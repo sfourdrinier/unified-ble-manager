@@ -14,11 +14,19 @@ Scanning does not require this extension; strict connection/GATT work does.
 
 The native authority additionally requires
 `org.unifiedblemanager.LinuxAuthority1.GetContract` on the selected adapter,
-with the exact three-unsigned-integer reply `(1, 1, 1)` for contract, lease and
+with the exact three-unsigned-integer reply `(1, 2, 1)` for contract, lease and
 GATT observer versions. Missing, malformed or unknown answers refuse lifecycle
 admission and keep their native failure details. The maintained source extension
 supplies the lease producer and fresh GATT observer together. Installing UBM
 alone does not install that derivative daemon.
+
+Lease revision 2's exact `ReleaseLease` reply is `uttsby` (version, original
+token, physical generation, scope, observed-reason presence, raw MGMT byte).
+The reason is captured only from the exact generation's native physical-loss
+callback and retained in the release answer, so reply-before-signal scheduling
+cannot erase it. Absent detail is explicit: presence false and byte 0, never a
+reason inferred from the requested disconnect. Reservation/protected scopes
+carry no invented physical reason. Older scope-only revision 1 is rejected.
 
 ## Upstream feasibility and ownership boundary
 

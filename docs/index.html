@@ -926,6 +926,15 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               framework-neutral <code>desktop-native</code> host kind; browser and React Native backends require their
               own host integration and cannot be driven from a Node shell.
             </p>
+            <p>
+              Connection disconnect and lease release return <code>BackendConnectionCleanupRecord</code>. Its optional
+              <code>platform</code> detail is the operation's own observed result for that exact connection generation,
+              not an inferred reason or a lookup of a later connection. Include the same detail on terminal backend
+              connection events when available. The shared core preserves the first terminal observation even when event
+              delivery is delayed; it exposes platform detail on the public lifecycle terminal and returns only
+              <code>state</code> and <code>failures</code> in the public cleanup receipt. An unobserved platform reason
+              remains absent, and failed cleanup is not a confirmed connection end.
+            </p>
             <h2>Scan planning contract</h2>
             <p>
               The additive PR9 backend contract exposes <code>ScanPlan</code>, <code>BackendScanPlanner</code>, and the

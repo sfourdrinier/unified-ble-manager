@@ -598,12 +598,11 @@ jobs:
           rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-linux-android x86_64-linux-android
 
       - name: Install Expo example dependencies
-        run: pnpm --dir example-expo install --no-frozen-lockfile
+        run: node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
 
       - name: Align Expo peer deps to installed SDK
         # package.json uses caret floors; let Expo pick compatible peers for the resolved SDK.
-        working-directory: example-expo
-        run: npx expo install --fix
+        run: node examples-shared/dev/install-example-dependencies.js --expo-fix example-expo
 
       - name: Typecheck Expo example
         run: pnpm typecheck:references:expo
@@ -684,7 +683,7 @@ jobs:
       - name: Install classic example dependencies
         # example/.npmrc uses node-linker=hoisted so @react-native/gradle-plugin is at
         # example/node_modules/@react-native/gradle-plugin (required by settings.gradle).
-        run: pnpm --dir example install --no-frozen-lockfile
+        run: node examples-shared/dev/install-example-dependencies.js example --no-frozen-lockfile
 
       - name: Verify React Native gradle plugin path
         run: test -d example/node_modules/@react-native/gradle-plugin

@@ -159,10 +159,18 @@ export interface ScannerBackend<Attachment extends string> {
     clientId: ClientId<Attachment, string>
   ): Promise<ScanLease<Attachment, string>>
 }
+/**
+ * Own-operation cleanup observation for a connection generation. Platform detail is
+ * observed, never inferred from a disconnect request, and belongs in its lifecycle
+ * terminal rather than the public cleanup receipt.
+ */
+export interface BackendConnectionCleanupRecord extends CleanupRecord {
+  readonly platform?: import('./errors').PlatformErrorDetail
+}
 export interface ConnectionLease<Attachment extends string, _Connection extends string, _Lease extends string> {
   readonly leaseId: LeaseId<Attachment, string>
   readonly connection: BackendConnection<Attachment, string>
-  release(): Promise<CleanupRecord>
+  release(): Promise<BackendConnectionCleanupRecord>
 }
 export interface BackendConnection<Attachment extends string, _Connection extends string> {
   readonly attachment: AttachmentRecord<Attachment>
@@ -171,7 +179,7 @@ export interface BackendConnection<Attachment extends string, _Connection extend
   readonly connectionId: ConnectionId<Attachment, string>
   readonly connectionGeneration: GenerationId<'connection-generation', string>
   readonly state: ConnectionState
-  disconnect(): Promise<CleanupRecord>
+  disconnect(): Promise<BackendConnectionCleanupRecord>
 }
 export type ConnectionIntent = 'direct' | 'when-available'
 /**
@@ -367,11 +375,13 @@ export interface BackendConnectionStateChangedEvent<Attachment extends string> e
   readonly previous: ConnectionState
   readonly current: ConnectionState
   readonly reason: BackendDisconnectReason | null
+  readonly platform?: import('./errors').PlatformErrorDetail
 }
 export interface BackendDisconnectedEvent<Attachment extends string> extends BackendEventBase<Attachment> {
   readonly kind: 'disconnected'
   readonly connection: ConnectionPath<Attachment, string>
   readonly reason: BackendDisconnectReason
+  readonly platform?: import('./errors').PlatformErrorDetail
 }
 export interface BackendCharacteristicValueChangedEvent<Attachment extends string>
   extends BackendEventBase<Attachment> {

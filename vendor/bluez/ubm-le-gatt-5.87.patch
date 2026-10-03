@@ -1937,7 +1937,7 @@
 +#endif
 --- a/src/ubm-le-lease.c
 +++ b/src/ubm-le-lease.c
-@@ -0,0 +1,881 @@
+@@ -0,0 +1,895 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/* Versioned sender-scoped LE authority. Not a general Device1 disconnect. */
 +#ifdef HAVE_CONFIG_H
@@ -2004,6 +2004,8 @@
 +	bool released;
 +	bool owner_dead;
 +	uint64_t generation;
++	dbus_bool_t has_disconnect_reason;
++	uint8_t disconnect_reason;
 +	const char *receipt;
 +	DBusMessage *connect;
 +	GSList *releases;
@@ -2306,7 +2308,7 @@
 +
 +static void send_receipts(struct lease *lease)
 +{
-+	uint32_t version = 1;
++	uint32_t version = 2;
 +	GSList *l;
 +	if (!lease->receipt)
 +		return;
@@ -2316,7 +2318,9 @@
 +			DBUS_TYPE_UINT32, &version,
 +			DBUS_TYPE_UINT64, &lease->token,
 +			DBUS_TYPE_UINT64, &lease->generation,
-+			DBUS_TYPE_STRING, &lease->receipt, DBUS_TYPE_INVALID))
++			DBUS_TYPE_STRING, &lease->receipt,
++			DBUS_TYPE_BOOLEAN, &lease->has_disconnect_reason,
++			DBUS_TYPE_BYTE, &lease->disconnect_reason, DBUS_TYPE_INVALID))
 +			g_warning("LE lease receipt delivery failed; retained token %" G_GUINT64_FORMAT,
 +						lease->token);
 +		dbus_message_unref(message);
@@ -2656,6 +2660,15 @@
 +	GSList *l;
 +	if (!peer || peer->generation != generation || !generation)
 +		return;
++	/* The operation's own reply retains the exact kernel observation even
++	 * when the client consumes that reply before its signal callback runs. */
++	for (l = leases; l; l = l->next) {
++		struct lease *lease = l->data;
++		if (lease->peer == peer && lease->generation == generation) {
++			lease->has_disconnect_reason = TRUE;
++			lease->disconnect_reason = reason;
++		}
++	}
 +	peer->generation = 0;
 +	peer->releasing = false;
 +	peer->born_exclusive = false;
@@ -2694,7 +2707,7 @@
 +static DBusMessage *get_contract(DBusConnection *conn, DBusMessage *message,
 +						void *data)
 +{
-+	uint32_t protocol = 1, lease = 1, gatt = 1;
++	uint32_t protocol = 1, lease = 2, gatt = 1;
 +	(void) conn;
 +	(void) data;
 +	/* Versioned producer and fresh ATT observer are verified together. */
@@ -2774,7 +2787,8 @@
 +		GDBUS_ARGS({"generation", "t"}), connect_lease) },
 +	{ GDBUS_ASYNC_METHOD("ReleaseLease", GDBUS_ARGS({"token", "t"}),
 +		GDBUS_ARGS({"version", "u"}, {"token", "t"},
-+			{"generation", "t"}, {"scope", "s"}), release_lease) },
++			{"generation", "t"}, {"scope", "s"},
++			{"has_reason", "b"}, {"reason", "y"}), release_lease) },
 +	{}
 +};
 +static const GDBusSignalTable lease_signals[] = {
@@ -3924,7 +3938,7 @@
 +}
 --- a/unit/test-ubm-le-lease.c
 +++ b/unit/test-ubm-le-lease.c
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,424 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/* Real daemon tables/handlers on private D-Bus; kernel/device boundary doubles. */
 +#include "src/ubm-le-lease.c"
@@ -4039,20 +4053,29 @@
 +	assert(token != 0);
 +	return token;
 +}
-+static void receipt(struct call *call, uint64_t token, uint64_t generation,
++static uint8_t receipt(struct call *call, uint64_t token, uint64_t generation,
 +						const char *expected)
 +{
 +	uint32_t version;
 +	uint64_t returned_token, returned_generation;
 +	const char *scope;
 +	await_call(call);
-+	assert(!strcmp(dbus_message_get_signature(call->reply), "utts"));
++	assert(!strcmp(dbus_message_get_signature(call->reply), "uttsby"));
++	dbus_bool_t has_reason;
++	uint8_t reason;
 +	assert(dbus_message_get_args(call->reply, NULL,
 +		DBUS_TYPE_UINT32, &version, DBUS_TYPE_UINT64, &returned_token,
 +		DBUS_TYPE_UINT64, &returned_generation, DBUS_TYPE_STRING, &scope,
++		DBUS_TYPE_BOOLEAN, &has_reason, DBUS_TYPE_BYTE, &reason,
 +		DBUS_TYPE_INVALID));
-+	assert(version == 1 && token == returned_token && generation == returned_generation);
++	assert(version == 2 && token == returned_token && generation == returned_generation);
 +	assert(!strcmp(expected, scope));
++	if (!strcmp(scope, "physical-released")) {
++		assert(has_reason && (reason == 2 || reason == 3));
++	} else {
++		assert(!has_reason && reason == 0);
++	}
++	return reason;
 +}
 +static gboolean settle_connect(void *data)
 +{
@@ -4090,7 +4113,7 @@
 +	assert(dbus_message_get_args(replay.reply, NULL,
 +		DBUS_TYPE_UINT32, &contract, DBUS_TYPE_UINT32, &lease_version,
 +		DBUS_TYPE_UINT32, &gatt_version, DBUS_TYPE_INVALID));
-+	assert(contract == 1 && lease_version == 1 && gatt_version == 1);
++	assert(contract == 1 && lease_version == 2 && gatt_version == 1);
 +	clear_call(&replay);
 +	/* Reserve -> release is no physical effect; late Connect cannot re-admit. */
 +	token = reserve_token(client);
@@ -4111,12 +4134,12 @@
 +	g_timeout_add(50, settle_disconnect, NULL);
 +	await_call(&connect);
 +	assert(connect_calls == 1);
-+	receipt(&release, second, 9, "physical-released");
++	assert(receipt(&release, second, 9, "physical-released") == 2);
 +	assert(disconnect_calls == 1);
 +	clear_call(&connect);
 +	clear_call(&release);
 +	send_call(client, "ReleaseLease", second, &replay);
-+	receipt(&replay, second, 9, "physical-released");
++	assert(receipt(&replay, second, 9, "physical-released") == 2);
 +	assert(disconnect_calls == 1);
 +	clear_call(&replay);
 +	/* Lost reservation reply recovers exact original token after object loss. */
@@ -4254,8 +4277,13 @@
 +	device.generation = 0;
 +	btd_ubm_le_lost(&device, 10, 3);
 +	send_call(client, "ReleaseLease", borrowed, &release);
-+	receipt(&release, borrowed, 10, "physical-released");
++	assert(receipt(&release, borrowed, 10, "physical-released") == 3);
 +	clear_call(&release);
++	/* Duplicate or stale loss cannot overwrite the original receipt. */
++	btd_ubm_le_lost(&device, 10, 7);
++	send_call(client, "ReleaseLease", borrowed, &replay);
++	assert(receipt(&replay, borrowed, 10, "physical-released") == 3);
++	clear_call(&replay);
 +	send_call(client, "AckLease", borrowed, &replay);
 +	await_call(&replay);
 +	clear_call(&replay);
@@ -4265,6 +4293,8 @@
 +	send_call(client, "ConnectLease", owned, &connect);
 +	g_timeout_add(25, settle_connect, NULL);
 +	await_call(&connect);
++	btd_ubm_le_lost(&device, 10, 7);
++	assert(!find_lease(&adapter, owned, dbus_bus_get_unique_name(client))->has_disconnect_reason);
 +	clear_call(&connect);
 +	DBusConnection *external = g_dbus_setup_private(DBUS_BUS_SESSION, NULL, &error);
 +	assert(external);
@@ -4298,7 +4328,7 @@
 +	expected_disconnects = 3;
 +	send_call(client, "ReleaseLease", owned, &release);
 +	g_timeout_add(25, settle_disconnect, NULL);
-+	receipt(&release, owned, 11, "physical-released");
++	assert(receipt(&release, owned, 11, "physical-released") == 2);
 +	clear_call(&release);
 +	send_call(client, "AckLease", owned, &replay);
 +	await_call(&replay);

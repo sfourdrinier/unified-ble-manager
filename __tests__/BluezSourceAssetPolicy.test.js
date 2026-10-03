@@ -19,12 +19,12 @@ function fixture(change, check) {
   }
 }
 
-test.each([undefined, '5.87-ubm.0', '5.87-ubm.01', '5.88-ubm.1', '5.87-ubm.1\n'])(
+test.each([undefined, '5.87-ubm.0', '5.87-ubm.01', '5.88-ubm.2', '5.87-ubm.2\n'])(
   'a ready deployment requires the exact supported release grammar (%s)',
   release => {
     fixture(
       manifest => {
-        manifest.distribution.linuxAuthorityContract = [1, 1, 1]
+        manifest.distribution.linuxAuthorityContract = [1, 2, 1]
         manifest.distribution.release = release
       },
       root => expect(() => readBluezSourceAsset(root)).toThrow(/deployment.*identity/)
@@ -35,19 +35,22 @@ test.each([undefined, '5.87-ubm.0', '5.87-ubm.01', '5.88-ubm.1', '5.87-ubm.1\n']
 test('a ready deployment retains one authoritative manifest release', () => {
   fixture(
     manifest => {
-      manifest.distribution.linuxAuthorityContract = [1, 1, 1]
-      manifest.distribution.release = '5.87-ubm.1'
+      manifest.distribution.linuxAuthorityContract = [1, 2, 1]
+      manifest.distribution.release = '5.87-ubm.2'
     },
-    root => expect(readBluezSourceAsset(root).distribution.release).toBe('5.87-ubm.1')
+    root => expect(readBluezSourceAsset(root).distribution.release).toBe('5.87-ubm.2')
   )
 })
 
-test('unknown deployment authority versions are refused', () => {
-  fixture(
-    manifest => {
-      manifest.distribution.linuxAuthorityContract = [1, 1, 2]
-      manifest.distribution.release = '5.87-ubm.1'
-    },
-    root => expect(() => readBluezSourceAsset(root)).toThrow(/deployment.*identity/)
-  )
-})
+test.each([{ contract: [1, 1, 1] }, { contract: [1, 2, 2] }])(
+  'obsolete or unknown deployment authority versions are refused ($contract)',
+  ({ contract }) => {
+    fixture(
+      manifest => {
+        manifest.distribution.linuxAuthorityContract = contract
+        manifest.distribution.release = '5.87-ubm.2'
+      },
+      root => expect(() => readBluezSourceAsset(root)).toThrow(/deployment.*identity/)
+    )
+  }
+)

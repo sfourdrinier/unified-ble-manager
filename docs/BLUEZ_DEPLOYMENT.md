@@ -11,7 +11,7 @@ authority contract and retained source are described in
 
 `vendor/bluez/deployment/bundle.mjs` uses the exact upstream archive digest,
 patch and license hashes from `source-asset-manifest.json`. It refuses a source
-manifest without `distribution.linuxAuthorityContract: [1, 1, 1]`. The producer
+manifest without `distribution.linuxAuthorityContract: [1, 2, 1]`. The producer
 owner sets that readiness fact only after integrating and exercising the actual
 lease handlers; adding the field is not a substitute for those tests.
 
@@ -21,7 +21,7 @@ fresh, disjoint directories outside the repository:
 ```sh
 node /absolute/ubm/vendor/bluez/deployment/bundle.mjs \
   /absolute/bluez-5.87.tar.xz /absolute/new-bluez-bundle \
-  /absolute/new-bluez-build-work 5.87-ubm.1
+  /absolute/new-bluez-build-work 5.87-ubm.2
 node --test /absolute/ubm/vendor/bluez/deployment/deployment.test.mjs
 ```
 
@@ -100,7 +100,7 @@ state migration remain the operator's separately approved actions.
 ## Admission and recovery after activation
 
 Under the freshly resolved unique daemon owner, the selected adapter must
-answer `org.unifiedblemanager.LinuxAuthority1.GetContract` with exact `(1,1,1)`.
+answer `org.unifiedblemanager.LinuxAuthority1.GetContract` with exact `(1,2,1)`.
 The lease mechanism is `LELease1.ReserveLease(deviceObjectPath, privateReservationId)` then
 `ConnectLease(token)`, with `ReleaseLease(token)` returning `(u,t,t,s)`:
 version, original token, physical LE generation and scoped outcome. Outcomes
@@ -144,7 +144,7 @@ recovery is not a claim that previous physical resources were released.
 
 ```sh
 node /absolute/ubm/vendor/bluez/deployment/activate.mjs rollback \
-  /opt/unified-ble-manager/bluez/5.87-ubm.1-PATCH_HASH_PREFIX/deployment-receipt.json \
+  /opt/unified-ble-manager/bluez/5.87-ubm.2-PATCH_HASH_PREFIX/deployment-receipt.json \
   --confirm-override-removal
 ```
 

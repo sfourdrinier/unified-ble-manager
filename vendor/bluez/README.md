@@ -90,12 +90,18 @@ failure into full client initialization. The graph fixture includes duplicate
 native Include declarations, whose exported unique targets follow stock BlueZ
 Includes semantics, as well as missing and stale targets.
 
-## Private protocol, version 1
+## Private authority contract 1, lease revision 2, GATT revision 1
 
-The adapter's `LinuxAuthority1.GetContract` verifies the `(1,1,1)` lease and
+The adapter's `LinuxAuthority1.GetContract` verifies the `(1,2,1)` lease and
 GATT-observer contract before native lifecycle capability admission. `LELease1`
 owns reservation, read-only recovery, connection and exact-token release;
 `PhysicalLost(o,t,y)` retains actual physical generation and raw MGMT reason.
+`ReleaseLease` returns exactly `uttsby`: revision2, original token, physical
+generation, release scope, observed-reason presence, and raw MGMT reason byte.
+The reason is retained by the exact physical-loss callback and travels in the
+operation's own reply, independent of client signal/reply scheduling. An absent
+reason has canonical byte0; reservation/protected/indeterminate receipts never
+manufacture an observed physical cause. Revision1 scope-only daemons are refused.
 The real daemon-table fixture tests retained ownership, accepted late work,
 protected versus exclusive release, asynchronous MGMT refusal/retry, exact
 cancellation fences and more than 1024 interleaved completed sender cycles.

@@ -138,7 +138,7 @@ describe('canonical package modernization', () => {
 
   test('force-refreshes the local Expo package before its Android build', () => {
     expect(rootPackage.scripts['build:expo:android']).toContain(
-      'pnpm --dir example-expo install --force --no-frozen-lockfile'
+      'node examples-shared/dev/install-example-dependencies.js example-expo --force --no-frozen-lockfile'
     )
     expect(rootPackage.scripts['build:expo:android']).toContain('npx expo prebuild --clean --no-install')
   })

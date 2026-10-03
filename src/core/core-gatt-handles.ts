@@ -272,7 +272,8 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     previous: ConnectionState,
     current: Extract<ConnectionState, 'disconnected' | 'lost'>,
     cause: ConnectionLifecycleTerminalCause,
-    backendIngressOrdinal: number
+    backendIngressOrdinal: number,
+    platform?: PlatformErrorDetail
   ): void {
     if (this.lifecycleFinished) {
       return
@@ -289,7 +290,7 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
       throw contractError('lifecycle.invariant-violation', 'connection', 'connection-lifecycle.terminal-cause')
     }
     this.acceptBackendIngressOrdinal(backendIngressOrdinal)
-    this.completeLifecycle(cause, backendIngressOrdinal)
+    this.completeLifecycle(cause, backendIngressOrdinal, platform)
   }
 
   finishLifecycle(

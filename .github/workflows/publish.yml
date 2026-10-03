@@ -353,18 +353,17 @@ jobs:
           rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-linux-android x86_64-linux-android
 
       - name: Install classic example dependencies
-        run: pnpm --dir example install --no-frozen-lockfile
+        run: node examples-shared/dev/install-example-dependencies.js example --no-frozen-lockfile
 
       - name: Assemble classic RN Android debug APK
         working-directory: example/android
         run: ./gradlew :app:assembleDebug --no-daemon --console=plain -PreactNativeArchitectures=arm64-v8a
 
       - name: Install Expo example dependencies
-        run: pnpm --dir example-expo install --no-frozen-lockfile
+        run: node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
 
       - name: Align Expo peer deps to installed SDK
-        working-directory: example-expo
-        run: npx expo install --fix
+        run: node examples-shared/dev/install-example-dependencies.js --expo-fix example-expo
 
       - name: Typecheck Expo example
         run: pnpm --dir example-expo exec tsc --noEmit -p tsconfig.json

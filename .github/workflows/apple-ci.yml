@@ -41,7 +41,7 @@ jobs:
 
       - name: Install example dependencies
         # example/pnpm-lock.yaml is gitignored; CI must not freeze.
-        run: pnpm --dir example install --no-frozen-lockfile
+        run: node examples-shared/dev/install-example-dependencies.js example --no-frozen-lockfile
 
       - name: Install CocoaPods
         working-directory: example/ios
@@ -115,11 +115,10 @@ jobs:
         run: pnpm native:refresh --only apple
 
       - name: Install Expo example dependencies
-        run: pnpm --dir example-expo install --no-frozen-lockfile
+        run: node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
 
       - name: Align Expo peer deps to installed SDK
-        working-directory: example-expo
-        run: npx expo install --fix
+        run: node examples-shared/dev/install-example-dependencies.js --expo-fix example-expo
 
       - name: Verify and refresh the package copy Expo will link
         env:

@@ -163,15 +163,15 @@ run_android() {
   export ANDROID_SDK_ROOT="$ANDROID_HOME"
 
   # classic-rn-android
-  pnpm --dir example install --no-frozen-lockfile
+  node examples-shared/dev/install-example-dependencies.js example --no-frozen-lockfile
   test -d example/node_modules/@react-native/gradle-plugin
   pnpm test:native-protocol:android
   (cd example/android && ./gradlew :app:assembleDebug --no-daemon --console=plain \
       -PreactNativeArchitectures=arm64-v8a)
 
   # expo-cng-android
-  pnpm --dir example-expo install --no-frozen-lockfile
-  (cd example-expo && npx expo install --fix)
+  node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
+  node examples-shared/dev/install-example-dependencies.js --expo-fix example-expo
   pnpm typecheck:references:expo
   (cd example-expo && NODE_ENV=development npx expo prebuild --clean --no-install)
   (cd example-expo/android && NODE_ENV=development ./gradlew :app:assembleDebug \

@@ -401,6 +401,26 @@ impl RadioBoundary for DispatchRadio {
         }
     }
 
+    async fn disconnect_with_observation(
+        &self,
+        peer_id: &str,
+    ) -> std::result::Result<ubm_desktop::boundary::DisconnectObservation, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.disconnect_with_observation(peer_id).await,
+            Self::Synthetic(radio) => radio.disconnect_with_observation(peer_id).await,
+        }
+    }
+    fn consume_disconnect_observation(
+        &self,
+        peer_id: &str,
+        observation: &ubm_desktop::boundary::DisconnectObservation,
+    ) {
+        match self {
+            Self::Radio(radio) => radio.consume_disconnect_observation(peer_id, observation),
+            Self::Synthetic(radio) => radio.consume_disconnect_observation(peer_id, observation),
+        }
+    }
+
     async fn discover(
         &self,
         peer_id: &str,
@@ -1737,6 +1757,19 @@ pub struct LifecycleEventInfo {
     pub platform: Option<String>,
 }
 
+/// Private operation-owned release report, not a separately polled event.
+#[napi(object)]
+pub struct ConnectionReleaseInfo {
+    pub schema: String,
+    pub state: String,
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    pub lease: String,
+    #[napi(js_name = "connectionGeneration")]
+    pub connection_generation: Option<String>,
+    pub platform: Option<String>,
+}
+
 fn lifecycle_event_wire(
     event: ubm_desktop::LifecycleEvent,
 ) -> std::result::Result<LifecycleEventInfo, DispatchError> {
@@ -1848,6 +1881,22 @@ pub struct StagePlatformDetail {
     pub code: String,
     pub message: Option<String>,
     pub metadata: Option<HashMap<String, Either3<String, i64, bool>>>,
+}
+
+fn staged_platform(platform: StagePlatformDetail) -> PlatformDetail {
+    let mut staged = PlatformDetail::new(platform.domain, platform.code);
+    if let Some(message) = platform.message {
+        staged = staged.with_message(message);
+    }
+    for (key, value) in platform.metadata.unwrap_or_default() {
+        let value = match value {
+            Either3::A(text) => PlatformValue::Text(text),
+            Either3::B(number) => PlatformValue::Int(number),
+            Either3::C(flag) => PlatformValue::Bool(flag),
+        };
+        staged = staged.with_metadata(key, value);
+    }
+    staged
 }
 
 /// Peer-scoped control arguments (security, address type).
@@ -3840,7 +3889,7 @@ impl UbmCentral {
     /// Release this caller's connection lease. `"released"` confirms that
     /// lease's release, not physical disconnection when another owner remains.
     #[napi(catch_unwind)]
-    pub async fn disconnect(&self, options: LeaseOptions) -> Result<String> {
+    pub async fn disconnect(&self, options: LeaseOptions) -> Result<ConnectionReleaseInfo> {
         let ctl = self
             .control(
                 options.timeout_ms,
@@ -3850,9 +3899,16 @@ impl UbmCentral {
             .map_err(to_napi)?;
         bump(&self.counters.disconnect);
         self.central
-            .release_connection_lease(&options.peer_id, &options.lease, ctl)
+            .release_connection_lease_report(&options.peer_id, &options.lease, ctl)
             .await
-            .map(|_| "released".to_owned())
+            .map(|report| ConnectionReleaseInfo {
+                schema: "ubm-desktop-release/1".to_owned(),
+                state: "released".to_owned(),
+                peer_id: options.peer_id,
+                lease: options.lease,
+                connection_generation: report.connection_generation,
+                platform: report.platform.as_ref().map(platform_wire),
+            })
             .map_err(fail)
     }
 
@@ -4389,19 +4445,22 @@ impl UbmCentral {
             .synthetic("dispatch.fail-next-radio-op-with-platform")
             .map_err(to_napi)?;
         let parsed = fault_op(&op).map_err(to_napi)?;
-        let mut staged = PlatformDetail::new(platform.domain, platform.code);
-        if let Some(message) = platform.message {
-            staged = staged.with_message(message);
-        }
-        for (key, value) in platform.metadata.unwrap_or_default() {
-            let value = match value {
-                Either3::A(text) => PlatformValue::Text(text),
-                Either3::B(number) => PlatformValue::Int(number),
-                Either3::C(flag) => PlatformValue::Bool(flag),
-            };
-            staged = staged.with_metadata(key, value);
-        }
-        radio.fail_next_with_platform(parsed, &detail, staged);
+        radio.fail_next_with_platform(parsed, &detail, staged_platform(platform));
+        Ok(())
+    }
+
+    /// Stage the synthetic OS answer to a successful release (never production).
+    #[napi(catch_unwind)]
+    pub async fn stage_disconnect_observation(
+        &self,
+        peer_id: String,
+        platform: StagePlatformDetail,
+    ) -> Result<()> {
+        self.central
+            .boundary()
+            .synthetic("dispatch.stage-disconnect-observation")
+            .map_err(to_napi)?
+            .set_disconnect_observation(&peer_id, staged_platform(platform));
         Ok(())
     }
 
@@ -4872,6 +4931,28 @@ impl UbmCentral {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn disconnect_dispatch_preserves_and_consumes_own_native_observation() {
+        let radio = FakeRadio::new();
+        let platform = PlatformDetail::new("bluez-mgmt", "2");
+        radio.set_disconnect_observation("peer", platform.clone());
+        let dispatch = DispatchRadio::Synthetic(Box::new(radio));
+        let observation = dispatch.disconnect_with_observation("peer").await.unwrap();
+        assert_eq!(observation.platform, Some(platform));
+        assert_eq!(
+            dispatch.disconnect_with_observation("peer").await.unwrap(),
+            observation
+        );
+        dispatch.consume_disconnect_observation("peer", &observation);
+        assert_eq!(
+            dispatch
+                .disconnect_with_observation("peer")
+                .await
+                .unwrap()
+                .platform,
+            None
+        );
+    }
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn linux_physical_loss_admission_forwards_exact_generation() {
@@ -6102,7 +6183,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(central.disconnect(lease(None)).await.unwrap(), "released");
+        assert_eq!(
+            central.disconnect(lease(None)).await.unwrap().state,
+            "released"
+        );
         assert!(!central
             .read(request("lease-b"))
             .await
@@ -6168,7 +6252,10 @@ mod tests {
             timeout_ms: Some(5000),
             ticket: None,
         };
-        assert_eq!(central.disconnect(lease(None)).await.unwrap(), "released");
+        assert_eq!(
+            central.disconnect(lease(None)).await.unwrap().state,
+            "released"
+        );
         assert_eq!(
             central
                 .poll_notification(subscription("consumer-a"))

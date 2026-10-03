@@ -33,6 +33,12 @@ pub(crate) struct Receipt {
     pub token: u64,
     pub generation: u64,
     pub scope: Scope,
+    pub disconnect_reason: Option<u8>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReleaseObservation {
+    pub physical_generation: Option<u64>,
+    pub disconnect_reason: Option<u8>,
 }
 
 pub(crate) trait LeaseClient: Clone + Send + Sync + 'static {
@@ -63,7 +69,7 @@ struct Token {
 enum State {
     UnresolvedReservation,
     Owned(Token),
-    Released,
+    Released(ReleaseObservation),
 }
 struct Entry<C> {
     client: C,
@@ -76,6 +82,7 @@ struct Entry<C> {
 }
 pub(crate) struct Ledger<C> {
     entries: Arc<StdMutex<HashMap<String, Arc<Entry<C>>>>>,
+    terminal_facts: Arc<StdMutex<HashMap<String, Arc<Entry<C>>>>>,
     maintenance: Arc<StdMutex<HashMap<u64, Arc<Acknowledgment<C>>>>>,
 }
 struct Acknowledgment<C> {
@@ -89,6 +96,7 @@ impl<C> Clone for Ledger<C> {
     fn clone(&self) -> Self {
         Self {
             entries: Arc::clone(&self.entries),
+            terminal_facts: Arc::clone(&self.terminal_facts),
             maintenance: Arc::clone(&self.maintenance),
         }
     }
@@ -97,6 +105,7 @@ impl<C> Default for Ledger<C> {
     fn default() -> Self {
         Self {
             entries: Arc::default(),
+            terminal_facts: Arc::default(),
             maintenance: Arc::default(),
         }
     }
@@ -153,7 +162,50 @@ impl<C: LeaseClient> Ledger<C> {
             .is_some_and(|owned| Arc::ptr_eq(owned, entry))
         {
             entries.remove(peer);
+            if entry.physical_generation.load(Ordering::Acquire) != 0 {
+                let mut facts = self.terminal_facts.lock().expect("terminal release facts");
+                if !entry.loss_reported.load(Ordering::Acquire) {
+                    facts.insert(peer.to_owned(), Arc::clone(entry));
+                }
+            }
         }
+    }
+    #[cfg(test)]
+    fn terminal_facts_len(&self) -> usize {
+        self.terminal_facts.lock().unwrap().len()
+    }
+    pub(crate) fn consume_terminal(&self, peer: &str, generation: u64) {
+        let mut facts = self.terminal_facts.lock().expect("terminal release facts");
+        if facts
+            .get(peer)
+            .is_some_and(|entry| entry.physical_generation.load(Ordering::Acquire) == generation)
+        {
+            facts.remove(peer);
+        }
+    }
+    pub(crate) fn with_release_scope<T>(
+        &self,
+        peer: &str,
+        generation: Option<u64>,
+        cleanup: impl FnOnce() -> T,
+    ) -> Option<T> {
+        // Admission and retained facts share this lock order. A newer provisional
+        // entry already supersedes old cleanup, even before its Connect answers.
+        let entries = self.entries.lock().expect("lease ledger");
+        if entries.contains_key(peer) {
+            return None;
+        }
+        let facts = self.terminal_facts.lock().expect("terminal release facts");
+        if facts.get(peer).is_some_and(|entry| {
+            !generation.is_some_and(|generation| {
+                entry.physical_generation.load(Ordering::Acquire) == generation
+            })
+        }) {
+            return None;
+        }
+        drop(facts);
+        // Keep admission excluded until synchronous local cleanup finishes.
+        Some(cleanup())
     }
     /// Install provisional ownership before starting the native request. Dropping
     /// the waiter never drops the request: its retained task settles the token,
@@ -189,6 +241,10 @@ impl<C: LeaseClient> Ledger<C> {
                 observation_failure: AtomicBool::new(false),
             });
             entries.insert(peer.clone(), Arc::clone(&entry));
+            self.terminal_facts
+                .lock()
+                .expect("terminal release facts")
+                .remove(&peer);
             (entry, state)
         };
         // Reserve/connect worker takes the lock across both accepted futures.
@@ -248,7 +304,11 @@ impl<C: LeaseClient> Ledger<C> {
         }
         result
     }
-    async fn release_entry(&self, peer: &str, entry: &Arc<Entry<C>>) -> Result<(), DesktopError> {
+    async fn release_entry(
+        &self,
+        peer: &str,
+        entry: &Arc<Entry<C>>,
+    ) -> Result<ReleaseObservation, DesktopError> {
         let mut state = entry.token.lock().await;
         if matches!(*state, State::UnresolvedReservation) {
             // Read-only exact-ID reconciliation installs a daemon no-admission
@@ -262,22 +322,22 @@ impl<C: LeaseClient> Ledger<C> {
                 }
                 Some(_) => return Err(failed("recovery returned a zero owned token")),
                 None => {
-                    *state = State::Released;
+                    *state = State::Released(ReleaseObservation::default());
                     self.retire(peer, entry);
-                    return Ok(());
+                    return Ok(ReleaseObservation::default());
                 }
             }
         }
         let token = match *state {
             State::Owned(token) => token,
-            State::Released => return Ok(()),
+            State::Released(reason) => return Ok(reason),
             State::UnresolvedReservation => {
                 return Err(failed(
                     "reservation admission is indeterminate; exact native reservation reconciliation is required",
                 ));
             }
         };
-        {
+        let reason = {
             let receipt = entry.client.release(token.id, token.generation).await?;
             if receipt.token != token.id
                 || token
@@ -296,9 +356,18 @@ impl<C: LeaseClient> Ledger<C> {
                         .with_metadata("token", PlatformValue::Text(receipt.token.to_string()))
                         .with_metadata("physicalGeneration", PlatformValue::Text(receipt.generation.to_string())))),
             }
-        }
-        *state = State::Released;
-        entry.physical_generation.store(0, Ordering::Release);
+            if receipt.disconnect_reason.is_some() && receipt.scope != Scope::Physical {
+                return Err(failed(
+                    "nonphysical release receipt carries a physical disconnect reason",
+                ));
+            }
+            ReleaseObservation {
+                physical_generation: (receipt.scope == Scope::Physical)
+                    .then_some(receipt.generation),
+                disconnect_reason: receipt.disconnect_reason,
+            }
+        };
+        *state = State::Released(reason);
         let acknowledgment = Arc::new(Acknowledgment {
             client: entry.client.clone(),
             token: token.id,
@@ -312,7 +381,7 @@ impl<C: LeaseClient> Ledger<C> {
         self.retire(peer, entry);
         let reservation = entry.reservation;
         drop(self.start_acknowledgment(reservation, &acknowledgment));
-        Ok(())
+        Ok(reason)
     }
     fn start_acknowledgment(
         &self,
@@ -411,14 +480,27 @@ impl<C: LeaseClient> Ledger<C> {
             .sum()
     }
     pub(crate) async fn release(self, peer: &str) -> Result<(), DesktopError> {
+        self.release_with_observation(peer).await.map(|_| ())
+    }
+    pub(crate) async fn release_with_observation(
+        self,
+        peer: &str,
+    ) -> Result<ReleaseObservation, DesktopError> {
         let entry = self
             .entries
             .lock()
             .expect("lease ledger")
             .get(peer)
-            .cloned();
+            .cloned()
+            .or_else(|| {
+                self.terminal_facts
+                    .lock()
+                    .expect("terminal release facts")
+                    .get(peer)
+                    .cloned()
+            });
         let Some(entry) = entry else {
-            return Ok(());
+            return Ok(ReleaseObservation::default());
         };
         let ledger = self.clone();
         let peer = peer.to_owned();
@@ -451,7 +533,14 @@ impl<C: LeaseClient> Ledger<C> {
             .lock()
             .expect("lease ledger")
             .get(peer)
-            .cloned();
+            .cloned()
+            .or_else(|| {
+                self.terminal_facts
+                    .lock()
+                    .expect("terminal release facts")
+                    .get(peer)
+                    .cloned()
+            });
         let Some(entry) = entry else {
             return false;
         };
@@ -483,6 +572,7 @@ impl<C: LeaseClient> Ledger<C> {
         if !matches {
             return false;
         }
+        self.consume_terminal(peer, generation);
         let ledger = self.clone();
         let peer = peer.to_owned();
         tokio::spawn(async move {
@@ -630,6 +720,7 @@ mod tests {
                     } else {
                         Scope::Reservation
                     },
+                    disconnect_reason: None,
                 }))
         }
     }
@@ -653,6 +744,167 @@ mod tests {
         settled().await;
         assert_eq!(*client.calls.lock().unwrap(), vec![(41, None)]);
         assert_eq!(ledger.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn release_answer_preserves_exact_observed_reason_before_retirement() {
+        let ledger = Ledger::default();
+        let client = Client::new();
+        client.reserve.add_permits(1);
+        client.connect.add_permits(1);
+        ledger
+            .clone()
+            .connect("peer".into(), client.clone())
+            .await
+            .unwrap();
+        client.receipts.lock().unwrap().push_back(Ok(Receipt {
+            token: 41,
+            generation: 73,
+            scope: Scope::Physical,
+            disconnect_reason: Some(2),
+        }));
+        assert_eq!(
+            ledger
+                .clone()
+                .release_with_observation("peer")
+                .await
+                .unwrap()
+                .disconnect_reason,
+            Some(2)
+        );
+        assert_eq!(ledger.len(), 0);
+        assert_eq!(ledger.terminal_facts_len(), 1);
+        assert!(ledger.physical_lost_observed("peer", 73, 2).await);
+        assert_eq!(ledger.terminal_facts_len(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancelled_release_waiter_preserves_late_terminal_fact_not_native_debt() {
+        let ledger = Ledger::default();
+        let client = Client::new();
+        client.reserve.add_permits(1);
+        client.connect.add_permits(1);
+        ledger
+            .clone()
+            .connect("peer".into(), client.clone())
+            .await
+            .unwrap();
+        client.receipts.lock().unwrap().push_back(Ok(Receipt {
+            token: 41,
+            generation: 73,
+            scope: Scope::Physical,
+            disconnect_reason: Some(2),
+        }));
+        let gate = Arc::new(Semaphore::new(0));
+        *client.release_gate.lock().unwrap() = Some(gate.clone());
+        let owner = ledger.clone();
+        let waiter = tokio::spawn(async move { owner.release_with_observation("peer").await });
+        settled().await;
+        waiter.abort();
+        gate.add_permits(1);
+        settled().await;
+        assert_eq!(ledger.len(), 0);
+        assert_eq!(ledger.terminal_facts_len(), 1);
+        assert_eq!(
+            ledger
+                .clone()
+                .release_with_observation("peer")
+                .await
+                .unwrap()
+                .disconnect_reason,
+            Some(2)
+        );
+        assert!(ledger.physical_lost_observed("peer", 73, 2).await);
+        assert!(!ledger.physical_lost_observed("peer", 73, 2).await);
+        assert_eq!(client.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn new_peer_admission_cannot_consume_a_previous_generation_terminal_fact() {
+        let ledger = Ledger::default();
+        let first = Client::new();
+        first.reserve.add_permits(1);
+        first.connect.add_permits(1);
+        ledger.clone().connect("peer".into(), first).await.unwrap();
+        ledger.clone().release("peer").await.unwrap();
+        assert_eq!(ledger.terminal_facts_len(), 1);
+        let mut next = Client::new();
+        next.generation = 74;
+        next.token = 42;
+        next.reserve.add_permits(1);
+        next.connect.add_permits(1);
+        ledger
+            .clone()
+            .connect("peer".into(), next.clone())
+            .await
+            .unwrap();
+        assert_eq!(ledger.terminal_facts_len(), 0);
+        assert!(!ledger.physical_lost_observed("peer", 73, 2).await);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(
+            ledger.with_release_scope("peer", Some(73), || panic!("old cleanup must not run")),
+            None::<()>
+        );
+        assert!(next.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_release_cleanup_holds_admission_until_its_synchronous_mutation_finishes() {
+        let ledger = Ledger::default();
+        let client = Client::new();
+        client.reserve.add_permits(1);
+        client.connect.add_permits(1);
+        ledger.clone().connect("peer".into(), client).await.unwrap();
+        ledger.clone().release("peer").await.unwrap();
+        assert_eq!(
+            ledger.with_release_scope("peer", Some(73), || {
+                assert!(
+                    ledger.entries.try_lock().is_err(),
+                    "admission cannot cross scoped cleanup"
+                );
+                1
+            }),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_native_reason_is_not_inferred_from_requested_release() {
+        let ledger = Ledger::default();
+        let client = Client::new();
+        client.reserve.add_permits(1);
+        client.connect.add_permits(1);
+        ledger.clone().connect("peer".into(), client).await.unwrap();
+        assert_eq!(
+            ledger
+                .release_with_observation("peer")
+                .await
+                .unwrap()
+                .disconnect_reason,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn reservation_receipt_cannot_fabricate_physical_disconnect_reason() {
+        let ledger = Ledger::default();
+        let client = Client::new();
+        client.reserve.add_permits(1);
+        client.connect.add_permits(1);
+        *client.connect_failure.lock().unwrap() = Some(failed("connect refused"));
+        client.receipts.lock().unwrap().push_back(Ok(Receipt {
+            token: 41,
+            generation: 0,
+            scope: Scope::Reservation,
+            disconnect_reason: Some(2),
+        }));
+        assert!(ledger.clone().connect("peer".into(), client).await.is_err());
+        settled().await;
+        assert_eq!(
+            ledger.len(),
+            1,
+            "malformed release stays owned for exact retry"
+        );
     }
 
     #[tokio::test]
@@ -709,6 +961,7 @@ mod tests {
                 token: 41,
                 generation: 73,
                 scope,
+                disconnect_reason: None,
             }));
             assert!(ledger.clone().release("peer").await.is_err());
             assert_eq!(ledger.len(), 1);
@@ -717,12 +970,14 @@ mod tests {
             token: 42,
             generation: 73,
             scope: Scope::Physical,
+            disconnect_reason: None,
         }));
         assert!(ledger.clone().release("peer").await.is_err());
         client.receipts.lock().unwrap().push_back(Ok(Receipt {
             token: 41,
             generation: 74,
             scope: Scope::Physical,
+            disconnect_reason: None,
         }));
         assert!(ledger.clone().release("peer").await.is_err());
         ledger.clone().release("peer").await.unwrap();
@@ -770,6 +1025,7 @@ mod tests {
             token: 41,
             generation: 73,
             scope: Scope::Physical,
+            disconnect_reason: None,
         }));
         ledger.clone().release("peer").await.unwrap();
         assert_eq!(*client.calls.lock().unwrap(), vec![(41, None), (41, None)]);

@@ -24,6 +24,9 @@ All notable changes to `unified-ble-manager` are documented here.
   identity, hash, export and exact-content release guards.
 - Restore rendered installation/simulator code blocks through the pinned HTML
   renderer and add semantic omission checks.
+- Keep independent example dependency installs outside the parent pnpm workspace
+  through one shared installer, preserving their own configuration and frozen
+  lockfiles. Verify clean-checkout packaging without requiring retired directories.
 - Remove unreachable C++ desktop producers, private loaders and their exclusive
   build dependencies. The maintained distribution contains five shared Rust
   desktop targets: macOS arm64 and Windows/Linux x64 and arm64. Transfer useful
@@ -42,7 +45,13 @@ All notable changes to `unified-ble-manager` are documented here.
   production builds, without aliases or installed-source rewrites.
 - Preserve authenticated BlueZ MGMT disconnect reasons under optional platform
   detail through native, public, Electron IPC and Tauri lifecycle delivery.
-  Keep the existing public loss vocabulary and reject retired physical generations.
+  Carry the actual observation in lease revision 2 release answers so reply-first
+  and event-first completion preserve the same reason without manufacturing one
+  from the request. Project the operation's own generation-bound observation
+  directly into the public terminal even while backend event delivery is held;
+  preserve the public cleanup receipt shape and keep refused release retryable.
+  Keep the existing public loss vocabulary and reject retired
+  physical generations. The maintained daemon distribution is `5.87-ubm.2`.
 - Bind Linux connection ownership to exact daemon lease generations, retain
   accepted work across cancellation and lost replies, and retry acknowledged
   cleanup maintenance without blocking another connection. Keep deployment an

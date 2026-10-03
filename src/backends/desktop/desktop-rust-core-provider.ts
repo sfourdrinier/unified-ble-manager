@@ -36,8 +36,13 @@ import {
   cleanupDesktopAllocation,
   DesktopProcessHostInitializationError
 } from '../../desktop-process-initialization'
-import type { CleanupRecord, NormalizedBleError } from '../../backend-contract/errors'
-import type { BackendAttachment, BackendAttachmentRequest, BackendEvent } from '../../backend-contract/backend'
+import type { CleanupRecord, NormalizedBleError, PlatformErrorDetail } from '../../backend-contract/errors'
+import type {
+  BackendAttachment,
+  BackendAttachmentRequest,
+  BackendEvent,
+  BackendConnectionCleanupRecord
+} from '../../backend-contract/backend'
 import type {
   AdapterBackend,
   BackendConnection,
@@ -200,6 +205,7 @@ import {
   type DesktopRustCoreControl,
   type DesktopRustCoreLifecycleEvent,
   parseDesktopRustCoreLifecyclePlatform,
+  parseDesktopRustCoreReleaseReport,
   type DesktopRustCorePairOutcome,
   type DesktopRustCorePath,
   type DesktopRustCorePlatform,
@@ -950,6 +956,10 @@ interface ConnectionRecord {
   readonly coreGeneration: string
   readonly path: ConnectionPath<string, string>
   state: 'connected' | 'disconnecting' | 'disconnected' | 'lost'
+  releasePlatform?: PlatformErrorDetail
+  requestedTerminalAnnounced?: boolean
+  requestedDisconnect?: boolean
+  releaseAttempt?: Promise<BackendConnectionCleanupRecord>
   readonly databases: Set<string>
   readonly subscriptions: Set<string>
   /** The next database ordinal of this link (BlueZ numbered databases per connection record). */
@@ -2271,7 +2281,11 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     for (const record of records) {
       record.state = requested ? 'disconnected' : 'lost'
       this.invalidateConnectionState(record, 'connection-lost')
-      if (requested) continue
+      if (requested) {
+        record.releasePlatform = platform
+        if (record.requestedDisconnect === true) this.emitRequestedDisconnect(record)
+        continue
+      }
       this.emitEvent({
         kind: 'connection-lost',
         attachment: this.attachment,
@@ -2293,6 +2307,20 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       for (const databaseId of record.databases) this.databases.delete(databaseId)
       record.databases.clear()
     }
+  }
+
+  private emitRequestedDisconnect(record: ConnectionRecord): void {
+    if (record.requestedTerminalAnnounced === true) return
+    record.requestedTerminalAnnounced = true
+    this.emitEvent({
+      kind: 'disconnected',
+      attachment: this.attachment,
+      attachmentId: this.attachment.attachmentId,
+      ingressOrdinal: this.nextEventOrdinal(),
+      connection: record.path,
+      reason: 'local',
+      ...(record.releasePlatform === undefined ? {} : { platform: record.releasePlatform })
+    })
   }
 
   // -- peers ---------------------------------------------------------------
@@ -3476,7 +3504,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       nextDatabase: 1
     }
     this.connectionsById.set(String(connectionId), record)
-    const release = (): Promise<CleanupRecord> => this.disconnectConnection(record)
+    const release = (): Promise<BackendConnectionCleanupRecord> => this.disconnectConnection(record)
     const connection: BackendConnection<string, string> = Object.freeze({
       attachment: this.attachment,
       attachmentId: this.attachment.attachmentId,
@@ -3484,7 +3512,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       connectionId,
       connectionGeneration,
       state: 'connected',
-      disconnect: release
+      disconnect: () => this.disconnectConnection(record, true)
     })
     return Object.freeze({ leaseId, connection, release })
   }
@@ -3544,7 +3572,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       nextDatabase: 1
     }
     this.connectionsById.set(String(connectionId), record)
-    const release = (): Promise<CleanupRecord> => this.disconnectConnection(record)
+    const release = (): Promise<BackendConnectionCleanupRecord> => this.disconnectConnection(record)
     const connection: BackendConnection<string, string> = Object.freeze({
       attachment: this.attachment,
       attachmentId: this.attachment.attachmentId,
@@ -3552,7 +3580,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       connectionId,
       connectionGeneration,
       state: 'connected',
-      disconnect: release
+      disconnect: () => this.disconnectConnection(record, true)
     })
     return Object.freeze({ leaseId, connection, release })
   }
@@ -3590,19 +3618,45 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
    * `release-failed`; a retry drives the radio again, and a link that
    * already ended answers `already-released` without a radio call.
    */
-  private async disconnectConnection(record: ConnectionRecord): Promise<CleanupRecord> {
+  private disconnectConnection(
+    record: ConnectionRecord,
+    requestedDisconnect = false
+  ): Promise<BackendConnectionCleanupRecord> {
+    if (record.releaseAttempt !== undefined) return record.releaseAttempt
+    record.requestedDisconnect = requestedDisconnect
+    const attempt = this.disconnectConnectionCurrent(record)
+    record.releaseAttempt = attempt
+    const settled = () => {
+      if (record.releaseAttempt === attempt) record.releaseAttempt = undefined
+    }
+    attempt.then(settled, settled)
+    return attempt
+  }
+
+  private async disconnectConnectionCurrent(record: ConnectionRecord): Promise<BackendConnectionCleanupRecord> {
     const operation = this.op('connection.disconnect')
     if (record.state !== 'connected' && record.state !== 'disconnecting') {
-      return Object.freeze({ state: 'released', failures: Object.freeze([]) })
+      return Object.freeze({
+        state: 'released',
+        failures: Object.freeze([]),
+        ...(record.releasePlatform === undefined ? {} : { platform: record.releasePlatform })
+      })
     }
-    if (record.state === 'connected') record.state = 'disconnecting'
+    if (record.state === 'connected') {
+      record.state = 'disconnecting'
+    }
     if (this.liveLinkHolders(record.nativePeerId, record).length > 0) {
       record.state = 'disconnected'
       this.invalidateConnectionState(record, 'connection-lost')
       return Object.freeze({ state: 'released', failures: Object.freeze([]) })
     }
     try {
-      await this.central.disconnect({ peerId: record.nativePeerId, lease: record.lease })
+      const answer = await this.central.disconnect({ peerId: record.nativePeerId, lease: record.lease })
+      record.releasePlatform = parseDesktopRustCoreReleaseReport(answer, {
+        peerId: record.nativePeerId,
+        lease: record.lease,
+        connectionGeneration: record.coreGeneration
+      })
     } catch (error) {
       const normalized = desktopRustCoreError(error, operation).normalized
       return Object.freeze({
@@ -3612,7 +3666,12 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     record.state = 'disconnected'
     this.invalidateConnectionState(record, 'connection-lost')
-    return Object.freeze({ state: 'released', failures: Object.freeze([]) })
+    if (record.requestedDisconnect === true) this.emitRequestedDisconnect(record)
+    return Object.freeze({
+      state: 'released',
+      failures: Object.freeze([]),
+      ...(record.releasePlatform === undefined ? {} : { platform: record.releasePlatform })
+    })
   }
 
   private liveConnection(connection: BackendConnection<string, string>, operation: string): ConnectionRecord {

@@ -95,11 +95,19 @@ The shared Rust authority resolves and pins the current unique D-Bus owner of
 to a deliberately supplied owner; it is not an implementation attestation.
 An introspection entry alone is not proof: BlueZ can expose an unimplemented
 LE interface. The selected adapter must answer the versioned
-`LinuxAuthority1.GetContract` lease/GATT handshake `(1,1,1)`. The backend checks
-the owner pin before connection effects and
-never substitutes a restarted daemon or generic
+`LinuxAuthority1.GetContract` lease/GATT handshake `(1,2,1)`. Lease revision 2
+includes the actual, exact-generation MGMT disconnect observation in a physical
+release answer; older daemon revisions are refused rather than losing that
+detail when the release reply precedes the event. The backend checks
+the owner pin before connection effects and never substitutes a restarted daemon or generic
 device-wide `Device1.Connect`/`Disconnect`. It does not run privileged commands,
 modify daemon configuration, or add a compatibility fallback.
+
+The native release answer is also bound to the caller's original peer, lease and
+public connection generation. Its observed platform detail reaches the public
+lifecycle terminal directly from that answer, without waiting for event delivery.
+The public cleanup receipt remains `state` and `failures`; an unobserved reason
+remains absent, and a refused release retains ownership for retry.
 
 Migration from earlier candidates: omission selects native owner binding, not
 scan-only admission. Actual LE lifecycle and strict discovery support still
@@ -112,6 +120,11 @@ and native continuation because they share its central. Policy is BlueZ-only;
 CoreBluetooth and WinRT reject it.
 
 Accepted token-bound LE connect/release replies remain owned when a caller cancels.
+An exact terminal release observation may remain as one peer/generation fact
+after native obligations reach zero, so an original cancelled or concurrent
+waiter can consume its own answer. The matching public transition consumes it;
+newer peer admission supersedes it. This retained fact is not a live native lease
+or ACK maintenance debt, and it cannot supply a reason for a newer connection.
 An indeterminate reply is not permission to resend the effect or acquire a new
 generation; a refused release stays retryable. Resolving an unknown address uses
 separately owned, adapter-scoped LE discovery, never `ConnectDevice`. Its accepted

@@ -29,6 +29,7 @@ export type {
   AdapterBackend,
   AttachedBackend,
   BackendConnection,
+  BackendConnectionCleanupRecord,
   BackendAttachment,
   BackendAttachmentRequest,
   BackendEvent,

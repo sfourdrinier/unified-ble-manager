@@ -27,7 +27,7 @@ function fixture(t) {
     upstream: { archive: 'bluez-5.87.tar.xz', sha256: hash(fs.readFileSync(archive)) },
     patch: { file: 'extension.patch', sha256: hash('extension.patch') },
     licenseFiles: ['COPYING', 'COPYING.LIB'].map(file => ({ file, sha256: hash(file) })),
-    distribution: { linuxAuthorityContract: [1, 1, 1], release: '5.87-ubm.1' }
+    distribution: { linuxAuthorityContract: [1, 2, 1], release: '5.87-ubm.2' }
   }
   fs.writeFileSync(path.join(assets, 'source-asset-manifest.json'), JSON.stringify(manifest))
   const calls = []
@@ -57,7 +57,7 @@ function fixture(t) {
     manifest,
     calls,
     run,
-    options: { archive, output: path.join(root, 'bundle'), work: path.join(root, 'work'), release: '5.87-ubm.1' }
+    options: { archive, output: path.join(root, 'bundle'), work: path.join(root, 'work'), release: '5.87-ubm.2' }
   }
 }
 
@@ -66,7 +66,7 @@ test('build invokes fresh preparation, producer gates, and separate production p
   const bundle = buildBundle(f.options, { assets: f.assets, run: f.run })
   assert.equal(bundle.schema, 'ubm-bluez-deployment/1')
   assert.equal(bundle.qualification, 'built-not-radio-qualified')
-  assert.deepEqual(bundle.authorityContract, [1, 1, 1])
+  assert.deepEqual(bundle.authorityContract, [1, 2, 1])
   const prepares = f.calls.filter(call => call.command === 'sh' && call.args[0].endsWith('prepare-isolated.sh'))
   assert.equal(prepares.length, 2)
   assert.notEqual(prepares[0].args[2], prepares[1].args[2])
@@ -91,7 +91,7 @@ test('unready producer, changed input, relative paths and existing destinations 
   delete f.manifest.distribution.linuxAuthorityContract
   fs.writeFileSync(path.join(f.assets, 'source-asset-manifest.json'), JSON.stringify(f.manifest))
   assert.throws(() => buildBundle(f.options, { assets: f.assets, run: f.run }), /not ready/)
-  f.manifest.distribution.linuxAuthorityContract = [1, 1, 1]
+  f.manifest.distribution.linuxAuthorityContract = [1, 2, 1]
   fs.writeFileSync(path.join(f.assets, 'source-asset-manifest.json'), JSON.stringify(f.manifest))
   fs.appendFileSync(f.archive, 'mutation')
   assert.throws(() => buildBundle(f.options, { assets: f.assets, run: f.run }), /archive digest/)
@@ -99,6 +99,19 @@ test('unready producer, changed input, relative paths and existing destinations 
   fs.mkdirSync(f.options.output)
   assert.throws(() => buildBundle(f.options, { assets: f.assets, run: f.run }), /exists/)
   assert.equal(f.calls.length, 0)
+})
+
+test('old scope-only and unknown authority revisions refuse before invoking tools', t => {
+  const f = fixture(t)
+  for (const contract of [
+    [1, 1, 1],
+    [1, 2, 2]
+  ]) {
+    f.manifest.distribution.linuxAuthorityContract = contract
+    fs.writeFileSync(path.join(f.assets, 'source-asset-manifest.json'), JSON.stringify(f.manifest))
+    assert.throws(() => buildBundle(f.options, { assets: f.assets, run: f.run }), /not ready|contract/)
+    assert.equal(f.calls.length, 0)
+  }
 })
 
 test('retained production settings include caller supplied dependency and tool search paths', t => {
@@ -121,7 +134,7 @@ test('retained production settings include caller supplied dependency and tool s
 test('the source manifest owns the deployment release and explicit mismatches fail before tools', t => {
   const f = fixture(t)
   assert.throws(
-    () => buildBundle({ ...f.options, release: '5.87-ubm.2' }, { assets: f.assets, run: f.run }),
+    () => buildBundle({ ...f.options, release: '5.87-ubm.3' }, { assets: f.assets, run: f.run }),
     /release.*manifest/
   )
   assert.equal(f.calls.length, 0)

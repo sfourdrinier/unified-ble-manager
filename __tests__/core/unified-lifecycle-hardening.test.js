@@ -204,6 +204,100 @@ function expectNoResources(counters) {
 }
 
 describe('UnifiedBleCore lifecycle hardening', () => {
+  test.each([
+    ['disconnect', 'requested-disconnect'],
+    ['release', 'released']
+  ])('uses the own %s observation even while backend event delivery is held', async (method, cause) => {
+    const fixture = createDeterministicTestBackend()
+    const originalEvents = fixture.backend.events.bind(fixture.backend)
+    let resumeEvents
+    const eventGate = new Promise(resolve => {
+      resumeEvents = resolve
+    })
+    fixture.backend.events = () => {
+      const stream = originalEvents()
+      const originalIterator = stream[Symbol.asyncIterator].bind(stream)
+      stream[Symbol.asyncIterator] = () => {
+        const iterator = originalIterator()
+        return {
+          next: async () => {
+            await eventGate
+            return iterator.next()
+          },
+          return: () => iterator.return(),
+          [Symbol.asyncIterator]() {
+            return this
+          }
+        }
+      }
+      return stream
+    }
+    const attachedBackend = await attachBleBackend(fixture.backend, compatibility())
+    const authority = createManagerOwnershipAuthority(attachedBackend)
+    const manager = await BleManager.create(
+      managerConstruction(attachedBackend),
+      authority,
+      DEFAULT_BLE_MANAGER_OPTIONS
+    )
+    const connection = await settle(fixture.controller, manager.connect(peer(), operation()))
+    const events = connection.events[Symbol.asyncIterator]()
+    await events.next()
+    const platform = {
+      domain: 'bluez.mgmt',
+      code: '2',
+      safeMessage: 'Observed local-host disconnect',
+      metadata: { reason: 2 }
+    }
+    const resource = connection.connection.resource
+    const originalDisconnect = resource.disconnect.bind(resource)
+    resource.disconnect = async () => ({ ...(await originalDisconnect()), platform })
+    try {
+      await expect(settle(fixture.controller, connection[method]())).resolves.toEqual({
+        state: 'released',
+        failures: []
+      })
+      await expect(events.next()).resolves.toMatchObject({
+        value: { kind: 'value', value: { cause, platform } }
+      })
+      await expect(events.next()).resolves.toMatchObject({ value: { kind: 'terminal' } })
+      resumeEvents()
+      await flushMicrotasks()
+      await expect(events.next()).resolves.toMatchObject({ done: true })
+    } finally {
+      resumeEvents()
+      await settle(fixture.controller, manager.destroy())
+    }
+    expectNoResources(fixture.backend.resourceCounters())
+  })
+
+  test('does not terminalize or expose backend observation metadata when disconnect is refused', async () => {
+    const { fixture, manager } = await createFixture()
+    const connection = await settle(fixture.controller, manager.connect(peer(), operation()))
+    const resource = connection.connection.resource
+    const originalDisconnect = resource.disconnect.bind(resource)
+    const failure = {
+      resourceKind: 'connection',
+      error: { code: 'platform.failure', domain: 'cleanup', operation: 'test.disconnect', retryable: true }
+    }
+    resource.disconnect = async () => ({
+      state: 'release-failed',
+      failures: [failure],
+      platform: { domain: 'bluez.mgmt', code: '2', safeMessage: 'Unconfirmed release', metadata: {} }
+    })
+    try {
+      await expect(settle(fixture.controller, connection.disconnect())).resolves.toEqual({
+        state: 'release-failed',
+        failures: [failure]
+      })
+      expect(connection.connection.isCurrent()).toBe(true)
+    } finally {
+      resource.disconnect = originalDisconnect
+      await settle(fixture.controller, connection.disconnect())
+      await settle(fixture.controller, manager.destroy())
+    }
+    expectNoResources(fixture.backend.resourceCounters())
+  })
+
   test('rejects stale, mismatched, and impossible public lifecycle transitions before finishing a connection', async () => {
     const { fixture, manager } = await createFixture()
     const connection = await settle(fixture.controller, manager.connect(peer(), operation()))

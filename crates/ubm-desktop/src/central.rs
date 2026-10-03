@@ -800,6 +800,23 @@ pub enum LinkRelease {
     AlreadyReleased,
 }
 
+/// The original operation's release answer, independent of event delivery.
+#[derive(Debug, Clone)]
+pub struct ConnectionReleaseReport {
+    /// Whether the final local lease drove link release.
+    pub physical: bool,
+    /// The exact public generation admitted before the native request.
+    pub connection_generation: Option<String>,
+    /// Actual native detail, never inferred from requested intent.
+    pub platform: Option<crate::errors::PlatformDetail>,
+}
+
+struct DisconnectReport {
+    release: LinkRelease,
+    connection_generation: Option<String>,
+    platform: Option<crate::errors::PlatformDetail>,
+}
+
 /// Handle for one connected peer.
 #[derive(Debug, Clone)]
 pub struct ConnectionHandle {
@@ -1500,7 +1517,7 @@ struct HalfOpenCleanup {
     failure: StdMutex<Option<DesktopError>>,
 }
 
-type LeaseReleaseGate = Mutex<Option<bool>>;
+type LeaseReleaseGate = Mutex<Option<ConnectionReleaseReport>>;
 type LeaseReleaseGates = StdMutex<HashMap<(String, String), Weak<LeaseReleaseGate>>>;
 type LeaseChild = (PathSelector, String);
 type PendingLeaseChildren = StdMutex<HashMap<(String, String), Vec<LeaseChild>>>;
@@ -1533,7 +1550,7 @@ struct Inner<B> {
     /// cleared them, and their release answers
     /// already-released once (legacy adapter-loss cleanup left
     /// terminalized handles).
-    retired_leases: StdMutex<HashSet<(String, String)>>,
+    retired_leases: StdMutex<HashMap<(String, String), Option<String>>>,
     /// Consumers whose physical obligation ended with a confirmed link loss
     /// or adapter reset. A later failed reconnect may erase their old paths.
     retired_consumers: StdMutex<HashSet<(String, String)>>,
@@ -1866,7 +1883,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             tickets: StdMutex::new(Vec::new()),
             reset_ops: StdMutex::new(HashSet::new()),
             reset_peers: StdMutex::new(HashSet::new()),
-            retired_leases: StdMutex::new(HashSet::new()),
+            retired_leases: StdMutex::new(HashMap::new()),
             retired_consumers: StdMutex::new(HashSet::new()),
             reset_events: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
             reset_sequence: AtomicU64::new(0),
@@ -3523,12 +3540,26 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         lease: &str,
         ctl: OpControl,
     ) -> Result<bool, DesktopError> {
+        self.release_connection_lease_report(peer_id, lease, ctl)
+            .await
+            .map(|report| report.physical)
+    }
+
+    /// Release a lease and return its own observation without waiting for event consumers.
+    pub async fn release_connection_lease_report(
+        &self,
+        peer_id: &str,
+        lease: &str,
+        ctl: OpControl,
+    ) -> Result<ConnectionReleaseReport, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
         if self.inner.shutdown_release_confirmed.load(Ordering::SeqCst) {
             let peer_key = self.known_peer_key(peer_id).await?;
             let mut core = self.inner.core.lock().await;
-            let retired = lock_std(&self.inner.retired_leases)
-                .contains(&(peer_key.clone(), lease.to_owned()));
+            let retired_generation = lock_std(&self.inner.retired_leases)
+                .get(&(peer_key.clone(), lease.to_owned()))
+                .cloned();
+            let retired = retired_generation.is_some();
             if (core.connection_state(&peer_key) == Some(ConnectionState::Disconnected) || retired)
                 && !lock_std(&self.inner.half_open_cleanup).contains_key(peer_id)
             {
@@ -3539,9 +3570,16 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                         .map_err(DesktopError::from)
                 };
                 if result.is_ok() {
-                    lock_std(&self.inner.retired_leases).remove(&(peer_key, lease.to_owned()));
+                    lock_std(&self.inner.retired_leases)
+                        .remove(&(peer_key.clone(), lease.to_owned()));
                 }
-                return result;
+                return result.map(|physical| ConnectionReleaseReport {
+                    physical,
+                    connection_generation: retired_generation
+                        .flatten()
+                        .or_else(|| Generations::of(&core, &peer_key).connection),
+                    platform: None,
+                });
             }
         }
         self.precheck(&ctl, "connection.release")?;
@@ -3581,12 +3619,24 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
         };
         self.refuse_before_admission(&ctl, "connection.release")?;
-        if let Some(physical) = *released {
-            return Ok(physical);
+        if let Some(report) = released.as_ref() {
+            return Ok(report.clone());
         }
         let peer_key = self.known_peer_key(peer_id).await?;
         let children = {
             let mut core = self.inner.core.lock().await;
+            if !core.holds_lease(&peer_key, lease)
+                && let Some(original_generation) = lock_std(&self.inner.retired_leases)
+                    .remove(&(peer_key.clone(), lease.to_owned()))
+            {
+                let report = ConnectionReleaseReport {
+                    physical: true,
+                    connection_generation: original_generation,
+                    platform: None,
+                };
+                *released = Some(report.clone());
+                return Ok(report);
+            }
             let another = core
                 .held_leases()
                 .iter()
@@ -3673,8 +3723,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     .map_err(DesktopError::from)?;
                 lock_std(&self.inner.pending_lease_children)
                     .remove(&(peer_id.to_owned(), lease.to_owned()));
-                *released = Some(false);
-                return Ok(false);
+                let report = ConnectionReleaseReport {
+                    physical: false,
+                    connection_generation: Generations::of(&core, &peer_key).connection,
+                    platform: None,
+                };
+                *released = Some(report.clone());
+                return Ok(report);
             }
             if matches!(
                 core.connection_state(&peer_key),
@@ -3685,13 +3740,17 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
         }
         let result = self
-            .disconnect(
+            .disconnect_report(
                 peer_id,
                 lease,
                 OpControl::new(release_budget, ctl.ticket.clone()),
             )
             .await
-            .map(|_| true)
+            .map(|report| ConnectionReleaseReport {
+                physical: true,
+                connection_generation: report.connection_generation,
+                platform: report.platform,
+            })
             .map_err(|error| {
                 if window.backstop && error.code() == BleErrorCode::OperationTimedOut {
                     error.with_detail(LIVENESS_BACKSTOP_DETAIL)
@@ -3699,8 +3758,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     error
                 }
             });
-        if let Ok(physical) = result {
-            *released = Some(physical);
+        if let Ok(report) = &result {
+            *released = Some(report.clone());
             lock_std(&self.inner.retired_leases).remove(&(peer_key.clone(), lease.to_owned()));
             lock_std(&self.inner.pending_lease_children).retain(|(peer, _), _| peer != peer_id);
         }
@@ -3722,17 +3781,31 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         lease: &str,
         ctl: OpControl,
     ) -> Result<LinkRelease, DesktopError> {
+        self.disconnect_report(peer_id, lease, ctl)
+            .await
+            .map(|report| report.release)
+    }
+    async fn disconnect_report(
+        &self,
+        peer_id: &str,
+        lease: &str,
+        ctl: OpControl,
+    ) -> Result<DisconnectReport, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "connection.disconnect")?;
         let window = ctl.budget.window(LIVENESS_CLEANUP);
         let peer_key = self.known_peer_key(peer_id).await?;
-        {
+        let release_generation = {
             let mut core = self.inner.core.lock().await;
             if core.connection_state(&peer_key).is_none()
-                && lock_std(&self.inner.retired_leases)
+                && let Some(original_generation) = lock_std(&self.inner.retired_leases)
                     .remove(&(peer_key.clone(), lease.to_owned()))
             {
-                return Ok(LinkRelease::AlreadyReleased);
+                return Ok(DisconnectReport {
+                    release: LinkRelease::AlreadyReleased,
+                    connection_generation: original_generation,
+                    platform: None,
+                });
             }
             let held = core.holds_lease(&peer_key, lease);
             match core.connection_state(&peer_key) {
@@ -3740,7 +3813,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     ConnectionState::Disconnected
                     | ConnectionState::Lost
                     | ConnectionState::Invalid,
-                ) if held => return Ok(LinkRelease::AlreadyReleased),
+                ) if held => {
+                    return Ok(DisconnectReport {
+                        release: LinkRelease::AlreadyReleased,
+                        connection_generation: Generations::of(&core, &peer_key).connection,
+                        platform: None,
+                    });
+                }
                 // A retained release: the same lease drives the radio again.
                 Some(ConnectionState::Disconnecting) if held => {}
                 _ => {
@@ -3749,32 +3828,51 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                         .map_err(DesktopError::from)?;
                 }
             }
-        }
+            Generations::of(&core, &peer_key)
+        };
         // The release is underway: operations still waiting on this link end
         // now, `operation.disconnected`, as Android's stack ends them at an
         // app disconnect (owner decision, 5.0).
         note_link_end(&self.inner, peer_id);
-        let outcome = drive(&ctl.ticket, window, self.inner.boundary.disconnect(peer_id)).await;
-        if matches!(&outcome, Wait::Done(Ok(()))) {
-            note_confirmed_release(&self.inner, peer_id);
-        }
+        let outcome = drive(
+            &ctl.ticket,
+            window,
+            self.inner.boundary.disconnect_with_observation(peer_id),
+        )
+        .await;
+        let platform = match &outcome {
+            Wait::Done(Ok(observation)) => observation.platform.clone(),
+            _ => None,
+        };
         // Late radio completions must not resurrect the link: drop local
         // subscription routing for this peer now; the core already
         // invalidated its hubs at disconnect.
-        self.drop_peer_subscriptions(peer_id).await;
+        clear_peer_routing_scoped(
+            &self.inner,
+            peer_id,
+            Some((&peer_key, release_generation.connection.as_deref())),
+        )
+        .await;
         let (result, event) = {
             let mut core = self.inner.core.lock().await;
             match outcome {
-                Wait::Done(Ok(())) => {
+                Wait::Done(Ok(observation)) => {
                     let generation = Generations::of(&core, &peer_key);
-                    if core.connection_state(&peer_key) == Some(ConnectionState::Disconnecting) {
+                    if Generations::of(&core, &peer_key).connection == release_generation.connection
+                        && core.connection_state(&peer_key) == Some(ConnectionState::Disconnecting)
+                    {
+                        note_confirmed_release(&self.inner, peer_id);
                         core.note_link_released(&peer_key)
                             .map_err(DesktopError::from)?;
-                        let event = self.inner.stage_lifecycle(
+                        self.inner
+                            .boundary
+                            .consume_disconnect_observation(peer_id, &observation);
+                        let event = self.inner.stage_lifecycle_with_platform(
                             peer_id,
                             &peer_key,
                             generation,
                             LifecycleKind::Released { requested: true },
+                            observation.platform,
                         );
                         (Ok(LinkRelease::Released), Some(event))
                     } else {
@@ -3784,12 +3882,18 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     }
                 }
                 Wait::Done(Err(error)) => {
-                    let _ = core.report_disconnect_failure(&peer_key, error.code());
+                    if Generations::of(&core, &peer_key).connection == release_generation.connection
+                    {
+                        let _ = core.report_disconnect_failure(&peer_key, error.code());
+                    }
                     (Err(error), None)
                 }
                 Wait::Expired => {
-                    let _ =
-                        core.report_disconnect_failure(&peer_key, BleErrorCode::OperationTimedOut);
+                    if Generations::of(&core, &peer_key).connection == release_generation.connection
+                    {
+                        let _ = core
+                            .report_disconnect_failure(&peer_key, BleErrorCode::OperationTimedOut);
+                    }
                     let error = if window.backstop {
                         timed_out("connection.disconnect", window)
                     } else {
@@ -3799,8 +3903,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     (Err(classify(error, OpKind::Cleanup, true)), None)
                 }
                 Wait::Cancelled => {
-                    let _ =
-                        core.report_disconnect_failure(&peer_key, BleErrorCode::OperationAborted);
+                    if Generations::of(&core, &peer_key).connection == release_generation.connection
+                    {
+                        let _ = core
+                            .report_disconnect_failure(&peer_key, BleErrorCode::OperationAborted);
+                    }
                     (
                         Err(classify(
                             ctl.ticket.interruption("connection.disconnect"),
@@ -3815,7 +3922,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         if let Some(event) = event {
             self.inner.signal(CentralSignal::Lifecycle(event));
         }
-        result
+        result.map(|release| DisconnectReport {
+            release,
+            connection_generation: release_generation.connection,
+            platform,
+        })
     }
 
     /// Radio-observed link loss reported by the host: exactly one terminal,
@@ -3841,7 +3952,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 lock_std(&self.inner.retired_leases).extend(
                     core.held_leases()
                         .into_iter()
-                        .filter(|(peer, _)| peer == &peer_key),
+                        .filter(|(peer, _)| peer == &peer_key)
+                        .map(|key| {
+                            let generation = Generations::of(&core, &key.0).connection;
+                            (key, generation)
+                        }),
                 );
             }
             let kind = if before == Some(ConnectionState::Disconnecting) {
@@ -5905,10 +6020,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
             let outcome = tokio::time::timeout(
                 DISCONNECT_COMPLETION_TIMEOUT,
-                self.inner.boundary.disconnect(&peer_id),
+                self.inner.boundary.disconnect_with_observation(&peer_id),
             )
             .await;
-            if matches!(&outcome, Ok(Ok(()))) {
+            if matches!(&outcome, Ok(Ok(_))) {
                 note_confirmed_release(&self.inner, &peer_id);
             }
             // Late radio completions must not resurrect the link: drop local
@@ -5917,14 +6032,18 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let event = {
                 let mut core = self.inner.core.lock().await;
                 match outcome {
-                    Ok(Ok(())) => {
+                    Ok(Ok(observation)) => {
                         let generation = Generations::of(&core, &peer_key);
                         core.shutdown_release_link(&peer_key).ok().map(|()| {
-                            self.inner.stage_lifecycle(
+                            self.inner
+                                .boundary
+                                .consume_disconnect_observation(&peer_id, &observation);
+                            self.inner.stage_lifecycle_with_platform(
                                 &peer_id,
                                 &peer_key,
                                 generation,
                                 LifecycleKind::Released { requested: true },
+                                observation.platform,
                             )
                         })
                     }
@@ -6167,15 +6286,29 @@ impl DesktopCentral<crate::btleplug_backend::BtleplugRadio> {
 /// and values still queued under the dead generation fail the routing check
 /// after resubscribe.
 async fn clear_peer_routing<B>(inner: &Arc<Inner<B>>, peer_id: &str) {
-    lock_std(&inner.retained_enablements).retain(|key| key.0 != peer_id);
+    clear_peer_routing_scoped(inner, peer_id, None).await;
+}
+async fn clear_peer_routing_scoped<B>(
+    inner: &Arc<Inner<B>>,
+    peer_id: &str,
+    expected: Option<(&str, Option<&str>)>,
+) {
     let mut subscriptions = inner.subscriptions.lock().await;
-    subscriptions.retain(|key, _| key.0 != peer_id);
-    drop(subscriptions);
     let mut failed = inner.failed_disables.lock().await;
-    failed.retain(|key| key.0 != peer_id);
-    drop(failed);
-    lock_std(&inner.deliveries).retain(|key, _| key.0 != peer_id);
     let mut epochs = inner.epochs.lock().await;
+    let _core = if let Some((peer_key, generation)) = expected {
+        let core = inner.core.lock().await;
+        if Generations::of(&core, peer_key).connection.as_deref() != generation {
+            return;
+        }
+        Some(core)
+    } else {
+        None
+    };
+    lock_std(&inner.retained_enablements).retain(|key| key.0 != peer_id);
+    subscriptions.retain(|key, _| key.0 != peer_id);
+    failed.retain(|key| key.0 != peer_id);
+    lock_std(&inner.deliveries).retain(|key, _| key.0 != peer_id);
     let epoch = epochs.entry(peer_id.to_owned()).or_insert(0);
     *epoch = epoch.saturating_add(1);
 }
@@ -6583,7 +6716,10 @@ async fn adapter_reset<B: RadioBoundary>(
             })
             .collect();
         lock_std(&inner.reset_ops).extend(core.live_operation_ids());
-        lock_std(&inner.retired_leases).extend(core.held_leases());
+        lock_std(&inner.retired_leases).extend(core.held_leases().into_iter().map(|key| {
+            let generation = Generations::of(&core, &key.0).connection;
+            (key, generation)
+        }));
         lock_std(&inner.retired_consumers).extend(core.held_consumers());
         if let Some(active) = &scan {
             retain_completed_scan(
@@ -6935,14 +7071,14 @@ async fn reconcile_disconnected_scoped<B: RadioBoundary>(
             lock_std(&inner.retired_leases).extend(
                 core.held_leases()
                     .into_iter()
-                    .filter(|(peer, _)| peer == &peer_key),
+                    .filter(|(peer, _)| peer == &peer_key)
+                    .map(|key| {
+                        let generation = Generations::of(&core, &key.0).connection;
+                        (key, generation)
+                    }),
             );
-            let platform = physical_generation.map(|(_, reason)| {
-                crate::errors::PlatformDetail::new("bluez-mgmt", reason.to_string()).with_metadata(
-                    "disconnectReason",
-                    crate::errors::PlatformValue::Int(i64::from(reason)),
-                )
-            });
+            let platform = physical_generation
+                .map(|(_, reason)| crate::boundary::bluez_disconnect_observation(reason));
             inner.stage_lifecycle_with_platform(peer_id, &peer_key, generation, kind, platform)
         })
     };
@@ -8716,6 +8852,326 @@ mod adapter_tests {
             events.try_recv().is_err(),
             "duplicate loss publishes no second transition"
         );
+    }
+
+    #[tokio::test]
+    async fn old_release_answer_cannot_clear_new_connection_routing_or_gatt() {
+        let central = open().await;
+        central
+            .boundary()
+            .push_event(advertisement("release-reconnect"));
+        central
+            .connect("release-reconnect", "old", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Disconnect);
+        let owner = central.clone();
+        let old = tokio::spawn(async move {
+            owner
+                .disconnect("release-reconnect", "old", OpControl::unbounded())
+                .await
+        });
+        central.boundary().wait_for_calls("disconnect", 1).await;
+        super::reconcile_disconnected(&central.inner, "release-reconnect", false).await;
+        let handle = central
+            .connect("release-reconnect", "new", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .boundary()
+            .set_services("release-reconnect", vec![hrm_service()]);
+        central
+            .discover("release-reconnect", "new", OpControl::unbounded())
+            .await
+            .unwrap();
+        let epoch = central
+            .inner
+            .epochs
+            .lock()
+            .await
+            .get("release-reconnect")
+            .copied();
+        let mut events = central.lifecycle_events();
+        central.boundary().unblock_op(FaultOp::Disconnect);
+        old.await.unwrap().unwrap();
+        assert_eq!(
+            central
+                .inner
+                .epochs
+                .lock()
+                .await
+                .get("release-reconnect")
+                .copied(),
+            epoch,
+            "old answer cannot advance newer routing epoch"
+        );
+        assert_eq!(
+            central
+                .with_core(|core| core.connection_state(&handle.peer_key))
+                .await,
+            Some(ConnectionState::Connected)
+        );
+        assert_eq!(
+            central
+                .with_core(|core| core.database_state(&handle.peer_key))
+                .await,
+            Some(ubm_core::central::DatabaseState::Current)
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "old answer cannot emit a newer-generation release"
+        );
+    }
+
+    #[tokio::test]
+    async fn old_release_answer_cannot_settle_newer_disconnecting_generation() {
+        let central = open().await;
+        central
+            .boundary()
+            .push_event(advertisement("release-newer-pending"));
+        central
+            .connect("release-newer-pending", "old", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Disconnect);
+        let owner = central.clone();
+        let old = tokio::spawn(async move {
+            owner
+                .disconnect("release-newer-pending", "old", OpControl::unbounded())
+                .await
+        });
+        central.boundary().wait_for_calls("disconnect", 1).await;
+        super::reconcile_disconnected(&central.inner, "release-newer-pending", false).await;
+        let handle = central
+            .connect("release-newer-pending", "new", OpControl::unbounded())
+            .await
+            .unwrap();
+        {
+            let mut core = central.inner.core.lock().await;
+            core.disconnect(
+                &handle.peer_key,
+                "new",
+                super::now_ms(),
+                &mut super::batch(),
+            )
+            .unwrap();
+        }
+        let mut events = central.lifecycle_events();
+        central.boundary().unblock_op(FaultOp::Disconnect);
+        old.await.unwrap().unwrap();
+        assert_eq!(
+            central
+                .with_core(|core| core.connection_state(&handle.peer_key))
+                .await,
+            Some(ConnectionState::Disconnecting),
+            "old native answer cannot settle a newer disconnect request"
+        );
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn cancelled_local_release_stage_retry_preserves_original_native_answer() {
+        let central = open().await;
+        central
+            .boundary()
+            .push_event(advertisement("release-stage"));
+        central
+            .connect("release-stage", "lease", OpControl::unbounded())
+            .await
+            .unwrap();
+        let platform = crate::boundary::bluez_disconnect_observation(2);
+        central
+            .boundary()
+            .set_disconnect_observation("release-stage", platform.clone());
+        let held = central.inner.subscriptions.lock().await;
+        let mut events = central.lifecycle_events();
+        let first_owner = central.clone();
+        let first = tokio::spawn(async move {
+            first_owner
+                .disconnect("release-stage", "lease", OpControl::unbounded())
+                .await
+        });
+        central.boundary().wait_for_calls("disconnect", 1).await;
+        tokio::task::yield_now().await;
+        first.abort();
+        let _ = first.await;
+        let retry_owner = central.clone();
+        let retry = tokio::spawn(async move {
+            retry_owner
+                .disconnect("release-stage", "lease", OpControl::unbounded())
+                .await
+        });
+        central.boundary().wait_for_calls("disconnect", 2).await;
+        drop(held);
+        retry.await.unwrap().unwrap();
+        assert_eq!(events.recv().await.unwrap().platform, Some(platform));
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn retired_release_report_preserves_original_generation_across_reset_and_replacement() {
+        let central = open().await;
+        central
+            .boundary()
+            .push_event(advertisement("retired-report"));
+        let original = central
+            .connect("retired-report", "old", OpControl::unbounded())
+            .await
+            .unwrap();
+        let _held_events = central.lifecycle_events();
+        super::adapter_reset(
+            &central.inner,
+            crate::boundary::AdapterLossCause::PoweredOff,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(
+            central
+                .with_core(|core| core.connection_state(&original.peer_key))
+                .await,
+            None
+        );
+        let replacement = central
+            .connect("retired-report", "new", OpControl::unbounded())
+            .await
+            .unwrap();
+        assert_ne!(
+            replacement.connection_generation,
+            original.connection_generation
+        );
+        let calls = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "disconnect")
+            .count();
+        let report = central
+            .release_connection_lease_report("retired-report", "old", OpControl::unbounded())
+            .await
+            .unwrap();
+        assert_eq!(report.connection_generation, original.connection_generation);
+        assert_eq!(report.platform, None);
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "disconnect")
+                .count(),
+            calls
+        );
+        assert_eq!(
+            central
+                .with_core(|core| core.connection_state(&replacement.peer_key))
+                .await,
+            Some(ConnectionState::Connected)
+        );
+    }
+
+    #[tokio::test]
+    async fn own_lease_release_report_does_not_depend_on_lifecycle_consumer_delivery() {
+        let central = open().await;
+        central
+            .boundary()
+            .push_event(advertisement("release-report"));
+        let connected = central
+            .connect("release-report", "lease", OpControl::unbounded())
+            .await
+            .unwrap();
+        let platform = crate::boundary::bluez_disconnect_observation(2);
+        central
+            .boundary()
+            .set_disconnect_observation("release-report", platform.clone());
+        let _held_events = central.lifecycle_events();
+        let report = central
+            .release_connection_lease_report("release-report", "lease", OpControl::unbounded())
+            .await
+            .unwrap();
+        assert!(report.physical);
+        assert_eq!(
+            report.connection_generation,
+            connected.connection_generation
+        );
+        assert_eq!(report.platform, Some(platform));
+    }
+
+    #[tokio::test]
+    async fn requested_release_publishes_its_own_native_observation_once() {
+        let central = open().await;
+        central
+            .boundary()
+            .push_event(advertisement("release-observation"));
+        central
+            .connect("release-observation", "lease", OpControl::unbounded())
+            .await
+            .unwrap();
+        let platform = crate::errors::PlatformDetail::new("bluez-mgmt", "2")
+            .with_metadata("disconnectReason", crate::errors::PlatformValue::Int(2));
+        central
+            .boundary()
+            .set_disconnect_observation("release-observation", platform.clone());
+        let mut events = central.lifecycle_events();
+        central
+            .disconnect("release-observation", "lease", OpControl::unbounded())
+            .await
+            .unwrap();
+        let event = events.recv().await.unwrap();
+        assert_eq!(
+            event.kind,
+            super::LifecycleKind::Released { requested: true }
+        );
+        assert_eq!(event.platform, Some(platform));
+        super::reconcile_disconnected(&central.inner, "release-observation", false).await;
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn requested_release_event_first_preserves_same_observation_once() {
+        let central = open().await;
+        central
+            .boundary()
+            .push_event(advertisement("release-event-first"));
+        central
+            .connect("release-event-first", "lease", OpControl::unbounded())
+            .await
+            .unwrap();
+        let platform = crate::boundary::bluez_disconnect_observation(2);
+        central
+            .boundary()
+            .set_disconnect_observation("release-event-first", platform.clone());
+        central
+            .boundary()
+            .set_physical_generation("release-event-first", 73);
+        central.boundary().block_op(FaultOp::Disconnect);
+        let mut events = central.lifecycle_events();
+        let owner = central.clone();
+        let release = tokio::spawn(async move {
+            owner
+                .disconnect("release-event-first", "lease", OpControl::unbounded())
+                .await
+        });
+        central.boundary().wait_for_calls("disconnect", 1).await;
+        super::reconcile_disconnected_scoped(
+            &central.inner,
+            "release-event-first",
+            false,
+            Some((73, 2)),
+        )
+        .await;
+        let event = events.recv().await.unwrap();
+        assert_eq!(
+            event.kind,
+            super::LifecycleKind::Released { requested: true }
+        );
+        assert_eq!(event.platform, Some(platform));
+        central.boundary().unblock_op(FaultOp::Disconnect);
+        assert_eq!(
+            release.await.unwrap().unwrap(),
+            super::LinkRelease::Released
+        );
+        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -10765,7 +11221,7 @@ mod adapter_tests {
         central.remote_peer_loss("loss-owner").await.unwrap();
         assert!(
             super::lock_std(&central.inner.retired_leases)
-                .contains(&(peer_key.clone(), "lease-a".into()))
+                .contains_key(&(peer_key.clone(), "lease-a".into()))
         );
         central
             .connect("loss-owner", "lease-a", OpControl::unbounded())
@@ -10773,7 +11229,7 @@ mod adapter_tests {
             .unwrap();
         assert!(
             !super::lock_std(&central.inner.retired_leases)
-                .contains(&(peer_key.clone(), "lease-a".into()))
+                .contains_key(&(peer_key.clone(), "lease-a".into()))
         );
         central
             .boundary()

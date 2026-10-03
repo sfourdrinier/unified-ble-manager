@@ -96,9 +96,9 @@ UBM_SMOKE_USE_SOURCE=1 ./node_modules/.bin/electron --no-sandbox scripts/ci/elec
 echo "== Expo CNG Android path =="
 rm -rf "$ROOT_DIR/example-expo/node_modules/.pnpm/unified-ble-manager@file+.."*
 rm -rf "$ROOT_DIR/example-expo/node_modules/unified-ble-manager"
-pnpm --dir example-expo install --no-frozen-lockfile
+node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
 # R3-F043: match publish.yml / package.json test:expo — fix peer versions before tsc/doctor
-pnpm --dir example-expo exec expo install --fix
+node examples-shared/dev/install-example-dependencies.js --expo-fix example-expo
 pnpm --dir example-expo exec tsc --noEmit -p tsconfig.json
 
 (
@@ -117,7 +117,7 @@ pnpm --dir example-expo exec tsc --noEmit -p tsconfig.json
 # a gate that publish.yml requires on Ubuntu (R2-F040).
 if [[ -n "${ANDROID_HOME:-}" && -d "$ANDROID_HOME" && -d "$ROOT_DIR/example/android" ]]; then
   echo "== classic RN Android assemble (ANDROID_HOME set) =="
-  pnpm --dir example install --no-frozen-lockfile
+  node examples-shared/dev/install-example-dependencies.js example --no-frozen-lockfile
   (
     cd example/android
     ./gradlew :app:assembleDebug --no-daemon --console=plain -PreactNativeArchitectures=arm64-v8a

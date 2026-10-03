@@ -12,6 +12,16 @@ Run `runBackendAuthorTck()` before publishing. A factory receives the exact scen
 
 The Node CLI intentionally accepts only backends whose provider declares `node`, `desktop-native`, or `test`. Electron main and Tauri native providers use the framework-neutral `desktop-native` host kind; browser and React Native backends require their own host integration and cannot be driven from a Node shell.
 
+Connection disconnect and lease release return `BackendConnectionCleanupRecord`.
+Its optional `platform` detail is the operation's own observed result for that
+exact connection generation, not an inferred reason or a lookup of a later
+connection. Include the same detail on terminal backend connection events when
+available. The shared core preserves the first terminal observation even when
+event delivery is delayed; it exposes platform detail on the public lifecycle
+terminal and returns only `state` and `failures` in the public cleanup receipt.
+An unobserved platform reason remains absent, and failed cleanup is not a
+confirmed connection end.
+
 ## Scan planning contract
 
 The additive PR9 backend contract exposes `ScanPlan`, `BackendScanPlanner`, and

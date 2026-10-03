@@ -153,6 +153,7 @@ impl crate::os::linux_lease::LeaseClient for LinuxLeaseClient {
         Ok(Receipt {
             token: receipt.token,
             generation: receipt.physical_generation,
+            disconnect_reason: receipt.disconnect_reason,
             scope: match receipt.scope {
                 LeLeaseReleaseScope::PhysicalReleased => Scope::Physical,
                 LeLeaseReleaseScope::ReservationReleased => Scope::Reservation,
@@ -3599,11 +3600,31 @@ impl RadioBoundary for BtleplugRadio {
     }
 
     async fn disconnect(&self, peer_id: &str) -> Result<(), DesktopError> {
+        self.disconnect_with_observation(peer_id).await.map(|_| ())
+    }
+
+    async fn disconnect_with_observation(
+        &self,
+        peer_id: &str,
+    ) -> Result<crate::boundary::DisconnectObservation, DesktopError> {
         // T-R2: straight to the radio, as legacy went straight to
         // `peripheral.disconnect()` — no pre-disconnect `is_connected()`
         // query (an extra D-Bus read the legacy path never made).
         #[cfg(target_os = "linux")]
-        self.linux_leases.clone().release(peer_id).await?;
+        let receipt = self
+            .linux_leases
+            .clone()
+            .release_with_observation(peer_id)
+            .await?;
+        #[cfg(target_os = "linux")]
+        let observation = crate::boundary::DisconnectObservation {
+            platform: receipt
+                .disconnect_reason
+                .map(crate::boundary::bluez_disconnect_observation),
+            physical_generation: receipt.physical_generation,
+        };
+        #[cfg(not(target_os = "linux"))]
+        let observation = crate::boundary::DisconnectObservation::default();
         #[cfg(not(target_os = "linux"))]
         let disconnected = self.peripheral_by_id(peer_id).await?.disconnect().await;
         #[cfg(not(target_os = "linux"))]
@@ -3629,8 +3650,35 @@ impl RadioBoundary for BtleplugRadio {
                 .with_os(&error));
             }
         }
-        self.gatt.evict(peer_id);
-        self.release_link_state(peer_id)
+        #[cfg(target_os = "linux")]
+        if let Some(result) =
+            self.linux_leases
+                .with_release_scope(peer_id, observation.physical_generation, || {
+                    self.gatt.evict(peer_id);
+                    self.release_link_state(peer_id)
+                })
+        {
+            result?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.gatt.evict(peer_id);
+            self.release_link_state(peer_id)?;
+        }
+        Ok(observation)
+    }
+
+    fn consume_disconnect_observation(
+        &self,
+        peer_id: &str,
+        observation: &crate::boundary::DisconnectObservation,
+    ) {
+        #[cfg(target_os = "linux")]
+        if let Some(generation) = observation.physical_generation {
+            self.linux_leases.consume_terminal(peer_id, generation);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (peer_id, observation);
     }
 
     async fn discover(&self, peer_id: &str) -> Result<Vec<ServiceSnapshot>, DesktopError> {

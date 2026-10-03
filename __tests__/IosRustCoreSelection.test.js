@@ -67,7 +67,7 @@ test('CI stages ios/RustCore before an example installs the package copy that Co
   const apple = fs.readFileSync(path.join(root, '.github', 'workflows', 'apple-ci.yml'), 'utf8')
   const expoJob = apple.slice(apple.indexOf('  ios-expo:'), apple.indexOf('  tvos-library:'))
   const prepare = expoJob.indexOf('pnpm native:refresh --only apple')
-  const install = expoJob.indexOf('pnpm --dir example-expo install')
+  const install = expoJob.indexOf('node examples-shared/dev/install-example-dependencies.js example-expo')
   expect(prepare).toBeGreaterThan(-1)
   expect(install).toBeGreaterThan(prepare)
   const prepareStep = expoJob.slice(expoJob.lastIndexOf('- name:', prepare), prepare)

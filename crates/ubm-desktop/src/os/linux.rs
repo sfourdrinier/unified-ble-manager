@@ -494,7 +494,7 @@ impl Bluez {
                 BleErrorDomain::Capability,
                 "peer.address-targeting",
             )
-            .with_detail("the attested BlueZ daemon owner changed"));
+            .with_detail("the bound BlueZ daemon owner changed; create a fresh manager to resolve and verify native authority"));
         }
         Ok(owner)
     }
@@ -554,7 +554,7 @@ impl Bluez {
             .with_detail(format!("malformed Linux authority contract: {error}"))
             .with_platform(bluez_dbus_detail(&error))
         })?;
-        if versions != (1, 1, 1) {
+        if versions != (1, 2, 1) {
             return Err(DesktopError::new(
                 BleErrorCode::CapabilityUnsupported,
                 BleErrorDomain::Capability,
@@ -1194,7 +1194,7 @@ mod watch_tests {
         );
         let publisher = zbus::Connection::session().await.unwrap();
         publisher.request_name(BLUEZ).await.unwrap();
-        let versions = Arc::new(StdMutex::new((1, 1, 1)));
+        let versions = Arc::new(StdMutex::new((1, 2, 1)));
         publisher
             .object_server()
             .at("/org/bluez/hci0", LinuxContractFixture(versions.clone()))
@@ -1204,7 +1204,7 @@ mod watch_tests {
             .await
             .unwrap();
         assert!(authority.verify_connection_contract().await.is_ok());
-        for unsupported in [(2, 1, 1), (1, 0, 1), (1, 1, 2)] {
+        for unsupported in [(1, 1, 1), (2, 2, 1), (1, 0, 1), (1, 2, 2)] {
             *versions.lock().unwrap() = unsupported;
             assert!(authority.verify_connection_contract().await.is_err());
         }

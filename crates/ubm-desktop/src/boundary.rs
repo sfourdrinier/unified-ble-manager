@@ -1043,6 +1043,22 @@ pub trait RadioBoundary: Send + Sync + 'static {
         &'a self,
         peer_id: &'a str,
     ) -> impl Future<Output = Result<(), DesktopError>> + Send + 'a;
+    /// The disconnect operation's own native observation, when available.
+    /// Absence never invents a platform cause from the caller's request.
+    fn disconnect_with_observation<'a>(
+        &'a self,
+        peer_id: &'a str,
+    ) -> impl Future<Output = Result<DisconnectObservation, DesktopError>> + Send + 'a {
+        async move {
+            self.disconnect(peer_id)
+                .await
+                .map(|()| DisconnectObservation::default())
+        }
+    }
+    /// Consume only the exact terminal generation whose transition was published.
+    /// This is synchronous metadata retirement, never native cleanup.
+    fn consume_disconnect_observation(&self, _peer_id: &str, _observation: &DisconnectObservation) {
+    }
     fn discover<'a>(
         &'a self,
         peer_id: &'a str,
@@ -1383,6 +1399,22 @@ pub type InstanceKey = (String, String, u64, String, u64);
 /// uuid/occurrence.
 pub type DescriptorKey = (InstanceKey, String, u64);
 
+/// A release operation's own answer and private native-generation fence.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DisconnectObservation {
+    /// Optional actual platform observation, not a cause inferred from intent.
+    pub platform: Option<crate::errors::PlatformDetail>,
+    /// Native physical generation; distinct from public connection/ATT generations.
+    pub physical_generation: Option<u64>,
+}
+
+pub(crate) fn bluez_disconnect_observation(reason: u8) -> crate::errors::PlatformDetail {
+    crate::errors::PlatformDetail::new("bluez-mgmt", reason.to_string()).with_metadata(
+        "disconnectReason",
+        crate::errors::PlatformValue::Int(i64::from(reason)),
+    )
+}
+
 /// One characteristic scope whose close-time native release did not
 /// complete (F14 receipt). The scope stays live at the radio: a failed
 /// unsubscribe leaves the OS enablement behind, and the shutdown report
@@ -1404,6 +1436,7 @@ impl RadioCloseFailure {
 }
 
 struct FakeInner {
+    disconnect_observations: HashMap<String, crate::errors::PlatformDetail>,
     #[cfg(target_os = "linux")]
     physical_generations: HashMap<String, u64>,
     directory_peers: Option<Vec<DirectoryPeer>>,
@@ -1511,6 +1544,14 @@ impl Default for FakeRadio {
 }
 
 impl FakeRadio {
+    /// Script the authoritative detail returned by a synthetic release.
+    pub fn set_disconnect_observation(&self, peer: &str, detail: crate::errors::PlatformDetail) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .disconnect_observations
+            .insert(peer.to_owned(), detail);
+    }
     /// Set the identity subsequent successful discoveries report.
     pub fn set_gatt_snapshot_identity(&self, peer_id: &str, identity: GattSnapshotIdentity) {
         let mut state = self.state.lock().expect("fake radio state");
@@ -1551,6 +1592,7 @@ impl FakeRadio {
     pub fn new() -> Self {
         Self {
             state: StdMutex::new(FakeInner {
+                disconnect_observations: HashMap::new(),
                 directory_peers: None,
                 directory_unblocked_reads: 0,
                 canonical_peer_ids: HashMap::new(),
@@ -2295,6 +2337,30 @@ impl RadioBoundary for FakeRadio {
             .connected
             .retain(|peer| peer != peer_id);
         Ok(())
+    }
+
+    async fn disconnect_with_observation(
+        &self,
+        peer_id: &str,
+    ) -> Result<DisconnectObservation, DesktopError> {
+        let platform = self
+            .state
+            .lock()
+            .expect("fake radio state")
+            .disconnect_observations
+            .get(peer_id)
+            .cloned();
+        self.disconnect(peer_id).await?;
+        Ok(DisconnectObservation {
+            platform,
+            physical_generation: None,
+        })
+    }
+    fn consume_disconnect_observation(&self, peer: &str, observation: &DisconnectObservation) {
+        let mut state = self.state.lock().expect("fake radio state");
+        if state.disconnect_observations.get(peer) == observation.platform.as_ref() {
+            state.disconnect_observations.remove(peer);
+        }
     }
 
     async fn discover(&self, peer_id: &str) -> Result<Vec<ServiceSnapshot>, DesktopError> {
