@@ -1,10 +1,28 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 const directory = new URL('./', import.meta.url)
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
+
+test('source patch owner refuses foreign archive before changing either asset', () => {
+  const manifestPath = new URL('source-asset-manifest.json', directory)
+  const manifestBefore = readFileSync(manifestPath)
+  const manifest = JSON.parse(manifestBefore)
+  const patchPath = new URL(manifest.patch.file, directory)
+  const patchBefore = readFileSync(patchPath)
+  const result = spawnSync(process.execPath, [
+    fileURLToPath(new URL('regenerate-source-patch.js', directory)),
+    fileURLToPath(new URL('COPYING', directory)), fileURLToPath(directory),
+  ], { encoding: 'utf8' })
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /archive hash mismatch; no source assets changed/)
+  assert.deepEqual(readFileSync(manifestPath), manifestBefore)
+  assert.deepEqual(readFileSync(patchPath), patchBefore)
+})
 
 test('BlueZ derivative source assets retain exact upstream provenance and licenses', () => {
   const manifest = JSON.parse(readFileSync(new URL('source-asset-manifest.json', directory), 'utf8'))
@@ -29,5 +47,15 @@ test('BlueZ derivative source assets retain exact upstream provenance and licens
     linkedIntoPackageNativeLibraries: false,
     deployment: 'external-explicit-host-action',
     automaticInstallOrLaunch: false,
+    linuxAuthorityContract: [1, 1, 1],
+    release: '5.87-ubm.1',
   })
+  const patch = readFileSync(new URL(manifest.patch.file, directory), 'utf8')
+  for (const path of ['src/ubm-le-lease.c', 'src/ubm-le-lease.h', 'unit/test-ubm-le-lease.c']) {
+    assert.ok(patch.includes(`+++ b/${path}`), `missing production authority source: ${path}`)
+  }
+  assert.match(patch, /protocol = 1, lease = 1, gatt = 1/)
+  assert.match(patch, /GDBUS_METHOD\("RecoverLease"/)
+  assert.match(patch, /GDBUS_METHOD\("AckLease"/)
+  assert.match(patch, /"reason", "y"/)
 })

@@ -62,7 +62,7 @@ public final class TestMobile {
         public void acquireBackground(long id, String kind, String reason) { MobileCoreBridge.nativeCompleteLease(id, "lease-1"); }
         public void releaseBackground(long id, String lease) { backgroundReleases.incrementAndGet(); MobileCoreBridge.nativeCompleteUnit(id); }
         public void updateBackgroundNotification(long id, String lease, String title, String body) { MobileCoreBridge.nativeCompleteUnit(id); }
-        public void associateCompanion(long id, String name, String service) { MobileCoreBridge.nativeCompleteCompanion(id, 7L, "AA:BB:CC:DD:EE:FF", null, false); }
+        public void associateCompanion(long id, String name, String service, String filtersJson) { MobileCoreBridge.nativeCompleteCompanion(id, 7L, "AA:BB:CC:DD:EE:FF", null, false); }
         public void listCompanion(long id) { MobileCoreBridge.nativeCompleteCompanionList(id, new long[0], new String[0], new String[0]); }
         public void disassociateCompanion(long id, long associationId) { MobileCoreBridge.nativeCompleteUnit(id); }
         public void observePresence(long id, String peerId) { MobileCoreBridge.nativeCompleteUnit(id); }

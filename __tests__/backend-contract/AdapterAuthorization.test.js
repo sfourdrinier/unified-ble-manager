@@ -20,7 +20,8 @@ const {
 const { createDeterministicTestBackend } = require('../../src/testing/deterministic/deterministic-test-backend')
 const { createBluezBackendProvider } = require('../../src/backends/bluez/bluez-backend-provider')
 const { createCoreBluetoothBackendProvider } = require('../../src/backends/corebluetooth/corebluetooth-provider')
-const { prepareNativeCoreBluetoothBoundary } = require('../../src/backends/corebluetooth/corebluetooth-native-boundary')
+const { realBinding } = require('../helpers/desktop-rust-core-harness')
+const { createTestDesktopRustCoreBackendProvider } = require('../../src/backends/desktop/desktop-rust-core-provider')
 const { assertWinRtAdapterReady, winRtAdapterIsReady } = require('../../src/backends/winrt/winrt-adapter-state')
 const { ReactNativeAppleProtocolBoundary } = require('../../src/native-protocol/rn-apple-boundary')
 const { ReactNativeAndroidProtocolBoundary } = require('../../src/native-protocol/rn-android-boundary')
@@ -71,6 +72,29 @@ function scanOptions() {
 
 function adapterSnapshot(authorization) {
   return { availability: 'available', authorization, power: 'on', safeReason: null }
+}
+
+function currentCoreBluetoothAuthorizationProvider(authorization) {
+  const harness = realBinding('corebluetooth')
+  const original = harness.binding.openSynthetic
+  harness.binding.openSynthetic = async (...args) => {
+    const central = await original(...args)
+    // Unknown is absence of a measurement, not a fabricated OS enum value.
+    if (authorization !== 'unknown') {
+      await harness.opened.at(-1).stageAdapterAuthorization(authorization, true)
+    }
+    return central
+  }
+  const provider = createTestDesktopRustCoreBackendProvider({
+    platform: 'corebluetooth',
+    owner: 'authorization-preparation',
+    now: () => performance.now(),
+    radio: 'synthetic',
+    binding: harness.binding,
+    hostPlatform: 'darwin',
+    firstStateTimeoutMs: 200
+  })
+  return { harness, provider }
 }
 
 async function settle(controller, promise) {
@@ -199,11 +223,7 @@ describe('adapter authorization vocabulary', () => {
   // the platform prompt from ever being raised, leaving it undecided forever.
   test('blocks only the values that are an explicit platform refusal', () => {
     const vocabulary = ['granted', 'denied', 'restricted', 'not-determined', 'unavailable', 'unknown']
-    expect(vocabulary.filter(value => isAuthorizationBlocking(value))).toEqual([
-      'denied',
-      'restricted',
-      'unavailable'
-    ])
+    expect(vocabulary.filter(value => isAuthorizationBlocking(value))).toEqual(['denied', 'restricted', 'unavailable'])
   })
 })
 
@@ -242,35 +262,20 @@ describe('unknown authorization never makes an adapter unready', () => {
     await settle(fixture.controller, manager.destroy())
   })
 
-  test('the node CoreBluetooth boundary accepts an unmeasurable authorization as its first usable state', async () => {
-    const state = adapterSnapshot('unknown')
-    const remove = jest.fn()
-    const boundary = {
-      adapterSnapshot: () => state,
-      onAdapterState: listener => {
-        listener(state)
-        return remove
-      }
-    }
-
-    await expect(prepareNativeCoreBluetoothBoundary(boundary)).resolves.toBeUndefined()
-    expect(remove).toHaveBeenCalledTimes(1)
+  test('the current Rust provider accepts unmeasurable authorization as its first usable state and releases the probe', async () => {
+    const { harness, provider } = currentCoreBluetoothAuthorizationProvider('unknown')
+    await expect(provider.listAdapters()).resolves.toMatchObject([
+      { state: { availability: 'available', authorization: 'unknown', power: 'on' } }
+    ])
+    expect(harness.calls.filter(([name]) => name === 'close')).toHaveLength(1)
   })
 
-  test('the node CoreBluetooth boundary still waits out an explicit refusal', async () => {
-    jest.useFakeTimers()
-    try {
-      const state = adapterSnapshot('denied')
-      const pending = prepareNativeCoreBluetoothBoundary({
-        adapterSnapshot: () => state,
-        onAdapterState: () => () => {}
-      })
-      const assertion = expect(pending).rejects.toMatchObject({ normalized: { code: 'capability.unavailable' } })
-      jest.advanceTimersByTime(10_000)
-      await assertion
-    } finally {
-      jest.useRealTimers()
-    }
+  test('the current Rust provider times out explicit refusal and releases the failed probe', async () => {
+    const { harness, provider } = currentCoreBluetoothAuthorizationProvider('denied')
+    await expect(provider.listAdapters()).rejects.toMatchObject({
+      normalized: { code: 'capability.unavailable', platform: { code: 'adapter-initialization-timed-out' } }
+    })
+    expect(harness.calls.filter(([name]) => name === 'close')).toHaveLength(1)
   })
 
   test('the CoreBluetooth backend does not treat an unmeasurable authorization as adapter loss', async () => {

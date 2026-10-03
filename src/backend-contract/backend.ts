@@ -329,6 +329,7 @@ export interface BackendDatabaseChangedEvent<Attachment extends string> extends 
 export interface BackendConnectionLostEvent<Attachment extends string> extends BackendEventBase<Attachment> {
   readonly kind: 'connection-lost'
   readonly connection: ConnectionPath<Attachment, string>
+  readonly platform?: import('./errors').PlatformErrorDetail
 }
 export interface BackendGenericEvent<Attachment extends string> extends BackendEventBase<Attachment> {
   readonly kind: 'adapter-state' | 'backend-restarted' | 'diagnostic'

@@ -13,7 +13,8 @@ import { Platform, TurboModuleRegistry } from 'react-native'
 import { rehydratePublicError } from './public/error-bridge'
 import { BleError } from './public/errors'
 import type { BleAdapterState } from './public/ble-adapter'
-import { createPublicBleManager, type BleManager } from './public/ble-manager'
+import type { BleManager } from './public/ble-manager'
+import { composeReactNativePublicManager } from './react-native-public-manager'
 import { normalizeBleManagerCreateOptions, type BleManagerCreateOptions } from './public/host-identity'
 import { createReactNativeApplicationHost } from './react-native-app-manager'
 import { createReactNativeManagerHost, type ReactNativeManagerHost } from './react-native-manager'
@@ -295,7 +296,7 @@ export async function createExpoBleManager(
     assertExpoRuntimeConfiguration(readinessConfiguration)
     const host = await createReactNativeApplicationHost(options)
     return withExpoRuntime(
-      await createPublicBleManager(host.manager, () => performance.now()),
+      await composeReactNativePublicManager(host, () => performance.now()),
       host,
       readinessConfiguration?.settingsBridge ?? nativeSettingsBridge(nativeRuntime),
       readinessConfiguration?.permissionBridge ?? nativePermissionBridge(nativeRuntime),
@@ -315,7 +316,7 @@ export async function createExpoBleManagerWithEnvironment(
     const readinessConfiguration = environmentExpoRuntimeConfiguration(environment.platform, expo)
     const host = await createReactNativeManagerHost(environment)
     return withExpoRuntime(
-      await createPublicBleManager(host.manager, environment.now),
+      await composeReactNativePublicManager(host, environment.now),
       host,
       expo?.settingsBridge,
       expo?.permissionBridge,

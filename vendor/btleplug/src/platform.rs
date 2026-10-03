@@ -2,6 +2,8 @@
 //! traits. Refer for the `api` module for how to use them.
 
 #[cfg(target_os = "linux")]
+pub use bluez_async::{LeLeaseReleaseReceipt, LeLeaseReleaseScope};
+#[cfg(target_os = "linux")]
 pub use crate::bluez::peripheral::{
     LE_GATT_OBSERVATION_TIMEOUT, LeGattBearer, LeGattErrorStage, LeGattReadyToken, LeGattSnapshot,
     LeGattStatus,

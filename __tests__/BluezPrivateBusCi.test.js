@@ -56,6 +56,15 @@ test('CI and clean preflight share the complete private-bus regression gate', ()
   expect(release).toMatch(/does not\s+qualify physical-radio behavior/)
 })
 
+test('the daemon CI gate consumes the deployment owner instead of duplicating native build recipes', () => {
+  const gate = fs.readFileSync(path.join(__dirname, '../scripts/ci/test-bluez-daemon-extension.js'), 'utf8')
+  expect(gate).toContain('deployment/bundle.mjs')
+  expect(gate).toContain('buildBundle({')
+  expect(gate).not.toContain("execFileSync('sh'")
+  expect(gate).not.toContain('build-test-isolated.sh')
+  expect(gate).not.toMatch(/release:\s*['"]5\.87-ubm\./)
+})
+
 test.each([undefined, 'bluez_private_bus', 'private_bus_', 'le_gatt_tests', 'daemon-extension'])(
   'the shared runner isolates every suite and stops on failure (%s)',
   failTarget => {

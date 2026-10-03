@@ -10,6 +10,8 @@ case "$1" in /*) ;; *) echo 'absolute source path required' >&2; exit 2 ;; esac
 cd -- "$1"
 test -f src/ubm-gatt-state.h
 test -f unit/test-ubm-device.c
+test -f src/ubm-le-lease.c
+test -f unit/test-ubm-le-lease.c
 for required in cc make pkg-config dbus-run-session; do
   command -v "$required" >/dev/null
 done
@@ -48,4 +50,11 @@ for row in pending-count pending-disable removed transition unbonded-peer dorman
   mtu-change mtu-peer mtu-refused mtu-registration-refused mtu-pending-disconnect; do
   ./unit/test-ubm-bonded-notify "$row"
 done
+cc -std=gnu11 -DHAVE_CONFIG_H -Werror=implicit-function-declaration \
+  -ffunction-sections -fdata-sections -I. -Ilib \
+  $(pkg-config --cflags glib-2.0 dbus-1) unit/test-ubm-le-lease.c src/error.c \
+  -Wl,--gc-sections gdbus/.libs/libgdbus-internal.a \
+  src/.libs/libshared-glib.a lib/.libs/libbluetooth-internal.a \
+  $(pkg-config --libs glib-2.0 dbus-1) -o unit/test-ubm-le-lease
+dbus-run-session -- ./unit/test-ubm-le-lease
 sha256sum src/bluetoothd src/device.c src/gatt-client.c src/shared/gatt-client.c

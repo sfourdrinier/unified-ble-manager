@@ -1296,7 +1296,7 @@ final class Harness {
       .acquireBackground(id: 901, kind: "connected-device", reason: "workout"),
       .releaseBackground(id: 902, leaseId: "lease"),
       .updateBackgroundNotification(id: 903, leaseId: "lease", title: "Recording", body: nil),
-      .associateCompanion(id: 904, name: "Polar", serviceUuid: nil),
+      .associateCompanion(id: 904, name: "Polar", serviceUuid: nil, filtersJson: nil),
     ]
     for request in requests { isolated.submit(request: request) }
     for _ in requests {

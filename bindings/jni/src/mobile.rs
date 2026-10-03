@@ -360,10 +360,18 @@ pub fn request_call(request: &RadioRequest) -> (&'static str, Vec<Arg>) {
             vec![rid, text(lease_id), text(title), Arg::Str(body.clone())],
         ),
         RadioRequest::AssociateCompanion {
-            name, service_uuid, ..
+            name,
+            service_uuid,
+            filters_json,
+            ..
         } => (
             "associateCompanion",
-            vec![rid, Arg::Str(name.clone()), Arg::Str(service_uuid.clone())],
+            vec![
+                rid,
+                Arg::Str(name.clone()),
+                Arg::Str(service_uuid.clone()),
+                Arg::Str(filters_json.clone()),
+            ],
         ),
         RadioRequest::ListCompanion { .. } => ("listCompanion", vec![rid]),
         RadioRequest::DisassociateCompanion { association_id, .. } => (

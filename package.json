@@ -1,6 +1,6 @@
 {
   "name": "unified-ble-manager",
-  "version": "5.0.0-rc.16",
+  "version": "5.0.0-rc.17",
   "description": "Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop",
   "packageManager": "pnpm@10.14.0",
   "main": "lib/commonjs/index.js",
@@ -14,6 +14,7 @@
     "android",
     "ios",
     "native",
+    "!native/electron",
     "crates",
     "bindings",
     "vendor",
@@ -116,6 +117,7 @@
     "build:ios": "cd example/ios && xcodebuild -workspace BlePlxExample.xcworkspace -scheme BlePlxExample -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CC=clang CPLUSPLUS=clang++ LD=clang LDPLUSPLUS=clang++ GCC_OPTIMIZATION_LEVEL=0 GCC_PRECOMPILE_PREFIX_HEADER=YES ASSETCATALOG_COMPILER_OPTIMIZATION=time DEBUG_INFORMATION_FORMAT=dwarf COMPILER_INDEX_STORE_ENABLE=NO",
     "test:ios": "cd example/ios && xcodebuild -workspace BlePlxExample.xcworkspace -scheme BlePlxExample -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' ASSETCATALOG_COMPILER_OPTIMIZATION=time DEBUG_INFORMATION_FORMAT=dwarf COMPILER_INDEX_STORE_ENABLE=NO",
     "test:tvos:library": "bash scripts/ci/check-tvos-library.sh",
+    "test:tvos:packed": "bash scripts/ci/check-tvos-packed-consumer.sh",
     "test:expo": "pnpm --dir example-expo install --no-frozen-lockfile && pnpm --dir example-expo exec expo install --fix && pnpm typecheck:references:expo && cd example-expo && NODE_ENV=development npx expo-doctor && NODE_ENV=development npx expo prebuild --clean --no-install",
     "build:expo:android": "pnpm --dir example-expo install --force --no-frozen-lockfile && cd example-expo && NODE_ENV=development npx expo prebuild --clean --no-install && cd android && NODE_ENV=development ./gradlew :app:assembleDebug --no-daemon --console=plain",
     "bootstrap": "pnpm --dir example install && pnpm install && pnpm --dir example pods",
@@ -123,8 +125,8 @@
     "build:plugin": "tsc --build plugin",
     "clean:plugin": "del-cli plugin/build",
     "test:plugin": "jest --config plugin/jest.config.js",
-    "build:electron:macos": "cd native/electron/corebluetooth && node-gyp rebuild --release",
-    "build:electron:winrt": "cd native/electron/winrt && node-gyp rebuild --release",
+    "build:electron:macos": "node scripts/ci/build-napi-addon.js",
+    "build:electron:winrt": "node scripts/ci/build-napi-addon.js",
     "native-prebuild:build": "node scripts/native-prebuilds/build.js",
     "native-prebuild:verify": "node scripts/native-prebuilds/verify.js",
     "native:apple:prepare": "sh ios/build-rust-core.sh",
@@ -589,10 +591,6 @@
       },
       "default": "./lib/commonjs/expo.js"
     }
-  },
-  "optionalDependencies": {
-    "node-addon-api": "8.9.0",
-    "node-gyp": "12.4.0"
   },
   "dependencies": {
     "@babel/runtime": "^7.29.7"

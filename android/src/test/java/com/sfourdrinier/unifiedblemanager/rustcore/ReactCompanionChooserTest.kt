@@ -34,6 +34,88 @@ import org.mockito.Mockito.verify
  */
 class ReactCompanionChooserTest {
   @Test
+  fun heldAndRefusedCancellationRetainsExactOwnerForRetry() {
+    val context = mock(ReactApplicationContext::class.java)
+    val queue = mutableListOf<Runnable>()
+    org.mockito.Mockito.doAnswer { invocation -> queue.add(invocation.getArgument(0)); null }
+      .`when`(context).runOnUiQueueThread(any(Runnable::class.java))
+    val activity = mock(android.app.Activity::class.java)
+    org.mockito.Mockito.doThrow(SecurityException("UI release refused")).doNothing()
+      .`when`(activity).finishActivity(42)
+    val chooser = ReactCompanionChooser(context, 33) { true }
+    var completions = 0
+    val callback: (Result<CompanionAssociation>) -> Unit = { completions++ }
+    fun field(name: String, value: Any) {
+      ReactCompanionChooser::class.java.getDeclaredField(name).also { it.isAccessible = true }.set(chooser, value)
+    }
+    field("pending", callback)
+    field("pendingActivity", activity)
+    field("pendingRequestCode", 42)
+    field("uiLaunched", true)
+    assertTrue(chooser.cancelAssociation(callback))
+    org.junit.Assert.assertEquals(0, completions)
+    queue.removeAt(0).run()
+    org.junit.Assert.assertEquals(0, completions)
+    assertTrue(chooser.cancelAssociation(callback))
+    queue.removeAt(0).run()
+    org.junit.Assert.assertEquals(1, completions)
+    verify(activity, org.mockito.Mockito.times(2)).finishActivity(42)
+  }
+  @Test
+  fun synchronouslyRefusedAssociationDoesNotPoisonTheNextOwner() {
+    val context = mock(ReactApplicationContext::class.java)
+    val manager = mock(CompanionDeviceManager::class.java)
+    org.mockito.Mockito.`when`(context.getSystemService(Context.COMPANION_DEVICE_SERVICE)).thenReturn(manager)
+    org.mockito.Mockito.`when`(context.currentActivity).thenReturn(mock(android.app.Activity::class.java))
+    mockConstruction(BluetoothLeDeviceFilter.Builder::class.java, { builder, _ ->
+      org.mockito.Mockito.doReturn(mock(BluetoothLeDeviceFilter::class.java)).`when`(builder).build()
+    }).use {
+      mockConstruction(AssociationRequest.Builder::class.java, { builder, _ ->
+        org.mockito.Mockito.doReturn(builder).`when`(builder).addDeviceFilter(any())
+        org.mockito.Mockito.doReturn(builder).`when`(builder).setSingleDevice(anyBoolean())
+        org.mockito.Mockito.doReturn(mock(AssociationRequest::class.java)).`when`(builder).build()
+      }).use {
+        org.mockito.Mockito.doThrow(SecurityException("permission refused")).doNothing()
+          .`when`(manager).associate(any(AssociationRequest::class.java), any(CompanionDeviceManager.Callback::class.java), org.mockito.ArgumentMatchers.isNull())
+        val chooser = ReactCompanionChooser(context, 33) { true }
+        org.junit.Assert.assertThrows(SecurityException::class.java) { chooser.associate(null, null) {} }
+        chooser.associate(null, null) {}
+        verify(manager, org.mockito.Mockito.times(2)).associate(any(AssociationRequest::class.java), any(CompanionDeviceManager.Callback::class.java), org.mockito.ArgumentMatchers.isNull())
+      }
+    }
+  }
+  @Test
+  fun detachingClosesOwnedPickerBeforeSettlingItsCallback() {
+    val context = mock(ReactApplicationContext::class.java)
+    org.mockito.Mockito.doAnswer { invocation -> invocation.getArgument<Runnable>(0).run(); null }
+      .`when`(context).runOnUiQueueThread(any(Runnable::class.java))
+    val activity = mock(android.app.Activity::class.java)
+    val chooser = ReactCompanionChooser(context, 33) { true }
+    var completed = false
+    val callback: (Result<CompanionAssociation>) -> Unit = { outcome ->
+      verify(activity).finishActivity(42)
+      assertTrue(outcome.isFailure)
+      completed = true
+    }
+    fun field(name: String, value: Any) {
+      ReactCompanionChooser::class.java.getDeclaredField(name).also { it.isAccessible = true }.set(chooser, value)
+    }
+    field("pending", callback)
+    field("pendingActivity", activity)
+    field("pendingRequestCode", 42)
+    field("uiLaunched", true)
+    chooser.detach()
+    assertTrue(completed)
+    verify(context).removeActivityEventListener(chooser)
+  }
+  @Test
+  fun publicNamePrefixIsAnchoredLiteralAndPreservesArbitrarySuffix() {
+    val pattern = companionNamePrefixPattern("Polar.+")
+    assertTrue(pattern.matcher("Polar.+ H10\nvariant").matches())
+    assertFalse(pattern.matcher("PolarABC").matches())
+    assertFalse(pattern.matcher("Other Polar.+").matches())
+  }
+  @Test
   fun associationRequestCarriesALeFilterWithTheExactNamePattern() {
     mockConstruction(
       BluetoothLeDeviceFilter.Builder::class.java,

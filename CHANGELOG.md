@@ -2,6 +2,52 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.17] - 2026-10-03
+
+### Before upgrading
+
+- Apple desktop and iOS/tvOS simulator artifacts are ARM64-only. Generic
+  simulator builds must select `ARCHS=arm64`; physical iPhone architectures are
+  unaffected.
+- Linux connection/GATT requires the maintained LE-bearer/GATT authority
+  integration described in [`docs/BLUEZ_LE_GATT.md`](docs/BLUEZ_LE_GATT.md). The
+  native prebuild alone does not install or configure the daemon. Privileged
+  deployment remains an explicit host choice, never an implicit package action.
+- Stable package/API SemVer and backend hardware-evidence labels are independent.
+  Compile, model, simulator and synthetic-radio checks do not establish new
+  physical-radio qualification.
+
+### Changes
+
+- Share stable/prerelease version admission between packaging and publication.
+  Stable 5.x versions select `latest`; numbered RCs select `next`. Retain native
+  identity, hash, export and exact-content release guards.
+- Restore rendered installation/simulator code blocks through the pinned HTML
+  renderer and add semantic omission checks.
+- Remove unreachable C++ desktop producers, private loaders and their exclusive
+  build dependencies. The maintained distribution contains five shared Rust
+  desktop targets: macOS arm64 and Windows/Linux x64 and arm64. Transfer useful
+  advertisement, unsubscribe, admission and loader-error regressions to the
+  actual production boundaries.
+- Build the complete shared TV reference consumer from an exact outside-checkout
+  tarball in the existing Apple lane. Correct TV focusable-list layout without
+  a second BLE implementation. Simulator/link evidence remains distinct from
+  physical Apple TV qualification.
+- Route eligible React Native public chooser requests to Apple's
+  AccessorySetupKit and Android's existing CompanionDeviceManager mechanism,
+  with faithful selector validation and owner-controlled cancellation. Document
+  app declarations, genuine OS limitations and accessory-specific relaunch rules;
+  no unconditional background/relaunch claim is introduced.
+- Extend existing packed Tauri consumer acceptance with ordinary Vite 7 and 8
+  production builds, without aliases or installed-source rewrites.
+- Preserve authenticated BlueZ MGMT disconnect reasons under optional platform
+  detail through native, public, Electron IPC and Tauri lifecycle delivery.
+  Keep the existing public loss vocabulary and reject retired physical generations.
+- Bind Linux connection ownership to exact daemon lease generations, retain
+  accepted work across cancellation and lost replies, and retry acknowledged
+  cleanup maintenance without blocking another connection. Keep deployment an
+  explicit host operation and exercise recovery on isolated private buses.
+
 ## [5.0.0-rc.16] - 2026-10-02
 
 - Ship macOS desktop prebuilds only for Apple Silicon (`arm64`). Retire both

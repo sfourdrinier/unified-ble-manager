@@ -177,7 +177,7 @@ public final class MobileCoreBridge {
         void updateBackgroundNotification(long requestId, String leaseId, String title, String body);
 
         /** Answer: {@link #nativeCompleteCompanion}. */
-        void associateCompanion(long requestId, String name, String serviceUuid);
+        void associateCompanion(long requestId, String name, String serviceUuid, String filtersJson);
 
         /** This app's associations. Answer: {@link #nativeCompleteCompanionList}. */
         void listCompanion(long requestId);

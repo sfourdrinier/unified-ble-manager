@@ -7,7 +7,7 @@ import type {
   ConnectionLifecycleEvent,
   ConnectionLifecycleTerminalCause
 } from '../backend-contract/connection-lifecycle'
-import type { CleanupRecord } from '../backend-contract/errors'
+import type { CleanupRecord, PlatformErrorDetail } from '../backend-contract/errors'
 import type {
   CharacteristicPath,
   ConnectionPath,
@@ -292,14 +292,18 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     this.completeLifecycle(cause, backendIngressOrdinal)
   }
 
-  finishLifecycle(cause: ConnectionLifecycleTerminalCause, backendIngressOrdinal: number | null): void {
+  finishLifecycle(
+    cause: ConnectionLifecycleTerminalCause,
+    backendIngressOrdinal: number | null,
+    platform?: PlatformErrorDetail
+  ): void {
     if (this.lifecycleFinished) {
       return
     }
     if (backendIngressOrdinal !== null) {
       this.acceptBackendIngressOrdinal(backendIngressOrdinal)
     }
-    this.completeLifecycle(cause, backendIngressOrdinal)
+    this.completeLifecycle(cause, backendIngressOrdinal, platform)
   }
 
   private acceptBackendIngressOrdinal(backendIngressOrdinal: number): void {
@@ -309,9 +313,13 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     this.lastBackendIngressOrdinal = backendIngressOrdinal
   }
 
-  private completeLifecycle(cause: ConnectionLifecycleTerminalCause, backendIngressOrdinal: number | null): void {
+  private completeLifecycle(
+    cause: ConnectionLifecycleTerminalCause,
+    backendIngressOrdinal: number | null,
+    platform?: PlatformErrorDetail
+  ): void {
     const current = lifecycleTerminalState(cause)
-    this.emitLifecycle(current, cause, backendIngressOrdinal)
+    this.emitLifecycle(current, cause, backendIngressOrdinal, platform)
     this.lifecycleFinished = true
     this.lifecycleStream.finishWithReason(lifecycleTerminalReason(current))
   }
@@ -344,7 +352,8 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
   private emitLifecycle(
     current: ConnectionState,
     cause: ConnectionLifecycleCause,
-    backendIngressOrdinal: number | null
+    backendIngressOrdinal: number | null,
+    platform?: PlatformErrorDetail
   ): void {
     if (!Number.isSafeInteger(this.nextLifecycleSequence)) {
       throw contractError('lifecycle.invariant-violation', 'connection', 'connection-lifecycle.sequence')
@@ -363,7 +372,8 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
       backendIngressOrdinal,
       previous,
       current,
-      cause
+      cause,
+      ...(platform === undefined ? {} : { platform })
     })
     this.nextLifecycleSequence += 1
     this.lifecycleStream.emit(event, connectionLifecycleEventByteLength(event))

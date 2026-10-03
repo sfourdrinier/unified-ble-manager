@@ -1020,6 +1020,8 @@ pub struct LifecycleEvent {
     /// when the peer had a discovered database.
     pub database_generation: Option<String>,
     pub kind: LifecycleKind,
+    /// The OS's own observed detail, when available; never inferred from a request.
+    pub platform: Option<crate::errors::PlatformDetail>,
 }
 
 /// Connection and database generations of one peer, captured under the
@@ -1666,6 +1668,17 @@ impl<B> Inner<B> {
         generation: Generations,
         kind: LifecycleKind,
     ) -> LifecycleEvent {
+        self.stage_lifecycle_with_platform(peer_id, peer_key, generation, kind, None)
+    }
+
+    fn stage_lifecycle_with_platform(
+        &self,
+        peer_id: &str,
+        peer_key: &str,
+        generation: Generations,
+        kind: LifecycleKind,
+        platform: Option<crate::errors::PlatformDetail>,
+    ) -> LifecycleEvent {
         let sequence = self.lifecycle_sequence.fetch_add(1, Ordering::SeqCst) + 1;
         let event = LifecycleEvent {
             sequence,
@@ -1674,6 +1687,7 @@ impl<B> Inner<B> {
             connection_generation: generation.connection,
             database_generation: generation.database,
             kind,
+            platform,
         };
         let received = self.lifecycle.send(event.clone()).is_ok();
         if !received && self.observer.is_none() {
@@ -6255,6 +6269,10 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                     Some(RadioEvent::Lost(peer_id)) => {
                         reconcile_disconnected(&inner, &peer_id, true).await;
                     }
+                    #[cfg(target_os = "linux")]
+                    Some(RadioEvent::LinuxPhysicalLost { peer_id, physical_generation, reason }) => {
+                        reconcile_disconnected_scoped(&inner, &peer_id, false, Some((physical_generation, reason))).await;
+                    }
                     Some(RadioEvent::ServicesChanged(peer_id)) => {
                         services_changed_invalidated(&inner, &peer_id).await;
                     }
@@ -6850,13 +6868,45 @@ async fn reconcile_disconnected<B: RadioBoundary>(
     peer_id: &str,
     errored: bool,
 ) {
+    reconcile_disconnected_scoped(inner, peer_id, errored, None).await;
+}
+
+async fn reconcile_disconnected_scoped<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    peer_id: &str,
+    errored: bool,
+    physical_generation: Option<(u64, u8)>,
+) {
     let peer_key = inner.peers.lock().await.get(peer_id).cloned();
     let Some(peer_key) = peer_key else {
         return;
     };
-    clear_peer_routing(inner, peer_id).await;
+    // Acquire local routing ownership before core admission. No synchronous
+    // guard crosses an await; native cleanup is only enqueued by the boundary.
+    let mut subscriptions = inner.subscriptions.lock().await;
+    let mut failed = inner.failed_disables.lock().await;
+    let mut epochs = inner.epochs.lock().await;
     let event = {
         let mut core = inner.core.lock().await;
+        #[cfg(target_os = "linux")]
+        if let Some((generation, reason)) = physical_generation
+            && !inner
+                .boundary
+                .accept_physical_loss(peer_id, generation, reason)
+                .await
+        {
+            // An authenticated observation can still belong to an older
+            // generation. It neither invalidates GATT nor publishes loss.
+            return;
+        }
+        #[cfg(not(target_os = "linux"))]
+        debug_assert!(physical_generation.is_none());
+        lock_std(&inner.retained_enablements).retain(|key| key.0 != peer_id);
+        subscriptions.retain(|key, _| key.0 != peer_id);
+        failed.retain(|key| key.0 != peer_id);
+        lock_std(&inner.deliveries).retain(|key, _| key.0 != peer_id);
+        let epoch = epochs.entry(peer_id.to_owned()).or_insert(0);
+        *epoch = epoch.saturating_add(1);
         let generation = Generations::of(&core, &peer_key);
         note_confirmed_release(inner, peer_id);
         let consumers: Vec<_> = core
@@ -6887,9 +6937,18 @@ async fn reconcile_disconnected<B: RadioBoundary>(
                     .into_iter()
                     .filter(|(peer, _)| peer == &peer_key),
             );
-            inner.stage_lifecycle(peer_id, &peer_key, generation, kind)
+            let platform = physical_generation.map(|(_, reason)| {
+                crate::errors::PlatformDetail::new("bluez-mgmt", reason.to_string()).with_metadata(
+                    "disconnectReason",
+                    crate::errors::PlatformValue::Int(i64::from(reason)),
+                )
+            });
+            inner.stage_lifecycle_with_platform(peer_id, &peer_key, generation, kind, platform)
         })
     };
+    drop(epochs);
+    drop(failed);
+    drop(subscriptions);
     if let Some(event) = event {
         // Only a transition of a live link ends its operations; a stale
         // event for an older generation publishes nothing and ends nothing.
@@ -8562,6 +8621,132 @@ mod adapter_tests {
         assert_eq!(retry, LinkRelease::AlreadyReleased);
         assert_eq!(disconnect_calls(&central), before, "no radio call on retry");
         central.boundary().unblock_op(FaultOp::Disconnect);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_old_physical_loss_does_not_invalidate_new_connection() {
+        let central = open().await;
+        central
+            .boundary()
+            .push_event(advertisement("lease-generation"));
+        wait_peer(&central, "lease-generation").await;
+        let handle = central
+            .connect("lease-generation", "lease", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        central
+            .boundary()
+            .set_services("lease-generation", vec![hrm_service()]);
+        central
+            .discover("lease-generation", "lease", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        central
+            .boundary()
+            .set_physical_generation("lease-generation", 74);
+        super::reconcile_disconnected_scoped(
+            &central.inner,
+            "lease-generation",
+            false,
+            Some((73, 2)),
+        )
+        .await;
+        assert_eq!(
+            central
+                .with_core(|core| core.connection_state(&handle.peer_key))
+                .await,
+            Some(ConnectionState::Connected)
+        );
+        assert!(
+            central
+                .with_core(|core| core.holds_lease(&handle.peer_key, "lease"))
+                .await
+        );
+        assert_eq!(
+            central
+                .with_core(|core| core.database_state(&handle.peer_key))
+                .await,
+            Some(ubm_core::central::DatabaseState::Current),
+            "old physical loss preserves current GATT"
+        );
+        let mut events = central.lifecycle_events();
+        super::reconcile_disconnected_scoped(
+            &central.inner,
+            "lease-generation",
+            false,
+            Some((74, 2)),
+        )
+        .await;
+        let event = events.recv().await.unwrap();
+        assert_eq!(event.kind, super::LifecycleKind::LinkLost);
+        let platform = event
+            .platform
+            .as_ref()
+            .expect("native reason survives admitted observation");
+        assert_eq!(platform.domain, "bluez-mgmt");
+        assert_eq!(platform.code, "2");
+        assert_eq!(
+            platform.metadata.get("disconnectReason"),
+            Some(&crate::errors::PlatformValue::Int(2))
+        );
+        assert_ne!(
+            central
+                .with_core(|core| core.database_state(&handle.peer_key))
+                .await,
+            Some(ubm_core::central::DatabaseState::Current),
+            "current physical loss invalidates GATT"
+        );
+        assert_eq!(
+            central
+                .disconnect("lease-generation", "lease", OpControl::budget_ms(5000))
+                .await
+                .unwrap(),
+            super::LinkRelease::AlreadyReleased,
+            "the public lease is retired by observed loss, not by deleting core history"
+        );
+        super::reconcile_disconnected_scoped(
+            &central.inner,
+            "lease-generation",
+            false,
+            Some((74, 2)),
+        )
+        .await;
+        assert!(
+            events.try_recv().is_err(),
+            "duplicate loss publishes no second transition"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_platform_detail_is_published_with_the_original_transition() {
+        let central = open().await;
+        let mut events = central.lifecycle_events();
+        let platform = crate::errors::PlatformDetail::new("bluez-mgmt", "1")
+            .with_metadata("disconnectReason", crate::errors::PlatformValue::Int(1));
+        let staged = central.inner.stage_lifecycle_with_platform(
+            "peer",
+            "peer-key",
+            super::Generations {
+                connection: None,
+                database: None,
+            },
+            super::LifecycleKind::LinkLost,
+            Some(platform.clone()),
+        );
+        assert_eq!(staged.platform, Some(platform.clone()));
+        assert_eq!(events.try_recv().unwrap().platform, Some(platform));
+        let unavailable = central.inner.stage_lifecycle(
+            "peer",
+            "peer-key",
+            super::Generations {
+                connection: None,
+                database: None,
+            },
+            super::LifecycleKind::LinkLost,
+        );
+        assert!(unavailable.platform.is_none());
+        assert!(events.try_recv().unwrap().platform.is_none());
     }
 
     #[tokio::test]

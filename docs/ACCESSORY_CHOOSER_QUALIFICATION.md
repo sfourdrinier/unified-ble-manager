@@ -1,0 +1,100 @@
+# ASK / CDM physical qualification checklist
+
+This is a prepared procedure, **not a receipt**. It does not authorize an
+installation, association removal, phone interaction, force quit or reboot.
+Retain one exact source/native-build/package identity for the run. Do not repeat
+unrelated background campaigns after documentation or metadata changes.
+
+## Reference app preparation required before using a phone
+
+Use the current Expo reference app and its ordinary `createExpoBleManager()`
+factory. RN and Expo share the same public composition; do not bypass `choose()`
+with a private native call or build a second radio manager. Refresh native
+artifacts through their canonical owner, then build the actual signed consumer.
+Retain the binary identity and inspect the built application Info.plist/merged
+manifest, not just a source configuration object.
+
+For the simulator's advertised `SIM Polar H10` prefix, the iPhone app needs:
+
+```xml
+<key>NSAccessorySetupKitSupports</key><array><string>Bluetooth</string></array>
+<key>NSAccessorySetupBluetoothServices</key><array><string>180D</string></array>
+<key>NSAccessorySetupBluetoothNames</key><array><string>SIM Polar H10</string></array>
+```
+
+A manufacturer-prefix scenario additionally needs the **actual** simulator
+company ID in `NSAccessorySetupBluetoothCompanyIdentifiers`, encoded as the
+documented hexadecimal string; capture its advertisement before choosing a
+prefix. Do not assume arbitrary bytes absent from that advertisement.
+The consuming app still needs Bluetooth usage descriptions, `bluetooth-central`
+background mode and the existing stable restoration identity/native continuation
+configuration. ASK needs iOS 18+, and this name-prefix selector needs 18.2+.
+The newer ASK-qualified relaunch cases require iOS/iPadOS 26+.
+
+The current `example-expo/app.json` declares these ASK keys through Expo
+`ios.infoPlist`; verify them in the generated native app before qualification.
+The existing scenario screens and authenticated remote registry expose
+`accessory-chooser` with `choose`, `connect-selected`, and `cancel`/`stop`. It:
+
+1. Runs only when the app is active, retains the same scenario-owned manager, and reports
+   current system-chooser capability before requesting UI.
+2. Calls `manager.choose({ filters: [{ serviceUuids: ['180d'],
+localNamePrefix: 'SIM Polar H10' }], timeoutMs: 30000, signal })`.
+3. Displays/records the returned source and scoped peer ID separately from GATT
+   connection status. Never labels a chooser selection as a scan or OS relaunch.
+4. Provides cancel and an explicit connect-selected action, preserving refused
+   cleanup ownership and using the existing report/evidence channel. Selection
+   retains the original hosted manager without requesting scan permissions;
+   connect-selected prepares that same host's Bluetooth authorization/readiness
+   before connecting, never constructing a replacement manager or scanning.
+
+These commands are available automatically in the current scenario UI; no
+private native command, replacement radio or unauthenticated remote endpoint is
+needed. The chooser-to-connect tests cover scoped ID handoff through the real
+TypeScript session serializer and a previously unobserved UUID through the real
+Rust/UniFFI foreign-radio connect/disconnect route. They remain deterministic
+boundary evidence, not an ASK UI or radio receipt.
+
+Keep authenticated development remote commands enabled. Remote execution may
+request the foreground system picker, but the human's picker decision must be
+recorded as human input, not represented as an automated radio assertion.
+An app running only in the background must report foreground refusal.
+
+## Bounded execution matrix
+
+| Scenario                 | Action                                                                                                                                                     | Required observation                                                                                                                                                          |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Apple ordinary setup     | Open the foreground chooser and select the simulator                                                                                                       | Real Apple system UI; one authorized UUID result; successful connect → discover → a positive HRS notification through the same manager                                        |
+| Android ordinary setup   | Select simulator through public `choose()`                                                                                                                 | Real CDM LE UI; one association result with connectable scoped peer; same positive GATT sequence; association display label is not fabricated advertisement provenance        |
+| Selector fidelity        | Test service+literal prefix and one actual manufacturer prefix; include a nonmatching simulator advertisement                                              | Nonmatching candidate does not satisfy the selection; OR alternatives and conjunction inside one filter remain intact                                                         |
+| Cancel / timeout         | Cancel while picker is visible; separately allow a short bounded deadline                                                                                  | Exactly one terminal result; picker closes; no late selected peer; a new choice can succeed without restarting the app                                                        |
+| Attachment teardown      | Destroy the manager with picker visible, then create a new manager                                                                                         | Old UI owner retires; old manager cannot allocate another picker; new manager's positive choice/connect still works                                                           |
+| Configuration refusal    | Use a separately built undeclared-selector app only if needed                                                                                              | Typed refusal before ASK session/UI, no process crash; do not mutate the qualifying app's retained artifact to manufacture the case                                           |
+| Foreground refusal       | Request while the app is inactive using retained development controls                                                                                      | Typed native refusal, no picker allocation; record actual app state                                                                                                           |
+| Native background intake | Establish native continuation, background/lock, inject simulator link loss then recovery                                                                   | Native recording contains ordered positive values after reconnect/resubscribe; successful archive commit precedes explicit ACK; no JS wake is required for collection         |
+| ASK-qualified relaunch   | After real ASK setup, establish the pending native request, remove the process in the **specific** TN3115 scenario, then cause its matching physical event | OS starts app without a manual launch; native `willRestoreState` and positive intake bound to this artifact; source counters and timestamps distinguish pre/post interruption |
+
+Do not simulate user force-quit with an ordinary process kill and call the two
+equivalent. Do not use `devicectl`/ADB manual launch before observing an OS wake;
+that would mask the property under test. ASK authorization alone is not a
+relaunch receipt. Settings/Control Center Bluetooth and airplane/restart cases
+have different Apple conditions; record the exact action and follow
+[TN3115](https://developer.apple.com/documentation/technotes/tn3115-bluetooth-state-restoration-app-relaunch-rules)
+and [the current background guide](BACKGROUND.md).
+
+Use short event-driven windows (normally up to two minutes after the injected
+event); no ten-minute rerun is needed merely for chooser/configuration changes.
+A timeout with no wake is an observed failure/inconclusive result with retained
+logs, not permission to manually launch and convert it into a pass. Longer
+background-duration qualification is a separate requirement and should reuse
+valid existing receipts unless changed runtime behavior invalidates them.
+
+## Receipt requirements
+
+Capture device/OS version, exact build/source/package/native identity, simulator
+revision and advertisement identity, actual foreground state, picker outcome,
+native domain/code for refusal, release receipts, reconnect notification values,
+native recording ordinals/loss markers, archive commit and ACK boundary, and OS
+launch evidence with no manual-launch substitution. Keep ASK setup, ordinary
+restoration, ASK-qualified relaunch and sustained background collection as
+separate claims. Simulator radio evidence is not a real Polar-device receipt.

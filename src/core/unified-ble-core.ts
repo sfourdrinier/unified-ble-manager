@@ -1173,7 +1173,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     if (event.kind === 'connection-lost') {
       const connection = this.connections.get(String(event.connection.connectionId))
       if (connection !== undefined && connection.matchesConnectionPath(event.connection)) {
-        connection.finishLifecycle('peer-link-loss', event.ingressOrdinal)
+        connection.finishLifecycle('peer-link-loss', event.ingressOrdinal, event.platform)
         this.lifecycleObserver.observeCleanup(
           this.releaseConnection(connection, 'peer-link-loss'),
           'backend-event-connection-cleanup'

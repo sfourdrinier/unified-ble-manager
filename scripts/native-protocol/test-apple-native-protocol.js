@@ -57,6 +57,30 @@ const borrowerOwnerExecutable = path.join(temporaryDirectory, 'AppleCoreBluetoot
 const executionExecutable = path.join(temporaryDirectory, 'AppleNativeProtocolExecutionHarness')
 const rustRadioAdapterExecutable = path.join(temporaryDirectory, 'AppleRustRadioAdapterHarness')
 const continuationExecutable = path.join(temporaryDirectory, 'AppleContinuationStatusHarness')
+const accessorySources = [
+  'ios/AccessoryChoiceOwner.swift',
+  'ios/AccessoryChoiceAdmission.swift',
+  'ios/UnifiedBleAccessoryChooser.swift'
+]
+const accessoryExecutable = path.join(temporaryDirectory, 'AccessoryChoiceOwnerHarness')
+function testAccessoryChooser() {
+  run('xcrun', [
+    'swiftc',
+    ...accessorySources.slice(0, 2),
+    'ios/__tests__/AccessoryChoiceOwnerHarness.swift',
+    '-o',
+    accessoryExecutable
+  ])
+  run(accessoryExecutable, [])
+  for (const [sdk, target] of [
+    ['iphoneos', 'arm64-apple-ios16.4'],
+    ['iphonesimulator', 'arm64-apple-ios16.4-simulator'],
+    ['appletvsimulator', 'arm64-apple-tvos16.4-simulator']
+  ]) {
+    const sdkPath = childProcess.execFileSync('xcrun', ['--sdk', sdk, '--show-sdk-path'], { encoding: 'utf8' }).trim()
+    run('xcrun', ['--sdk', sdk, 'swiftc', '-typecheck', '-target', target, '-sdk', sdkPath, ...accessorySources])
+  }
+}
 const uniffiSwiftDirectory = path.join(root, 'bindings/uniffi/generated/swift')
 
 // The Apple Rust route harness links the REAL mobile host: the host-platform
@@ -152,6 +176,7 @@ function compileIosContinuationBootstrap() {
 }
 
 try {
+  testAccessoryChooser()
   run(process.execPath, [path.join(root, 'scripts/native-protocol/test-native-protocol.js')])
   run('xcrun', [
     '--sdk',

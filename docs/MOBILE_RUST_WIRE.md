@@ -12,7 +12,16 @@ core. It is the frozen interface between four parts:
 
 The schema exists in two places only, Rust and TS. Golden vectors bind the two
 (see [Golden vectors](#golden-vectors)). Java and Swift never parse
-JavaScript arguments.
+JavaScript radio arguments. OS accessory setup is a separate, versioned
+host-control seam: `chooseAccessory` / `cancelAccessoryChoice` and
+`accessoryChooserAvailable` on the TurboModule. The Apple seam uses strict
+`ubm-accessory-chooser/1` JSON and AccessorySetupKit, not a second radio or Rust
+session. The native facade verifies app allowlists before picker allocation.
+The ordinary Android public chooser reuses `companion.associate` with its
+additive `filtersJson` selector field; Rust validates and canonicalizes that
+field before the JNI/UniFFI platform request. Omitted `filtersJson` preserves
+the existing exact-name association API. Budgets and cancellation remain owned
+by the existing Rust operation tracker. See [`BACKGROUND.md`](BACKGROUND.md).
 
 ## Ownership (one owner per process)
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/verify-release.sh
-# Multi-host release gate for the canonical unified-ble-manager 4.0 package.
+# Multi-host release gate for the canonical unified-ble-manager 5.x package.
 # Shared checklist with publish.yml (R2-F040):
 #   - package/plugin/lint/prepack
 #   - host export typeof BleManager (scripts/ci/check-host-exports.js)
@@ -8,7 +8,7 @@
 #   - Expo CNG Android (always)
 #   - classic RN Android assemble (required when Android SDK available;
 #     clear install hint when missing — same gate publish always runs on Ubuntu)
-#   - darwin: CoreBluetooth node-gyp L2 + lib requireNative
+#   - shared desktop Rust core under Node/Electron (synthetic radio)
 #   - canonical npm pack dry-run
 set -euo pipefail
 
@@ -81,44 +81,17 @@ pnpm release:artifacts:check
 echo "== host export resolution (post-prepack, typeof BleManager) =="
 node scripts/ci/check-host-exports.js
 
-echo "== 4.0 Web Bluetooth public example bundle =="
+echo "== 5.x Web Bluetooth public example bundle =="
 pnpm build:example:web
 
 echo "== Electron Fake multi-device demo smoke (L1) =="
 node example-electron/smoke.js
 
-# Darwin CoreBluetooth L2 (node-gyp Node ABI + public contract boundary).
-if [[ "$(uname -s)" == "Darwin" ]]; then
-  echo "== CoreBluetooth native boundary L2 (darwin: node-gyp + public boundary) =="
-  pnpm run build:electron:macos
-  test -f native/electron/corebluetooth/build/Release/unified_ble_corebluetooth.node
-  node -e "
-    const publicEntry = require('./lib/commonjs/node-corebluetooth');
-    if (typeof publicEntry.createCoreBluetoothBleManager !== 'function' || 'createNativeCoreBluetoothBoundary' in publicEntry) {
-      throw new Error('node/corebluetooth must expose the Rust-core factory and no legacy boundary');
-    }
-    const { createNativeCoreBluetoothBoundary } = require('./lib/commonjs/backends/corebluetooth/corebluetooth-native-boundary');
-    const boundary = createNativeCoreBluetoothBoundary();
-    const required = [
-      'adapterSnapshot', 'startScan', 'stopScan', 'connect', 'disconnect',
-      'connectionState', 'discover', 'read', 'write', 'startNotify',
-      'stopNotify', 'onDisconnect', 'onAdapterState', 'destroy'
-    ];
-    for (const method of required) {
-      if (typeof boundary[method] !== 'function') {
-        throw new Error('CoreBluetooth boundary method is missing: ' + method);
-      }
-    }
-    Promise.resolve(boundary.destroy()).then(() => {
-      console.log('CoreBluetooth public boundary L2 ok');
-    }, error => {
-      console.error('CoreBluetooth boundary destroy failed:', error);
-      process.exitCode = 1;
-    });
-  "
-else
-  echo "== CoreBluetooth native boundary L2 skipped (not darwin) =="
-fi
+# The production desktop core is Node-API ABI-stable. Exercise that same
+# native addon under Electron; there is no second node-gyp producer.
+echo "== Shared Rust desktop core under Electron (synthetic radio, no physical claim) =="
+node scripts/ci/build-napi-addon.js
+UBM_SMOKE_USE_SOURCE=1 ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js
 
 echo "== Expo CNG Android path =="
 rm -rf "$ROOT_DIR/example-expo/node_modules/.pnpm/unified-ble-manager@file+.."*

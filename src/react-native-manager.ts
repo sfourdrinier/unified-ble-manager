@@ -31,6 +31,9 @@ import type { ReactNativeRestorationAuthority } from './backends/reactnative/rea
 import { hostAndroidApiLevel } from './backends/reactnative/react-native-providers'
 import { rehydratePublicPromise } from './public/error-bridge'
 import type { DiagnosticsOptions } from './public/host-identity'
+import { createReactNativeAccessoryChooser } from './backends/reactnative/react-native-accessory-chooser'
+import { createReactNativeCompanionChooser } from './backends/reactnative/react-native-companion-chooser'
+import type { ChooseOptions, BlePeer } from './public/ble-manager'
 
 export type ReactNativeBlePlatform = 'android' | 'apple'
 
@@ -81,6 +84,7 @@ export interface ReactNativeBleManagerOptions {
 
 /** What an Expo host reaches besides the public manager. */
 export interface ReactNativeManagerHost {
+  readonly chooseAccessory?: (options: ChooseOptions) => Promise<BlePeer>
   readonly recordings: ContinuationRecordingController
   readonly manager: BleManager<string, NativeBackendIdentity<string>>
   readonly services: ReactNativeRustCoreHostServices
@@ -129,6 +133,8 @@ export async function createReactNativeManagerHost(
     options.diagnostics?.traceMaximumBytes ?? DEFAULT_TRACE_MAXIMUM_BYTES
   )
   const binding = options.rustCore ?? createReactNativeRustCoreBinding({ platform: options.platform })
+  const systemChooserAvailable =
+    typeof binding.accessoryChooserAvailable === 'function' && (await binding.accessoryChooserAvailable())
   const authority = options.restorationAuthority ?? null
   // Only an explicitly passed order reaches the owner: an absent option
   // leaves the native store alone, so a build-time manifest declaration
@@ -145,7 +151,8 @@ export async function createReactNativeManagerHost(
     now: options.now,
     runtime: {
       androidApiLevel: options.platform === 'android' ? (options.androidApiLevel ?? hostAndroidApiLevel()) : null,
-      appleRestorationConfigured: options.platform === 'apple' && authority !== null
+      appleRestorationConfigured: options.platform === 'apple' && authority !== null,
+      systemChooserAvailable
     },
     restorationAuthority: () => authority,
     trace,
@@ -183,6 +190,23 @@ export async function createReactNativeManagerHost(
   }
   return Object.freeze({
     manager,
+    ...(systemChooserAvailable
+      ? {
+          chooseAccessory:
+            options.platform === 'apple'
+              ? createReactNativeAccessoryChooser(
+                  binding,
+                  id => backend.peerIdForNativeId(id),
+                  options.now,
+                  (id, cancel) => backend.admitAccessoryChoice(id, cancel)
+                )
+              : createReactNativeCompanionChooser(
+                  backend.hostServices,
+                  id => backend.peerIdForNativeId(id),
+                  options.now
+                )
+        }
+      : {}),
     services: backend.hostServices,
     recordings: createReactNativeContinuationRecordings({ rustCore: binding }),
     continuation,

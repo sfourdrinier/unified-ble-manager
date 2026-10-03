@@ -89,7 +89,7 @@ import {
 } from '../backend-contract/connection-controls'
 import { MAX_PUBLIC_SCAN_STATE_BYTES, MAX_PUBLIC_SCAN_STATE_ENTRIES } from './scan-state-budget'
 import type { CleanupRecord as PublicCleanupRecord } from './cleanup'
-import { toPublicCleanupRecord } from './cleanup'
+import { toPublicCleanupRecord, toPublicPlatformErrorDetail, type PublicPlatformErrorDetail } from './cleanup'
 import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream } from './streams'
 
 export type { ConnectionPriority } from '../backend-contract/connection-controls'
@@ -128,6 +128,8 @@ export interface BleConnectionEvent {
   readonly cause: ConnectionLifecycleCause
   readonly connectionGeneration: string
   readonly sequence: number
+  /** The native owner's observed cause detail; absent when none was reported. */
+  readonly platform?: PublicPlatformErrorDetail
 }
 
 export type BleControlObservationState = 'measured' | 'unavailable' | 'unsupported'
@@ -517,6 +519,10 @@ export interface FindOptions extends OperationOptions {
   readonly platform?: ScanPlatformOptions
 }
 
+/** System selection, not connection. Web chooses a permitted device; configured
+ * mobile hosts may perform OS accessory setup/association. Unsupported selector
+ * combinations are refused rather than widened. ASK grants the accessory, not a
+ * per-service allowlist, so optionalServices only governs Web service permission. */
 export interface ChooseOptions extends OperationOptions {
   readonly filters?: readonly ChooseFilter[]
   readonly optionalServices?: readonly (string | number)[]
@@ -2674,6 +2680,7 @@ function mapPublicConnectionEvents(
               throw publicConnectionTerminalError(item.value.reason, item.value.error ?? null)
             }
             const event = item.value.value
+            const platform = toPublicPlatformErrorDetail(event.platform)
             return {
               done: false,
               value: Object.freeze({
@@ -2682,7 +2689,8 @@ function mapPublicConnectionEvents(
                 current: event.current,
                 cause: event.cause,
                 connectionGeneration: String(event.connectionGeneration),
-                sequence: event.sequence
+                sequence: event.sequence,
+                ...(platform === null ? {} : { platform })
               })
             }
           }

@@ -853,7 +853,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
       let .requestMtu(id, _, _), let .readRssi(id, _), let .requestConnectionPriority(id, _, _), let .readPhy(id, _),
       let .requestPhy(id, _, _, _), let .securityState(id, _), let .createBond(id, _, _), let .cancelBond(id, _),
       let .acquireBackground(id, _, _), let .releaseBackground(id, _), let .updateBackgroundNotification(id, _, _, _),
-      let .associateCompanion(id, _, _), let .listCompanion(id),
+      let .associateCompanion(id, _, _, _), let .listCompanion(id),
       let .disassociateCompanion(id, _),
       let .observePresence(id, _), let .stopPresence(id, _):
       return id

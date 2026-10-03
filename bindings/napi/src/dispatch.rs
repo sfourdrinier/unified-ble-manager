@@ -244,6 +244,14 @@ impl DispatchRadio {
 // `async fn` satisfies the trait's `-> impl Future` seams; each arm's
 // future is `Send`, so the combined future is too.
 impl RadioBoundary for DispatchRadio {
+    #[cfg(target_os = "linux")]
+    async fn accept_physical_loss(&self, peer: &str, generation: u64, reason: u8) -> bool {
+        match self {
+            Self::Radio(radio) => radio.accept_physical_loss(peer, generation, reason).await,
+            Self::Synthetic(radio) => radio.accept_physical_loss(peer, generation, reason).await,
+        }
+    }
+
     fn gatt_snapshot_identity(
         &self,
         peer_id: &str,
@@ -1725,6 +1733,27 @@ pub struct LifecycleEventInfo {
     pub connection_generation: Option<String>,
     pub requested: Option<bool>,
     pub missed: Option<i64>,
+    /// Existing typed platform-detail JSON; wide native integers retain exact decimal strings.
+    pub platform: Option<String>,
+}
+
+fn lifecycle_event_wire(
+    event: ubm_desktop::LifecycleEvent,
+) -> std::result::Result<LifecycleEventInfo, DispatchError> {
+    let (kind, requested) = lifecycle_kind_wire(event.kind);
+    Ok(LifecycleEventInfo {
+        kind: kind.to_owned(),
+        sequence: Some(number_wire(
+            event.sequence,
+            "dispatch.take-lifecycle-event",
+        )?),
+        peer_id: Some(event.peer_id),
+        peer_key: Some(event.peer_key),
+        connection_generation: event.connection_generation,
+        requested,
+        missed: None,
+        platform: event.platform.as_ref().map(platform_wire),
+    })
 }
 
 /// One adapter power-state change the OS reported, or a gap marker
@@ -3024,18 +3053,7 @@ impl UbmCentral {
         const OP: &str = "dispatch.take-lifecycle-event";
         let mut receiver = self.lifecycle.lock().await;
         match receiver.try_recv() {
-            Ok(event) => {
-                let (kind, requested) = lifecycle_kind_wire(event.kind);
-                Ok(Some(LifecycleEventInfo {
-                    kind: kind.to_owned(),
-                    sequence: Some(number_wire(event.sequence, OP).map_err(to_napi)?),
-                    peer_id: Some(event.peer_id),
-                    peer_key: Some(event.peer_key),
-                    connection_generation: event.connection_generation,
-                    requested,
-                    missed: None,
-                }))
-            }
+            Ok(event) => lifecycle_event_wire(event).map(Some).map_err(to_napi),
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Lagged(missed)) => Ok(Some(LifecycleEventInfo {
                 kind: "lagged".to_owned(),
@@ -3045,6 +3063,7 @@ impl UbmCentral {
                 connection_generation: None,
                 requested: None,
                 missed: Some(number_wire(missed, OP).map_err(to_napi)?),
+                platform: None,
             })),
             Err(TryRecvError::Closed) => Ok(Some(LifecycleEventInfo {
                 kind: "closed".to_owned(),
@@ -3054,6 +3073,7 @@ impl UbmCentral {
                 connection_generation: None,
                 requested: None,
                 missed: None,
+                platform: None,
             })),
         }
     }
@@ -4852,6 +4872,51 @@ impl UbmCentral {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_physical_loss_admission_forwards_exact_generation() {
+        let radio = Box::new(FakeRadio::new());
+        radio.set_physical_generation("peer", 7);
+        let dispatch = DispatchRadio::Synthetic(radio);
+        assert!(!dispatch.accept_physical_loss("peer", 6, 1).await);
+        assert!(!dispatch.accept_physical_loss("other-peer", 7, 1).await);
+        assert!(dispatch.accept_physical_loss("peer", 7, 1).await);
+        assert!(!dispatch.accept_physical_loss("peer", 7, 1).await);
+        dispatch
+            .synthetic("dispatch.test")
+            .unwrap()
+            .set_physical_generation("peer", 8);
+        assert!(!dispatch.accept_physical_loss("peer", 7, 1).await);
+        assert!(dispatch.accept_physical_loss("peer", 8, 8).await);
+    }
+
+    #[test]
+    fn lifecycle_projection_preserves_platform_detail_without_changing_the_public_kind() {
+        let platform = PlatformDetail::new("bluez-mgmt", "1")
+            .with_metadata("disconnectReason", PlatformValue::Int(1))
+            .with_metadata("wideProof", PlatformValue::Int(i64::MAX));
+        let projected = lifecycle_event_wire(ubm_desktop::LifecycleEvent {
+            sequence: 7,
+            peer_id: "peer".into(),
+            peer_key: "key".into(),
+            connection_generation: Some("generation".into()),
+            database_generation: None,
+            kind: LifecycleKind::LinkLost,
+            platform: Some(platform),
+        })
+        .unwrap();
+        assert_eq!(projected.kind, "link-lost");
+        assert_eq!(
+            projected.connection_generation.as_deref(),
+            Some("generation")
+        );
+        let detail: serde_json::Value =
+            serde_json::from_str(projected.platform.as_deref().unwrap()).unwrap();
+        assert_eq!(detail["domain"], "bluez-mgmt");
+        assert_eq!(detail["code"], "1");
+        assert_eq!(detail["metadata"]["disconnectReason"], 1);
+        assert_eq!(detail["metadata"]["wideProof"], i64::MAX.to_string());
+    }
     use ubm_desktop::{CharacteristicSnapshot, DescriptorSnapshot};
 
     use super::*;

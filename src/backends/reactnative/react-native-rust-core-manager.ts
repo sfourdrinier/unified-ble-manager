@@ -60,7 +60,7 @@ import { CoreBoundedStream } from '../../core/bounded-stream'
 import { createCoreFeatureRegistry, observeMaximumWriteLength, planLongWrite } from '../../core/core-capabilities'
 import type { LongWriteFeatureOutput } from '../../backend-contract/capabilities'
 import { BackendContractError, contractError } from '../../backend-contract/errors'
-import type { CleanupFailure, CleanupRecord } from '../../backend-contract/errors'
+import type { CleanupFailure, CleanupRecord, PlatformErrorDetail } from '../../backend-contract/errors'
 import type {
   CharacteristicPath,
   ConnectionPath,
@@ -974,7 +974,11 @@ class ReactNativeRustCoreManager {
       if (connection !== undefined && connection.matchesConnectionPath(event.connection)) {
         const cause =
           event.kind === 'connection-lost' ? 'peer-link-loss' : lifecycleCauseFromBackendDisconnect(event.reason)
-        connection.finishLifecycle(cause, event.ingressOrdinal)
+        connection.finishLifecycle(
+          cause,
+          event.ingressOrdinal,
+          event.kind === 'connection-lost' ? event.platform : undefined
+        )
         this.releaseConnection(connection, cause).catch(() => undefined)
       }
       return
@@ -1333,14 +1337,18 @@ class NativeConnection {
     this.completeLifecycle(cause, backendIngressOrdinal)
   }
 
-  finishLifecycle(cause: ConnectionLifecycleTerminalCause, backendIngressOrdinal: number | null): void {
+  finishLifecycle(
+    cause: ConnectionLifecycleTerminalCause,
+    backendIngressOrdinal: number | null,
+    platform?: PlatformErrorDetail
+  ): void {
     if (this.lifecycleFinished) {
       return
     }
     if (backendIngressOrdinal !== null) {
       this.acceptBackendIngressOrdinal(backendIngressOrdinal)
     }
-    this.completeLifecycle(cause, backendIngressOrdinal)
+    this.completeLifecycle(cause, backendIngressOrdinal, platform)
   }
 
   matchesConnectionPath(path: DatabasePath<string, string, string> | ConnectionPath<string, string>): boolean {
@@ -1361,9 +1369,13 @@ class NativeConnection {
     this.lastBackendIngressOrdinal = backendIngressOrdinal
   }
 
-  private completeLifecycle(cause: ConnectionLifecycleTerminalCause, backendIngressOrdinal: number | null): void {
+  private completeLifecycle(
+    cause: ConnectionLifecycleTerminalCause,
+    backendIngressOrdinal: number | null,
+    platform?: PlatformErrorDetail
+  ): void {
     const current = lifecycleTerminalState(cause)
-    this.emitLifecycle(current, cause, backendIngressOrdinal)
+    this.emitLifecycle(current, cause, backendIngressOrdinal, platform)
     this.lifecycleFinished = true
     this.lifecycleStream.finishWithReason(lifecycleTerminalReason(current))
   }
@@ -1371,7 +1383,8 @@ class NativeConnection {
   private emitLifecycle(
     current: ConnectionState,
     cause: ConnectionLifecycleCause,
-    backendIngressOrdinal: number | null
+    backendIngressOrdinal: number | null,
+    platform?: PlatformErrorDetail
   ): void {
     if (!Number.isSafeInteger(this.nextLifecycleSequence)) {
       throw contractError('lifecycle.invariant-violation', 'connection', 'connection-lifecycle.sequence')
@@ -1390,7 +1403,8 @@ class NativeConnection {
       backendIngressOrdinal,
       previous,
       current,
-      cause
+      cause,
+      ...(platform === undefined ? {} : { platform })
     })
     this.nextLifecycleSequence += 1
     this.lifecycleStream.emit(event, lifecycleEventByteLength(event))

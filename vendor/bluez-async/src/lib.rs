@@ -16,6 +16,7 @@ mod events;
 mod introspect;
 mod le_bearer;
 mod le_gatt;
+mod le_lease;
 mod macaddress;
 mod match_cleanup;
 mod messagestream;
@@ -34,6 +35,7 @@ pub use self::le_gatt::{
     LE_GATT_OBSERVATION_TIMEOUT, LeGattBearer, LeGattErrorStage, LeGattReadyToken, LeGattSnapshot,
     LeGattStatus,
 };
+pub use self::le_lease::{LeLeaseProtocolError, LeLeaseReleaseReceipt, LeLeaseReleaseScope};
 pub use self::macaddress::{MacAddress, ParseMacAddressError};
 use self::match_cleanup::{MatchFailure, MatchRegistry};
 use self::messagestream::MessageStream;
@@ -137,6 +139,8 @@ pub enum BluetoothError {
     LeGattUnsupportedVersion(u32),
     #[error("Invalid authoritative LE GATT snapshot: {0}")]
     LeGattProtocolError(String),
+    #[error(transparent)]
+    LeLeaseProtocolError(#[from] LeLeaseProtocolError),
     #[error("Authoritative LE GATT snapshot is not ready: {0:?}")]
     LeGattNotReady(Box<LeGattSnapshot>),
     #[error("Authoritative LE GATT token changed during graph retrieval: {before:?} -> {after:?}")]
@@ -334,6 +338,7 @@ pub struct BluetoothSession {
     matches: Arc<MatchRegistry>,
     cleanup_scope: u64,
     le: Arc<le_bearer::Registry>,
+    lease_reservation_ids: Arc<std::sync::atomic::AtomicU64>,
     destination: String,
 }
 
@@ -384,6 +389,7 @@ impl BluetoothSession {
             connection,
             matches,
             le: Arc::new(le_bearer::Registry::default()),
+            lease_reservation_ids: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             destination: "org.bluez".to_owned(),
             cleanup_scope: NEXT_CLEANUP_SCOPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
@@ -395,6 +401,7 @@ impl BluetoothSession {
             connection: self.connection.clone(),
             matches: self.matches.clone(),
             le: self.le.clone(),
+            lease_reservation_ids: self.lease_reservation_ids.clone(),
             destination: self.destination.clone(),
             cleanup_scope: NEXT_CLEANUP_SCOPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }

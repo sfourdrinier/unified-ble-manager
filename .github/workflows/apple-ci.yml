@@ -30,17 +30,7 @@ jobs:
         uses: ./.github/actions/setup-js-package
 
       - name: Install pinned Rust + Apple targets
-        # Source mode builds ios/RustCore/RustCore.xcframework with the
-        # explicit `native:apple:prepare` step (ios/build-rust-core.sh)
-        # before pod install; it needs the pinned toolchain plus the Apple device/simulator matrix
-        # (aarch64-ios, aarch64-sim, aarch64-tvos,
-        # aarch64-tvos-sim). Pin single-sourced from rust-toolchain.toml
-        # (cargo --version resolves it via rustup).
-        run: |
-          cargo --version
-          PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
-          test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
-          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-tvos aarch64-apple-tvos-sim
+        uses: ./.github/actions/setup-apple-rust
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
@@ -104,17 +94,7 @@ jobs:
         uses: ./.github/actions/setup-js-package
 
       - name: Install pinned Rust + Apple targets
-        # Source mode builds ios/RustCore/RustCore.xcframework with the
-        # explicit `native:apple:prepare` step (ios/build-rust-core.sh)
-        # before pod install; it needs the pinned toolchain plus the Apple device/simulator matrix
-        # (aarch64-ios, aarch64-sim, aarch64-tvos,
-        # aarch64-tvos-sim). Pin single-sourced from rust-toolchain.toml
-        # (cargo --version resolves it via rustup).
-        run: |
-          cargo --version
-          PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
-          test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
-          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-tvos aarch64-apple-tvos-sim
+        uses: ./.github/actions/setup-apple-rust
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
@@ -195,9 +175,9 @@ jobs:
             build
 
   tvos-library:
-    name: tvOS library compile check
+    name: tvOS library and packed reference consumer
     runs-on: macos-26
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.0
@@ -207,3 +187,21 @@ jobs:
 
       - name: Check tvOS library (podspec + vendor Swift)
         run: bash scripts/ci/check-tvos-library.sh
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+        with:
+          prepack: 'false'
+
+      - name: Install pinned Rust + Apple targets
+        uses: ./.github/actions/setup-apple-rust
+
+      - name: Prepare canonical Apple artifact
+        run: pnpm native:apple:prepare
+
+      - name: Compile packed Apple TV consumer (ARM64 simulator and physical target)
+        run: |
+          TV_PACK_DIR="$(mktemp -d "$RUNNER_TEMP/ubm-tv-package.XXXXXX")"
+          pnpm pack --pack-destination "$TV_PACK_DIR"
+          TV_PACKAGE_TARBALL="$TV_PACK_DIR/$(node -p "'unified-ble-manager-' + require('./package.json').version + '.tgz'")" \
+            bash scripts/ci/check-tvos-packed-consumer.sh

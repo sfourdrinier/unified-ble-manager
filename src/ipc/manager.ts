@@ -4,6 +4,7 @@ import {
   BLE_ERROR_CODES,
   BLE_ERROR_DOMAINS,
   contractError,
+  optionalPlatformErrorDetail,
   type BleCommitUncertainty,
   type CleanupFailure,
   type CleanupRecord,
@@ -3304,6 +3305,7 @@ function isIpcNotificationValue(value: unknown): value is IpcNotificationValue {
 function isIpcConnectionLifecycleEvent(value: unknown): value is SerializableRecord {
   if (!isSerializableRecord(value)) return false
   const record = value
+  optionalPlatformErrorDetail(record.platform, 'ipc-manager.lifecycle.platform')
   return (
     record.kind === 'connection-lifecycle' &&
     record.schemaVersion === 2 &&

@@ -286,7 +286,12 @@ all three (`native/electron/corebluetooth/index.js:99-110`).
 real `NSDictionary`, checking absent keys and present-but-empty versus
 populated values. `tests/parity_ops.rs`
 `advertisement_extras_reach_the_host_verbatim` covers the path through the
-central. Physical check, which needs a Bluetooth-authorized macOS terminal
+central. The vendor's `ubm_advertisement_boundary_tests` additionally executes
+the production callback parser on Foundation objects: missing versus empty
+extras, a short manufacturer record, little-endian company identity, and
+payload independence after mutating the original `NSMutableData`. The callback
+and tests share the same manufacturer conversion, not a copied parser.
+Physical check, which needs a Bluetooth-authorized macOS terminal
 and a peer that solicits a service or advertises in the background: this has
 not been run yet.
 
@@ -1108,7 +1113,13 @@ once on every `Device1` `PropertiesChanged` signal
   `DeviceDisconnected` emit.
 - `corebluetooth/internal.rs` `a_disconnect_answers_every_attribute_waiter`:
   characteristic and descriptor waiters on real CoreBluetooth attribute
-  objects all receive the disconnect error.
+  objects all receive the disconnect error, including pending unsubscribe.
+- `corebluetooth/internal.rs` notification-state ownership tests exercise the
+  exact settlement methods used by the delegate-event handlers with real
+  `CBMutableCharacteristic` fixtures. A still-notifying callback cannot confirm
+  disable; the waiter stays pending until a disabled-state answer or a native
+  error, whose identity is preserved. A repeated callback cannot settle the
+  retired waiter twice. These are macOS native-object tests, not radio proof.
 - `vendor/bluez-async/src/lib.rs`:
   - `a_disconnect_ends_a_pending_service_discovery`;
   - `resolved_services_end_the_discovery`;

@@ -297,6 +297,26 @@ export function createReactNativeRustCoreBinding(
   }
 
   return Object.freeze({
+    ...(typeof native.chooseAccessory === 'function' &&
+    typeof native.cancelAccessoryChoice === 'function' &&
+    typeof native.accessoryChooserAvailable === 'function'
+      ? {
+          accessoryChooserAvailable: async (): Promise<boolean> => {
+            await verifyBinary()
+            const value = await call('accessory-availability', () => native.accessoryChooserAvailable())
+            if (typeof value !== 'boolean')
+              throw contractError('protocol.malformed', 'chooser', 'accessory.availability')
+            return value
+          },
+          chooseAccessory: async (requestId: string, optionsJson: string, timeoutMs: number): Promise<string> => {
+            await verifyBinary()
+            return call('accessory-choose', () => native.chooseAccessory(requestId, optionsJson, timeoutMs))
+          },
+          cancelAccessoryChoice: async (requestId: string): Promise<void> => {
+            await call('accessory-cancel', () => native.cancelAccessoryChoice(requestId))
+          }
+        }
+      : {}),
     verifyNativeIdentity: async (): Promise<void> => {
       await verifyBinary()
     },

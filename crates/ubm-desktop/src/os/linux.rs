@@ -204,10 +204,34 @@ impl Bluez {
         Self::open_with_le_owner(adapter_id, bus, None).await
     }
 
+    #[cfg(test)]
     pub(crate) async fn open_with_le_owner(
         adapter_id: &str,
         bus: crate::boundary::BluezBus,
         le_owner: Option<String>,
+    ) -> Result<Arc<Self>, DesktopError> {
+        Self::open_bound(adapter_id, bus, le_owner, false).await
+    }
+
+    /// Resolve and bind the daemon epoch natively. A supplied owner is an
+    /// additional restriction, never evidence that the daemon implements an API.
+    pub(crate) async fn open_authority(
+        adapter_id: &str,
+        bus: crate::boundary::BluezBus,
+        expected_owner: Option<String>,
+    ) -> Result<Arc<Self>, DesktopError> {
+        Self::open_bound(adapter_id, bus, expected_owner, true).await
+    }
+
+    pub(crate) fn bound_owner(&self) -> Option<&str> {
+        self.le_owner.as_deref()
+    }
+
+    async fn open_bound(
+        adapter_id: &str,
+        bus: crate::boundary::BluezBus,
+        expected_owner: Option<String>,
+        resolve_owner: bool,
     ) -> Result<Arc<Self>, DesktopError> {
         let conn = match bus {
             crate::boundary::BluezBus::System => zbus::Connection::system().await,
@@ -216,13 +240,13 @@ impl Bluez {
         .map_err(|error| {
             DesktopError::adapter_unavailable("adapter.dbus").with_detail(error.to_string())
         })?;
-        Ok(Arc::new(Self {
+        let mut authority = Self {
             conn,
             adapter_path: bluez_model::adapter_path(adapter_id),
             agent_registered: Mutex::new(false),
             pairing: StdMutex::new(HashSet::new()),
             mtus: StdMutex::new(HashMap::new()),
-            le_owner,
+            le_owner: expected_owner,
             gatt_watch: StdMutex::new(Err(DesktopError::new(
                 BleErrorCode::GattDiscoveryRequired,
                 BleErrorDomain::Gatt,
@@ -230,7 +254,15 @@ impl Bluez {
             )
             .with_detail("LE GATT observation has not been registered"))),
             address_discovery: Arc::new(discovery::DiscoveryOwner::default()),
-        }))
+        };
+        if resolve_owner {
+            let owner = authority.current_daemon_owner().await?;
+            authority.le_owner = Some(owner);
+            // Recheck after binding: replacement cannot turn resolution into
+            // silent admission of a different daemon generation.
+            authority.current_daemon_owner().await?;
+        }
+        Ok(Arc::new(authority))
     }
 
     async fn get_all(
@@ -465,6 +497,74 @@ impl Bluez {
             .with_detail("the attested BlueZ daemon owner changed"));
         }
         Ok(owner)
+    }
+
+    /// A daemon owner string is an epoch, not a capability. Verify the private
+    /// implementation contract before admitting lifecycle work; individual
+    /// device answers still determine actual link/discovery outcomes.
+    pub(crate) async fn verify_connection_contract(&self) -> Result<(), DesktopError> {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            self.verify_connection_contract_inner(),
+        )
+        .await
+        .map_err(|_| {
+            DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "connection.authority",
+            )
+            .with_detail("Linux authority contract observation timed out after five seconds")
+            .with_platform(crate::errors::PlatformDetail::new(
+                "ubm-linux-authority",
+                "observation-timeout",
+            ))
+        })?
+    }
+
+    async fn verify_connection_contract_inner(&self) -> Result<(), DesktopError> {
+        let owner = self.current_daemon_owner().await?;
+        let reply = self
+            .conn
+            .call_method(
+                Some(owner.as_str()),
+                object_path(&self.adapter_path, "connection.authority")?,
+                Some("org.unifiedblemanager.LinuxAuthority1"),
+                "GetContract",
+                &(),
+            )
+            .await
+            .map_err(|error| {
+                DesktopError::new(
+                    BleErrorCode::CapabilityUnsupported,
+                    BleErrorDomain::Capability,
+                    "connection.authority",
+                )
+                .with_detail(
+                    "the pinned daemon does not provide the required Linux authority contract",
+                )
+                .with_platform(bluez_dbus_detail(&error))
+            })?;
+        let versions: (u32, u32, u32) = reply.body().deserialize().map_err(|error| {
+            DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "connection.authority",
+            )
+            .with_detail(format!("malformed Linux authority contract: {error}"))
+            .with_platform(bluez_dbus_detail(&error))
+        })?;
+        if versions != (1, 1, 1) {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "connection.authority",
+            )
+            .with_detail(format!(
+                "unsupported Linux authority contract/lease/GATT versions: {versions:?}"
+            )));
+        }
+        self.verify_daemon_owner(&owner).await
     }
 
     async fn verify_daemon_owner(&self, owner: &str) -> Result<(), DesktopError> {
@@ -717,6 +817,42 @@ impl Bluez {
                 }
                 evidence.owner(sender);
                 if bluez.le_owner.is_some()
+                    && header.interface().map(|name| name.as_str()) == Some("org.unifiedblemanager.LELease1")
+                    && header.member().map(|name| name.as_str()) == Some("PhysicalLost")
+                {
+                    if header.path().map(|path| path.as_str()) != Some(bluez.adapter_path.as_str()) {
+                        continue;
+                    }
+                    match message.body().deserialize::<(OwnedObjectPath, u64, u8)>() {
+                        Ok((path, physical_generation, reason)) if physical_generation != 0
+                            && path.as_str().starts_with(&format!("{}/", bluez.adapter_path)) => {
+                            if let Some(peer_id) = bluez_model::peer_id_for_path(path.as_str())
+                                && events.send(RadioEvent::LinuxPhysicalLost {
+                                    peer_id: peer_id.to_owned(), physical_generation, reason,
+                                }).await.is_err() { return; }
+                        }
+                        Ok(_) => {
+                            let error = DesktopError::new(BleErrorCode::PlatformFailure,
+                                BleErrorDomain::Platform, "connection.watch.protocol")
+                                .with_detail("invalid physical loss identity");
+                            bluez.fail_gatt_watch(error.clone());
+                            if events.send(RadioEvent::GattWatchFailed(error)).await.is_err() {
+                                eprintln!("ubm-desktop: physical loss protocol failure receiver closed");
+                            }
+                            return;
+                        }
+                        Err(error) => {
+                            let error = platform("connection.watch.protocol", error);
+                            bluez.fail_gatt_watch(error.clone());
+                            if events.send(RadioEvent::GattWatchFailed(error)).await.is_err() {
+                                eprintln!("ubm-desktop: physical loss protocol failure receiver closed");
+                            }
+                            return;
+                        }
+                    }
+                    continue;
+                }
+                if bluez.le_owner.is_some()
                     && header.interface().map(|name| name.as_str())
                         == Some("org.unifiedblemanager.LEGatt1")
                     && header.member().map(|name| name.as_str()) == Some("Invalidated")
@@ -757,7 +893,7 @@ impl Bluez {
                                 if let Some(peer) = bluez_model::peer_id_for_path(path.as_str()) {
                                     if interfaces.iter().any(|name| name == DEVICE) {
                                         evidence.replace(peer, None);
-                                        if events.send(RadioEvent::Disconnected(peer.to_owned())).await.is_err() { return; }
+                                        if events.send(RadioEvent::GattInvalidationHint(peer.to_owned())).await.is_err() { return; }
                                     }
                                 } else if interfaces.iter().any(|name| name == SERVICE)
                                     && let Some((device, _)) = path.as_str().split_once("/service")
@@ -823,9 +959,10 @@ impl Bluez {
                     match bool_of(&changed, "Connected") {
                         Some(connected) => {
                             evidence.replace(&peer_id, Some(connected));
-                            let event = if connected { RadioEvent::Connected(peer_id) }
-                                else { RadioEvent::Disconnected(peer_id) };
-                            if events.send(event).await.is_err() { return; }
+                            // A peer-only false can be buffered across a newer
+                            // lease. Only PhysicalLost's exact generation can
+                            // invalidate the owned current connection.
+                            if connected && events.send(RadioEvent::Connected(peer_id)).await.is_err() { return; }
                         }
                         None if invalidated.iter().any(|name| name == "Connected") => {
                             evidence.replace(&peer_id, None);
@@ -1038,6 +1175,112 @@ impl DeviceConnectionEvidence {
 #[cfg(test)]
 mod watch_tests {
     use super::*;
+
+    struct LinuxContractFixture(Arc<StdMutex<(u32, u32, u32)>>);
+
+    #[zbus::interface(name = "org.unifiedblemanager.LinuxAuthority1")]
+    impl LinuxContractFixture {
+        fn get_contract(&self) -> (u32, u32, u32) {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a dedicated dbus-run-session; native client proof only"]
+    async fn private_bus_authority_contract_requires_implemented_current_versions() {
+        assert_eq!(
+            std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
+            Ok("1")
+        );
+        let publisher = zbus::Connection::session().await.unwrap();
+        publisher.request_name(BLUEZ).await.unwrap();
+        let versions = Arc::new(StdMutex::new((1, 1, 1)));
+        publisher
+            .object_server()
+            .at("/org/bluez/hci0", LinuxContractFixture(versions.clone()))
+            .await
+            .unwrap();
+        let authority = Bluez::open_authority("hci0", crate::boundary::BluezBus::Session, None)
+            .await
+            .unwrap();
+        assert!(authority.verify_connection_contract().await.is_ok());
+        for unsupported in [(2, 1, 1), (1, 0, 1), (1, 1, 2)] {
+            *versions.lock().unwrap() = unsupported;
+            assert!(authority.verify_connection_contract().await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a dedicated dbus-run-session"]
+    async fn private_bus_authority_resolves_owner_without_host_attestation() {
+        assert_eq!(
+            std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
+            Ok("1")
+        );
+        let publisher = zbus::Connection::session().await.unwrap();
+        publisher.request_name(BLUEZ).await.unwrap();
+        let authority = Bluez::open_authority("hci0", crate::boundary::BluezBus::Session, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            authority.bound_owner(),
+            Some(publisher.unique_name().unwrap().as_str())
+        );
+        publisher.release_name(BLUEZ).await.unwrap();
+        let replacement = zbus::Connection::session().await.unwrap();
+        replacement.request_name(BLUEZ).await.unwrap();
+        assert!(
+            authority.current_daemon_owner().await.is_err(),
+            "old authority must not rebind old leases"
+        );
+        let recovered = Bluez::open_authority("hci0", crate::boundary::BluezBus::Session, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            recovered.bound_owner(),
+            Some(replacement.unique_name().unwrap().as_str())
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a dedicated dbus-run-session"]
+    async fn private_bus_authority_refuses_mismatched_explicit_pin() {
+        assert_eq!(
+            std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
+            Ok("1")
+        );
+        let publisher = zbus::Connection::session().await.unwrap();
+        publisher.request_name(BLUEZ).await.unwrap();
+        let unrelated = zbus::Connection::session().await.unwrap();
+        assert!(
+            Bluez::open_authority(
+                "hci0",
+                crate::boundary::BluezBus::Session,
+                Some(unrelated.unique_name().unwrap().to_string())
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a dedicated dbus-run-session"]
+    async fn private_bus_owner_resolution_does_not_attest_implemented_contract() {
+        assert_eq!(
+            std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
+            Ok("1")
+        );
+        let publisher = zbus::Connection::session().await.unwrap();
+        publisher.request_name(BLUEZ).await.unwrap();
+        let authority = Bluez::open_authority("hci0", crate::boundary::BluezBus::Session, None)
+            .await
+            .unwrap();
+        let refused = authority.verify_connection_contract().await;
+        assert!(
+            refused.is_err(),
+            "a name owner without actual methods is not support"
+        );
+    }
 
     #[tokio::test]
     #[ignore = "requires a dedicated dbus-run-session"]
@@ -1300,6 +1543,20 @@ mod watch_tests {
                     .unwrap();
             }
         }
+        publisher
+            .emit_signal(
+                None::<&str>,
+                "/org/bluez/hci0",
+                "org.unifiedblemanager.LELease1",
+                "PhysicalLost",
+                &(
+                    OwnedObjectPath::try_from("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF").unwrap(),
+                    9_u64,
+                    3_u8,
+                ),
+            )
+            .await
+            .unwrap();
         let connected = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
             .unwrap()
@@ -1321,8 +1578,15 @@ mod watch_tests {
             .unwrap()
             .unwrap();
         assert!(
-            matches!(disconnected, RadioEvent::Disconnected(_)),
-            "LE-only loss must survive aggregate Classic state: {disconnected:?}"
+            matches!(
+                disconnected,
+                RadioEvent::LinuxPhysicalLost {
+                    physical_generation: 9,
+                    reason: 3,
+                    ..
+                }
+            ),
+            "only generation-bearing LE loss may reach teardown: {disconnected:?}"
         );
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());

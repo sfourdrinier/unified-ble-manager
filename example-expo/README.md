@@ -6,7 +6,7 @@ This repository fixture validates the Expo SDK 57 continuous-native-generation
 path. The app constructs the host with `createExpoBleManager()` from
 `unified-ble-manager/expo`. It uses `unified-ble-manager: file:..` and the v2
 config plugin, so it is not a published-package install recipe. The v2 Expo
-surface is in the `5.0.0-rc.16` source; this workspace fixture remains
+surface is in the `5.0.0-rc.17` source; this workspace fixture remains
 source-checkout evidence only. Registry installation is checked separately.
 
 The BLE host includes native code and cannot run in Expo Go. Generate and build
@@ -202,8 +202,8 @@ never touches `ios/` or `android/`.
 
 TV dependency versions (pinned in the script):
 
-- `react-native` via `npm:react-native-tvos@0.86-stable` (resolves to
-  `0.86.3-0`), the tvOS fork release matching Expo SDK 57 / React Native
+- `react-native` via `npm:react-native-tvos@0.86.3-0`, the exact tvOS fork
+  release matching Expo SDK 57 / React Native
   0.86 — the version rule in Expo's "Build Expo apps for TV" guide.
 - `@react-native-tvos/config-tv` 0.1.6 (peer `expo >= 52`), which rewrites
   the prebuilt native project for TV when `EXPO_TV=1`.
@@ -251,6 +251,54 @@ focusable for the Siri Remote with no UI fork (`TouchableOpacity` is
 TV-focusable by default). Do not run Bluetooth scenarios against hardware
 the owner has not made available: launch, driver `hosts`, and the
 `readiness` report are the no-hardware check.
+
+#### Packed Apple TV consumer acceptance
+
+The same reference app can be staged outside the repository from an **actual
+release tarball**, rather than `file:..`. This path copies the shared scenario
+driver into the stage; Metro and native autolinking must not read UBM source or
+dependencies from the checkout. It does not rebuild the packed RustCore bytes.
+
+```sh
+export TV_STAGE_DIR="$(mktemp -d /tmp/ubm-packed-tv.XXXXXX)"
+export TV_PACKAGE_TARBALL=/absolute/path/to/unified-ble-manager-release.tgz
+bash example-expo/scripts/build-tv.sh stage
+bash example-expo/scripts/build-tv.sh install
+bash example-expo/scripts/build-tv.sh verify-identity
+bash example-expo/scripts/build-tv.sh prebuild
+bash example-expo/scripts/build-tv.sh build-simulator
+bash example-expo/scripts/build-tv.sh build-target
+```
+
+`verify-identity` binds this acceptance to the checkout's package version and
+native identity. The builds link the full React Native TV app, production
+`UnifiedBleRustCore` TurboModule, UniFFI bindings and packaged RustCore—not just
+the six-file Swift typecheck. Both generic destinations explicitly select
+`ARCHS=arm64`; Intel simulator artifacts are not maintained. `build-target`
+compiles for physical Apple TV without signing, installation or a radio claim.
+For launch, use the built simulator app with the stage's own Metro (`metro`),
+or use the signed `build` / `install-tv` / `launch-tv` flow on an available TV.
+Keep compile/link, simulator launch, runtime boundary and physical-radio receipts
+separate. A successful simulator launch is not proof of CoreBluetooth traffic.
+The dashboard's `ReferenceFlatList` measures the TV viewport because this pinned
+RN TV release wraps its virtualized list in a non-flex focus guide; a flex-only
+inner list collapses. The measured-height adapter preserves virtualization and
+the identical controls/scenarios, while phones retain their normal list layout.
+
+#### Android TV acceptance boundary
+
+`scripts/android-tv-emu.sh` installs the reference Android APK, reverses its
+driver/Metro ports and launches its activity without forking BLE behavior. The
+shared host retains the `android` platform label; identify the selected TV
+serial/model explicitly in its receipt rather than treating that label as a
+phone or TV qualification. An emulator without a
+Bluetooth adapter is a UI/native-module/capability-refusal host, not a BLE radio
+fixture. A physical Android TV must independently report adapter, permissions,
+companion-presence and background-service capabilities at runtime; a phone pass
+or a TV build does not establish those capabilities or hardware qualification.
+Run the shared scenarios only for mechanisms that the instantiated backend
+reports, retaining platform refusals rather than replacing them with phone
+assumptions. Android TV store/launcher packaging is application-owned.
 
 ### Android headless continuation reference task
 

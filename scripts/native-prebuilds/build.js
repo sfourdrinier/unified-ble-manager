@@ -22,26 +22,6 @@ function parseBackend(argv) {
   return backend
 }
 
-function runNodeGyp(target) {
-  const nodeGyp = require.resolve('node-gyp/bin/node-gyp.js', { paths: [root] })
-  const moduleDirectory = path.join(root, ...target.moduleDirectory.split('/'))
-  const result = spawnSync(process.execPath, [nodeGyp, 'rebuild', '--release', `--arch=${target.arch}`], {
-    cwd: moduleDirectory,
-    encoding: 'utf8',
-    stdio: 'inherit',
-    shell: false,
-    env: {
-      ...process.env,
-      npm_config_napi_version: String(NODE_API_VERSION)
-    }
-  })
-  if (result.error) throw result.error
-  if (result.status !== 0) {
-    throw new Error(`node-gyp failed for ${target.backend}/${target.platform}-${target.arch}`)
-  }
-  return moduleDirectory
-}
-
 /**
  * The shared desktop Rust core: a stripped release build for the exact
  * target triple, sealed with the source identity, staged with its sidecar
@@ -74,9 +54,6 @@ function verifyLoad(target, binaryPath) {
   // import/no-dynamic-require suppression was removed: the rule no longer
   // exists in the installed plugin and global-require is not enabled here).
   const nativeModule = require(binaryPath)
-  if (target.backend === 'corebluetooth' && typeof nativeModule.createNativeRadio !== 'function') {
-    throw new Error('CoreBluetooth prebuild does not export createNativeRadio')
-  }
   if (target.backend === 'desktop-core') {
     if (
       typeof nativeModule.nativeBuildIdentity !== 'function' ||
@@ -84,42 +61,35 @@ function verifyLoad(target, binaryPath) {
       typeof nativeModule.UbmCentral?.openSynthetic !== 'function' ||
       typeof nativeModule.UbmCentral?.listAdapters !== 'function'
     ) {
-      throw new Error('desktop-core prebuild does not export nativeBuildIdentity + UbmCentral.open/openSynthetic/listAdapters')
+      throw new Error(
+        'desktop-core prebuild does not export nativeBuildIdentity + UbmCentral.open/openSynthetic/listAdapters'
+      )
     }
     const identity = JSON.parse(nativeModule.nativeBuildIdentity())
-    if (identity.profile !== 'release' || identity.target !== target.rustTarget || identity.sourceDigest === 'unsealed') {
-      throw new Error(`desktop-core prebuild identity is not a sealed release for ${target.rustTarget}: ${JSON.stringify(identity)}`)
+    if (
+      identity.profile !== 'release' ||
+      identity.target !== target.rustTarget ||
+      identity.sourceDigest === 'unsealed'
+    ) {
+      throw new Error(
+        `desktop-core prebuild identity is not a sealed release for ${target.rustTarget}: ${JSON.stringify(identity)}`
+      )
     }
-  }
-  if (
-    target.backend === 'winrt' &&
-    (nativeModule.boundaryVersion !== 2 || typeof nativeModule.createContractBoundary !== 'function')
-  ) {
-    throw new Error('WinRT prebuild does not implement native boundary protocol v2')
   }
 }
 
 function main(argv) {
   const backend = parseBackend(argv)
   const target = NATIVE_PREBUILD_TARGETS.find(
-    candidate => candidate.backend === backend && candidate.platform === process.platform && candidate.arch === process.arch
+    candidate =>
+      candidate.backend === backend && candidate.platform === process.platform && candidate.arch === process.arch
   )
   if (target === undefined) {
     throw new Error(`No maintained ${backend} prebuild target exists for ${process.platform}-${process.arch}`)
   }
 
   const destination = path.join(root, ...target.prebuildPath.split('/'))
-  if (target.builder === 'cargo') {
-    runCargo(target)
-  } else {
-    const moduleDirectory = runNodeGyp(target)
-    const source = path.join(moduleDirectory, 'build', 'Release', `${target.addonName}.node`)
-    if (!fs.existsSync(source) || fs.statSync(source).size === 0) {
-      throw new Error(`node-gyp did not produce a non-empty native addon: ${source}`)
-    }
-    fs.mkdirSync(path.dirname(destination), { recursive: true })
-    fs.copyFileSync(source, destination)
-  }
+  runCargo(target)
   verifyLoad(target, destination)
 
   const staged = path.join(root, '.native-prebuild-artifact', ...target.prebuildPath.split('/'))

@@ -3,6 +3,7 @@ const path = require('path')
 const { parseVerifiedSection } = require('../scripts/docs/check-api-reports')
 const {
   assertByteIdentical,
+  assertRenderedExamples,
   assertPublicApiBoundary,
   extractPublicApiSection,
   packageManagerCommand
@@ -13,6 +14,27 @@ const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf
 const currentMigration = migration => migration.slice(0, migration.indexOf('## Historical RC1'))
 
 describe('PR8 documentation contract', () => {
+  test('generated HTML retains simulator and installation code blocks', () => {
+    expect(() => assertRenderedExamples(read('docs/index.html'))).not.toThrow()
+  })
+
+  test('semantic example guards reject omitted code even if the surrounding prose survives', () => {
+    const simulator =
+      '<pre><code>xcodebuild -destination &quot;generic/platform=iOS Simulator&quot; ARCHS=arm64</code></pre>'
+    const installation = '<pre><code>pnpm add unified-ble-manager@5.0.0</code></pre>'
+    const section = content => `<section><h2 id="getting-started">Getting started</h2>${content}</section>`
+    expect(() => assertRenderedExamples(section(simulator + installation))).not.toThrow()
+    expect(() =>
+      assertRenderedExamples(section(installation + '<p>xcodebuild ARCHS=arm64 generic/platform=iOS Simulator</p>'))
+    ).toThrow('simulator')
+    expect(() => assertRenderedExamples(section(simulator + '<p>pnpm add unified-ble-manager</p>'))).toThrow(
+      'installation'
+    )
+    expect(() => assertRenderedExamples(simulator + installation)).toThrow('Getting Started')
+    expect(() => assertRenderedExamples('<h2 id="getting-started">')).toThrow('unterminated')
+    expect(() => assertRenderedExamples(section(installation) + simulator)).toThrow('simulator')
+  })
+
   test('uses the Windows package-manager command when spawning documentation tooling', () => {
     expect(packageManagerCommand('win32')).toBe('pnpm')
     expect(packageManagerCommand('darwin')).toBe('pnpm')

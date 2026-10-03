@@ -62,7 +62,8 @@ export type DeviceSelector = {
 /** Without a `device` argument a run takes the first Polar H10 it finds. */
 export const DEFAULT_DEVICE: DeviceSelector = { match: 'prefix', name: 'Polar H10' }
 
-export const DEVICE_ARGUMENT_HELP = 'device?: string (exact advertised name, or a name prefix ending in "*"; default "Polar H10*")'
+export const DEVICE_ARGUMENT_HELP =
+  'device?: string (exact advertised name, or a name prefix ending in "*"; default "Polar H10*")'
 
 /** Reads the `device` argument: `"Polar H10 E997042F"` is an exact name, `"Polar H10 E99*"` a prefix. */
 export function parseDevice(raw: JsonObject): DeviceSelector {
@@ -71,7 +72,10 @@ export function parseDevice(raw: JsonObject): DeviceSelector {
   const prefix = value.endsWith('*')
   const name = prefix ? value.slice(0, -1) : value
   if (name.trim().length === 0) {
-    throw new ScenarioError('scenario.invalid-argument', `argument "device" must name a device (exact name, or a prefix ending in "*"); received ${JSON.stringify(value)}`)
+    throw new ScenarioError(
+      'scenario.invalid-argument',
+      `argument "device" must name a device (exact name, or a prefix ending in "*"); received ${JSON.stringify(value)}`
+    )
   }
   return { match: prefix ? 'prefix' : 'exact', name }
 }
@@ -172,7 +176,8 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
 
   /** Releases the current run, if any, exactly like the `stop` command. */
   override async stop(): Promise<ScenarioStopOutcome> {
-    if (!this.isRunning() && this.ledger.length === 0 && this.cleanupAttempt === null) return { wasRunning: false, cleanup: [] }
+    if (!this.isRunning() && this.ledger.length === 0 && this.cleanupAttempt === null)
+      return { wasRunning: false, cleanup: [] }
     return { wasRunning: true, cleanup: await this.teardown('stopped') }
   }
 
@@ -184,7 +189,10 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
   /** Starts a run from a fresh state; a second start while one is active is refused, not ignored. */
   private beginRun(): AbortSignal {
     if (this.runAbort !== null || this.ledger.length > 0 || this.cleanupAttempt !== null) {
-      throw new ScenarioError('scenario.busy', `${this.id} is already running (phase ${this.snapshot().phase}); run "stop" first`)
+      throw new ScenarioError(
+        'scenario.busy',
+        `${this.id} is already running (phase ${this.snapshot().phase}); run "stop" first`
+      )
     }
     const abort = new AbortController()
     this.runAbort = abort
@@ -215,7 +223,10 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
     const result = await this.runJourney(body)
     const cleanup = await this.teardown('stopped')
     if (cleanup.some(step => step.state !== 'released')) {
-      throw new ScenarioError('scenario.cleanup-failed', `${this.id} command cleanup failed; retry stop before another command`)
+      throw new ScenarioError(
+        'scenario.cleanup-failed',
+        `${this.id} command cleanup failed; retry stop before another command`
+      )
     }
     return result
   }
@@ -286,13 +297,16 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
   }
 
   /** The host constructs the manager; the run owns it and the host makes Bluetooth ready. */
-  protected async createManager(signal: AbortSignal): Promise<HostManager> {
+  protected async createManager(signal: AbortSignal, prepare = true): Promise<HostManager> {
     const instanceId = `driver-${this.id}-${(nextManagerOrdinal++).toString()}`
     const hosted = await this.host.createManager(instanceId)
     const manager = hosted.manager
     this.own('manager.destroy', () => manager.destroy())
     this.emit('manager-created', { instanceId, backend: this.host.identity.backend, discovery: manager.discovery.kind })
-    await hosted.prepare((kind, data) => this.emit(kind, data), signal)
+    // A system accessory picker is itself the authorization step. Its caller
+    // can defer scan readiness instead of demanding unrelated permissions
+    // before ASK/CDM has a chance to negotiate access.
+    if (prepare) await hosted.prepare((kind, data) => this.emit(kind, data), signal)
     return hosted
   }
 
@@ -305,7 +319,10 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
   protected async findH10(manager: BleManager, device: DeviceSelector, signal: AbortSignal): Promise<BlePeer> {
     const acquisition = peerAcquisition(manager)
     this.emit('peer-acquisition', { via: acquisition, device })
-    const peer = acquisition === 'choose' ? await this.chooseH10(manager, device, signal) : await this.scanForH10(manager, device, signal)
+    const peer =
+      acquisition === 'choose'
+        ? await this.chooseH10(manager, device, signal)
+        : await this.scanForH10(manager, device, signal)
     this.emit('found', {
       id: peer.id,
       name: peer.name,
@@ -383,7 +400,13 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
       this.patchBase({ phase: 'awaiting-user-gesture' })
       this.emit('user-gesture-required', { reason, timeoutMs: USER_GESTURE_TIMEOUT_MS })
       const startedAt = this.runtime.now()
-      await withTimeout(gate.request(this.id, reason, signal), USER_GESTURE_TIMEOUT_MS, signal, 'host.user-gesture-timeout', 'no user gesture')
+      await withTimeout(
+        gate.request(this.id, reason, signal),
+        USER_GESTURE_TIMEOUT_MS,
+        signal,
+        'host.user-gesture-timeout',
+        'no user gesture'
+      )
       this.emit('user-gesture-received', { waitedMs: this.runtime.now() - startedAt })
     }
     this.patchBase({ phase: 'choosing' })
@@ -422,7 +445,10 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
    * (release, destroy) completes the iteration; any other end throws its typed
    * cause (for example `connection.lost`), which is reported, not dropped.
    */
-  protected async watchLifecycle(connection: BleConnection, onEvent?: (event: BleConnectionEvent) => void): Promise<{ readonly expected: boolean; readonly error: unknown }> {
+  protected async watchLifecycle(
+    connection: BleConnection,
+    onEvent?: (event: BleConnectionEvent) => void
+  ): Promise<{ readonly expected: boolean; readonly error: unknown }> {
     try {
       for await (const event of connection.lifecycleEvents) {
         this.emit('lifecycle', {
@@ -437,13 +463,21 @@ export abstract class BleScenario<State extends BleScenarioState> extends Scenar
       this.emit('lifecycle-ended', { expected: true, connectionGeneration: connection.connectionGeneration })
       return { expected: true, error: null }
     } catch (error) {
-      this.emit('lifecycle-ended', { expected: false, connectionGeneration: connection.connectionGeneration, error: describeError(error) })
+      this.emit('lifecycle-ended', {
+        expected: false,
+        connectionGeneration: connection.connectionGeneration,
+        error: describeError(error)
+      })
       return { expected: false, error }
     }
   }
 
   /** Iterates a bounded stream; overflow and terminal notices become events, a throw becomes `stream-threw`. */
-  protected async consume<Value>(name: string, stream: PublicBoundedAsyncStream<Value>, handlers: StreamHandlers<Value>): Promise<void> {
+  protected async consume<Value>(
+    name: string,
+    stream: PublicBoundedAsyncStream<Value>,
+    handlers: StreamHandlers<Value>
+  ): Promise<void> {
     try {
       for await (const item of stream) {
         if (item.kind === 'value') {
@@ -484,7 +518,13 @@ export function cleanupStep(step: string, outcome: CleanupRecord | JsonValue): C
 }
 
 function isCleanupRecord(value: CleanupRecord | JsonValue): value is CleanupRecord {
-  return typeof value === 'object' && value !== null && 'state' in value && 'failures' in value && Array.isArray(value.failures)
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'state' in value &&
+    'failures' in value &&
+    Array.isArray(value.failures)
+  )
 }
 
 /** The library's own answer about repeating the failed operation; never inferred from the code or platform detail. */
@@ -502,7 +542,9 @@ export function appendRecent<Item>(list: readonly Item[], item: Item): readonly 
   return [...list.slice(-(RECENT_LINES - 1)), item]
 }
 
-export function outcomeOf<Value>(run: () => Promise<Value>): Promise<{ ok: true; value: Value } | { ok: false; error: DriverError }> {
+export function outcomeOf<Value>(
+  run: () => Promise<Value>
+): Promise<{ ok: true; value: Value } | { ok: false; error: DriverError }> {
   return run().then(
     value => ({ ok: true as const, value }),
     error => ({ ok: false as const, error: describeError(error) })
@@ -518,7 +560,10 @@ export function withTimeout<Value>(
   message: string
 ): Promise<Value> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new ScenarioError(code, `${message} within ${timeoutMs.toString()} ms`)), timeoutMs)
+    const timer = setTimeout(
+      () => reject(new ScenarioError(code, `${message} within ${timeoutMs.toString()} ms`)),
+      timeoutMs
+    )
     const onAbort = () => {
       clearTimeout(timer)
       reject(new ScenarioError('operation.aborted', `${message}: run aborted`))

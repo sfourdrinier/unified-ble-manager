@@ -1302,7 +1302,16 @@ impl MobileSession {
                 )
             }
             "companion.associate" => {
-                args.exact(&[], &["name", "serviceUuid", "budgetMs", "operationId"])?;
+                args.exact(
+                    &[],
+                    &[
+                        "name",
+                        "serviceUuid",
+                        "filtersJson",
+                        "budgetMs",
+                        "operationId",
+                    ],
+                )?;
                 if apple {
                     return Err(unsupported(
                         "companion.associate",
@@ -1315,10 +1324,20 @@ impl MobileSession {
                         canonical_uuid(&uuid).map_err(|_| wire::invalid("args.serviceUuid"))
                     })
                     .transpose()?;
+                let filters_json = args
+                    .opt_string("filtersJson")?
+                    .map(|text| crate::companion_filters::validate(&text))
+                    .transpose()?;
+                if filters_json.is_some()
+                    && (args.opt_string("name")?.is_some() || service_uuid.is_some())
+                {
+                    return Err(wire::invalid("args.filtersJson.exclusive"));
+                }
                 (
                     Body::CompanionAssociate {
                         name: args.opt_string("name")?,
                         service_uuid,
+                        filters_json,
                     },
                     Self::operation_id(args)?,
                     budget(args, received)?,
@@ -2104,14 +2123,21 @@ impl MobileSession {
                     _ => Err(protocol("background.update-notification")),
                 }
             }
-            Body::CompanionAssociate { name, service_uuid } => {
+            Body::CompanionAssociate {
+                name,
+                service_uuid,
+                filters_json,
+            } => {
                 match awaited(
                     &ctl,
                     "companion.associate",
-                    host.radio.call(|id| RadioRequest::AssociateCompanion {
-                        id,
-                        name,
-                        service_uuid,
+                    host.radio.call_owned_companion(self.state.id, |id| {
+                        RadioRequest::AssociateCompanion {
+                            id,
+                            name,
+                            service_uuid,
+                            filters_json,
+                        }
                     }),
                 )
                 .await?
@@ -2794,6 +2820,9 @@ impl MobileSession {
             idle.await;
         }
         let mut failures = Vec::new();
+        if let Err(error) = host.radio.release_companion_choices(self.state.id).await {
+            failures.push(cleanup_failure("companion-chooser", &error));
+        }
         let membership = lock(&self.state.scan).membership().map(str::to_owned);
         if let Some(membership) = membership {
             match host
@@ -3004,6 +3033,7 @@ enum Body {
     CompanionAssociate {
         name: Option<String>,
         service_uuid: Option<String>,
+        filters_json: Option<String>,
     },
     CompanionList,
     CompanionDisassociate {
@@ -3059,6 +3089,7 @@ mod scan_stop_race_tests {
                 }
                 RadioRequest::StartScan { .. } => RadioCompletion::Unit,
                 RadioRequest::Close { .. } => RadioCompletion::Closed(Vec::new()),
+                RadioRequest::AssociateCompanion { .. } => return,
                 _ => panic!("unexpected radio work in scan-stop race"),
             };
             self.host
@@ -3087,6 +3118,58 @@ mod scan_stop_race_tests {
             }),
         );
         serde_json::from_str(&rx.await.unwrap()).unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dispose_retries_unconfirmed_companion_ui_without_releasing_another_session() {
+        let radio = Arc::new(Radio::default());
+        let host = Arc::new(
+            MobileHost::open(
+                radio.clone(),
+                Arc::new(Wake::default()),
+                HostOptions {
+                    platform: MobilePlatform::Android,
+                    owner: "chooser-release".into(),
+                    adapter_label: "test".into(),
+                },
+                tokio::runtime::Handle::current(),
+            )
+            .await
+            .unwrap(),
+        );
+        radio.host.set(Arc::downgrade(&host)).unwrap();
+        let session = host.open_session("chooser").unwrap();
+        let other = host.open_session("unrelated").unwrap();
+        let mut choice = Box::pin(session.host.radio.call_owned_companion(session.id(), |id| {
+            RadioRequest::AssociateCompanion {
+                id,
+                name: None,
+                service_uuid: None,
+                filters_json: None,
+            }
+        }));
+        std::future::poll_fn(|cx| {
+            assert!(choice.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(choice);
+        let failed = session.dispose_failures().await;
+        assert_eq!(failed.len(), 1);
+        assert!(other.dispose_failures().await.is_empty());
+        assert_eq!(
+            session.dispose_failures().await.len(),
+            1,
+            "unconfirmed UI remains retryable"
+        );
+        host.complete(
+            1,
+            RadioCompletion::Failed(crate::PlatformFailure::new(
+                crate::FailureKind::Cancelled,
+                "UI closed after held queue drained",
+            )),
+        );
+        assert!(session.dispose_failures().await.is_empty());
     }
 
     #[tokio::test(start_paused = true)]

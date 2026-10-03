@@ -569,16 +569,16 @@ class RustRadioHostAdapterTest {
 
   @Test
   fun companionAssociationUsesTheAttachedChooser() {
-    adapter.associateCompanion(1, "Polar", null)
+    adapter.associateCompanion(1, "Polar", null, null)
     chooser = stubChooser(onAssociate = { name -> CompanionAssociation(17, peer, "Polar H10 $name") })
-    adapter.associateCompanion(2, "Polar", HR_SERVICE)
+    adapter.associateCompanion(2, "Polar", HR_SERVICE, null)
     assertEquals(listOf("failure:1:unsupported:null", "companion:2:17:$peer:Polar H10 Polar:false"), core.calls)
   }
 
   @Test
   fun alreadyAssociatedCompanionPropagatesTheExistingRecord() {
     chooser = stubChooser(onAssociate = { CompanionAssociation(4, peer, "Polar H10 E9B93D29", alreadyAssociated = true) })
-    adapter.associateCompanion(1, "Polar H10 E9B93D29", null)
+    adapter.associateCompanion(1, "Polar H10 E9B93D29", null, null)
     assertEquals(listOf("companion:1:4:$peer:Polar H10 E9B93D29:true"), core.calls)
   }
 
@@ -604,6 +604,33 @@ class RustRadioHostAdapterTest {
       ),
       core.calls
     )
+  }
+
+  @Test
+  fun filteredChooserPreservesSelectorsAndCancelsOnlyItsOwner() {
+    var completion: ((Result<CompanionAssociation>) -> Unit)? = null
+    var received: String? = null
+    var cancels = 0
+    chooser = object : CompanionPort {
+      override fun associate(name: String?, serviceUuid: String?, onResult: (Result<CompanionAssociation>) -> Unit) { throw AssertionError("legacy selector route") }
+      override fun associateWithFilters(filtersJson: String, onResult: (Result<CompanionAssociation>) -> Unit) { received = filtersJson; completion = onResult }
+      override fun cancelAssociation(onResult: (Result<CompanionAssociation>) -> Unit): Boolean {
+        assertTrue(onResult === completion); cancels += 1
+        onResult(Result.failure(RadioPortFailure(RadioFailureKind.CANCELLED, "cancelled")))
+        return true
+      }
+      override fun listAssociations(): List<CompanionAssociationRecord> = emptyList()
+      override fun disassociate(associationId: Long) { throw AssertionError("cancellation must not revoke association") }
+    }
+    val filters = "[{\"namePrefix\":\"Polar.+\"},{\"companyIdentifier\":107,\"manufacturerPrefix\":[0,255]}]"
+    adapter.associateCompanion(7, null, null, filters)
+    assertEquals(filters, received)
+    adapter.cancel(7)
+    assertEquals(1, cancels)
+    assertEquals(listOf("failure:7:cancelled:null"), core.calls)
+    completion?.invoke(Result.success(CompanionAssociation(7, peer, "Late")))
+    assertEquals(1, core.calls.size)
+    assertTrue(adapter.statusCounts().containsKey("suppressed-second-answer"))
   }
 
   @Test

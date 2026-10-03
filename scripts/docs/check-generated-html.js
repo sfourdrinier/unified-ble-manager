@@ -50,6 +50,41 @@ function assertByteIdentical(committed, regenerated) {
   }
 }
 
+function assertRenderedExamples(html) {
+  const start = html.indexOf('<h2 id="getting-started"')
+  if (start < 0) throw new Error('Generated HTML is missing the Getting Started section')
+  const end = html.indexOf('</section>', start)
+  if (end < 0) throw new Error('Generated HTML has an unterminated Getting Started section')
+  const section = html.slice(start, end)
+  const blocks = [...section.matchAll(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gu)].map(match =>
+    match[1].replace(/<[^>]*>/gu, '').replace(
+      /&(?:amp|lt|gt|quot|apos|#39);/gu,
+      entity =>
+        ({
+          '&amp;': '&',
+          '&lt;': '<',
+          '&gt;': '>',
+          '&quot;': '"',
+          '&apos;': "'",
+          '&#39;': "'"
+        })[entity]
+    )
+  )
+  if (
+    !blocks.some(
+      block =>
+        block.includes('xcodebuild') &&
+        block.includes('generic/platform=iOS Simulator') &&
+        block.includes('ARCHS=arm64')
+    )
+  ) {
+    throw new Error('Generated HTML is missing the rendered simulator build command')
+  }
+  if (!blocks.some(block => /pnpm\s+add\s+unified-ble-manager\b/u.test(block))) {
+    throw new Error('Generated HTML is missing the rendered installation example')
+  }
+}
+
 function run(command, args) {
   const result = spawnSync(command, args, {
     cwd: root,
@@ -58,7 +93,8 @@ function run(command, args) {
     shell: process.platform === 'win32'
   })
   if (result.error) throw result.error
-  if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed with exit code ${String(result.status)}`)
+  if (result.status !== 0)
+    throw new Error(`${command} ${args.join(' ')} failed with exit code ${String(result.status)}`)
 }
 
 function packageManagerCommand(platform = process.platform) {
@@ -71,7 +107,19 @@ function checkGeneratedHtml() {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-ble-manager-docs-'))
   const temporaryOutput = path.join(temporaryRoot, 'docs')
   try {
-    run(packageManagerCommand(), ['exec', 'documentation', 'build', 'lib/module/index.js', '-o', temporaryOutput, '--config', 'documentation.yml', '-f', 'html', '--shallow'])
+    run(packageManagerCommand(), [
+      'exec',
+      'documentation',
+      'build',
+      'lib/module/index.js',
+      '-o',
+      temporaryOutput,
+      '--config',
+      'documentation.yml',
+      '-f',
+      'html',
+      '--shallow'
+    ])
     run(packageManagerCommand(), [
       'exec',
       'prettier',
@@ -85,7 +133,8 @@ function checkGeneratedHtml() {
     const regenerated = fs.readFileSync(path.join(temporaryOutput, 'index.html'))
     assertByteIdentical(fs.readFileSync(trackedHtmlPath), regenerated)
     assertPublicApiBoundary(regenerated.toString('utf8'))
-    console.log('Generated HTML checked: byte-identical and root-public-safe')
+    assertRenderedExamples(regenerated.toString('utf8'))
+    console.log('Generated HTML checked: byte-identical, root-public-safe and code examples present')
   } finally {
     fs.rmSync(temporaryRoot, { recursive: true, force: true })
   }
@@ -93,4 +142,11 @@ function checkGeneratedHtml() {
 
 if (require.main === module) checkGeneratedHtml()
 
-module.exports = { assertByteIdentical, assertPublicApiBoundary, extractPublicApiSection, packageManagerCommand, checkGeneratedHtml }
+module.exports = {
+  assertByteIdentical,
+  assertPublicApiBoundary,
+  assertRenderedExamples,
+  extractPublicApiSection,
+  packageManagerCommand,
+  checkGeneratedHtml
+}

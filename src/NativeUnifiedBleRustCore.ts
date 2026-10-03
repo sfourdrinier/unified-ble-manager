@@ -15,6 +15,10 @@ export interface RustCoreSessionWake {
 }
 
 export interface Spec extends TurboModule {
+  /** ubm-accessory-chooser/1 OS setup, available on configured iOS 18+ hosts. */
+  chooseAccessory(requestId: string, optionsJson: string, timeoutMs: number): Promise<string>
+  cancelAccessoryChoice(requestId: string): Promise<void>
+  accessoryChooserAvailable(): Promise<boolean>
   /**
    * Admits one session lease on the process host (installing the host on
    * first use). Resolves Rust's admission JSON

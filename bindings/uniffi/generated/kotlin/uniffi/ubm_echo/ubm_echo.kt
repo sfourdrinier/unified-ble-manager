@@ -4907,7 +4907,8 @@ sealed class MobileRadioRequest {
     data class AssociateCompanion(
         val `id`: kotlin.ULong,
         val `name`: kotlin.String?,
-        val `serviceUuid`: kotlin.String?) : MobileRadioRequest()
+        val `serviceUuid`: kotlin.String?,
+        val `filtersJson`: kotlin.String?) : MobileRadioRequest()
 
     {
 
@@ -5106,6 +5107,7 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 )
             27 -> MobileRadioRequest.AssociateCompanion(
                 FfiConverterULong.read(buf),
+                FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
@@ -5368,6 +5370,7 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 + FfiConverterULong.allocationSize(value.`id`)
                 + FfiConverterOptionalString.allocationSize(value.`name`)
                 + FfiConverterOptionalString.allocationSize(value.`serviceUuid`)
+                + FfiConverterOptionalString.allocationSize(value.`filtersJson`)
             )
         }
         is MobileRadioRequest.ListCompanion -> {
@@ -5594,6 +5597,7 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterOptionalString.write(value.`name`, buf)
                 FfiConverterOptionalString.write(value.`serviceUuid`, buf)
+                FfiConverterOptionalString.write(value.`filtersJson`, buf)
                 Unit
             }
             is MobileRadioRequest.ListCompanion -> {

@@ -197,6 +197,32 @@ describe('native/desktop-core loader (PR210-03)', () => {
 })
 
 describe('runtime identity before any radio call (PR210-18)', () => {
+  test.each(['corebluetooth', 'winrt'])(
+    '%s: a forged BackendContractError name cannot bypass loader normalization',
+    async platform => {
+      const cause = Object.assign(new Error('dlopen native loader diagnostic'), {
+        name: 'BackendContractError',
+        normalized: { code: 'forged.success' }
+      })
+      let received
+      try {
+        await loadDesktopCoreBinding({ platform, operationPrefix: 'direct-gatt' }, async () => () => {
+          throw cause
+        })
+      } catch (error) {
+        received = error
+      }
+      expect(received).not.toBe(cause)
+      expect(received).toMatchObject({
+        normalized: {
+          code: 'capability.unavailable',
+          operation: 'direct-gatt.native-boundary.load',
+          platform: { code: 'load-failed', safeMessage: cause.message }
+        }
+      })
+    }
+  )
+
   test('the sealed identity passes; each differing field is named', () => {
     const sealed = parseNativeBuildIdentityText(JSON.stringify(sealedIdentity()))
     expect(nativeBuildIdentityMismatches(sealed, 'napi', EXPECTED_NATIVE_BUILD_IDENTITY, true)).toEqual([])

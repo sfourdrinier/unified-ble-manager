@@ -21,16 +21,13 @@ describe('native Node-API prebuild distribution', () => {
         runner
       }))
     ).toEqual([
-      { backend: 'corebluetooth', platform: 'darwin', arch: 'arm64', runner: 'macos-15' },
-      { backend: 'winrt', platform: 'win32', arch: 'arm64', runner: 'windows-11-arm' },
-      { backend: 'winrt', platform: 'win32', arch: 'x64', runner: 'windows-2025' },
       { backend: 'desktop-core', platform: 'linux', arch: 'x64', runner: 'ubuntu-22.04' },
       { backend: 'desktop-core', platform: 'linux', arch: 'arm64', runner: 'ubuntu-22.04-arm' },
       { backend: 'desktop-core', platform: 'darwin', arch: 'arm64', runner: 'macos-15' },
       { backend: 'desktop-core', platform: 'win32', arch: 'x64', runner: 'windows-2025' },
       { backend: 'desktop-core', platform: 'win32', arch: 'arm64', runner: 'windows-11-arm' }
     ])
-    expect(NATIVE_PREBUILD_TARGETS).toHaveLength(8)
+    expect(NATIVE_PREBUILD_TARGETS).toHaveLength(5)
     expect(new Set(NATIVE_PREBUILD_TARGETS.map(target => target.artifactName)).size).toBe(
       NATIVE_PREBUILD_TARGETS.length
     )
@@ -54,11 +51,7 @@ describe('native Node-API prebuild distribution', () => {
     expect(matrix.include.map(row => row.artifactName)).toEqual(NATIVE_PREBUILD_TARGETS.map(row => row.artifactName))
     expect(matrix.include.every(row => row.platform !== 'darwin' || row.arch === 'arm64')).toBe(true)
     expect(matrix.include.some(row => row.runner === 'macos-15-intel')).toBe(false)
-    expect(matrix.include.filter(row => row.arch === 'x64').map(row => row.platform)).toEqual([
-      'win32',
-      'linux',
-      'win32'
-    ])
+    expect(matrix.include.filter(row => row.arch === 'x64').map(row => row.platform)).toEqual(['linux', 'win32'])
   })
 
   test.each([
@@ -84,45 +77,35 @@ describe('native Node-API prebuild distribution', () => {
     }
   })
 
-  test.each(['corebluetooth', 'desktop-core'])(
-    'producer refuses retired Intel macOS target before compiling %s',
-    backend => {
-      const { main } = require('../scripts/native-prebuilds/build')
-      const platform = Object.getOwnPropertyDescriptor(process, 'platform')
-      const arch = Object.getOwnPropertyDescriptor(process, 'arch')
-      Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' })
-      Object.defineProperty(process, 'arch', { ...arch, value: 'x64' })
-      try {
-        expect(() => main(['--backend', backend])).toThrow(
-          `No maintained ${backend} prebuild target exists for darwin-x64`
-        )
-      } finally {
-        Object.defineProperty(process, 'arch', arch)
-        Object.defineProperty(process, 'platform', platform)
-      }
+  test.each(['desktop-core'])('producer refuses retired Intel macOS target before compiling %s', backend => {
+    const { main } = require('../scripts/native-prebuilds/build')
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+    const arch = Object.getOwnPropertyDescriptor(process, 'arch')
+    Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' })
+    Object.defineProperty(process, 'arch', { ...arch, value: 'x64' })
+    try {
+      expect(() => main(['--backend', backend])).toThrow(
+        `No maintained ${backend} prebuild target exists for darwin-x64`
+      )
+    } finally {
+      Object.defineProperty(process, 'arch', arch)
+      Object.defineProperty(process, 'platform', platform)
     }
-  )
-
-  test('loads platform prebuilds first while preserving an explicit source-build fallback', () => {
-    const sharedLoader = read('native/load-node-api-addon.js')
-    const coreBluetoothLoader = read('native/electron/corebluetooth/index.js')
-    const winRtLoader = read('native/electron/winrt/index.js')
-
-    expect(sharedLoader).toContain("'prebuilds', `${platform}-${arch}`")
-    expect(sharedLoader).toContain("'build', 'Release'")
-    expect(sharedLoader.indexOf("'prebuilds', `${platform}-${arch}`")).toBeLessThan(
-      sharedLoader.indexOf("'build', 'Release'")
-    )
-    expect(coreBluetoothLoader).toContain("require('../../load-node-api-addon')")
-    expect(winRtLoader).toContain("require('../../load-node-api-addon')")
-    expect(coreBluetoothLoader).toContain("addonName: 'unified_ble_corebluetooth'")
-    expect(winRtLoader).toContain("addonName: 'unified_ble_winrt'")
   })
 
-  test('pins a compatible Node-API floor in both native build definitions', () => {
-    for (const binding of ['native/electron/corebluetooth/binding.gyp', 'native/electron/winrt/binding.gyp']) {
-      expect(read(binding)).toContain('NAPI_VERSION=8')
-    }
+  test('production loader uses the shared exact native prebuild and explicit source override', () => {
+    const loader = read('native/desktop-core/index.js')
+    expect(loader).toContain("require('../load-node-api-addon')")
+    expect(loader).toContain('loadExactPrebuild')
+    expect(loader).toContain('loadExplicitAddon')
+    expect(loader).not.toContain('native/electron')
+  })
+
+  test('maintained producer only executes the shared Rust build owner', () => {
+    const build = read('scripts/native-prebuilds/build.js')
+    expect(build).toContain('build-napi-addon.js')
+    expect(build).not.toContain('node-gyp')
+    expect(read('bindings/napi/Cargo.toml')).toContain('"napi4"')
   })
 
   test('builds every prebuild before the trusted-publishing tarball is created', () => {
@@ -147,8 +130,8 @@ describe('native Node-API prebuild distribution', () => {
   test('accepts pnpm extra -- before --backend', () => {
     const { parseBackend } = require('../scripts/native-prebuilds/build.js')
 
-    expect(parseBackend(['--backend', 'winrt'])).toBe('winrt')
-    expect(parseBackend(['--', '--backend', 'corebluetooth'])).toBe('corebluetooth')
+    expect(parseBackend(['--backend', 'desktop-core'])).toBe('desktop-core')
+    expect(parseBackend(['--', '--backend', 'desktop-core'])).toBe('desktop-core')
     expect(() => parseBackend([])).toThrow(/Usage/)
     expect(() => parseBackend(['--backend'])).toThrow(/Usage/)
   })

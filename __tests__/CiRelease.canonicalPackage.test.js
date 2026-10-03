@@ -69,9 +69,7 @@ describe('ci-release canonical package (4.0)', () => {
     expect(w).toContain('4.0.0-rc.*')
     expect(w).toContain('Fetch main for initial tag verification')
     expect(w).toContain('Verify release tag points at current main')
-    expect(w).toContain('echo "NPM_DIST_TAG=next" >> "$GITHUB_ENV"')
-    expect(w).toContain('echo "NPM_DIST_TAG=latest" >> "$GITHUB_ENV"')
-    expect(w).toMatch(/ROOT_VER" == 4\.0\.0-rc\.\*[\s\S]*NPM_DIST_TAG=latest/)
+    expect(w).toContain('run: node scripts/release/release-version-policy.js')
     expect(w).toMatch(
       /if \[\[ "\$\{VER\}" == \*-\* \]\]; then[\s\S]+?gh release create[\s\S]+?--prerelease[\s\S]+?\n\s+else[\s\S]+?gh release create/
     )
@@ -129,18 +127,18 @@ describe('ci-release canonical package (4.0)', () => {
   test('ci.yml has honest L1/L2 labels and no retired web example build', () => {
     const ci = read('.github/workflows/ci.yml')
     expect(ci).toContain('Electron Fake multi-device demo smoke (L1)')
-    expect(ci).toContain('CoreBluetooth native boundary L2')
-    expect(ci).toContain('build:electron:macos')
-    expect(ci).toContain('WinRT native boundary Node ABI build and load')
-    expect(ci).toContain('WinRT native boundary Electron ABI rebuild and load')
-    expect(ci).toContain('createContractBoundary')
+    expect(ci).toContain('Build NAPI dispatch addon')
+    expect(ci).toContain('scripts/ci/build-napi-addon.js')
+    expect(ci).toContain('Shared Rust core under Electron main')
+    expect(ci).toContain("UBM_SMOKE_USE_SOURCE: '1'")
+    expect(ci).not.toContain('node-gyp rebuild')
     expect(ci).toContain('Canonical host export resolve (L2)')
     expect(ci).toContain('Production performance benchmark gate (host-native + JS)')
     expect(ci).toContain('pnpm performance:check')
     expect(ci).not.toMatch(/vite build|example-web\/vite\.config\.js/)
     expect(ci).toContain('unified-ble-manager.podspec')
     expect(ci).not.toContain('react-native-ble-plx.podspec')
-    expect(ci).toContain('native/electron/**')
+    expect(ci).toContain('native/desktop-core/**')
   })
 
   test('superseded CI cancels dependent platform builds instead of keeping the latest run queued', () => {
@@ -151,21 +149,17 @@ describe('ci-release canonical package (4.0)', () => {
     expect(ci).not.toMatch(/always\(\) &&\s+needs\.changes\.result/)
   })
 
-  // R2-F005: L2 must load the compiled public CoreBluetooth boundary after prepack.
-  test('R2-F005 ci.yml CoreBluetooth L2 requires the public compiled boundary after prepack', () => {
+  test('shared native core is built before package tests and Electron ABI smoke', () => {
     const ci = read('.github/workflows/ci.yml')
-    expect(ci).toContain("require('./lib/commonjs/node-corebluetooth')")
-    expect(ci).toContain("'createNativeCoreBluetoothBoundary' in publicEntry")
-    expect(ci).toContain("require('./lib/commonjs/backends/corebluetooth/corebluetooth-native-boundary')")
-    expect(ci).not.toMatch(/hosts\/electron|createCoreBluetoothBlePort/)
-    // macOS/Windows L2 must prepack before the requireNative probes
-    expect(ci).toMatch(/Build package artifacts \(macOS\/Windows L2 hosts\)/)
-    const prepackL2 = ci.indexOf('Build package artifacts (macOS/Windows L2 hosts)')
-    const cbL2 = ci.indexOf('CoreBluetooth native boundary L2')
-    const winL2 = ci.indexOf('WinRT native boundary Node ABI build and load')
-    expect(prepackL2).toBeGreaterThan(-1)
-    expect(cbL2).toBeGreaterThan(prepackL2)
-    expect(winL2).toBeGreaterThan(prepackL2)
+    const build = ci.indexOf('Build NAPI dispatch addon')
+    const tests = ci.indexOf('- name: Run package tests')
+    const prepack = ci.indexOf('Build package artifacts (macOS/Windows L2 hosts)')
+    const electron = ci.indexOf('Shared Rust core under Electron main')
+    expect(build).toBeGreaterThan(-1)
+    expect(tests).toBeGreaterThan(build)
+    expect(electron).toBeGreaterThan(prepack)
+    expect(ci).toContain("UBM_SMOKE_USE_SOURCE: '1'")
+    expect(ci).not.toContain('native/electron/')
   })
 
   test('canonical Electron example is the deterministic package smoke only', () => {
@@ -198,43 +192,21 @@ describe('ci-release canonical package (4.0)', () => {
     expect(ci).toContain(
       "if: (runner.os == 'macOS' && matrix.node == '22') || (runner.os == 'Windows' && matrix.node == '22')"
     )
-    expect(ci).toMatch(
-      /CoreBluetooth native boundary L2 \(node-gyp Node ABI \+ public boundary\)\n\s+if: runner\.os == 'macOS' && matrix\.node == '22'/
-    )
-    expect(ci).toMatch(
-      /Electron ABI rebuild \+ main-process smoke \(L3, Node ABI ≠ Electron ABI\)\n\s+if: runner\.os == 'macOS' && matrix\.node == '22'/
-    )
-    expect(ci).toMatch(
-      /WinRT native boundary Node ABI build and load \(Windows; no live radio\)\n\s+if: runner\.os == 'Windows' && matrix\.node == '22'/
-    )
-    expect(ci).toMatch(
-      /WinRT native boundary Electron ABI rebuild and load \(Windows; no live radio\)\n\s+if: runner\.os == 'Windows' && matrix\.node == '22'/
-    )
+    expect(ci).toContain('Shared Rust core under Electron main')
+    expect(ci).toContain("UBM_SMOKE_USE_SOURCE: '1'")
   })
 
-  // R2-F037: Electron ABI rebuild + main-process L3 smoke (not only node-gyp L2)
-  test('R2-F037 ci.yml rebuilds only the package CoreBluetooth addon for the Electron ABI', () => {
-    const ci = read('.github/workflows/ci.yml')
-    expect(ci).toContain('ELECTRON_VERSION=$(node -p')
-    expect(ci).toContain('native/electron/corebluetooth')
-    expect(ci).toContain('node-gyp rebuild')
-    expect(ci).toContain('--dist-url=https://electronjs.org/headers')
-    expect(ci).not.toContain('@electron/rebuild')
-    expect(ci).toContain('scripts/ci/electron-main-smoke.js')
-    expect(ci).toMatch(/Node ABI ≠ Electron ABI|Node ABI != Electron ABI|Node ABI/)
-    expect(ci).toContain('./node_modules/.bin/electron scripts/ci/electron-main-smoke.js')
-    expect(fs.existsSync(path.join(root, 'scripts/ci/electron-main-smoke.js'))).toBe(true)
-  })
-
-  // R3-F012 / R3-F067: L3 smoke exercises the public CoreBluetooth boundary under Electron on darwin.
-  test('R3-F012/F067 electron-main-smoke loads the public boundary after rebuild under Electron', () => {
+  test('Electron smoke loads the production core and cannot skip a missing addon', () => {
     const smoke = read('scripts/ci/electron-main-smoke.js')
     const ci = read('.github/workflows/ci.yml')
-    expect(smoke).toMatch(/process\.versions\.electron/)
-    expect(smoke).toMatch(/createNativeCoreBluetoothBoundary\(\)/)
-    expect(smoke).toMatch(/platform === ['"]darwin['"]/)
-    expect(smoke).not.toMatch(/FakeBlePort|createCoreBluetoothBlePort|hosts\/electron/)
-    expect(ci).toMatch(/public Electron-main exports|R3-F012|CoreBluetooth boundary/)
+    expect(smoke).toContain('process.versions.electron')
+    expect(smoke).toContain('loadDesktopCoreBinding')
+    expect(smoke).toContain('binding.openSynthetic')
+    expect(smoke).toContain("report.state !== 'released'")
+    expect(smoke).toContain('throw new Error(`desktop-core smoke requires')
+    expect(smoke).not.toContain('smokeLegacyBoundary')
+    expect(smoke).not.toContain('smoke skipped')
+    expect(ci).toContain('./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js')
   })
 
   // R3-F007: Electron L1 smoke does not claim bonding; it proves the public deterministic vertical scenario.
@@ -314,10 +286,10 @@ describe('ci-release canonical package (4.0)', () => {
     expect(sh).toContain('scripts/ci/check-host-exports.js')
     expect(sh).toContain('VERIFY_RELEASE_SKIP_CLASSIC_ANDROID')
     expect(sh).toMatch(/classic RN Android assemble required/)
-    expect(sh).toContain('build:electron:macos')
-    expect(sh).toContain("require('./lib/commonjs/node-corebluetooth')")
-    expect(sh).toContain("'createNativeCoreBluetoothBoundary' in publicEntry")
-    expect(sh).toContain("require('./lib/commonjs/backends/corebluetooth/corebluetooth-native-boundary')")
+    expect(sh).toContain('scripts/ci/build-napi-addon.js')
+    expect(sh).toContain('UBM_SMOKE_USE_SOURCE=1')
+    expect(sh).toContain('scripts/ci/electron-main-smoke.js')
+    expect(sh).not.toContain('native/electron/')
     expect(publish).toContain('scripts/ci/check-host-exports.js')
     expect(publish).toContain('Assemble Expo CNG Android debug APK')
     expect(publish).toContain('Assemble classic RN Android debug APK')

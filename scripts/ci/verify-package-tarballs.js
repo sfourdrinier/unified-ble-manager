@@ -28,27 +28,17 @@ const {
   publicProfileSourceFiles
 } = require('./package-source-classification')
 
-/** Source inputs a consumer needs to build either packaged Electron Node-API addon. */
+/** Source inputs shared by the production desktop Node-API loader. */
 const requiredElectronNativeSourceEntries = Object.freeze([
   'package/native/load-node-api-addon.js',
-  'package/native/electron/corebluetooth/binding.gyp',
-  'package/native/electron/corebluetooth/index.js',
-  'package/native/electron/corebluetooth/src/addon.mm',
-  'package/native/electron/corebluetooth/src/addon_stub.cc',
-  'package/native/electron/winrt/binding.gyp',
-  'package/native/electron/winrt/index.js',
-  'package/native/electron/winrt/src/addon.cpp',
-  'package/native/electron/winrt/src/winrt-boundary.inc'
+  'package/native/desktop-core/index.js'
 ])
 
 const expectedNativePrebuildEntries = Object.freeze(
   NATIVE_PREBUILD_TARGETS.map(target => `package/${target.prebuildPath}`).sort()
 )
 
-const publishedOptionalHostDependencies = Object.freeze({
-  'node-addon-api': '8.9.0',
-  'node-gyp': '12.4.0'
-})
+const publishedOptionalHostDependencies = Object.freeze({})
 
 const publishedOptionalPeerHostDependencies = Object.freeze({
   expo: '^57.0.0'
@@ -294,14 +284,6 @@ function assertExactObjectKeys(value, expectedKeys, label) {
 function assertNoUndeclaredElectronNativeRuntimeLoaders(files) {
   const loaderSpecifications = Object.freeze([
     {
-      entryPath: 'package/native/electron/corebluetooth/index.js',
-      allowedRuntimeModules: new Set(['../../load-node-api-addon'])
-    },
-    {
-      entryPath: 'package/native/electron/winrt/index.js',
-      allowedRuntimeModules: new Set(['../../load-node-api-addon'])
-    },
-    {
       entryPath: 'package/native/load-node-api-addon.js',
       allowedRuntimeModules: new Set(['fs', 'path'])
     }
@@ -313,7 +295,7 @@ function assertNoUndeclaredElectronNativeRuntimeLoaders(files) {
       throw new Error(`Packed Electron native loader is missing: ${loader.entryPath}`)
     }
     const source = contents.toString('utf8')
-    const staticRequire = /require\(\s*['\"]([^'\"]+)['\"]\s*\)/g
+    const staticRequire = /require\(\s*['"]([^'"]+)['"]\s*\)/g
     for (const match of source.matchAll(staticRequire)) {
       const runtimeModule = match[1]
       if (!loader.allowedRuntimeModules.has(runtimeModule)) {
@@ -611,6 +593,21 @@ function assertPackedRustCore(files) {
   return totalBytes
 }
 
+function assertNoRetiredDesktopProducers(files, packageJson) {
+  for (const entryPath of files.keys()) {
+    if (entryPath.startsWith('package/native/electron/')) {
+      throw new Error(`Retired desktop producer in packed artifact: ${entryPath}`)
+    }
+  }
+  for (const field of ['dependencies', 'optionalDependencies']) {
+    for (const dependency of ['node-addon-api', 'node-gyp']) {
+      if (Object.hasOwn(packageJson[field] ?? {}, dependency)) {
+        throw new Error(`Retired desktop build dependency in ${field}: ${dependency}`)
+      }
+    }
+  }
+}
+
 function verifyRootTarball(tarballPath) {
   const files = readTarball(tarballPath)
   const packageJsonBuffer = files.get('package/package.json')
@@ -618,6 +615,7 @@ function verifyRootTarball(tarballPath) {
     throw new Error('Packed canonical package is missing package.json')
   }
   const packageJson = JSON.parse(packageJsonBuffer.toString('utf8'))
+  assertNoRetiredDesktopProducers(files, packageJson)
   if (packageJson.name !== 'unified-ble-manager') {
     throw new Error(`Expected canonical package name unified-ble-manager, received ${String(packageJson.name)}`)
   }
@@ -644,7 +642,7 @@ function verifyRootTarball(tarballPath) {
   const packedAndroidBytes = assertPackedAndroidPrebuilts(files)
   const packedAppleBytes = assertPackedRustCore(files)
   assertExactObjectKeys(
-    packageJson.optionalDependencies,
+    packageJson.optionalDependencies ?? {},
     Object.keys(publishedOptionalHostDependencies),
     'Packed canonical optionalDependencies'
   )
@@ -897,5 +895,6 @@ module.exports = {
   readTarball,
   verifyRootTarball,
   assertPackedAndroidPrebuilts,
-  assertPackedRustCore
+  assertPackedRustCore,
+  assertNoRetiredDesktopProducers
 }

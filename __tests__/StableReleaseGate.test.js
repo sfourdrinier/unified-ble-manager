@@ -294,8 +294,10 @@ describe('stable release evidence gate', () => {
     const releaseGuide = fs.readFileSync(path.join(repositoryRoot, 'RELEASE.md'), 'utf8')
     const evidenceGuide = fs.readFileSync(path.join(repositoryRoot, 'evidence', 'v1', 'README.md'), 'utf8')
     expect(workflow).toContain('id: release_channel')
-    expect(workflow).toContain('echo "is_stable=false" >> "$GITHUB_OUTPUT"')
-    expect(workflow).toContain('echo "is_stable=true" >> "$GITHUB_OUTPUT"')
+    expect(workflow).toContain('run: node scripts/release/release-version-policy.js')
+    const { classifyReleaseVersion } = require('../scripts/release/release-version-policy')
+    expect(classifyReleaseVersion('5.0.0')).toEqual({ npmDistTag: 'latest', isStable: true })
+    expect(classifyReleaseVersion('5.0.0-rc.16')).toEqual({ npmDistTag: 'next', isStable: false })
     expect(workflow).toContain("if: steps.npm_status.outputs.package_published != 'true'")
     expect(workflow).toContain('fetch-depth: 0')
     expect(workflow).toContain('git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main')
@@ -319,7 +321,7 @@ describe('stable release evidence gate', () => {
     expect(schema.properties.checks.required).toEqual(stableReleaseCheckKinds)
     expect(stableReleaseCheckSubjects.sbom).toEqual([
       'SBOM.cdx.json',
-      'scripts/release/generate-dependency-artifacts.js',
+      'scripts/release/generate-dependency-artifacts.js'
     ])
     expect(schema.$defs.section31Item.properties.id.enum).toEqual(stableSection31ItemIds)
     expect(stableMinimumSupportLabels.deterministic).toBe('Preview')
@@ -364,7 +366,7 @@ describe('stable release evidence gate', () => {
       runGit(root, ['tag', 'v4.0.0', releaseCommit])
       expect(verifyStableTagCommit(root, 'v4.0.0', approvedCommit)).toEqual({
         sourceCommit: approvedCommit,
-        tagCommit: releaseCommit,
+        tagCommit: releaseCommit
       })
       expect(() => verifyStableTagCommit(root, 'v4.0.0', releaseCommit)).toThrow('evidence-only descendant')
 

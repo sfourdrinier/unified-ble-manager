@@ -4749,7 +4749,7 @@ class MobileRadioRequest:
     @dataclass
     class ASSOCIATE_COMPANION:
 
-        def __init__(self, id:int, name:typing.Optional[str], service_uuid:typing.Optional[str]):
+        def __init__(self, id:int, name:typing.Optional[str], service_uuid:typing.Optional[str], filters_json:typing.Optional[str]):
             self.id = id
 
 
@@ -4759,6 +4759,9 @@ class MobileRadioRequest:
             self.service_uuid = service_uuid
 
 
+            self.filters_json = filters_json
+
+
             pass
 
 
@@ -4766,7 +4769,7 @@ class MobileRadioRequest:
 
 
         def __str__(self):
-            return "MobileRadioRequest.ASSOCIATE_COMPANION(id={}, name={}, service_uuid={})".format(self.id, self.name, self.service_uuid)
+            return "MobileRadioRequest.ASSOCIATE_COMPANION(id={}, name={}, service_uuid={}, filters_json={})".format(self.id, self.name, self.service_uuid, self.filters_json)
         def __eq__(self, other):
             if not isinstance(other, MobileRadioRequest):
                 return NotImplemented
@@ -4777,6 +4780,8 @@ class MobileRadioRequest:
             if self.name != other.name:
                 return False
             if self.service_uuid != other.service_uuid:
+                return False
+            if self.filters_json != other.filters_json:
                 return False
             return True
 
@@ -5248,6 +5253,7 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
+                _UniffiFfiConverterOptionalString.read(buf),
             )
         if variant == 28:
             return MobileRadioRequest.LIST_COMPANION(
@@ -5405,6 +5411,7 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
             _UniffiFfiConverterUInt64.check_lower(value.id)
             _UniffiFfiConverterOptionalString.check_lower(value.name)
             _UniffiFfiConverterOptionalString.check_lower(value.service_uuid)
+            _UniffiFfiConverterOptionalString.check_lower(value.filters_json)
             return
         if value.is_LIST_COMPANION():
             _UniffiFfiConverterUInt64.check_lower(value.id)
@@ -5558,6 +5565,7 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterOptionalString.write(value.name, buf)
             _UniffiFfiConverterOptionalString.write(value.service_uuid, buf)
+            _UniffiFfiConverterOptionalString.write(value.filters_json, buf)
         if value.is_LIST_COMPANION():
             buf.write_i32(28)
             _UniffiFfiConverterUInt64.write(value.id, buf)

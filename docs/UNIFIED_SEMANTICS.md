@@ -136,7 +136,7 @@ two clients use equal filters or peer identifiers.
 | ordinary scan | One physical scan controller. A second non-shared request fails `scan.already-active` without changing the first. |
 | explicitly shared scan | Allowed only with an existing authorized share token naming identical filter, duplicate, timestamp, delivery, deadline, and overflow semantics. The owner retains physical control; each client receives an independently bounded stream. Releasing one share closes only that stream; it cannot stop physical scanning while another share remains. |
 | chooser | Per-session and non-shareable unless a platform evidence record proves a safe shared model. A second request fails `chooser.busy`. |
-| peer connection | Multiple clients lease a single physical link on every backend, each with independent generation validity and cleanup. Release cannot drop the link while another lease remains; final release or explicit owner disconnect does. `connection.already-owned` therefore never means "someone else is already connected": it is reported only when the peer cannot be leased right now — the link is mid-transition (connecting, disconnecting, or tearing down), it is owned by a different manager or process, or the backend runs in explicit exclusive (sharing opt-out) mode. |
+| peer connection | Multiple clients lease a single physical link on every backend, each with independent generation validity and cleanup. Lease release cannot disconnect the physical link while another lease remains; the final release or explicit owner disconnect does. `connection.already-owned` therefore never means "someone else is already connected": it is reported only when the peer cannot be leased right now — the link is mid-transition (connecting, disconnecting, or tearing down), it is owned by a different manager or process, or the backend runs in explicit exclusive (sharing opt-out) mode. |
 | notification subscription | Distinct consumer streams MAY share a physical enablement only through the owner; disabling one consumer MUST NOT disable another. |
 
 A physical scan retained only because its stop is unconfirmed is cleanup debt,
@@ -334,14 +334,20 @@ scan observation, and scan discovery never implies chooser authorization.
 | requested optional service not granted | `chooser.optional-service-not-granted` before GATT dispatch |
 | permitted-device retrieval unavailable | `chooser.permitted-device-unavailable`, never a synthetic chooser result |
 
-The granted scope expires on its documented platform event, chooser closure, or
-backend generation change. It MUST NOT be inferred from a peer's prior name,
-address, or cache entry.
+Chooser UI/request ownership ends at its terminal answer or confirmed closure.
+The returned peer is scoped to its backend attachment/generation; its lifetime
+is not a second opinion about persistent OS authorization. ASK/CDM/browser
+authorization follows the platform's own revocation events and can outlive the
+picker UI. Neither authorization nor current peer validity may be inferred
+from a prior name, address, or cache entry.
 
 Chooser abort and deadline are terminal contenders. Abort before UI dispatch
 returns `operation.aborted`; after dispatch it requests platform cancellation
 where possible and otherwise suppresses the late platform result. Deadline
 returns `operation.timed-out` and does not grant a late-selected peer.
+This suppresses publication to the caller; it does not claim that a racing OS
+authorization was undone. Native ASK/CDM cleanup never secretly revokes a
+person's persistent accessory permission or removes their association.
 
 <!-- SEM-COVERAGE: SEM-CONNECTION -->
 ## 8. Connections, adoption, and disconnect
@@ -509,7 +515,7 @@ is ingress ordinal order after the declared policy is applied. No queue may grow
 merely because a consumer stops reading.
 
 | Stream | Default capacity | Default policy | Overflow accounting |
-| --- | ---: | --- | --- |
+| ----------------------- | ---------------: | ----------------------------------------------- | ------------------------------------------------------------------- |
 | scan observation | 1 / 512 KiB | latest keyed by session peer identity | increment `replaced`; retain the most recent valid observation |
 | notification/indication | 64 / 1 MiB | drop-oldest | increment `droppedOldest`; attach first/last lost ordinal range |
 | manager/adapter state | 64 / 64 KiB | latest keyed by adapter identity and state kind | increment `replaced` per defined key |
@@ -765,6 +771,13 @@ peer names, payloads, secrets, or other client ownership data. A backend may
 preserve richer detail in locally protected diagnostics under the redaction
 rules in Section 21.
 
+Connection lifecycle events optionally carry this same typed `platform` detail
+when the operation's native owner supplied it. For example an authenticated
+BlueZ physical-loss observation preserves its raw MGMT disconnect reason while
+the public transition remains `lost` / `peer-link-loss`. The exact connection
+generation travels with both facts, including buffered delivery across IPC.
+No native reason is inferred when the platform did not report one.
+
 <!-- SEM-COVERAGE: SEM-CAPABILITIES -->
 ## 16. Capabilities, limitations, and evidence truth
 
@@ -921,6 +934,7 @@ qualification remains open.
 | Direct CoreBluetooth Node/Electron-main | `connection:request-mtu` is unsupported because CoreBluetooth negotiates internally; effective MTU is `limited`, derived per link as `CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3` (`corebluetooth-derived-effective-mtu`). | `connection:phy` is unsupported in the current boundary. | `limited` / deterministic only when both `canSendWriteWithoutResponse` and `peripheralIsReady(toSendWriteWithoutResponse:)` are bridged; otherwise `unsupported`. | `writeWhenReady` is `limited` / deterministic when readiness is authoritative and otherwise rejects `capability.unsupported`; parameters and subrate remain unsupported. |
 | Web and Electron renderer IPC | `unsupported` | `unsupported` | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
 | Desktop Rust core (BlueZ, WinRT, Tauri) | `connection:request-mtu` is unsupported (no caller-directed negotiation through the boundary); effective MTU is `limited` — WinRT reads `GattSession.MaxPduSize` (`winrt-gattsession-max-pdu-size`), BlueZ reads the `org.bluez.GattCharacteristic1` MTU (`bluez-gatt-characteristic-mtu`; a withheld link answers `capability.unavailable`), and Tauri follows its desktop OS. | `unsupported` | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
+
 Android `requestPhy()` does not treat dispatch or a preferred-PHY call as proof
 of the resulting link state: a successful `onPhyUpdate` supplies the accepted
 result and observation, while a failed callback yields rejection with no

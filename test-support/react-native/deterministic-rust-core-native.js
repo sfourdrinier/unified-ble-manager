@@ -86,7 +86,7 @@ const ARG_SCHEMAS = Object.freeze({
     ['leaseId', 'title'],
     ['body', 'budgetMs']
   ],
-  'companion.associate': [[], ['name', 'serviceUuid', 'budgetMs', 'operationId']],
+  'companion.associate': [[], ['name', 'serviceUuid', 'filtersJson', 'budgetMs', 'operationId']],
   'companion.list': [[], ['budgetMs', 'operationId']],
   'companion.disassociate': [['associationId'], ['budgetMs', 'operationId']],
   'presence.observe': [['peerId'], ['budgetMs', 'operationId']],

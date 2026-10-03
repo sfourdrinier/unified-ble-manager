@@ -1,0 +1,21 @@
+diff --git a/src/output/util/formatters.js b/src/output/util/formatters.js
+index 15ab86e6f89a00890304330360bd6ce6de54c368..31ac0d4ed8b920c6f211a4c8806c0c94ddd67c12 100644
+--- a/src/output/util/formatters.js
++++ b/src/output/util/formatters.js
+@@ -4,7 +4,6 @@ import doctrine from 'doctrine-temporary-fork';
+ const Syntax = doctrine.Syntax;
+ import { u } from 'unist-builder';
+ import _rerouteLinks from './reroute_links.js';
+-import highlighter from '../highlighter.js';
+ import formatType from './format_type.js';
+ 
+ /**
+@@ -50,7 +49,7 @@ export default function (getHref) {
+     if (ast) {
+       return remark()
+         .use(html)
+-        .stringify(highlighter(rerouteLinks(ast)));
++        .stringify(rerouteLinks(ast));
+     }
+     return '';
+   };

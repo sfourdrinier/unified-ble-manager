@@ -158,6 +158,41 @@ fn get_characteristic<'a>(
 }
 
 impl Peripheral {
+    /// Nonrecycled private identities shared across this actual sender lifetime.
+    pub fn allocate_le_reservation_id(&self) -> Result<u64> {
+        Ok(self.session.allocate_le_reservation_id()?)
+    }
+
+    /// Metadata housekeeping only, after consuming the exact terminal receipt.
+    pub async fn acknowledge_le_lease(&self, owner: &str, token: u64) -> Result<()> {
+        Ok(self.session.acknowledge_le_lease(&self.device, owner, token).await?)
+    }
+
+    /// Reserve sender ownership before any accepted LE connection effect.
+    pub async fn reserve_le_lease(&self, owner: &str, reservation_id: u64) -> Result<u64> {
+        Ok(self.session.reserve_le_lease(&self.device, owner, reservation_id).await?)
+    }
+
+    /// Reconcile an original identity without acquiring any new connection.
+    pub async fn recover_le_lease(&self, owner: &str, reservation_id: u64) -> Result<Option<u64>> {
+        Ok(self.session.recover_le_lease(&self.device, owner, reservation_id).await?)
+    }
+
+    /// Connect the exact retained reservation on its original daemon owner.
+    pub async fn connect_le_lease(&self, owner: &str, token: u64) -> Result<u64> {
+        Ok(self.session.connect_le_lease(&self.device, owner, token).await?)
+    }
+
+    /// Preserve authoritative scope; lease retirement is not ACL disconnection.
+    pub async fn release_le_lease(
+        &self,
+        owner: &str,
+        token: u64,
+        expected_generation: Option<u64>,
+    ) -> Result<bluez_async::LeLeaseReleaseReceipt> {
+        Ok(self.session.release_le_lease(&self.device, owner, token, expected_generation).await?)
+    }
+
     /// Pin this peripheral's GATT calls to an explicitly attested BlueZ
     /// daemon epoch. No connection or subscription is created here.
     pub async fn with_le_owner(mut self, owner: &str) -> Result<Self> {

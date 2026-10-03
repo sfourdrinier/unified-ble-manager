@@ -4,12 +4,12 @@
   "schemaVersion": "1.0.0",
   "package": {
     "name": "unified-ble-manager",
-    "version": "5.0.0-rc.16"
+    "version": "5.0.0-rc.17"
   },
   "source": {
     "method": "pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence) + reviewed bundled source-asset manifests (not linked runtime dependencies)",
     "lockfile": "pnpm-lock.yaml",
-    "lockfileSha256": "fea8b9fea3dca31d966c33e5942c5fb0f179c492a8462f90482d0c5dc1bd86d2",
+    "lockfileSha256": "503c3db14119e9532319fae77e44dddb1256ae11e23ef829d1e36fa38dbd2ae3",
     "cargoLockfile": "Cargo.lock",
     "cargoLockfileSha256": "c60eea5a7d72b4d58fd65ee8388157fc4c95e78cad58718727221e59ee998fd2"
   },
@@ -43,153 +43,6 @@
       "license": "MIT",
       "licenseSource": "package-metadata",
       "purl": "pkg:npm/%40babel/runtime@7.29.7"
-    },
-    {
-      "name": "@isaacs/fs-minipass",
-      "version": "4.0.1",
-      "license": "ISC",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/%40isaacs/fs-minipass@4.0.1"
-    },
-    {
-      "name": "abbrev",
-      "version": "4.0.0",
-      "license": "ISC",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/abbrev@4.0.0"
-    },
-    {
-      "name": "chownr",
-      "version": "3.0.0",
-      "license": "BlueOak-1.0.0",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/chownr@3.0.0"
-    },
-    {
-      "name": "env-paths",
-      "version": "2.2.1",
-      "license": "MIT",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/env-paths@2.2.1"
-    },
-    {
-      "name": "exponential-backoff",
-      "version": "3.1.2",
-      "license": "Apache-2.0",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/exponential-backoff@3.1.2"
-    },
-    {
-      "name": "fdir",
-      "version": "6.5.0",
-      "license": "MIT",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/fdir@6.5.0"
-    },
-    {
-      "name": "graceful-fs",
-      "version": "4.2.11",
-      "license": "ISC",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/graceful-fs@4.2.11"
-    },
-    {
-      "name": "isexe",
-      "version": "4.0.0",
-      "license": "BlueOak-1.0.0",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/isexe@4.0.0"
-    },
-    {
-      "name": "minipass",
-      "version": "7.1.3",
-      "license": "BlueOak-1.0.0",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/minipass@7.1.3"
-    },
-    {
-      "name": "minizlib",
-      "version": "3.1.0",
-      "license": "MIT",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/minizlib@3.1.0"
-    },
-    {
-      "name": "node-addon-api",
-      "version": "8.9.0",
-      "license": "MIT",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/node-addon-api@8.9.0"
-    },
-    {
-      "name": "node-gyp",
-      "version": "12.4.0",
-      "license": "MIT",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/node-gyp@12.4.0"
-    },
-    {
-      "name": "nopt",
-      "version": "9.0.0",
-      "license": "ISC",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/nopt@9.0.0"
-    },
-    {
-      "name": "picomatch",
-      "version": "4.0.5",
-      "license": "MIT",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/picomatch@4.0.5"
-    },
-    {
-      "name": "proc-log",
-      "version": "6.1.0",
-      "license": "ISC",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/proc-log@6.1.0"
-    },
-    {
-      "name": "semver",
-      "version": "7.8.5",
-      "license": "ISC",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/semver@7.8.5"
-    },
-    {
-      "name": "tar",
-      "version": "7.5.22",
-      "license": "BlueOak-1.0.0",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/tar@7.5.22"
-    },
-    {
-      "name": "tinyglobby",
-      "version": "0.2.17",
-      "license": "MIT",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/tinyglobby@0.2.17"
-    },
-    {
-      "name": "undici",
-      "version": "6.28.0",
-      "license": "MIT",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/undici@6.28.0"
-    },
-    {
-      "name": "which",
-      "version": "6.0.1",
-      "license": "ISC",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/which@6.0.1"
-    },
-    {
-      "name": "yallist",
-      "version": "5.0.0",
-      "license": "BlueOak-1.0.0",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/yallist@5.0.0"
     },
     {
       "name": "aho-corasick",
@@ -1937,7 +1790,7 @@
         },
         "patch": {
           "file": "ubm-le-gatt-5.87.patch",
-          "sha256": "2767a2adc9c4ad5ba343f7c9d18065077b06096596e462dd43be72b9b3bc79f8"
+          "sha256": "2bed947374ae3d093620148bde87970d47afda819509583884ebad2fd9ffd3f5"
         },
         "licenseFiles": [
           {
@@ -1959,7 +1812,13 @@
         "packageIncludesDaemonBinary": false,
         "linkedIntoPackageNativeLibraries": false,
         "deployment": "external-explicit-host-action",
-        "automaticInstallOrLaunch": false
+        "automaticInstallOrLaunch": false,
+        "linuxAuthorityContract": [
+          1,
+          1,
+          1
+        ],
+        "release": "5.87-ubm.1"
       }
     }
   ]

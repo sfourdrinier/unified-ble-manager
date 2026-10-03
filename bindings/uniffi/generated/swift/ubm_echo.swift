@@ -2977,7 +2977,7 @@ public enum MobileRadioRequest: Equatable, Hashable {
     )
     case updateBackgroundNotification(id: UInt64, leaseId: String, title: String, body: String?
     )
-    case associateCompanion(id: UInt64, name: String?, serviceUuid: String?
+    case associateCompanion(id: UInt64, name: String?, serviceUuid: String?, filtersJson: String?
     )
     case listCompanion(id: UInt64
     )
@@ -3088,7 +3088,7 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
         case 26: return .updateBackgroundNotification(id: try FfiConverterUInt64.read(from: &buf), leaseId: try FfiConverterString.read(from: &buf), title: try FfiConverterString.read(from: &buf), body: try FfiConverterOptionString.read(from: &buf)
         )
 
-        case 27: return .associateCompanion(id: try FfiConverterUInt64.read(from: &buf), name: try FfiConverterOptionString.read(from: &buf), serviceUuid: try FfiConverterOptionString.read(from: &buf)
+        case 27: return .associateCompanion(id: try FfiConverterUInt64.read(from: &buf), name: try FfiConverterOptionString.read(from: &buf), serviceUuid: try FfiConverterOptionString.read(from: &buf), filtersJson: try FfiConverterOptionString.read(from: &buf)
         )
 
         case 28: return .listCompanion(id: try FfiConverterUInt64.read(from: &buf)
@@ -3291,11 +3291,12 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
             FfiConverterOptionString.write(body, into: &buf)
 
 
-        case let .associateCompanion(id,name,serviceUuid):
+        case let .associateCompanion(id,name,serviceUuid,filtersJson):
             writeInt(&buf, Int32(27))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterOptionString.write(name, into: &buf)
             FfiConverterOptionString.write(serviceUuid, into: &buf)
+            FfiConverterOptionString.write(filtersJson, into: &buf)
 
 
         case let .listCompanion(id):

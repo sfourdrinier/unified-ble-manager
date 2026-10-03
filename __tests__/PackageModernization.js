@@ -12,7 +12,7 @@ const exampleExpoPackage = require('../example-expo/package.json')
 describe('canonical package modernization', () => {
   test('publishes the strict unified-ble-manager package boundary', () => {
     expect(rootPackage.name).toBe('unified-ble-manager')
-    expect(rootPackage.version).toBe('5.0.0-rc.16')
+    expect(rootPackage.version).toBe('5.0.0-rc.17')
     expect(Object.keys(rootPackage.exports).sort()).toEqual([
       '.',
       './advanced',
@@ -86,9 +86,9 @@ describe('canonical package modernization', () => {
 
     expect(releaseGate).toContain('node scripts/ci/pack-install-smoke.js')
     expect(releaseGate).toContain('npm pack --dry-run')
-    expect(releaseGate).toContain("require('./lib/commonjs/node-corebluetooth')")
-    expect(releaseGate).toContain("'createNativeCoreBluetoothBoundary' in publicEntry")
-    expect(releaseGate).toContain("require('./lib/commonjs/backends/corebluetooth/corebluetooth-native-boundary')")
+    expect(releaseGate).toContain('node scripts/ci/check-host-exports.js')
+    expect(releaseGate).toContain('node scripts/ci/build-napi-addon.js')
+    expect(releaseGate).not.toContain('corebluetooth-native-boundary')
     expect(packSmoke).toContain('unified-ble-manager/backend-sdk')
     expect(packSmoke).toContain('unified-ble-manager/testing')
     expect(packSmoke).toContain("moduleResolution: 'Bundler'")
@@ -106,16 +106,15 @@ describe('canonical package modernization', () => {
     const electronSmoke = read('scripts/ci/electron-main-smoke.js')
     const bluezProbe = read('scripts/ci/bluez-soft-probe.js')
 
-    expect(workflow).toContain('actions/setup-python@v6.0.0')
-    expect(workflow).toContain("python-version: '3.12'")
-    expect(workflow).toContain("require('./lib/commonjs/node-corebluetooth')")
-    expect(workflow).toContain("'createNativeCoreBluetoothBoundary' in publicEntry")
-    expect(workflow).toContain("require('./lib/commonjs/backends/corebluetooth/corebluetooth-native-boundary')")
+    expect(workflow).toContain('node scripts/ci/check-host-exports.js')
+    expect(workflow).toContain('node scripts/ci/build-napi-addon.js')
+    expect(workflow).not.toContain('corebluetooth-native-boundary')
     expect(workflow).toContain('./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js')
     expect(workflow).not.toMatch(/hosts\/electron|createCoreBluetoothBlePort/)
     expect(buildScript).toContain("shell: process.platform === 'win32'")
-    expect(electronSmoke).toContain('createElectronMainCoreBluetoothBackendProvider')
-    expect(electronSmoke).toContain('createNativeCoreBluetoothBoundary')
+    expect(electronSmoke).toContain('smokeDesktopCore')
+    expect(electronSmoke).toContain('UBM_SMOKE_USE_SOURCE')
+    expect(electronSmoke).toContain('if (legacy in electronMain)')
     expect(electronSmoke).not.toMatch(/FakeBlePort|hosts\/electron|createCoreBluetoothBlePort/)
     expect(bluezProbe).toContain('DbusNextBluezBoundaryFactory')
     expect(bluezProbe).toContain("factory.open('system')")

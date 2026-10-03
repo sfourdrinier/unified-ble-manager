@@ -34,6 +34,7 @@ export interface ReactNativeRustCoreRuntimeFacts {
   readonly androidApiLevel: number | null
   /** Whether this Apple host has a configured native restoration authority. */
   readonly appleRestorationConfigured?: boolean
+  readonly systemChooserAvailable?: boolean
 }
 
 /** The first Android API level with `BluetoothGatt.readPhy`/`setPreferredPhy`. */
@@ -199,7 +200,8 @@ export function createReactNativeRustCoreFeatureRegistry(
   )
   // The Rust owner runs `scan.start` on both platforms (legacy React Native
   // never registered this, so managers reported a system chooser they do
-  // not have; fixed in 5.0). The chooser stays unregistered: unsupported.
+  // not have; fixed in 5.0). OS setup is registered only after its native
+  // availability/configuration probe succeeds; no static platform promise.
   const continuousScan = operationRegistration(
     BUILT_IN_FEATURE_IDS.discoveryContinuousScan,
     implementationVersion,
@@ -228,6 +230,18 @@ export function createReactNativeRustCoreFeatureRegistry(
       Object.freeze([
         direct,
         continuousScan,
+        ...(facts.systemChooserAvailable === true
+          ? [
+              operationRegistration(
+                BUILT_IN_FEATURE_IDS.discoverySystemChooser,
+                implementationVersion,
+                `react-native-${platform}-system-chooser-v1`,
+                'capability.catalog-v2',
+                ['capability.truth-limits-evidence-and-binding'],
+                'discovery:system-chooser.invoke-without-choice'
+              )
+            ]
+          : []),
         maximumWriteLengthRegistration(platform, implementationVersion, maximumWriteLength)
       ])
     )

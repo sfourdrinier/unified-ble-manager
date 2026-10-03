@@ -223,6 +223,7 @@ export interface DesktopRustCoreLifecycleEvent {
   readonly connectionGeneration?: string | null
   readonly requested?: boolean | null
   readonly missed?: number | null
+  readonly platform?: string | null
 }
 
 /**
@@ -742,6 +743,20 @@ function parsePlatformDetail(text: string): DesktopRustCorePlatformDetail | unde
     entries[key] = entry
   }
   return Object.freeze({ domain, code, message, metadata: Object.freeze(entries) })
+}
+
+export function parseDesktopRustCoreLifecyclePlatform(
+  text: string | null | undefined
+): import('../../backend-contract/errors').PlatformErrorDetail | undefined {
+  if (text === null || text === undefined) return undefined
+  const detail = parsePlatformDetail(text)
+  if (detail === undefined) throw contractError('protocol.malformed', 'boundary', 'desktop.lifecycle.platform')
+  return Object.freeze({
+    domain: detail.domain,
+    code: detail.code,
+    safeMessage: detail.message ?? '',
+    metadata: detail.metadata
+  })
 }
 
 /**

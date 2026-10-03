@@ -2,8 +2,9 @@
 
 const { admitBluezConnectionPolicy } = require('../../../src/backends/desktop/bluez-connection-policy')
 
-test('BlueZ policy omission stays unattested and explicit policies are cloned', () => {
+test('BlueZ authority is native-owned by default and explicit owner pins are cloned', () => {
   expect(admitBluezConnectionPolicy(undefined)).toBeUndefined()
+  expect(admitBluezConnectionPolicy({ mode: 'le-bearer' })).toBeUndefined()
   for (const policy of [{ mode: 'le-bearer', daemonUniqueOwner: ':1.42' }]) {
     const admitted = admitBluezConnectionPolicy(policy)
     expect(admitted).toEqual(policy)
@@ -18,7 +19,8 @@ test.each([
   {},
   { mode: 'fallback' },
   { mode: 'legacy-device-wide' },
-  { mode: 'le-bearer' },
+  { mode: 'le-bearer', daemonUniqueOwner: undefined },
+  { mode: 'le-bearer', fallback: true },
   { mode: 'le-bearer', daemonUniqueOwner: 'org.bluez' },
   { mode: 'le-bearer', daemonUniqueOwner: ':1' },
   { mode: 'le-bearer', daemonUniqueOwner: ':1.42\n' },
@@ -60,7 +62,12 @@ test('production provider snapshots policy and sends it to the native open bound
   expect(openProduction.mock.calls[0][0].connectionPolicy).toEqual({ mode: 'le-bearer', daemonUniqueOwner: ':1.42' })
 })
 
-test.each(['corebluetooth', 'winrt'])('non-BlueZ provider %s rejects policy before native loading', platform => {
+test.each([
+  ['corebluetooth', { mode: 'le-bearer' }],
+  ['corebluetooth', { mode: 'le-bearer', daemonUniqueOwner: ':1.42' }],
+  ['winrt', { mode: 'le-bearer' }],
+  ['winrt', { mode: 'le-bearer', daemonUniqueOwner: ':1.42' }]
+])('non-BlueZ provider %s rejects policy before native loading', (platform, connectionPolicy) => {
   const {
     createTestDesktopRustCoreBackendProvider
   } = require('../../../src/backends/desktop/desktop-rust-core-provider')
@@ -72,7 +79,7 @@ test.each(['corebluetooth', 'winrt'])('non-BlueZ provider %s rejects policy befo
       now: () => 0,
       hostPlatform: platform === 'winrt' ? 'win32' : 'darwin',
       loadBinding,
-      connectionPolicy: { mode: 'le-bearer', daemonUniqueOwner: ':1.42' }
+      connectionPolicy
     })
   ).toThrow('argument.invalid')
   expect(loadBinding).not.toHaveBeenCalled()

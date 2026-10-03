@@ -24,7 +24,7 @@ const SAL_LICENSE_FILE = 'LICENSE-UBM-SOURCE-AVAILABLE-1.0.md'
 function runGenerator(args) {
   execFileSync(process.execPath, ['scripts/release/generate-dependency-artifacts.js', ...args], {
     cwd: root,
-    stdio: 'pipe',
+    stdio: 'pipe'
   })
 }
 
@@ -34,7 +34,7 @@ function cargoMetadata() {
     cwd: root,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe']
   })
   return JSON.parse(raw)
 }
@@ -66,7 +66,7 @@ const EXPECTED_DIRECT_CARGO_PURLS = [
   'pkg:cargo/tokio@1.53.1',
   'pkg:cargo/uniffi@0.32.1',
   'pkg:cargo/uuid@1.26.1',
-  'pkg:cargo/wasm-bindgen@0.2.128',
+  'pkg:cargo/wasm-bindgen@0.2.128'
 ]
 
 const EXPECTED_WORKSPACE_PURLS = [
@@ -75,35 +75,11 @@ const EXPECTED_WORKSPACE_PURLS = [
   'pkg:cargo/ubm5_jni_echo@0.1.0',
   'pkg:cargo/ubm5_napi_echo@0.1.0',
   'pkg:cargo/ubm5_uniffi_echo@0.1.0',
-  'pkg:cargo/ubm5_wasm_echo@0.1.0',
+  'pkg:cargo/ubm5_wasm_echo@0.1.0'
 ]
 
-// Frozen npm production inventory: the merge must not churn it.
-const EXPECTED_NPM_PACKAGES = [
-  { name: '@babel/runtime', version: '7.29.7', license: 'MIT' },
-  { name: '@isaacs/fs-minipass', version: '4.0.1', license: 'ISC' },
-  { name: 'abbrev', version: '4.0.0', license: 'ISC' },
-  { name: 'chownr', version: '3.0.0', license: 'BlueOak-1.0.0' },
-  { name: 'env-paths', version: '2.2.1', license: 'MIT' },
-  { name: 'exponential-backoff', version: '3.1.2', license: 'Apache-2.0' },
-  { name: 'fdir', version: '6.5.0', license: 'MIT' },
-  { name: 'graceful-fs', version: '4.2.11', license: 'ISC' },
-  { name: 'isexe', version: '4.0.0', license: 'BlueOak-1.0.0' },
-  { name: 'minipass', version: '7.1.3', license: 'BlueOak-1.0.0' },
-  { name: 'minizlib', version: '3.1.0', license: 'MIT' },
-  { name: 'node-addon-api', version: '8.9.0', license: 'MIT' },
-  { name: 'node-gyp', version: '12.4.0', license: 'MIT' },
-  { name: 'nopt', version: '9.0.0', license: 'ISC' },
-  { name: 'picomatch', version: '4.0.5', license: 'MIT' },
-  { name: 'proc-log', version: '6.1.0', license: 'ISC' },
-  { name: 'semver', version: '7.8.5', license: 'ISC' },
-  { name: 'tar', version: '7.5.22', license: 'BlueOak-1.0.0' },
-  { name: 'tinyglobby', version: '0.2.17', license: 'MIT' },
-  { name: 'undici', version: '6.28.0', license: 'MIT' },
-  { name: 'which', version: '6.0.1', license: 'ISC' },
-  { name: 'yallist', version: '5.0.0', license: 'BlueOak-1.0.0' },
-]
-
+// Frozen npm production inventory after retirement of the unreachable C++ producers.
+const EXPECTED_NPM_PACKAGES = [{ name: '@babel/runtime', version: '7.29.7', license: 'MIT' }]
 describe('SBOM Rust workspace merge (UBM 5.0)', () => {
   test('the packed F01 proof binds every Cargo consumer build to the pinned rustc', () => {
     const proof = read('scripts/ci/f01-packed-dispatch-proof.js')
@@ -197,12 +173,14 @@ describe('SBOM Rust workspace merge (UBM 5.0)', () => {
       .filter(([, license]) => license !== null && license.includes('/'))
       .map(([purl]) => purl)
       .sort()
-    expect(slashSeparated).toEqual(expect.arrayContaining([
-      BTLEPLUG_PURL,
-      'pkg:cargo/fallible-iterator@0.3.0',
-      'pkg:cargo/fallible-streaming-iterator@0.1.9',
-      'pkg:cargo/vcpkg@0.2.15',
-    ]))
+    expect(slashSeparated).toEqual(
+      expect.arrayContaining([
+        BTLEPLUG_PURL,
+        'pkg:cargo/fallible-iterator@0.3.0',
+        'pkg:cargo/fallible-streaming-iterator@0.1.9',
+        'pkg:cargo/vcpkg@0.2.15'
+      ])
+    )
 
     const sbom = readJson('SBOM.cdx.json')
     const inventory = readJson('THIRD_PARTY_LICENSES.json')
@@ -237,21 +215,21 @@ describe('SBOM Rust workspace merge (UBM 5.0)', () => {
     expect(btleplug).toMatchObject({
       license: BTLEPLUG_LICENSE,
       licenseSource: 'reviewed-cargo-license-file',
-      evidence: { fileName: 'vendor/btleplug/LICENSE.md' },
+      evidence: { fileName: 'vendor/btleplug/LICENSE.md' }
     })
     for (const purl of slashSeparated.filter(purl => purl !== BTLEPLUG_PURL)) {
       const declared = declaredByPurl.get(purl)
       expect(inventoryByPurl.get(purl)).toMatchObject({
         license: `(${declared.split('/').join(' OR ')})`,
         licenseSource: 'cargo-manifest-license-normalized',
-        declared,
+        declared
       })
     }
     expect(inventory.reviewedCargoOverrides).toContainEqual({
       dependency: 'btleplug@0.12.0',
       fileName: 'LICENSE.md',
       license: BTLEPLUG_LICENSE,
-      sha256: BTLEPLUG_LICENSE_SHA256,
+      sha256: BTLEPLUG_LICENSE_SHA256
     })
   })
 
@@ -279,15 +257,17 @@ describe('SBOM Rust workspace merge (UBM 5.0)', () => {
     const inventory = readJson('THIRD_PARTY_LICENSES.json')
 
     const npmComponents = sbom.components.filter(component => component.purl.startsWith('pkg:npm/'))
-    expect(npmComponents.map(component => ({
-      name: component.group ? `${component.group}/${component.name}` : component.name,
-      version: component.version,
-      license: component.licenses,
-    }))).toEqual(
+    expect(
+      npmComponents.map(component => ({
+        name: component.group ? `${component.group}/${component.name}` : component.name,
+        version: component.version,
+        license: component.licenses
+      }))
+    ).toEqual(
       EXPECTED_NPM_PACKAGES.map(entry => ({
         name: entry.name,
         version: entry.version,
-        license: [{ expression: entry.license }],
+        license: [{ expression: entry.license }]
       }))
     )
     for (const component of npmComponents) {
@@ -302,18 +282,14 @@ describe('SBOM Rust workspace merge (UBM 5.0)', () => {
         version: entry.version,
         license: entry.license,
         licenseSource: 'package-metadata',
-        purl: npmPurl(entry.name, entry.version),
+        purl: npmPurl(entry.name, entry.version)
       }))
     )
 
     // The root dependency edge still fans out to the npm production roots only.
     const rootPurl = `pkg:npm/unified-ble-manager@${require('../package.json').version}`
     const rootEntry = sbom.dependencies.find(entry => entry.ref === rootPurl)
-    expect(rootEntry.dependsOn).toEqual([
-      'pkg:npm/%40babel/runtime@7.29.7',
-      'pkg:npm/node-addon-api@8.9.0',
-      'pkg:npm/node-gyp@12.4.0',
-    ])
+    expect(rootEntry.dependsOn).toEqual(['pkg:npm/%40babel/runtime@7.29.7'])
   })
 
   test('merged generation is byte-stable and leaks no local paths', () => {

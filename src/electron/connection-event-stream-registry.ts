@@ -4,6 +4,7 @@ import {
   BackendContractError,
   contractError,
   serializeNormalizedError,
+  serializePlatformErrorDetail,
   type CleanupFailure,
   type CleanupRecord
 } from '../backend-contract/errors'
@@ -428,7 +429,8 @@ function snapshotConnectionLifecycleEvent(event: ConnectionLifecycleEvent<string
     backendIngressOrdinal: event.backendIngressOrdinal,
     previous: event.previous,
     current: event.current,
-    cause: event.cause
+    cause: event.cause,
+    platform: event.platform === undefined ? null : serializePlatformErrorDetail(event.platform)
   })
 }
 

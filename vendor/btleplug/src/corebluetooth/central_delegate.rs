@@ -34,7 +34,6 @@ use objc2_core_bluetooth::{
 use objc2_foundation::{
     NSArray, NSData, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSString,
 };
-use std::convert::TryInto;
 use std::{
     collections::HashMap,
     fmt::{self, Debug, Formatter},
@@ -167,6 +166,96 @@ pub fn advertisement_extras(
                 let value: *const NSNumber = value.cast();
                 unsafe { &*value }.as_bool()
             }),
+    }
+}
+
+/// Parse CoreBluetooth's NSData at the callback boundary, including its
+/// little-endian company identifier. The returned bytes own their storage.
+fn advertisement_manufacturer_data(
+    adv_data: &NSDictionary<NSString, AnyObject>,
+) -> Option<(u16, Vec<u8>)> {
+    let value = adv_data.get(unsafe { CBAdvertisementDataManufacturerDataKey })?;
+    // SAFETY: CoreBluetooth specifies NSData for this key.
+    let pointer: *const AnyObject = value;
+    let data = unsafe { &*pointer.cast::<NSData>() };
+    let bytes = data.bytes();
+    let company = u16::from_le_bytes([*bytes.first()?, *bytes.get(1)?]);
+    Some((company, bytes[2..].to_vec()))
+}
+
+#[cfg(test)]
+mod ubm_advertisement_boundary_tests {
+    use super::*;
+    use objc2_foundation::NSMutableData;
+
+    fn dictionary(
+        keys: &[&NSString],
+        values: &[&NSObject],
+    ) -> Retained<NSDictionary<NSString, AnyObject>> {
+        // SAFETY: every borrowed Foundation object is alive for construction;
+        // the dictionary owns these retains and is dropped before mutation.
+        let retained = values
+            .iter()
+            .map(|value| unsafe {
+                Retained::retain(std::ptr::from_ref(*value).cast_mut()).expect("Foundation object")
+            })
+            .collect();
+        let dictionary = NSDictionary::<NSString, NSObject>::from_vec(keys, retained);
+        // SAFETY: NSObject values are Objective-C objects. Only the generic
+        // view changes; NSDictionary retains the real Foundation objects.
+        unsafe { Retained::cast(dictionary) }
+    }
+
+    #[test]
+    fn advertisement_extras_preserve_absent_and_present_empty_fields() {
+        let absent = dictionary(&[], &[]);
+        let extras = advertisement_extras(&absent);
+        assert_eq!(extras.solicited_service_uuids, None);
+        assert_eq!(extras.overflow_service_uuids, None);
+        assert_eq!(extras.connectable, None);
+        let empty = NSArray::<CBUUID>::from_vec(vec![]);
+        let connectable = NSNumber::new_bool(false);
+        let values: [&NSObject; 3] = [&empty, &empty, &connectable];
+        let keys = unsafe {
+            [
+                CBAdvertisementDataSolicitedServiceUUIDsKey,
+                CBAdvertisementDataOverflowServiceUUIDsKey,
+                CBAdvertisementDataIsConnectable,
+            ]
+        };
+        let present = dictionary(&keys, &values);
+        let extras = advertisement_extras(&present);
+        assert_eq!(extras.solicited_service_uuids, Some(vec![]));
+        assert_eq!(extras.overflow_service_uuids, Some(vec![]));
+        assert_eq!(extras.connectable, Some(false));
+    }
+
+    #[test]
+    fn manufacturer_data_requires_a_company_id_and_copies_the_payload() {
+        let key = unsafe { CBAdvertisementDataManufacturerDataKey };
+        let absent = dictionary(&[], &[]);
+        assert_eq!(advertisement_manufacturer_data(&absent), None);
+        for bytes in [vec![], vec![0x6b]] {
+            let data = NSData::with_bytes(&bytes);
+            let values: [&NSObject; 1] = [&data];
+            let dictionary = dictionary(&[key], &values);
+            assert_eq!(advertisement_manufacturer_data(&dictionary), None);
+        }
+        let mut data = NSMutableData::with_bytes(&[0x6b, 0x00, 0x11, 0x22]);
+        let parsed = {
+            let values: [&NSObject; 1] = [&data];
+            let dictionary = dictionary(&[key], &values);
+            advertisement_manufacturer_data(&dictionary).expect("complete company id")
+        };
+        data.bytes_mut().fill(0xff);
+        assert_eq!(parsed, (0x006b, vec![0x11, 0x22]));
+        let data = NSData::with_bytes(&[0x34, 0x12]);
+        let values: [&NSObject; 1] = [&data];
+        let dictionary = dictionary(&[key], &values);
+        assert_eq!(
+            advertisement_manufacturer_data(&dictionary),
+            Some((0x1234, vec![]))
+        );
     }
 }
 
@@ -684,28 +773,16 @@ declare_class!(
                 extras: advertisement_extras(adv_data),
             });
 
-            let manufacturer_data = adv_data.get(unsafe { CBAdvertisementDataManufacturerDataKey });
-            if let Some(manufacturer_data) = manufacturer_data {
-                // SAFETY: manufacturer_data is `NSData`
-                let manufacturer_data: *const AnyObject = manufacturer_data;
-                let manufacturer_data: *const NSData = manufacturer_data.cast();
-                let manufacturer_data = unsafe { &*manufacturer_data };
-
-                if manufacturer_data.len() >= 2 {
-                    let (manufacturer_id, manufacturer_data) =
-                        manufacturer_data.bytes().split_at(2);
-
-                    let manufacturer_id = u16::from_le_bytes(manufacturer_id.try_into().unwrap());
+            if let Some((manufacturer_id, manufacturer_data)) = advertisement_manufacturer_data(adv_data) {
                     report
                         .manufacturer_data
-                        .insert(manufacturer_id, Vec::from(manufacturer_data));
+                        .insert(manufacturer_id, manufacturer_data.clone());
                     self.send_event(CentralDelegateEvent::ManufacturerData {
                         peripheral_uuid,
                         manufacturer_id,
-                        data: Vec::from(manufacturer_data),
+                        data: manufacturer_data,
                         rssi: rssi_value,
                     });
-                }
             }
 
             let service_data = adv_data.get(unsafe { CBAdvertisementDataServiceDataKey });

@@ -267,6 +267,22 @@ function runTypeScriptConsumers(consumer) {
   }
 }
 
+function runTauriBundlerConsumer(consumer) {
+  const fixture = path.join(root, '__tests__', 'fixtures', 'tauri-bundler')
+  for (const file of ['index.html', 'main.js', 'vite.config.mjs']) {
+    fs.copyFileSync(path.join(fixture, file), path.join(consumer, file))
+  }
+  for (const bundler of ['vite-rollup', 'vite']) {
+    const vite = path.join(consumer, 'node_modules', bundler, 'bin', 'vite.js')
+    run(process.execPath, [vite, 'build', '--config', 'vite.config.mjs'], { cwd: consumer })
+  }
+  const assets = path.join(consumer, 'dist', 'assets')
+  assert.ok(
+    fs.readdirSync(assets).some(file => file.endsWith('.js')),
+    'Tauri bundle must contain executable JavaScript'
+  )
+}
+
 function hostSpecifier(exportPath) {
   return `${rootPackage.name}${exportPath.slice(1)}`
 }
@@ -377,7 +393,11 @@ function main() {
             'react-native': 'file:../react-native-stub',
             [rootPackage.name]: tarballPath
           },
-          devDependencies: { typescript: TYPESCRIPT_VERSION }
+          devDependencies: {
+            typescript: TYPESCRIPT_VERSION,
+            vite: '8.2.2',
+            'vite-rollup': 'npm:vite@7.3.6'
+          }
         },
         null,
         2
@@ -388,6 +408,7 @@ function main() {
       env: npmEnvironment
     })
 
+    runTauriBundlerConsumer(consumer)
     runCjsConsumer(consumer, entries)
     runEsmConsumer(consumer, entries)
     runTypeScriptConsumers(consumer)
@@ -402,6 +423,7 @@ function main() {
         sourcePathUsedByConsumers: false
       },
       hosts: entries.map(entry => entry.host),
+      tauriBundler: 'vite-7-and-8-production-builds-no-warnings-no-source-rewrite',
       physicalRadio: 'not-provided'
     }
     console.log(JSON.stringify(result))

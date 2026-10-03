@@ -11,6 +11,7 @@
 //! surface cannot reach `ubm-fake-radio` (guarded by the `cargo tree`
 //! test in `tests/no_fake_radio.rs`).
 
+mod companion_filters;
 pub mod compat;
 pub mod continuation;
 pub mod drain;

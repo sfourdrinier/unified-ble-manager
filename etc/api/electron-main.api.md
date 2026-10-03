@@ -5,15 +5,15 @@
 
 - `ADAPTER_INITIALIZATION_TIMEOUT_MS :: 10000`
 - `BLUEZ_BACKEND_ID :: "unified-ble:bluez-dbus"`
-- `BLUEZ_IMPLEMENTATION_VERSION :: "5.0.0-rc.16"`
+- `BLUEZ_IMPLEMENTATION_VERSION :: "5.0.0-rc.17"`
 - `BLUEZ_PLATFORM_ID :: "unified-ble:linux-bluez"`
 - `BluezBleManagerAppOptions :: { readonly connectionPolicy?: BluezConnectionPolicy | undefined; readonly busKind?: BluezBusKind | undefined; readonly pairingGeneration?: BluezPairingGenerationController | undefined; readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`
 - `BluezBusKind :: "system" | "session"`
-- `BluezConnectionPolicy :: { readonly mode: "le-bearer"; readonly daemonUniqueOwner: string }`
+- `BluezConnectionPolicy :: { readonly mode: "le-bearer"; readonly daemonUniqueOwner?: string | undefined }`
 - `BluezPairingGeneration :: "required" | "legacy-only" | "enabled"`
 - `BluezPairingGenerationController :: { read(adapterId: string): Promise<BluezPairingGeneration>; set(adapterId: string, generation: BluezPairingGeneration): Promise<void> }`
 - `COREBLUETOOTH_BACKEND_ID :: "unified-ble:corebluetooth"`
-- `COREBLUETOOTH_IMPLEMENTATION_VERSION :: "5.0.0-rc.16"`
+- `COREBLUETOOTH_IMPLEMENTATION_VERSION :: "5.0.0-rc.17"`
 - `COREBLUETOOTH_PLATFORM_ID :: "unified-ble:macos-corebluetooth"`
 - `ContinuationBacklog :: { readonly recording?: { readonly id: string; } | undefined; readonly selectors: readonly BackgroundContinuationResubscribeSelector[]; readonly values: readonly ContinuationBacklogValue[]; readonly streamEnds: readonly ContinuationBacklogStreamEnd[]; readonly control: readonly WireDrainRecord[]; readonly controlLost: number; readonly afterCutoffLoss: { readonly items: number; readonly bytes: number; }; readonly disposed: boolean; readonly disposeFailure: string | null }`
 - `ContinuationBacklogStreamEnd :: { readonly consumer: string; readonly reason: "overflow" | "closed" | "invalidated"; readonly droppedItems: number; readonly droppedBytes: number }`
@@ -25,7 +25,7 @@
 - `ContinuationRecordingPrepareOptions :: { readonly maxItems: number; readonly maxBytes: number }`
 - `ContinuationRecordingStatus :: { readonly recordingId: string; readonly phase: "stopped" | "recording" | "capacity-reached"; readonly accepting: boolean; readonly records: number; readonly bytes: number; readonly lostRecords: number; readonly maxBytes: number; readonly maxRecords: number; readonly encrypted: false; readonly runtimeFailure: (ContinuationRecordingFailure & { readonly persisted: false; }) | null; readonly collectionFailure: (ContinuationRecordingFailure & { readonly persisted: boolean; readonly persistenceFailure?: ContinuationRecordingFailure | undefined; }) | null }`
 - `CoreBluetoothBleManagerAppOptions :: { readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`
-- `DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.0-rc.16"`
+- `DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.0-rc.17"`
 - `DESKTOP_RUST_CORE_PROFILES :: Readonly<Record<DesktopRustCorePlatform, DesktopRustCoreProfile>>`
 - `DbusNextBluezProviderOptions :: { readonly connectionPolicy?: BluezConnectionPolicy | undefined; readonly busKind: BluezBusKind; readonly now: () => number; readonly pairingGeneration?: BluezPairingGenerationController | undefined; readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined }`
 - `DesktopCoreHost :: { readonly platform: DesktopRustCorePlatform; readonly operationPrefix: string }`
@@ -51,7 +51,7 @@
 - `DesktopRustCoreConsumerCounters :: { readonly droppedItems: number; readonly droppedBytes: number; readonly replacedItems: number; readonly upstreamLost: number; readonly terminated: boolean }`
 - `DesktopRustCoreControl :: { readonly timeoutMs?: number | undefined; readonly ticket?: string | undefined }`
 - `DesktopRustCoreDispatchCounters :: { }`
-- `DesktopRustCoreLifecycleEvent :: { readonly kind: "released" | "closed" | "services-changed" | "lagged" | "link-lost" | "adapter-lost"; readonly sequence?: number | null | undefined; readonly peerId?: string | null | undefined; readonly peerKey?: string | null | undefined; readonly connectionGeneration?: string | null | undefined; readonly requested?: boolean | null | undefined; readonly missed?: number | null | undefined }`
+- `DesktopRustCoreLifecycleEvent :: { readonly kind: "released" | "closed" | "services-changed" | "lagged" | "link-lost" | "adapter-lost"; readonly sequence?: number | null | undefined; readonly peerId?: string | null | undefined; readonly peerKey?: string | null | undefined; readonly connectionGeneration?: string | null | undefined; readonly requested?: boolean | null | undefined; readonly missed?: number | null | undefined; readonly platform?: string | null | undefined }`
 - `DesktopRustCoreNotificationPoll :: { readonly kind: "terminal" | "closed" | "value" | "invalidated" | "empty"; readonly value?: Uint8Array<ArrayBufferLike> | null | undefined; readonly cause?: string | null | undefined; readonly droppedItems?: number | null | undefined; readonly droppedBytes?: number | null | undefined; readonly replacedItems?: number | null | undefined }`
 - `DesktopRustCorePath :: { readonly serviceUuid: string; readonly serviceOccurrence: number; readonly characteristicUuid?: string | null | undefined; readonly characteristicOccurrence?: number | null | undefined; readonly descriptorUuid?: string | null | undefined; readonly descriptorOccurrence?: number | null | undefined; readonly properties: number; readonly access?: DesktopRustCoreCharacteristicAccess | null | undefined }`
 - `DesktopRustCorePeerRecord :: { readonly peerId: string; readonly peerKey: string; readonly connectionState?: "connecting" | "connected" | "disconnecting" | "disconnected" | "lost" | "invalid" | null | undefined; readonly connectionGeneration?: string | null | undefined; readonly databaseGeneration?: string | null | undefined; readonly databaseState?: "current" | "invalid" | "undiscovered" | "discovering" | "changed" | null | undefined }`
@@ -84,7 +84,7 @@
 - `NativeWinRtProviderOptions :: { readonly now: () => number; readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined }`
 - `NodeBleManagerAppOptions :: { readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`
 - `WINRT_BACKEND_ID :: "unified-ble:winrt"`
-- `WINRT_IMPLEMENTATION_VERSION :: "5.0.0-rc.16"`
+- `WINRT_IMPLEMENTATION_VERSION :: "5.0.0-rc.17"`
 - `WINRT_PLATFORM_ID :: "unified-ble:windows-winrt"`
 - `WinRtBleManagerAppOptions :: { readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`
 - `assertDesktopRustCorePlatform :: (platform: DesktopRustCorePlatform, hostPlatform?: string) => void`

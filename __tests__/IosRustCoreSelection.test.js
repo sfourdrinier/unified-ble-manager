@@ -24,7 +24,10 @@ test.each(['prebuilt', 'source'])(
       encoding: 'utf8',
       env: { ...process.env, UBM_NATIVE_BUILD: mode, UBM_PODSPEC_STUB_USER_SWIFT_FLAGS: '-DCONSUMER_EXISTING_FLAG' }
     })
-    const consumer = JSON.parse(output).user_target_xcconfig
+    const evaluated = JSON.parse(output)
+    expect(evaluated.ios.weak_frameworks).toBe('AccessorySetupKit')
+    expect(evaluated.tvos?.weak_frameworks).toBeUndefined()
+    const consumer = evaluated.user_target_xcconfig
     expect(Object.keys(consumer)).toEqual(['OTHER_SWIFT_FLAGS'])
     expect(consumer.OTHER_SWIFT_FLAGS).toContain('$(inherited) -DCONSUMER_EXISTING_FLAG')
     expect(consumer.OTHER_SWIFT_FLAGS).toContain(

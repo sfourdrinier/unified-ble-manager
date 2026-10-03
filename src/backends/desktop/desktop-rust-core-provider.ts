@@ -199,6 +199,7 @@ import {
   type DesktopRustCoreCharacteristicAccess,
   type DesktopRustCoreControl,
   type DesktopRustCoreLifecycleEvent,
+  parseDesktopRustCoreLifecyclePlatform,
   type DesktopRustCorePairOutcome,
   type DesktopRustCorePath,
   type DesktopRustCorePlatform,
@@ -2266,6 +2267,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       return
     }
     const requested = event.kind === 'released' && event.requested === true
+    const platform = parseDesktopRustCoreLifecyclePlatform(event.platform)
     for (const record of records) {
       record.state = requested ? 'disconnected' : 'lost'
       this.invalidateConnectionState(record, 'connection-lost')
@@ -2275,7 +2277,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         attachment: this.attachment,
         attachmentId: this.attachment.attachmentId,
         ingressOrdinal: this.nextEventOrdinal(),
-        connection: record.path
+        connection: record.path,
+        ...(platform === undefined ? {} : { platform })
       })
     }
   }

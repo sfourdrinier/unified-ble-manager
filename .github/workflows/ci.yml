@@ -116,12 +116,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.0
 
-      - name: Setup Python for native Node22 builds
-        if: (runner.os == 'macOS' || runner.os == 'Windows') && matrix.node == '22'
-        uses: actions/setup-python@v6.0.0
-        with:
-          python-version: '3.12'
-
       - name: Setup JS package
         uses: ./.github/actions/setup-js-package
         with:
@@ -251,114 +245,6 @@ jobs:
         if: (runner.os == 'macOS' && matrix.node == '22') || (runner.os == 'Windows' && matrix.node == '22')
         run: pnpm prepack
 
-      # L2: compile the CoreBluetooth Node-API addon, then load the public 4.0
-      # contract boundary directly. No legacy BlePort host participates in this gate.
-      - name: CoreBluetooth native boundary L2 (node-gyp Node ABI + public boundary)
-        if: runner.os == 'macOS' && matrix.node == '22'
-        env:
-          npm_config_python: ${{ env.pythonLocation }}/bin/python
-        run: |
-          set -euo pipefail
-          pnpm run build:electron:macos
-          test -f native/electron/corebluetooth/build/Release/unified_ble_corebluetooth.node
-          node -e "
-            const publicEntry = require('./lib/commonjs/node-corebluetooth');
-            if (typeof publicEntry.createCoreBluetoothBleManager !== 'function' || 'createNativeCoreBluetoothBoundary' in publicEntry) {
-              throw new Error('node/corebluetooth must expose the Rust-core factory and no legacy boundary');
-            }
-            const { createNativeCoreBluetoothBoundary } = require('./lib/commonjs/backends/corebluetooth/corebluetooth-native-boundary');
-            const boundary = createNativeCoreBluetoothBoundary();
-            const required = [
-              'adapterSnapshot', 'startScan', 'stopScan', 'connect', 'disconnect',
-              'connectionState', 'discover', 'read', 'write', 'startNotify',
-              'stopNotify', 'onDisconnect', 'onAdapterState', 'destroy'
-            ];
-            for (const method of required) {
-              if (typeof boundary[method] !== 'function') {
-                throw new Error('CoreBluetooth boundary method is missing: ' + method);
-              }
-            }
-            Promise.resolve(boundary.destroy()).then(() => {
-              console.log('CoreBluetooth public boundary L2 ok');
-            }, error => {
-              console.error('CoreBluetooth boundary destroy failed:', error);
-              process.exitCode = 1;
-            });
-          "
-
-      # L3: Node ABI ≠ Electron ABI. Rebuild for Electron, then headless main-process smoke (R2-F037).
-      # electron-main-smoke loads public Electron-main exports and the direct
-      # CoreBluetooth boundary under the Electron ABI on macOS (R3-F012).
-      # Not radio L4 — no BrowserWindow or live peripheral is involved.
-      - name: Electron ABI rebuild + main-process smoke (L3, Node ABI ≠ Electron ABI)
-        if: runner.os == 'macOS' && matrix.node == '22'
-        run: |
-          set -euo pipefail
-          ELECTRON_VERSION=$(node -p "require('./node_modules/electron/package.json').version")
-          (
-            cd native/electron/corebluetooth
-            ../../../node_modules/.bin/node-gyp rebuild \
-              --target="$ELECTRON_VERSION" \
-              --arch="$(node -p 'process.arch')" \
-              --dist-url=https://electronjs.org/headers
-          )
-          test -f native/electron/corebluetooth/build/Release/unified_ble_corebluetooth.node
-          ./node_modules/.bin/electron scripts/ci/electron-main-smoke.js
-
-      # This is Node-API ABI and boundary-shape proof only. It does not claim a
-      # live adapter, advertisement, peripheral, or radio-support result.
-      - name: WinRT native boundary Node ABI build and load (Windows; no live radio)
-        if: runner.os == 'Windows' && matrix.node == '22'
-        shell: bash
-        run: |
-          set -euo pipefail
-          pnpm run build:electron:winrt
-          test -f native/electron/winrt/build/Release/unified_ble_winrt.node
-          node -e "
-            const native = require('./native/electron/winrt');
-            if (native.boundaryVersion !== 2 || typeof native.createContractBoundary !== 'function') {
-              throw new Error('WinRT addon does not expose boundary protocol v2');
-            }
-            const boundary = native.createContractBoundary();
-            const required = [
-              'listAdapters', 'selectAdapter', 'adapterSnapshot', 'startScan', 'stopScan',
-              'connect', 'disconnect', 'discover', 'read', 'write', 'readDescriptor',
-              'writeDescriptor', 'startNotify', 'stopNotify', 'onConnectionLost',
-              'onDatabaseChanged', 'onAdapterState', 'onSecurityState', 'onScanTerminal',
-              'securityState', 'pair', 'cancelPairing', 'unpair', 'ingressTelemetry', 'destroy'
-            ];
-            for (const method of required) {
-              if (typeof boundary[method] !== 'function') {
-                throw new Error('WinRT boundary method is missing: ' + method);
-              }
-            }
-            boundary.destroy().completion.then(() => {
-              console.log('WinRT Node-API compile and ABI load passed; no live-radio test ran.');
-            }, error => {
-              console.error('WinRT native destroy after ABI load failed:', error);
-              process.exitCode = 1;
-            });
-          "
-
-      # Rebuild the actual addon for Electron's Node ABI, then load the public
-      # WinRT boundary from Electron main. This remains compile/load evidence;
-      # electron-main-smoke does not start a scan or claim live-radio support.
-      - name: WinRT native boundary Electron ABI rebuild and load (Windows; no live radio)
-        if: runner.os == 'Windows' && matrix.node == '22'
-        shell: bash
-        run: |
-          set -euo pipefail
-          ELECTRON_VERSION=$(node -p "require('./node_modules/electron/package.json').version")
-          (
-            cd native/electron/winrt
-            ../../../node_modules/.bin/node-gyp rebuild \
-              --target="$ELECTRON_VERSION" \
-              --arch="$(node -p 'process.arch')" \
-              --dist-url=https://electronjs.org/headers
-          )
-          test -f native/electron/winrt/build/Release/unified_ble_winrt.node
-          ./node_modules/.bin/electron scripts/ci/electron-main-smoke.js
-
       # L2 packaging: resolve every canonical host entrypoint after prepack.
       - name: Canonical host export resolve (L2)
         if: runner.os == 'Linux'
@@ -368,8 +254,10 @@ jobs:
 
       # L3 wiring under the Electron binary on Linux. This uses Electron's
       # documented CI-safe no-sandbox mode and still executes the public smoke.
-      - name: Electron main-process public-boundary smoke under Electron binary (L3, Linux)
-        if: runner.os == 'Linux'
+      - name: Shared Rust core under Electron main (L3; synthetic radio)
+        shell: bash
+        env:
+          UBM_SMOKE_USE_SOURCE: '1'
         run: |
           set -euo pipefail
           ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js
@@ -627,6 +515,7 @@ jobs:
               - '.github/actions/**'
             apple:
               - 'ios/**'
+              - 'native/desktop-core/**'
               - 'examples-shared/dev/**'
               - 'native/protocol/**'
               - 'scripts/native-protocol/**'
@@ -654,7 +543,6 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/workflows/apple-ci.yml'
               - '.github/actions/**'
-              - 'native/electron/**'
               - 'example-electron/**'
 
   expo-cng-android:

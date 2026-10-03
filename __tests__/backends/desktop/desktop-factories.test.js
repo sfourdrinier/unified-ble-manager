@@ -284,7 +284,9 @@ describe('option audit: every rejected option fails with zero core dispatch', ()
   }
 
   test('BlueZ-only options on another platform are invalid before anything loads', () => {
-    const { createTestDesktopRustCoreBackendProvider } = require('../../../src/backends/desktop/desktop-rust-core-provider')
+    const {
+      createTestDesktopRustCoreBackendProvider
+    } = require('../../../src/backends/desktop/desktop-rust-core-provider')
     const loadBinding = jest.fn()
     expect(() =>
       createTestDesktopRustCoreBackendProvider({
@@ -383,7 +385,9 @@ describe('option audit: every rejected option fails with zero core dispatch', ()
 
   test('an unknown adapter id', async () => {
     const harness = realBinding('winrt')
-    const { createTestDesktopRustCoreBackendProvider } = require('../../../src/backends/desktop/desktop-rust-core-provider')
+    const {
+      createTestDesktopRustCoreBackendProvider
+    } = require('../../../src/backends/desktop/desktop-rust-core-provider')
     const provider = createTestDesktopRustCoreBackendProvider({
       platform: 'winrt',
       owner: 'audit',
@@ -422,27 +426,14 @@ describe('option audit: every rejected option fails with zero core dispatch', ()
   })
 })
 
-describe('legacy native loaders under ESM (PR210-28)', () => {
-  // The ESM build (lib/module, built by `pretest:package` -> prepack) has no
-  // CommonJS `require`: the legacy loaders must name that cause, not mask it
-  // as an unavailable artifact.
-  test.each([
-    ['backends/corebluetooth/corebluetooth-native-boundary.js', 'createNativeCoreBluetoothBoundary', 'darwin'],
-    ['backends/winrt/winrt-native-boundary.js', 'createNativeWinRtBoundary', 'win32']
-  ])('lib/module/%s throws capability.unsupported / esm-legacy-boundary', (file, loader, os) => {
-    const { spawnSync } = require('node:child_process')
-    const modulePath = path.join(__dirname, '..', '..', '..', 'lib', 'module', file)
-    const script = [
-      `Object.defineProperty(process, 'platform', { value: ${JSON.stringify(os)} })`,
-      `const { ${loader} } = await import(${JSON.stringify(require('node:url').pathToFileURL(modulePath).href)})`,
-      `try { ${loader}(); console.log(JSON.stringify({ outcome: 'loaded' })) }`,
-      'catch (error) { console.log(JSON.stringify(error.normalized ?? { message: String(error) })) }'
-    ].join('\n')
-    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
-    expect(result.stderr).toBe('')
-    expect(JSON.parse(result.stdout.trim())).toMatchObject({
-      code: 'capability.unsupported',
-      platform: { code: 'esm-legacy-boundary' }
-    })
+describe('retired native producers are not a private loading route', () => {
+  test.each(['corebluetooth', 'winrt'])('%s has no deleted native or TypeScript producer', platform => {
+    const fs = require('node:fs')
+    const root = path.resolve(__dirname, '../../..')
+    // Ignored historic build output may remain in a developer checkout; it
+    // cannot resurrect the deleted loader or a native producer declaration.
+    expect(fs.existsSync(path.join(root, 'native/electron', platform, 'index.js'))).toBe(false)
+    expect(fs.existsSync(path.join(root, 'native/electron', platform, 'binding.gyp'))).toBe(false)
+    expect(fs.existsSync(path.join(root, 'src/backends', platform, platform + '-native-boundary.ts'))).toBe(false)
   })
 })

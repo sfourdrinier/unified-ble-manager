@@ -1,0 +1,2 @@
+patchedDependencies:
+  documentation@14.0.3: patches/documentation@14.0.3.patch

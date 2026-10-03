@@ -71,10 +71,12 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 | [`WEB.md`](WEB.md) | Web Bluetooth host: chooser, HTTPS, user activation, lifecycle | Current |
 | [`NODE.md`](NODE.md) | Node hosts: CoreBluetooth, WinRT, and BlueZ entrypoints over the shared Rust core, prebuilds, runtime requirements | Current |
 | [`BLUEZ_LE_GATT.md`](BLUEZ_LE_GATT.md) | Strict BlueZ LE GATT observation, explicit source-only daemon extension, deployment boundary and cleanup | Current |
+| [`BLUEZ_DEPLOYMENT.md`](BLUEZ_DEPLOYMENT.md) | Gated maintained source bundle, explicit privileged file deployment and scoped recovery | Current |
 | [`ELECTRON.md`](ELECTRON.md) | Electron main/renderer split, IPC router, composition sequence | Current |
 | [`ELECTRON_SECURITY_MODEL.md`](ELECTRON_SECURITY_MODEL.md) | Electron ownership and threat boundary; renderer permission snapshot rules | Current |
 | [`TAURI.md`](TAURI.md) | Tauri v2 host: `createTauriBleManager()` and the Rust plugin install recipe | Current |
 | [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md) | Expo config-plugin option reference and development-build install | Current |
+| [`TV.md`](TV.md) | Shared TV runtime, exact packed Apple TV consumer and platform qualification limits | Current |
 | [`CLI.md`](CLI.md) | `ubm` CLI command surface: `doctor`, `inspect`, `init`, `support-bundle`, `trace` | Current |
 
 ## Contract, architecture, and backend authoring
@@ -82,6 +84,8 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 | Document | What it is | Status |
 | --- | --- | --- |
 | [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md) | Normative behavior contract (MUST/MUST NOT) for any conforming unified BLE implementation | Current |
+| [`NATIVE_CAPABILITY_AUDIT.md`](NATIVE_CAPABILITY_AUDIT.md) | Active native operation boundaries, chooser mechanisms and durable intake evidence limits | Current |
+| [`ACCESSORY_CHOOSER_QUALIFICATION.md`](ACCESSORY_CHOOSER_QUALIFICATION.md) | ASK/CDM reference setup and bounded physical qualification procedure; not a receipt | Current |
 | [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md) | Historical clean-baseline architecture and migration plan; not current 5.0 authority | Historical |
 | [`MOBILE_RUST_WIRE.md`](MOBILE_RUST_WIRE.md) | React Native Rust owner: process host, session leases, `ubm-mobile-wire/1` op table, drain records, platform radio interface | Current |
 | [`BACKEND_AUTHORING.md`](BACKEND_AUTHORING.md) | Authoring a third-party backend against `unified-ble-manager/backend-sdk` | Current |
@@ -124,6 +128,7 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Dev setup, canonical pre-PR checks, branch and PR flow | Current |
 | [`../GOVERNANCE.md`](../GOVERNANCE.md) | Maintainer roles, decision process, ADR requirement | Current |
 | [`../RELEASE.md`](../RELEASE.md) | Canonical tag-driven release procedure and invariants | Current |
+| [`5.0.0-RELEASE-COMPLETION-TRACKER.md`](5.0.0-RELEASE-COMPLETION-TRACKER.md) | rc.16 review intake: all UBM release/platform work, closure criteria and separate consumer handoff | Current |
 | [`5.0.0-LANE.md`](5.0.0-LANE.md) | Historical 5.0 integration-lane rules before the owner authorized the RC release path | Historical |
 | [`5.0.0-U0-BASELINE.md`](5.0.0-U0-BASELINE.md) | UBM 5.0 U0 baseline manifest: retained entrypoints/targets/capabilities, identities, toolchain, boundary | Current |
 | [`5.0.0-GATE-LEDGER.md`](5.0.0-GATE-LEDGER.md) | Historical U-LICENSE and U0–U12 gate receipts; live release status is in `RELEASE.md` | Historical |

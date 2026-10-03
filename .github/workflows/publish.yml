@@ -62,8 +62,6 @@ jobs:
   # Electron. Build once per OS/CPU and bundle every binary in npm:
   #   desktop-core (cargo): the shared Rust core every desktop entrypoint
   #     loads (PR210-03), maintained targets, each with an identity sidecar.
-  #   corebluetooth / winrt (node-gyp): LEGACY addons, unreachable from any
-  #     public entrypoint; Phase 4 deletes these legs with native/electron/*.
   native-prebuild:
     name: Native prebuild (${{ matrix.backend }} ${{ matrix.platform }}-${{ matrix.arch }})
     timeout-minutes: 90
@@ -75,12 +73,6 @@ jobs:
     steps:
       - name: Checkout tag
         uses: actions/checkout@v7.0.0
-
-      - name: Setup Python for node-gyp
-        if: matrix.builder == 'node-gyp'
-        uses: actions/setup-python@v6.0.0
-        with:
-          python-version: '3.12'
 
       - name: Install Linux native and Electron smoke dependencies
         if: matrix.builder == 'cargo' && runner.os == 'Linux'
@@ -152,11 +144,7 @@ jobs:
           node-version: '24'
 
       - name: Install pinned Rust + Apple targets
-        run: |
-          cargo --version
-          PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
-          test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
-          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-tvos aarch64-apple-tvos-sim
+        uses: ./.github/actions/setup-apple-rust
 
       - name: Build RustCore XCFramework from source
         # Canonical builder: seals UBM_BUILD_SOURCE_DIGEST /
@@ -447,30 +435,7 @@ jobs:
 
       - name: Classify and guard canonical package release channel
         id: release_channel
-        run: |
-          set -euo pipefail
-          TAG="${GITHUB_REF_NAME#v}"
-          ROOT_VER="$(node -p "require('./package.json').version")"
-          ROOT_NAME="$(node -p "require('./package.json').name")"
-          if [ "$TAG" != "$ROOT_VER" ]; then
-            echo "Tag v${TAG} does not match root package.json version ${ROOT_VER}"
-            exit 1
-          fi
-          if [ "$ROOT_NAME" != "unified-ble-manager" ]; then
-            echo "Root package name must be unified-ble-manager, got ${ROOT_NAME}"
-            exit 1
-          fi
-          if [[ "$ROOT_VER" == 4.0.0-rc.* ]]; then
-            echo "NPM_DIST_TAG=latest" >> "$GITHUB_ENV"
-            echo "is_stable=false" >> "$GITHUB_OUTPUT"
-          elif [[ "$ROOT_VER" == *-* ]]; then
-            echo "NPM_DIST_TAG=next" >> "$GITHUB_ENV"
-            echo "is_stable=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "NPM_DIST_TAG=latest" >> "$GITHUB_ENV"
-            echo "is_stable=true" >> "$GITHUB_OUTPUT"
-          fi
-          echo "Publishing ${ROOT_NAME}@${ROOT_VER} from tag ${GITHUB_REF_NAME}"
+        run: node scripts/release/release-version-policy.js
 
       # Check before enforcing current-main so an immutable npm publication can
       # finish its GitHub Release on a rerun even if main has advanced.

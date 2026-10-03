@@ -130,12 +130,16 @@ import {
   type WriteResult
 } from '../../backend-contract/operations'
 import { assertPeerReference, encodePeerReference, type PeerReference } from '../../backend-contract/peer-reference'
+import type { Deadline } from '../../backend-contract/primitives'
 import type { CoreTraceSink } from '../../core/trace-recorder'
+import { awaitWithOperationAdmission } from '../../core/unified-ble-core-helpers'
+import { ACCESSORY_CANCELLATION_DRAIN_MS } from './react-native-accessory-chooser'
 import {
   canonicalBleAddress,
   canonicalUuid,
   capacity,
   createAttachmentBoundIdFactory,
+  deadline,
   monotonicTimestamp,
   negotiateCoreVersions,
   negotiateVersion,
@@ -849,6 +853,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private destroyed = false
   private destroyResult: Promise<CleanupRecord> | null = null
   private sessionDisposed = false
+  private readonly accessoryChoices = new Map<string, () => Promise<void>>()
   private nextOrdinal = 1
   // Legacy per-backend resource counters (origin/main corebluetooth-backend.ts:352-357).
   private nextPeer = 1
@@ -999,8 +1004,13 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         readonly title: string
         readonly body?: string
       }) => this.updateBackgroundNotification(request),
-      associateCompanion: (request: { readonly name?: string; readonly serviceUuid?: string }) =>
-        this.associateCompanion(request),
+      associateCompanion: (request: {
+        readonly name?: string
+        readonly serviceUuid?: string
+        readonly filtersJson?: string
+        readonly signal?: AbortSignal | null
+        readonly deadline?: Deadline | null
+      }) => this.associateCompanion(request),
       listCompanionAssociations: () => this.listCompanionAssociations(),
       disassociateCompanion: (request: { readonly associationId: number }) => this.disassociateCompanion(request),
       observePresence: (request: { readonly peerId: string }) => this.observePresence(request),
@@ -1148,6 +1158,15 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     return String(this.peerIdForNative(nativePeerId))
   }
 
+  /** Native system UI is owned by this attachment, not by the module lifetime. */
+  admitAccessoryChoice(requestId: string, cancel: () => Promise<void>): () => void {
+    this.assertOperational(`${SCOPE}.accessory.choose`)
+    this.accessoryChoices.set(requestId, cancel)
+    return () => {
+      if (this.accessoryChoices.get(requestId) === cancel) this.accessoryChoices.delete(requestId)
+    }
+  }
+
   destroy(): Promise<CleanupRecord> {
     if (this.destroyResult === null) {
       const destruction = this.destroyInternal()
@@ -1170,6 +1189,22 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private async destroyInternal(): Promise<CleanupRecord> {
     this.destroyed = true
     const records: CleanupRecord[] = []
+    for (const [requestId, cancel] of [...this.accessoryChoices]) {
+      try {
+        await awaitWithOperationAdmission(
+          cancel(),
+          { signal: null, deadline: deadline(this.now() + ACCESSORY_CANCELLATION_DRAIN_MS) },
+          this.now,
+          `${SCOPE}.accessory.cancel`
+        )
+        if (this.accessoryChoices.get(requestId) === cancel) this.accessoryChoices.delete(requestId)
+      } catch (error) {
+        records.push({
+          state: 'release-failed',
+          failures: [cleanupFailure('session', error, `${SCOPE}.accessory.cancel`)]
+        })
+      }
+    }
     if (this.restorationActivation !== null && this.restoration !== null) {
       await this.restoration.deactivate(this.restorationActivation)
       this.restorationActivation = null
@@ -1186,7 +1221,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       }
       if (disposal.state !== 'released') {
         // The lease stays open so a retried destroy can dispose it again.
-        return disposal
+        return mergeCleanup([...records, disposal])
       }
       this.sessionDisposed = true
       await this.refreshCounters()
@@ -3531,13 +3566,22 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private associateCompanion(request: {
     readonly name?: string
     readonly serviceUuid?: string
+    readonly filtersJson?: string
+    readonly signal?: AbortSignal | null
+    readonly deadline?: Deadline | null
   }): Promise<WireOpResults['companion.associate']> {
-    this.assertOperational(`${SCOPE}.companion.associate`)
+    const operation = `${SCOPE}.companion.associate`
+    this.assertOperational(operation)
+    const budget = this.budget({ signal: request.signal ?? null, deadline: request.deadline ?? null }, operation)
+    const operationId = this.mintOperationId('companion')
+    const removeAbort = this.watchAbort(request.signal ?? null, operationId, operation)
     return this.invoke('companion.associate', {
       ...(request.name === undefined ? {} : { name: request.name }),
       ...(request.serviceUuid === undefined ? {} : { serviceUuid: String(canonicalUuid(request.serviceUuid)) }),
-      operationId: this.mintOperationId('companion')
-    })
+      ...(request.filtersJson === undefined ? {} : { filtersJson: request.filtersJson }),
+      ...budget,
+      operationId
+    }).finally(removeAbort)
   }
 
   private listCompanionAssociations(): Promise<WireOpResults['companion.list']> {
@@ -3597,7 +3641,13 @@ export interface ReactNativeRustCoreHostServices {
     readonly title: string
     readonly body?: string
   }): Promise<void>
-  associateCompanion(request: { readonly name?: string; readonly serviceUuid?: string }): Promise<{
+  associateCompanion(request: {
+    readonly name?: string
+    readonly serviceUuid?: string
+    readonly filtersJson?: string
+    readonly signal?: AbortSignal | null
+    readonly deadline?: Deadline | null
+  }): Promise<{
     readonly source: 'associated' | 'already-associated'
     readonly associationId: number
     readonly peerId: string | null

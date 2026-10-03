@@ -39,6 +39,10 @@ class ForegroundServiceBackgroundPort(
  */
 interface CompanionPort {
   fun associate(name: String?, serviceUuid: String?, onResult: (Result<CompanionAssociation>) -> Unit)
+  fun associateWithFilters(filtersJson: String, onResult: (Result<CompanionAssociation>) -> Unit) {
+    throw RadioPortFailure(RadioFailureKind.UNSUPPORTED, "This host has no filtered system chooser")
+  }
+  fun cancelAssociation(onResult: (Result<CompanionAssociation>) -> Unit): Boolean = false
   /** This app's associations; empty when none. Throws [RadioPortFailure] when the platform cannot answer. */
   fun listAssociations(): List<CompanionAssociationRecord>
   /** Removes one association by id; throws [RadioPortFailure] when no association carries it. */

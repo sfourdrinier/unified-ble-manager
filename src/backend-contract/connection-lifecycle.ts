@@ -30,4 +30,5 @@ export interface ConnectionLifecycleEvent<Attachment extends string> {
   readonly previous: ConnectionState
   readonly current: ConnectionState
   readonly cause: ConnectionLifecycleCause
+  readonly platform?: import('./errors').PlatformErrorDetail
 }

@@ -216,15 +216,16 @@ pub enum BluezBus {
     Session,
 }
 
-/// Explicit BlueZ connection authority supplied by the trusted host.
+/// Optional stricter daemon pin supplied by the trusted host.
 ///
-/// An LE attestation applies to one daemon process, not an introspection
-/// signature: older BlueZ releases export an unimplemented LE interface.
-/// `None` at radio construction permits observation, but no link acquisition.
+/// Native Linux construction always resolves and binds a unique daemon owner.
+/// A supplied pin must match it; it does not attest that any method works.
+/// Actual protocol answers remain authoritative, because older BlueZ releases
+/// can export an unimplemented LE interface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BluezConnectionPolicy {
-    /// The host attests that this unique D-Bus owner implements LE1 lifecycle
-    /// methods. The radio never substitutes a later owner or Device1 calls.
+    /// Restrict construction to this unique D-Bus owner. The radio never
+    /// substitutes a later owner or Device1 calls.
     LeBearer { daemon_unique_owner: String },
 }
 
@@ -808,6 +809,16 @@ pub struct GattSnapshotIdentity {
 /// Radio-side events delivered to the central event loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RadioEvent {
+    /// Private BlueZ authority observation. The production radio validates
+    /// this physical generation against its exact owned lease before any
+    /// public connection/GATT invalidation. Peer-only property hints cannot
+    /// substitute for this observed identity.
+    #[cfg(target_os = "linux")]
+    LinuxPhysicalLost {
+        peer_id: String,
+        physical_generation: u64,
+        reason: u8,
+    },
     Advertisement(PeerSnapshot),
     Connected(String),
     Disconnected(String),
@@ -937,6 +948,17 @@ pub struct DirectoryPeer {
 /// answer `capability.unsupported`, so existing implementations keep
 /// compiling and never claim a capability they do not have.
 pub trait RadioBoundary: Send + Sync + 'static {
+    /// Private daemon observation admission, independent of cleanup success.
+    /// Only the Linux authority radio can validate its owned physical token.
+    #[cfg(target_os = "linux")]
+    fn accept_physical_loss(
+        &self,
+        _peer: &str,
+        _generation: u64,
+        _reason: u8,
+    ) -> impl Future<Output = bool> + Send {
+        async { false }
+    }
     /// Identity of the currently accepted graph, read without radio I/O.
     /// `None` preserves platforms without an authoritative snapshot token.
     fn gatt_snapshot_identity(
@@ -1382,6 +1404,8 @@ impl RadioCloseFailure {
 }
 
 struct FakeInner {
+    #[cfg(target_os = "linux")]
+    physical_generations: HashMap<String, u64>,
     directory_peers: Option<Vec<DirectoryPeer>>,
     directory_unblocked_reads: usize,
     canonical_peer_ids: HashMap<String, String>,
@@ -1530,6 +1554,8 @@ impl FakeRadio {
                 directory_peers: None,
                 directory_unblocked_reads: 0,
                 canonical_peer_ids: HashMap::new(),
+                #[cfg(target_os = "linux")]
+                physical_generations: HashMap::new(),
                 faults: HashMap::new(),
                 scan_filters: Vec::new(),
                 known_peers: Vec::new(),
@@ -1716,6 +1742,16 @@ impl FakeRadio {
         }
         drop(state);
         self.notify.notify_one();
+    }
+
+    /// Stage deterministic Linux authority identity; never physical evidence.
+    #[cfg(target_os = "linux")]
+    pub fn set_physical_generation(&self, peer: &str, generation: u64) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .physical_generations
+            .insert(peer.to_owned(), generation);
     }
 
     /// Close the event source: a pending [`RadioBoundary::next_event`]
@@ -2103,6 +2139,16 @@ fn descriptor_key(
 }
 
 impl RadioBoundary for FakeRadio {
+    #[cfg(target_os = "linux")]
+    async fn accept_physical_loss(&self, peer: &str, generation: u64, _reason: u8) -> bool {
+        let mut state = self.state.lock().expect("fake radio state");
+        if generation != 0 && state.physical_generations.get(peer) == Some(&generation) {
+            state.physical_generations.remove(peer);
+            true
+        } else {
+            false
+        }
+    }
     fn gatt_snapshot_identity(
         &self,
         peer_id: &str,

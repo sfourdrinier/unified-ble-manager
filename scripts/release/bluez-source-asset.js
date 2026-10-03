@@ -2,6 +2,7 @@
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
+const { deploymentRelease } = require('../../vendor/bluez/deployment/identity.cjs')
 
 function readBluezSourceAsset(directory) {
   const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'source-asset-manifest.json'), 'utf8'))
@@ -22,6 +23,7 @@ function readBluezSourceAsset(directory) {
     distribution.deployment !== 'external-explicit-host-action'
   )
     throw new Error('BlueZ source-asset distribution requires a new review')
+  if (distribution.linuxAuthorityContract !== undefined) deploymentRelease(distribution)
   const digest = /^[a-f0-9]{64}$/
   if (
     !manifest.upstream ||
