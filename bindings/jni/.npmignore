@@ -1,0 +1,2 @@
+# Explicit npm exclusion policy; mirrored by .gitignore and gated by packaging tests.
+/target/
