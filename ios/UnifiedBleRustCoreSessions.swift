@@ -20,6 +20,22 @@ import Security
 @objcMembers
 public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchecked Sendable {
   public static let shared = UnifiedBleRustCoreSessions(installer: { try installProductionHost(wake: $0) })
+  private static let launchLock = NSLock()
+  private static var restorationLaunchIdentifiers = [String]()
+  private var accessoryStartupFailure: String?
+  private var accessoryStartupQueryInFlight = false
+
+  public static func recordNativeRestorationLaunchIdentifiers(_ identifiers: [String]) {
+    launchLock.lock()
+    restorationLaunchIdentifiers = identifiers
+    launchLock.unlock()
+  }
+
+  private static func nativeRestorationLaunchIdentifiers() -> [String] {
+    launchLock.lock()
+    defer { launchLock.unlock() }
+    return restorationLaunchIdentifiers
+  }
 
   typealias Installer = (MobileWakeSink) throws -> MobileCoreHost
 
@@ -197,12 +213,15 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
       restoreIdentifierKey: configuration.restoreIdentifierKey,
       showPowerAlert: configuration.showPowerAlert
     )
-    // Finding 179: `willRestoreState` only lands on a central created with
-    // the restore identifier, so a restoring app keeps legacy central timing
-    // (and the platform prompt) at startup; without restoration the central
-    // waits for first explicit need and the prompt appears on request.
+    // A genuine OS restoration launch must recover its original central.
+    // Legacy apps keep eager restoration timing; an ASK app's ordinary launch
+    // waits for its actual authorized accessory list before creating a central.
     if OwnedCoreBluetoothProtocolRadioSupport.restorationConfigured(
       restoreIdentifierKey: configuration.restoreIdentifierKey
+    ) && OwnedCoreBluetoothProtocolRadioSupport.shouldCreateStartupCentral(
+      restorationIdentifier: configuration.restoreIdentifierKey,
+      accessorySetup: OwnedCoreBluetoothProtocolRadioSupport.accessorySetupConfigured(info: bundle.infoDictionary ?? [:]),
+      restorationLaunchIdentifiers: nativeRestorationLaunchIdentifiers()
     ) {
       // Installation already synchronously attaches the delegate below and
       // must not enter from the radio queue. Allocate on that same queue so
@@ -516,9 +535,74 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
         return Self.failureJson(code: "capability.unsupported", domain: "restoration",
                                 operation: "continuation.bootstrap", detail: "native continuation requires a configured restoration identifier")
       }
-      return ensureHost()
+      if let failure = ensureHost() { return failure }
+      let configuration = Self.productionRadioConfiguration(bundle: .main)
+      let accessorySetup = OwnedCoreBluetoothProtocolRadioSupport.accessorySetupConfigured(info: Bundle.main.infoDictionary ?? [:])
+      if OwnedCoreBluetoothProtocolRadioSupport.shouldCreateStartupCentral(
+        restorationIdentifier: configuration.restoreIdentifierKey, accessorySetup: accessorySetup,
+        restorationLaunchIdentifiers: Self.nativeRestorationLaunchIdentifiers()
+      ) {
+        // A module can install/bind the host before the launch notification
+        // arrives. Recheck the now-known OS launch identity even for that host.
+        let radio = OwnedCoreBluetoothProtocolRadioOwner.acquire(
+          restoreIdentifierKey: configuration.restoreIdentifierKey,
+          showPowerAlert: configuration.showPowerAlert
+        )
+        radio.queue.async { _ = radio.ensureCentral() }
+      } else if accessorySetup {
+        resumeAuthorizedAccessoryStartup(configuration)
+      }
+      return nil
       #endif
     }
+  }
+
+  private func resumeAuthorizedAccessoryStartup(
+    _ configuration: (restoreIdentifierKey: String?, showPowerAlert: NSNumber?)
+  ) {
+    lock.lock()
+    guard !accessoryStartupQueryInFlight else { lock.unlock(); return }
+    accessoryStartupQueryInFlight = true
+    lock.unlock()
+    // ensureHost above has already attached and bound the event sink. An
+    // immediate authorization callback cannot precede that ownership boundary.
+    OwnedCoreBluetoothProtocolRadioSupport.resumeAuthorizedAccessoryStartup(
+      query: { completion in
+        OwnedCoreBluetoothProtocolRadioSupport.queryAuthorizedAccessories(completion: { result in
+          self.lock.lock()
+          switch result {
+          case .success: self.accessoryStartupFailure = nil
+          case .failure(let error):
+            self.accessoryStartupFailure = Self.platformFailureJson(error,
+              operation: "continuation.bootstrap.accessory-authorization", detail: error.localizedDescription)
+          }
+          self.accessoryStartupQueryInFlight = false
+          self.lock.unlock()
+          completion(result)
+        }, sessionFailure: { error in
+          self.recordAccessoryStartupFailure(error)
+        })
+      },
+      createCentral: {
+        let radio = OwnedCoreBluetoothProtocolRadioOwner.acquire(
+          restoreIdentifierKey: configuration.restoreIdentifierKey,
+          showPowerAlert: configuration.showPowerAlert
+        )
+        radio.queue.async { _ = radio.ensureCentral() }
+      },
+      failure: { error in
+        self.recordAccessoryStartupFailure(error)
+      }
+    )
+  }
+
+  private func recordAccessoryStartupFailure(_ error: NSError) {
+    let failure = Self.platformFailureJson(error, operation: "continuation.bootstrap.accessory-authorization",
+      detail: error.localizedDescription)
+    lock.lock()
+    accessoryStartupFailure = failure
+    lock.unlock()
+    NSLog("[UnifiedBleRustCore] native accessory authorization bootstrap failed: %@", failure)
   }
 
   /// The restored peer is supplied by the process radio, never a JS callback.
@@ -751,6 +835,10 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   /// `lastWake` is null
   /// until a wake executes one, never invented.
   public func continuationStatus(_ completion: @escaping (String?, String?) -> Void) {
+    lock.lock()
+    let startupFailure = accessoryStartupFailure
+    lock.unlock()
+    if let startupFailure { return completion(nil, startupFailure) }
     var strategy = "record-only"
     var peerId: String?
     var resubscribe = 0
@@ -1129,12 +1217,15 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   static func recordingFailureJson(_ error: Error) -> String {
     if let error = error as? RecordingFailure { return error.json }
     if case MobileCoreError.Failed = error { return failureJson(error, operation: "continuation.recording") }
-    let native = error as NSError
     let reason = "Private recording storage could not be configured"
-    let record: [String: Any] = ["code": "platform.failure", "domain": "platform", "operation": "continuation.recording.configure",
-      "detail": reason, "platform": ["domain": native.domain, "code": String(native.code), "message": reason, "metadata": [String: Any]()]]
+    return platformFailureJson(error as NSError, operation: "continuation.recording.configure", detail: reason)
+  }
+
+  static func platformFailureJson(_ native: NSError, operation: String, detail: String) -> String {
+    let record: [String: Any] = ["code": "platform.failure", "domain": "platform", "operation": operation,
+      "detail": detail, "platform": ["domain": native.domain, "code": String(native.code), "message": detail, "metadata": [String: Any]()]]
     guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else {
-      return failureJson(code: "platform.failure", domain: "platform", operation: "continuation.recording.configure", detail: reason)
+      return failureJson(code: "platform.failure", domain: "platform", operation: operation, detail: detail)
     }
     return String(decoding: data, as: UTF8.self)
   }

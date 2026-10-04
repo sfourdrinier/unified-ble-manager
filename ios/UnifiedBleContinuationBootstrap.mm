@@ -20,6 +20,14 @@
 }
 
 + (void)applicationDidFinishLaunching:(NSNotification *)notification {
+  id identifiers = notification.userInfo[UIApplicationLaunchOptionsBluetoothCentralsKey];
+  NSMutableArray<NSString *> *restorationIdentifiers = [NSMutableArray new];
+  if ([identifiers isKindOfClass:NSArray.class]) {
+    for (id identifier in identifiers) {
+      if ([identifier isKindOfClass:NSString.class]) [restorationIdentifiers addObject:identifier];
+    }
+  }
+  [UnifiedBleRustCoreSessions recordNativeRestorationLaunchIdentifiers:restorationIdentifiers];
   NSString *failure = [[UnifiedBleRustCoreSessions shared] bootstrapNativeContinuation];
   if (failure != nil) {
     NSLog(@"[UnifiedBleRustCore] native continuation bootstrap failed: %@", failure);

@@ -357,7 +357,8 @@ fallback title, and validation failure leaves existing ownership unchanged.
 The declaration is persisted host configuration: the OS must be able to read
 it before JavaScript runs. A host may replace it only when doing so cannot
 change an already owned continuation; claim and release that owner first.
-Claims queue behind an in-flight automatic recovery attempt, then seal the
+Desktop status reads and claims queue behind an in-flight automatic recovery
+attempt rather than depending on a scheduler gap. Claims then seal the
 continuation before another retry can start. An explicit initial execution still
 excludes concurrent claims and reports a busy lifecycle state. Confirmed link
 loss retires that generation's physical subscription obligations; it does not

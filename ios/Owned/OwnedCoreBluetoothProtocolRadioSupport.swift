@@ -2,6 +2,9 @@
 
 import CoreBluetooth
 import Foundation
+#if os(iOS) && !targetEnvironment(macCatalyst)
+import AccessorySetupKit
+#endif
 
 /**
  * Pure CoreBluetooth projections, shared radio value types, injectable
@@ -13,6 +16,8 @@ import Foundation
  * queue-confined mutable state.
  */
 enum OwnedCoreBluetoothProtocolRadioSupport {
+  private static var startupAccessorySession: AnyObject?
+  private static var startupAccessoryAuthorization: AppleAccessoryStartupAuthorization?
   static func advertisementDictionary(
     peripheral: CBPeripheral,
     advertisementData: [String: Any],
@@ -254,9 +259,13 @@ extension OwnedCoreBluetoothProtocolRadio {
   /// queue. Reading state never prompts: before the radio exists, power is
   /// unknown and the reason says the radio is created on request.
   func snapshotOnQueue() -> NSDictionary {
-    if central == nil,
-       OwnedCoreBluetoothProtocolRadioSupport.currentAuthorizationWord() == "notDetermined" {
-      return OwnedCoreBluetoothProtocolRadioSupport.prePermissionSnapshot(authorization: "notDetermined")
+    if central == nil && (
+      OwnedCoreBluetoothProtocolRadioSupport.currentAuthorizationWord() == "notDetermined" ||
+      OwnedCoreBluetoothProtocolRadioSupport.accessorySetupConfigured(info: Bundle.main.infoDictionary ?? [:])
+    ) {
+      return OwnedCoreBluetoothProtocolRadioSupport.prePermissionSnapshot(
+        authorization: OwnedCoreBluetoothProtocolRadioSupport.currentAuthorizationWord()
+      )
     }
     return OwnedCoreBluetoothProtocolRadioSupport.adapterSnapshotDictionary(central: ensureCentral())
   }
@@ -524,6 +533,100 @@ final class ApplePermissionPrompter {
 }
 
 extension OwnedCoreBluetoothProtocolRadioSupport {
+  static func accessorySetupConfigured(info: [String: Any]) -> Bool {
+    #if os(iOS) && !targetEnvironment(macCatalyst)
+    if #available(iOS 18.0, *) {
+      return (info["NSAccessorySetupKitSupports"] as? [String])?.contains("Bluetooth") == true
+    }
+    #endif
+    return false
+  }
+
+  static func shouldCreateStartupCentral(
+    restorationIdentifier: String?, accessorySetup: Bool, restorationLaunchIdentifiers: [String]
+  ) -> Bool {
+    guard let restorationIdentifier, !restorationIdentifier.isEmpty else { return false }
+    return !accessorySetup || restorationLaunchIdentifiers.contains(restorationIdentifier)
+  }
+
+  static func authorizedBluetoothAccessory(authorized: Bool, bluetoothIdentifier: UUID?) -> Bool {
+    authorized && bluetoothIdentifier != nil
+  }
+
+  /// Read the OS authorization list before restoring a configured ASK radio
+  /// on an ordinary launch. Never prompt, choose, or infer an authorization.
+  static func queryAuthorizedAccessories(
+    completion: @escaping (Result<Bool, NSError>) -> Void,
+    sessionFailure: @escaping (NSError) -> Void
+  ) {
+    #if os(iOS) && !targetEnvironment(macCatalyst)
+    if #available(iOS 18.0, *) {
+      DispatchQueue.main.async {
+        if let active = startupAccessorySession as? ASAccessorySession {
+          guard startupAccessoryAuthorization?.isActivated == true else {
+            completion(.failure(NSError(domain: "UnifiedBleAccessoryStartup", code: 4,
+              userInfo: [NSLocalizedDescriptionKey: "Accessory authorization query already in progress"])))
+            return
+          }
+          completion(.success(active.accessories.contains { accessory in
+            authorizedBluetoothAccessory(authorized: accessory.state == .authorized, bluetoothIdentifier: accessory.bluetoothIdentifier)
+          }))
+          return
+        }
+        let session = ASAccessorySession()
+        startupAccessorySession = session
+        var deadline: DispatchWorkItem?
+        let authorization = AppleAccessoryStartupAuthorization(
+          completion: completion, sessionFailure: sessionFailure,
+          activated: { deadline?.cancel() },
+          retire: {
+            deadline?.cancel()
+            if startupAccessorySession === session {
+              startupAccessorySession = nil
+              startupAccessoryAuthorization = nil
+            }
+            session.invalidate()
+          }
+        )
+        startupAccessoryAuthorization = authorization
+        let timeout = DispatchWorkItem {
+          authorization.fail(NSError(domain: "UnifiedBleAccessoryStartup", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Accessory authorization query timed out"]))
+        }
+        deadline = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
+        session.activate(on: .main) { event in
+          if let error = event.error { authorization.fail(error as NSError); return }
+          if event.eventType == .activated {
+            authorization.activate(authorized: session.accessories.contains { accessory in
+              authorizedBluetoothAccessory(authorized: accessory.state == .authorized, bluetoothIdentifier: accessory.bluetoothIdentifier)
+            })
+          } else if event.eventType == .invalidated {
+            authorization.fail(NSError(domain: "UnifiedBleAccessoryStartup", code: 2,
+              userInfo: [NSLocalizedDescriptionKey: "Accessory authorization session invalidated"]))
+          }
+        }
+      }
+      return
+    }
+    #endif
+    completion(.failure(NSError(domain: "UnifiedBleAccessoryStartup", code: 3,
+      userInfo: [NSLocalizedDescriptionKey: "AccessorySetupKit is unavailable on this platform"])))
+  }
+
+  static func resumeAuthorizedAccessoryStartup(
+    query: (@escaping (Result<Bool, NSError>) -> Void) -> Void,
+    createCentral: @escaping () -> Void,
+    failure: @escaping (NSError) -> Void
+  ) {
+    query { result in
+      switch result {
+      case .success(let authorized): if authorized { createCentral() }
+      case .failure(let error): failure(error)
+      }
+    }
+  }
+
   /// Whether the restore identifier needs its central early: `willRestoreState`
   /// only lands on a central created with it (finding 179 keeps legacy
   /// timing there, and the platform prompt with it).
@@ -586,7 +689,48 @@ extension OwnedCoreBluetoothProtocolRadioSupport {
       "availability": "available",
       "authorization": authorization,
       "power": "unknown",
-      "safeReason": "The Bluetooth permission prompt has not been requested; the radio is created on request"
+      "safeReason": "CoreBluetooth state is unknown until an explicit radio request or authorized native restoration creates the central"
     ] as NSDictionary
+  }
+}
+
+/// Queue-confined ownership of one native authorization query and its retained
+/// session. A late session failure is observable but cannot complete the query twice.
+final class AppleAccessoryStartupAuthorization {
+  private enum Phase { case pending, active, retired }
+  private var phase = Phase.pending
+  private let completion: (Result<Bool, NSError>) -> Void
+  private let sessionFailure: (NSError) -> Void
+  private let activated: () -> Void
+  private let retire: () -> Void
+  var isActivated: Bool { phase == .active }
+
+  init(completion: @escaping (Result<Bool, NSError>) -> Void,
+       sessionFailure: @escaping (NSError) -> Void, activated: @escaping () -> Void,
+       retire: @escaping () -> Void) {
+    self.completion = completion
+    self.sessionFailure = sessionFailure
+    self.activated = activated
+    self.retire = retire
+  }
+
+  @discardableResult
+  func activate(authorized: Bool) -> Bool {
+    guard phase == .pending else { return false }
+    phase = .active
+    activated()
+    completion(.success(authorized))
+    return true
+  }
+
+  @discardableResult
+  func fail(_ error: NSError) -> Bool {
+    guard phase != .retired else { return false }
+    let wasPending = phase == .pending
+    phase = .retired
+    retire() // Retire identity before invalidate's synchronous callback.
+    if wasPending { completion(.failure(error)) }
+    else { sessionFailure(error) }
+    return true
   }
 }

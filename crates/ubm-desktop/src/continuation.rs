@@ -862,19 +862,23 @@ impl NativeContinuation {
         Ok(completed(peer, selectors.len(), state))
     }
 
+    async fn observe_state(&self) -> Result<tokio::sync::MutexGuard<'_, State>> {
+        match self.state.try_lock() {
+            Ok(state) => Ok(state),
+            // Autonomous retry must not make foreground observation depend on
+            // catching the backoff gap. Join the same FIFO admission queue,
+            // allowing the current bounded operation to settle first.
+            // Explicit caller executions retain their existing busy contract.
+            Err(_) if self.recovering.load(Ordering::SeqCst) => Ok(self.state.lock().await),
+            Err(_) => Err(busy()),
+        }
+    }
+
     pub async fn prepare_claim(&self, max_items: u32, max_bytes: u32) -> Result<Value> {
         if max_items == 0 || max_bytes == 0 {
             return Err(invalid("claim bounds must be positive"));
         }
-        let mut state = match self.state.try_lock() {
-            Ok(state) => state,
-            // Autonomous retry must not make foreground handoff depend on
-            // catching the backoff gap. Join the same FIFO admission queue,
-            // allowing the current bounded operation to settle before sealing.
-            // Explicit caller executions retain their existing busy contract.
-            Err(_) if self.recovering.load(Ordering::SeqCst) => self.state.lock().await,
-            Err(_) => return Err(busy()),
-        };
+        let mut state = self.observe_state().await?;
         if let Some(prepared) = &state.prepared {
             let mut claim = prepared.claim.clone();
             if prepared.acknowledged {
@@ -1292,19 +1296,18 @@ impl NativeContinuation {
     }
 
     pub async fn describe_backlog(&self) -> Result<Value> {
-        match self.state.try_lock() {
-            Err(_) => Err(busy()),
-            Ok(state) if state.session.is_none() => Ok(Value::Null),
-            Ok(state) => {
-                let mut counters = invoke(&state, "counters.describe", json!({})).await?;
-                counters["continuationOutcome"] = self
-                    .last_recovery
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone()
-                    .unwrap_or(Value::Null);
-                Ok(counters)
-            }
+        let state = self.observe_state().await?;
+        if state.session.is_none() {
+            Ok(Value::Null)
+        } else {
+            let mut counters = invoke(&state, "counters.describe", json!({})).await?;
+            counters["continuationOutcome"] = self
+                .last_recovery
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .unwrap_or(Value::Null);
+            Ok(counters)
         }
     }
 }
@@ -1607,6 +1610,7 @@ mod idle_recovery_tests {
     struct Session {
         release: AtomicBool,
         hold_connect: AtomicBool,
+        connect_entered: tokio::sync::Notify,
         connected: tokio::sync::Notify,
     }
 
@@ -1619,6 +1623,7 @@ mod idle_recovery_tests {
         fn call<'a>(&'a self, op: &'a str, _: &'a str) -> ContinuationFuture<'a> {
             Box::pin(async move {
                 if op == "connection.connect" && self.hold_connect.load(Ordering::SeqCst) {
+                    self.connect_entered.notify_one();
                     self.connected.notified().await;
                 }
                 envelope(Ok(match op {
@@ -1628,6 +1633,8 @@ mod idle_recovery_tests {
                     "session.continuation-dispose" => {
                         json!({"state":if self.release.load(Ordering::SeqCst) {"released"} else {"release-failed"},"afterCutoffItems":0,"afterCutoffBytes":0})
                     }
+                    "counters.describe" => json!({"queuedData":1,"lastError":null}),
+                    "session.reconcile" => json!({"links":[],"subscriptions":[]}),
                     _ => json!({}),
                 }))
             })
@@ -1635,6 +1642,45 @@ mod idle_recovery_tests {
         fn drain(&self, _: u32, _: u32) -> ContinuationFuture<'_> {
             Box::pin(async { json!({"records":[],"more":false,"controlLost":0}).to_string() })
         }
+    }
+
+    #[tokio::test]
+    async fn backlog_status_joins_autonomous_recovery_but_explicit_execution_remains_busy() {
+        use std::{future::Future, task::Poll};
+        let host = Arc::new(Host::default());
+        host.0.release.store(true, Ordering::SeqCst);
+        let engine = NativeContinuation::new(host.clone());
+        engine
+            .execute("peer", r#"{"onAppearance":"native"}"#)
+            .await
+            .unwrap();
+        host.0.hold_connect.store(true, Ordering::SeqCst);
+        engine.request_recovery(&tokio::runtime::Handle::current());
+        host.0.connect_entered.notified().await;
+        let status = engine.describe_backlog();
+        tokio::pin!(status);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(status.as_mut().poll(cx).is_pending())).await,
+            "autonomous recovery must not make retained backlog status a timing-dependent busy refusal"
+        );
+        engine.stop_recovery();
+        host.0.connected.notify_one();
+        assert_eq!(status.await.unwrap()["queuedData"], 1);
+        engine.await_stopped_recovery().await;
+        let explicit = engine.state.lock().await;
+        assert_eq!(
+            engine.describe_backlog().await.unwrap_err()["code"],
+            "lifecycle.invalid-state"
+        );
+        drop(explicit);
+        let prepared = engine.prepare_claim(8, 1024).await.unwrap();
+        assert_eq!(
+            engine
+                .acknowledge_claim(prepared["claimToken"].as_str().unwrap())
+                .await
+                .unwrap()["disposed"],
+            true
+        );
     }
 
     #[tokio::test]

@@ -59,7 +59,9 @@ export interface NativeContinuationControl {
   execute(declaration: BackgroundContinuationDeclaration): Promise<NativeContinuationCompleted>
   /** Decodes all prepared values before acknowledging their handoff. */
   claim(options?: NativeContinuationClaimOptions): Promise<ContinuationBacklog>
-  /** Null means no native session is owned; failures are never hidden as null. */
+  /** Null means no native session is owned; failures are never hidden as null.
+   * Desktop reads queue behind autonomous recovery, while explicit execution
+   * or another foreground handoff retains its busy lifecycle refusal. */
   status(): Promise<NativeContinuationStatus | null>
 }
 

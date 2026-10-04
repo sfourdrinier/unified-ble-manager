@@ -15,6 +15,24 @@ describe('Apple native continuation launch wiring', () => {
     expect(source).not.toMatch(/RCT_EXPORT_MODULE|RCTBridge|startReactNative/)
   })
 
+  it('admits startup centrals from actual restoration launch identity rather than ASK declarations alone', () => {
+    const launch = read('ios/UnifiedBleContinuationBootstrap.mm')
+    expect(launch).toContain('UIApplicationLaunchOptionsBluetoothCentralsKey')
+    expect(launch).toContain('recordNativeRestorationLaunchIdentifiers')
+    const sessions = read('ios/UnifiedBleRustCoreSessions.swift')
+    expect(sessions).toContain('shouldCreateStartupCentral')
+    expect(sessions).toContain('resumeAuthorizedAccessoryStartup')
+    expect(sessions.indexOf('if let failure = ensureHost() { return failure }')).toBeLessThan(
+      sessions.indexOf('resumeAuthorizedAccessoryStartup(configuration)')
+    )
+    expect(sessions).toContain('accessoryStartupQueryInFlight')
+    expect(sessions).toContain('if let startupFailure { return completion(nil, startupFailure) }')
+    const support = read('ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift')
+    expect(support).toContain('queryAuthorizedAccessories')
+    expect(support).toContain('accessory.state == .authorized')
+    expect(support).toContain('accessorySetupConfigured(info: Bundle.main.infoDictionary')
+  })
+
   it('serializes startup central allocation with permission and radio work, without an on-queue sync deadlock', () => {
     const source = read('ios/UnifiedBleRustCoreSessions.swift')
     const install = source.slice(
@@ -25,6 +43,9 @@ describe('Apple native continuation launch wiring', () => {
       /dispatchPrecondition\(condition: \.notOnQueue\(radio\.queue\)\)[\s\S]*radio\.queue\.sync\s*\{\s*_ = radio\.ensureCentral\(\)\s*\}/
     )
     expect(install.match(/radio\.ensureCentral\(\)/g)).toHaveLength(1)
+    expect(install).toMatch(
+      /restorationConfigured\([\s\S]*?\)\s*&&\s*OwnedCoreBluetoothProtocolRadioSupport\.shouldCreateStartupCentral/
+    )
     // Restored callbacks may run on the radio queue only after bind; the
     // installed host is returned before the installer can be entered again.
     const host = source.slice(

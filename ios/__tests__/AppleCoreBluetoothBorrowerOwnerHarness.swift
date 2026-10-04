@@ -12,6 +12,7 @@ import Foundation
 @main
 enum AppleCoreBluetoothBorrowerOwnerHarness {
   static func main() {
+    checkAccessoryStartupAdmission()
     checkPermissionDecision()
     checkAuthorizationWaiters()
     checkKnownPeerRetrieval()
@@ -49,6 +50,67 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
     guard case .noBorrower = coordinator.beginRelease(first, completion: { _ in }) else {
       preconditionFailure("A stale borrower was allowed to release the replacement")
     }
+  }
+
+  static func checkAccessoryStartupAdmission() {
+    let bluetoothIdentifier = UUID()
+    let bluetooth = OwnedCoreBluetoothProtocolRadioSupport.authorizedBluetoothAccessory
+    precondition(!bluetooth(true, nil))
+    precondition(!bluetooth(false, bluetoothIdentifier))
+    precondition(bluetooth(true, bluetoothIdentifier))
+    precondition([(true, nil), (true, bluetoothIdentifier)].contains { bluetooth($0.0, $0.1) })
+    let policy = OwnedCoreBluetoothProtocolRadioSupport.shouldCreateStartupCentral
+    precondition(policy("restore-1", false, [])) // Legacy timing unchanged.
+    precondition(!policy(nil, false, ["restore-1"]))
+    precondition(!policy("restore-1", true, []))
+    precondition(!policy("restore-1", true, ["different-restore"]))
+    precondition(policy("restore-1", true, ["restore-1"]))
+    var installed = false
+    var allocated = 0
+    var failures = [NSError]()
+    let queryFailure = NSError(domain: "ASErrorDomain", code: 550,
+      userInfo: [NSLocalizedDescriptionKey: "CBManagers active with global permissions"])
+    for answer: Result<Bool, NSError> in [.success(false), .success(true), .failure(queryFailure)] {
+      // Production installs/binds the host before beginning a query, including
+      // an injected synchronously answered query. No central is allocated yet.
+      installed = true
+      OwnedCoreBluetoothProtocolRadioSupport.resumeAuthorizedAccessoryStartup(
+        query: { completion in completion(answer) },
+        createCentral: { precondition(installed); allocated += 1 },
+        failure: { failures.append($0) }
+      )
+    }
+    precondition(allocated == 1)
+    precondition(failures.count == 1 && failures[0] === queryFailure)
+    precondition(OwnedCoreBluetoothProtocolRadioSupport.prePermissionSnapshot(authorization: "granted")["power"] as? String == "unknown")
+    for lateReason in [queryFailure, NSError(domain: "UnifiedBleAccessoryStartup", code: 2)] {
+      var answers = 0
+      var lateFailures = [NSError]()
+      var retired = 0
+      let query = AppleAccessoryStartupAuthorization(
+        completion: { _ in answers += 1 },
+        sessionFailure: { lateFailures.append($0) },
+        activated: {}, retire: { retired += 1 }
+      )
+      precondition(query.activate(authorized: true))
+      precondition(!query.activate(authorized: false))
+      precondition(query.fail(lateReason))
+      precondition(!query.fail(queryFailure))
+      precondition(answers == 1 && lateFailures.count == 1 && lateFailures[0] === lateReason)
+      precondition(retired == 1 && !query.isActivated)
+    }
+    var pendingAnswers = [Result<Bool, NSError>]()
+    var pendingRetirements = 0
+    let pending = AppleAccessoryStartupAuthorization(
+      completion: { pendingAnswers.append($0) },
+      sessionFailure: { _ in preconditionFailure("timed-out query produced a late session answer") },
+      activated: { preconditionFailure("late activation created a central") },
+      retire: { pendingRetirements += 1 }
+    )
+    precondition(pending.fail(queryFailure))
+    precondition(!pending.activate(authorized: true))
+    precondition(!pending.fail(queryFailure))
+    precondition(pendingAnswers.count == 1 && pendingRetirements == 1)
   }
 
   /// The exact helper used by production connect. Script OS lookup only;

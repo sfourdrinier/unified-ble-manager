@@ -17,6 +17,20 @@ host-control seam: `chooseAccessory` / `cancelAccessoryChoice` and
 `accessoryChooserAvailable` on the TurboModule. The Apple seam uses strict
 `ubm-accessory-chooser/1` JSON and AccessorySetupKit, not a second radio or Rust
 session. The native facade verifies app allowlists before picker allocation.
+In an ASK-declared app, an ordinary launch and adapter-state observation do not
+create a global-permission CoreBluetooth central before first accessory setup.
+Configured native continuation binds its host first, then checks the OS's actual
+authorized-accessory list through a bounded, single-flight native ASK session.
+An existing authorized Bluetooth accessory permits native startup without JavaScript; an
+empty list leaves central creation to accessory setup or an explicit radio use.
+The successful native ASK session remains process-owned. A genuine OS Bluetooth
+restoration launch naming the exact configured central identifier retains eager
+restoration, as do apps without ASK declarations. Existing centrals and active
+radio work are never discarded to make a picker appear. An explicit Bluetooth
+permission request or radio operation before ASK may create a global central;
+ASK's resulting refusal retains the platform's actual domain, code and reason.
+Authorization-query failures are logged as structured native failures and remain
+observable through `continuationStatus` until an authoritative successful retry.
 The ordinary Android public chooser reuses `companion.associate` with its
 additive `filtersJson` selector field; Rust validates and canonicalizes that
 field before the JNI/UniFFI platform request. Omitted `filtersJson` preserves

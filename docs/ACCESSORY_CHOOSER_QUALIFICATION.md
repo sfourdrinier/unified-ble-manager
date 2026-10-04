@@ -34,7 +34,7 @@ The newer ASK-qualified relaunch cases require iOS/iPadOS 26+.
 The current `example-expo/app.json` declares these ASK keys through Expo
 `ios.infoPlist`; verify them in the generated native app before qualification.
 The existing scenario screens and authenticated remote registry expose
-`accessory-chooser` with `choose`, `connect-selected`, and `cancel`/`stop`. It:
+`accessory-chooser` with `choose`, `connect-selected`, `sample-selected-hr`, and `cancel`/`stop`. It:
 
 1. Runs only when the app is active, retains the same scenario-owned manager, and reports
    current system-chooser capability before requesting UI.
@@ -47,6 +47,20 @@ localNamePrefix: 'SIM Polar H10' }], timeoutMs: 30000, signal })`.
    retains the original hosted manager without requesting scan permissions;
    connect-selected prepares that same host's Bluetooth authorization/readiness
    before connecting, never constructing a replacement manager or scanning.
+5. `sample-selected-hr({ timeoutMs: 5000 })` subscribes to HRS180D/2A37 on that
+   exact discovered database, waits for one positive parsed measurement, and
+   reports its actual bytes, delivery, sequence, monotonic timestamp and original
+   peer/connection/database identities. Its shared deadline bounds subscription
+   admission and value wait. Timeout, cancellation, terminal/error and overflow
+   are failures, not successful zero-value receipts. Subscription and iterator
+   cleanup remain in the scenario ledger, including late admission or refused
+   removal; `stop` retries retained cleanup. This does not use `h10-stream`, which
+   would construct another manager and cannot prove chooser-to-notification.
+
+For a positive ordinary setup, run `choose` → `connect-selected` →
+`sample-selected-hr` → `stop`; keep the real picker decision and the emitted
+`chooser-hrs-value` plus cleanup records. These commands use the same UI/remote
+registry and manager throughout; the sample alone is not a background receipt.
 
 These commands are available automatically in the current scenario UI; no
 private native command, replacement radio or unauthenticated remote endpoint is
