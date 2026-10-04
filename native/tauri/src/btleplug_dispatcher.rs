@@ -2140,6 +2140,7 @@ impl BtleplugDispatcher {
     ) -> TauriJoinHandle<()> {
         let forwarder = self.clone();
         tauri::async_runtime::spawn(async move {
+            let mut address_types = HashMap::new();
             loop {
                 match forwarder.scan_delivery(&key, &handle).await {
                     Delivery::Gone => return,
@@ -2151,7 +2152,38 @@ impl BtleplugDispatcher {
                 }
                 match authority.take_advertisement().await {
                     Ok(Some(snapshot)) => {
-                        let observation = core_scan_observation(&snapshot);
+                        let observation = match typed_core_scan_observation(
+                            authority.as_ref(),
+                            &snapshot,
+                            &mut address_types,
+                        )
+                        .await
+                        {
+                            Ok(observation) => observation,
+                            Err(error) => {
+                                if let Err(delivery_error) = forwarder
+                                    .terminal(
+                                        &key,
+                                        (&lease.0, &lease.1),
+                                        &handle,
+                                        "source-failed",
+                                        Some(&error),
+                                    )
+                                    .await
+                                {
+                                    eprintln!("Tauri scan address-type failure terminal delivery failed: {delivery_error:?}; original failure: {error:?}");
+                                }
+                                return;
+                            }
+                        };
+                        // A supplemental native read must not publish into a retired scan.
+                        loop {
+                            match forwarder.scan_delivery(&key, &handle).await {
+                                Delivery::Gone => return,
+                                Delivery::Paused => tokio::time::sleep(FORWARD_POLL_INTERVAL).await,
+                                Delivery::Active => break,
+                            }
+                        }
                         match forwarder
                             .emit(&key, Some((&lease.0, &lease.1)), &handle, observation)
                             .await
@@ -5265,7 +5297,38 @@ fn scan_properties_match_optional(
 /// `txPowerLevel`, `serviceUuids`, `manufacturerData`, `serviceData`, `origin`) with
 /// no filtering, merging, or re-sampling. The radio facts cross unchanged;
 /// delivery policy is the core's.
-fn core_scan_observation(snapshot: &ubm_desktop::PeerSnapshot) -> IpcValue {
+async fn typed_core_scan_observation(
+    authority: &dyn CoreAuthority,
+    snapshot: &ubm_desktop::PeerSnapshot,
+    cache: &mut HashMap<String, Option<ubm_desktop::AddressType>>,
+) -> Result<IpcValue, DispatchError> {
+    let kind = if snapshot.address.is_none() {
+        None
+    } else if let Some(kind) = cache.get(&snapshot.id) {
+        *kind
+    } else {
+        let kind = match authority
+            .address_type(&snapshot.id, OpControl::budget_ms(1000))
+            .await
+        {
+            Ok(kind) => kind,
+            Err(error) if error.code_str() == "capability.unsupported" => None,
+            Err(error) => return Err(DispatchError::from_core(&error)),
+        };
+        // Address type is stable for a peer identity. Bound this scan-local cache;
+        // exceeding it only repeats the native lookup, never drops observations.
+        if cache.len() < MAX_PENDING_EVENTS {
+            cache.insert(snapshot.id.clone(), kind);
+        }
+        kind
+    };
+    Ok(core_scan_observation(snapshot, kind))
+}
+
+fn core_scan_observation(
+    snapshot: &ubm_desktop::PeerSnapshot,
+    address_type: Option<ubm_desktop::AddressType>,
+) -> IpcValue {
     let manufacturer_data = snapshot
         .manufacturer_data
         .iter()
@@ -5288,6 +5351,10 @@ fn core_scan_observation(snapshot: &ubm_desktop::PeerSnapshot) -> IpcValue {
         .collect();
     object([
         ("peerId", string(snapshot.id.clone())),
+        (
+            "addressType",
+            address_type.map_or(IpcValue::Null, |kind| string(kind.as_str())),
+        ),
         (
             "address",
             snapshot.address.clone().map_or(IpcValue::Null, string),

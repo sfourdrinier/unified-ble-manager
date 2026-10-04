@@ -91,50 +91,62 @@ describe('IPC address-targeting capability honesty', () => {
     expect(connect).not.toHaveBeenCalled()
   })
 
-  test('address-filtered scan receives a matching compact native observation', async () => {
-    const { CoreBoundedStream } = require('../src/core/bounded-stream')
-    const { capacity } = require('../src/backend-contract/primitives')
-    const observations = new CoreBoundedStream(
-      { itemCapacity: capacity(8), byteCapacity: capacity(8192), reservedControlCapacity: capacity(1) },
-      'error'
-    )
-    const scan = jest.fn(async () => ({ plan: null, observations, stop: async () => observations.close() }))
-    const manager = ipcManagerWith(capabilitiesAdvertisingAddressTargeting(), undefined, scan)
-    const session = await manager.scan({ query: { anyOf: [{ addresses: ['aa:bb:cc:dd:ee:ff'] }] }, duplicates: 'all' })
-    expect(scan.mock.calls[0][0].query.anyOf[0].addresses).toEqual(['AA:BB:CC:DD:EE:FF'])
-    const next = session.observations[Symbol.asyncIterator]().next()
-    observations.emit(
-      {
-        peerId: 'other',
-        address: '11:22:33:44:55:66',
-        localName: null,
-        rssi: -40,
-        txPowerLevel: null,
-        serviceUuids: [],
-        manufacturerData: [],
-        serviceData: []
-      },
-      1
-    )
-    observations.emit(
-      {
-        peerId: 'target',
-        address: 'AA:BB:CC:DD:EE:FF',
-        localName: null,
-        rssi: -40,
-        txPowerLevel: null,
-        serviceUuids: [],
-        manufacturerData: [],
-        serviceData: []
-      },
-      1
-    )
-    await expect(next).resolves.toMatchObject({
-      value: {
-        kind: 'value',
-        value: { address: { value: 'AA:BB:CC:DD:EE:FF', type: 'opaque' }, peer: { id: 'target' } }
-      }
-    })
-    await session.stop()
-  })
+  test.each([
+    ['public', 'public'],
+    ['random', 'random'],
+    [null, 'opaque'],
+    [undefined, 'opaque']
+  ])(
+    'address-filtered scan preserves native type %s in a matching compact observation',
+    async (addressType, expectedType) => {
+      const { CoreBoundedStream } = require('../src/core/bounded-stream')
+      const { capacity } = require('../src/backend-contract/primitives')
+      const observations = new CoreBoundedStream(
+        { itemCapacity: capacity(8), byteCapacity: capacity(8192), reservedControlCapacity: capacity(1) },
+        'error'
+      )
+      const scan = jest.fn(async () => ({ plan: null, observations, stop: async () => observations.close() }))
+      const manager = ipcManagerWith(capabilitiesAdvertisingAddressTargeting(), undefined, scan)
+      const session = await manager.scan({
+        query: { anyOf: [{ addresses: ['aa:bb:cc:dd:ee:ff'] }] },
+        duplicates: 'all'
+      })
+      expect(scan.mock.calls[0][0].query.anyOf[0].addresses).toEqual(['AA:BB:CC:DD:EE:FF'])
+      const next = session.observations[Symbol.asyncIterator]().next()
+      observations.emit(
+        {
+          peerId: 'other',
+          address: '11:22:33:44:55:66',
+          localName: null,
+          rssi: -40,
+          txPowerLevel: null,
+          serviceUuids: [],
+          manufacturerData: [],
+          serviceData: []
+        },
+        1
+      )
+      observations.emit(
+        {
+          peerId: 'target',
+          address: 'AA:BB:CC:DD:EE:FF',
+          addressType,
+          localName: null,
+          rssi: -40,
+          txPowerLevel: null,
+          serviceUuids: [],
+          manufacturerData: [],
+          serviceData: []
+        },
+        1
+      )
+      await expect(next).resolves.toMatchObject({
+        value: {
+          kind: 'value',
+          value: { address: { value: 'AA:BB:CC:DD:EE:FF', type: expectedType }, peer: { id: 'target' } }
+        }
+      })
+      await session.stop()
+    }
+  )
 })

@@ -251,6 +251,7 @@ export interface IpcServiceData {
 
 export interface IpcAdvertisement {
   readonly address?: string | null
+  readonly addressType?: 'public' | 'random' | null
   readonly connectable?: boolean | null
   readonly provenance?: ObservationSource
   readonly origin?: ObservationOrigin
@@ -3396,6 +3397,13 @@ function isIpcAdvertisement(value: unknown): value is IpcAdvertisement {
   }
   const peerId: unknown = Reflect.get(value, 'peerId')
   const address: unknown = Reflect.get(value, 'address')
+  const addressType: unknown = Reflect.get(value, 'addressType')
+  if (
+    addressType !== undefined &&
+    addressType !== null &&
+    ((addressType !== 'public' && addressType !== 'random') || address == null)
+  )
+    return false
   const connectable: unknown = Reflect.get(value, 'connectable')
   if (connectable !== undefined && connectable !== null && typeof connectable !== 'boolean') return false
   if (

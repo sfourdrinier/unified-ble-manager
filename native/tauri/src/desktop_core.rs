@@ -111,6 +111,12 @@ pub trait CoreAuthority: Send + Sync {
         ctl: OpControl,
     ) -> CoreFuture<'a, ubm_desktop::UnpairOutcome>;
     fn security_events(&self) -> broadcast::Receiver<ubm_desktop::SecurityEvent>;
+    /// The actual OS address type, never inferred from the address bytes.
+    fn address_type<'a>(
+        &'a self,
+        peer: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, Option<ubm_desktop::AddressType>>;
     fn resolve_address<'a>(
         &'a self,
         address: &'a str,
@@ -318,6 +324,13 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
     }
     fn security_events(&self) -> broadcast::Receiver<ubm_desktop::SecurityEvent> {
         DesktopCentral::security_events(self)
+    }
+    fn address_type<'a>(
+        &'a self,
+        peer: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, Option<ubm_desktop::AddressType>> {
+        Box::pin(DesktopCentral::address_type(self, peer, ctl))
     }
     fn resolve_address<'a>(
         &'a self,

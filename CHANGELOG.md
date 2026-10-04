@@ -4,6 +4,9 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Preserve available native public/random address types in Tauri scan
+  observations. Unknown stays opaque; malformed IPC metadata is rejected and
+  actual native metadata-read failures remain visible.
 - Give desktop and Tauri security watches positive, ordered observation
   sequences, and prevent a late unsequenced desktop snapshot from replacing
   a newer matching event. Snapshot failures remain observable.

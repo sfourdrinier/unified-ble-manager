@@ -484,7 +484,7 @@ fn scan_projection_preserves_exact_native_origin_and_service_union() {
         snapshot
             .service_uuids
             .push("0000110b-0000-1000-8000-00805f9b34fb".into());
-        let value = super::core_scan_observation(&snapshot);
+        let value = super::core_scan_observation(&snapshot, None);
         assert_eq!(field(&value, "address"), &string("AA:BB:CC:DD:EE:FF"));
         assert_eq!(field(&value, "connectable"), &IpcValue::Bool(true));
         assert_eq!(field(&value, "origin"), &string(source.as_str()));
@@ -499,6 +499,104 @@ fn scan_projection_preserves_exact_native_origin_and_service_union() {
             )
         );
     }
+}
+
+#[tokio::test]
+async fn scan_projection_preserves_authoritative_address_types_and_unknown() {
+    let harness = Harness::new().await;
+    let mut cache = std::collections::HashMap::new();
+    for (peer, kind) in [
+        ("public-peer", Some(ubm_desktop::AddressType::Public)),
+        ("random-peer", Some(ubm_desktop::AddressType::Random)),
+        ("unknown-peer", None),
+    ] {
+        harness.advertise(peer).await;
+        if let Some(kind) = kind {
+            harness.radio().set_address_type(peer, kind);
+        }
+        let RadioEvent::Advertisement(mut snapshot) = advertisement(peer) else {
+            unreachable!()
+        };
+        snapshot.address = Some("AA:BB:CC:DD:EE:FF".into());
+        let value = super::typed_core_scan_observation(&harness.central, &snapshot, &mut cache)
+            .await
+            .unwrap();
+        assert_eq!(
+            field(&value, "addressType"),
+            &kind.map_or(IpcValue::Null, |kind| string(kind.as_str()))
+        );
+        super::typed_core_scan_observation(&harness.central, &snapshot, &mut cache)
+            .await
+            .unwrap();
+    }
+    assert_eq!(count(&harness.radio().calls(), "address_type"), 3);
+    let RadioEvent::Advertisement(mut missing) = advertisement("missing-peer") else {
+        unreachable!()
+    };
+    missing.address = Some("AA:BB:CC:DD:EE:FF".into());
+    let error = super::typed_core_scan_observation(&harness.central, &missing, &mut cache)
+        .await
+        .expect_err("native failures are not unknown address types");
+    assert_eq!(error.code, BleErrorCode::PeerNotFound);
+    assert!(!cache.contains_key("missing-peer"));
+    missing.address = None;
+    let value = super::typed_core_scan_observation(&harness.central, &missing, &mut cache)
+        .await
+        .unwrap();
+    assert_eq!(field(&value, "addressType"), &IpcValue::Null);
+    harness.central.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scan_stream_serializes_native_public_random_and_unknown_address_types() {
+    let harness = Harness::new().await;
+    let scan = harness
+        .execute(
+            "scan.start",
+            vec![("query", empty_scan_query())],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let stream = text(&scan, "handle");
+    for (index, (peer, kind)) in [
+        ("public-scan", Some(ubm_desktop::AddressType::Public)),
+        ("random-scan", Some(ubm_desktop::AddressType::Random)),
+        ("unknown-scan", None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if let Some(kind) = kind {
+            harness.radio().set_address_type(peer, kind);
+        }
+        let RadioEvent::Advertisement(mut snapshot) = advertisement(peer) else {
+            unreachable!()
+        };
+        snapshot.address = Some("AA:BB:CC:DD:EE:FF".into());
+        harness
+            .radio()
+            .push_event(RadioEvent::Advertisement(snapshot));
+        let items = harness.wait_items(&stream, index + 1).await;
+        assert_eq!(items[index]["value"]["address"], "AA:BB:CC:DD:EE:FF");
+        assert_eq!(
+            items[index]["value"]["addressType"],
+            kind.map_or(serde_json::Value::Null, |kind| serde_json::Value::String(
+                kind.as_str().into()
+            ))
+        );
+    }
+    harness
+        .execute(
+            "scan.stop",
+            vec![("scanHandle", string(stream))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness.central.shutdown().await;
 }
 
 #[tokio::test]
