@@ -123,6 +123,13 @@ unsettled power may still offer an explicit permission action.
   prompt waiter. Decided authorization words retain their ordinary results.
   Accessory selection and explicit connection admission are separate from a
   global grant; never retry a global prompt to obtain an ASK accessory grant.
+  Startup authorization and concurrent saved-accessory directory reads join
+  the same process-owned ASK activation and its original deadline, rather
+  than opening another session or refusing merely because activation is pending.
+  Each admitted caller receives the activation result once; invalidation retires
+  the session and preserves the native failure. At most 64 pending readers are
+  retained, with an explicit refusal if that bound is exhausted. Public caller
+  cancellation and deadlines remain independent of this shared native activation.
 - Apple decides from `CBManager.authorization` (iOS 13.1+, tvOS 13.0+): the
   class property reads the state without allocating a manager, allocation
   prompts while undecided, and updates arrive via

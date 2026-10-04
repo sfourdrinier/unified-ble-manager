@@ -622,8 +622,11 @@ extension OwnedCoreBluetoothProtocolRadioSupport {
       DispatchQueue.main.async {
         if let active = startupAccessorySession as? ASAccessorySession {
           guard startupAccessoryAuthorization?.isActivated == true else {
+            if startupAccessoryAuthorization?.join(completion: completion, sessionFailure: sessionFailure) == true {
+              return
+            }
             completion(.failure(NSError(domain: "UnifiedBleAccessoryStartup", code: 4,
-              userInfo: [NSLocalizedDescriptionKey: "Accessory authorization query already in progress"])))
+              userInfo: [NSLocalizedDescriptionKey: "Accessory authorization activation waiter capacity exhausted or session retired"])))
             return
           }
           completion(.success(active.accessories.contains { accessory in
@@ -790,22 +793,31 @@ extension OwnedCoreBluetoothProtocolRadioSupport {
   }
 }
 
-/// Queue-confined ownership of one native authorization query and its retained
-/// session. A late session failure is observable but cannot complete the query twice.
+/// Queue-confined ownership of one activation and its retained session. Joined
+/// queries share the original deadline; late failures cannot complete them twice.
 final class AppleAccessoryStartupAuthorization {
   private enum Phase { case pending, active, retired }
   private var phase = Phase.pending
-  private let completion: (Result<Bool, NSError>) -> Void
-  private let sessionFailure: (NSError) -> Void
+  private var completions: [(Result<Bool, NSError>) -> Void]
+  private var sessionFailures: [(NSError) -> Void]
   private let activated: () -> Void
   private let retire: () -> Void
   var isActivated: Bool { phase == .active }
 
+  @discardableResult
+  func join(completion: @escaping (Result<Bool, NSError>) -> Void,
+            sessionFailure: @escaping (NSError) -> Void) -> Bool {
+    guard phase == .pending, completions.count < 64 else { return false }
+    completions.append(completion)
+    sessionFailures.append(sessionFailure)
+    return true
+  }
+
   init(completion: @escaping (Result<Bool, NSError>) -> Void,
        sessionFailure: @escaping (NSError) -> Void, activated: @escaping () -> Void,
        retire: @escaping () -> Void) {
-    self.completion = completion
-    self.sessionFailure = sessionFailure
+    self.completions = [completion]
+    self.sessionFailures = [sessionFailure]
     self.activated = activated
     self.retire = retire
   }
@@ -814,8 +826,10 @@ final class AppleAccessoryStartupAuthorization {
   func activate(authorized: Bool) -> Bool {
     guard phase == .pending else { return false }
     phase = .active
+    let answers = completions
+    completions.removeAll()
     activated()
-    completion(.success(authorized))
+    for completion in answers { completion(.success(authorized)) }
     return true
   }
 
@@ -824,9 +838,13 @@ final class AppleAccessoryStartupAuthorization {
     guard phase != .retired else { return false }
     let wasPending = phase == .pending
     phase = .retired
+    let answers = completions
+    let failures = sessionFailures
+    completions.removeAll()
+    sessionFailures.removeAll()
     retire() // Retire identity before invalidate's synchronous callback.
-    if wasPending { completion(.failure(error)) }
-    else { sessionFailure(error) }
+    if wasPending { for completion in answers { completion(.failure(error)) } }
+    else { for failure in failures { failure(error) } }
     return true
   }
 }

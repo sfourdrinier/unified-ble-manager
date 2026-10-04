@@ -113,6 +113,71 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
     precondition(!pending.activate(authorized: true))
     precondition(!pending.fail(queryFailure))
     precondition(pendingAnswers.count == 1 && pendingRetirements == 1)
+
+    for answer: Result<Bool, NSError> in [.success(true), .success(false), .failure(queryFailure)] {
+      var answers = [Result<Bool, NSError>]()
+      var retirements = 0
+      var activations = 0
+      var lateFailures = 0
+      let shared = AppleAccessoryStartupAuthorization(
+        completion: { answers.append($0) },
+        sessionFailure: { _ in lateFailures += 1 },
+        activated: { activations += 1 }, retire: { retirements += 1 }
+      )
+      // Startup and two concurrent directory queries share one activation.
+      precondition(shared.join(completion: { answers.append($0) }, sessionFailure: { _ in lateFailures += 1 }))
+      precondition(shared.join(completion: { answers.append($0) }, sessionFailure: { _ in lateFailures += 1 }))
+      precondition(answers.isEmpty)
+      switch answer {
+      case .success(let authorized):
+        precondition(shared.activate(authorized: authorized))
+        precondition(activations == 1)
+      case .failure(let error):
+        precondition(shared.fail(error))
+        precondition(activations == 0)
+      }
+      precondition(answers.count == 3)
+      for received in answers {
+        switch (answer, received) {
+        case (.success(let expected), .success(let actual)): precondition(actual == expected)
+        case (.failure(let expected), .failure(let actual)): precondition(actual === expected)
+        default: preconditionFailure("activation changed a joined caller's answer")
+        }
+      }
+      precondition(!shared.join(completion: { _ in preconditionFailure("late join accepted") },
+        sessionFailure: { _ in preconditionFailure("late observer accepted") }))
+      precondition(!shared.activate(authorized: false))
+      _ = shared.fail(queryFailure)
+      precondition(!shared.fail(queryFailure))
+      precondition(answers.count == 3 && retirements == 1)
+      if case .success = answer { precondition(lateFailures == 3) }
+      else { precondition(lateFailures == 0) }
+    }
+    var boundedAnswers = 0
+    let bounded = AppleAccessoryStartupAuthorization(
+      completion: { _ in boundedAnswers += 1 }, sessionFailure: { _ in }, activated: {}, retire: {}
+    )
+    for _ in 1..<64 {
+      precondition(bounded.join(completion: { _ in boundedAnswers += 1 }, sessionFailure: { _ in }))
+    }
+    precondition(!bounded.join(completion: { _ in preconditionFailure("unbounded waiter accepted") }, sessionFailure: { _ in }))
+    precondition(bounded.fail(queryFailure))
+    precondition(boundedAnswers == 64)
+    var reentrant: AppleAccessoryStartupAuthorization?
+    var reentrantAnswers = 0
+    var reentrantRetirements = 0
+    reentrant = AppleAccessoryStartupAuthorization(
+      completion: { _ in reentrantAnswers += 1 }, sessionFailure: { _ in preconditionFailure("pending failure became a late failure") },
+      activated: {}, retire: {
+        reentrantRetirements += 1
+        // AS invalidation may synchronously deliver another event.
+        precondition(reentrant?.fail(queryFailure) == false)
+        precondition(reentrant?.activate(authorized: true) == false)
+      }
+    )
+    precondition(reentrant?.join(completion: { _ in reentrantAnswers += 1 }, sessionFailure: { _ in }) == true)
+    precondition(reentrant?.fail(queryFailure) == true)
+    precondition(reentrantAnswers == 2 && reentrantRetirements == 1)
   }
 
   /// The exact helper used by production connect. Script OS lookup only;
