@@ -148,11 +148,16 @@ impl BtleplugDispatcher {
                 if start.await.is_err() {
                     return;
                 }
+                // Snapshot and source events form this watch's observation
+                // sequence; the central's counter excludes the snapshot and
+                // includes unrelated peers, so it cannot index this stream.
+                let mut sequence = 0u64;
                 if buffered.is_empty() {
+                    sequence = 1;
                     let initial = object([
                         ("kind", string("state")),
                         ("peerId", string(&peer)),
-                        ("sequence", IpcValue::Number(Number::from(0))),
+                        ("sequence", IpcValue::Number(Number::from(sequence))),
                         ("state", state_record(initial, initial_observed_at)),
                     ]);
                     if let Err(error) = dispatcher
@@ -186,34 +191,47 @@ impl BtleplugDispatcher {
                     };
                     match received {
                         Ok((event, observed_at)) if event.peer_id == peer => {
-                            let value = object([
-                                ("kind", string("state")),
-                                ("peerId", string(&event.peer_id)),
-                                ("sequence", IpcValue::Number(Number::from(event.sequence))),
-                                (
-                                    "state",
-                                    state_record(
-                                        event.state,
-                                        observed_at.unwrap_or_else(|| {
-                                            dispatcher
-                                                .started_at
-                                                .elapsed()
-                                                .as_millis()
-                                                .min(MAX_SAFE_INTEGER as u128)
-                                                as u64
-                                        }),
+                            let delivery = async {
+                                sequence = sequence
+                                    .checked_add(1)
+                                    .filter(|value| *value <= MAX_SAFE_INTEGER)
+                                    .ok_or_else(|| {
+                                        DispatchError::new(
+                                            BleErrorCode::StreamQuota,
+                                            "stream",
+                                            "security.watch.sequence",
+                                        )
+                                    })?;
+                                let value = object([
+                                    ("kind", string("state")),
+                                    ("peerId", string(&event.peer_id)),
+                                    ("sequence", IpcValue::Number(Number::from(sequence))),
+                                    (
+                                        "state",
+                                        state_record(
+                                            event.state,
+                                            observed_at.unwrap_or_else(|| {
+                                                dispatcher
+                                                    .started_at
+                                                    .elapsed()
+                                                    .as_millis()
+                                                    .min(MAX_SAFE_INTEGER as u128)
+                                                    as u64
+                                            }),
+                                        ),
                                     ),
-                                ),
-                            ]);
-                            if let Err(error) = dispatcher
-                                .emit(
-                                    &task_key,
-                                    Some((&task_lease.0, &task_lease.1)),
-                                    &stream,
-                                    value,
-                                )
-                                .await
-                            {
+                                ]);
+                                dispatcher
+                                    .emit(
+                                        &task_key,
+                                        Some((&task_lease.0, &task_lease.1)),
+                                        &stream,
+                                        value,
+                                    )
+                                    .await
+                            }
+                            .await;
+                            if let Err(error) = delivery {
                                 if let Err(terminal_error) = dispatcher
                                     .terminal(
                                         &task_key,

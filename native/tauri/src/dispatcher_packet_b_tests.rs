@@ -103,7 +103,6 @@ async fn security_watch_retains_racing_event_order_without_regressing_to_an_unse
             .expect("watch task")
             .expect("watch published");
         let handle = text(&watch, "handle");
-        let mut marker = 0;
         for bond in [
             ubm_desktop::BondState::Bonded,
             ubm_desktop::BondState::NotBonded,
@@ -115,17 +114,21 @@ async fn security_watch_retains_racing_event_order_without_regressing_to_an_unse
                     pairing_possible: Some(true),
                 },
             });
-            marker = tokio::time::timeout(WAIT, observed.recv())
+            tokio::time::timeout(WAIT, observed.recv())
                 .await
                 .expect("live event observed")
-                .expect("live event")
-                .sequence;
+                .expect("live event");
         }
         tokio::time::timeout(WAIT, async {
-            while !harness.events.lock().unwrap().iter().any(|event| {
-                event["streamId"] == handle
-                    && event["item"]["value"]["sequence"].as_u64() == Some(marker)
-            }) {
+            while harness
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event["streamId"] == handle)
+                .count()
+                < 4
+            {
                 tokio::task::yield_now().await;
             }
         })
@@ -147,9 +150,10 @@ async fn security_watch_retains_racing_event_order_without_regressing_to_an_unse
             ["not-bonded", "bonded", "bonded", "not-bonded"],
             "an unsequenced snapshot cannot be placed ahead of or after a racing native event"
         );
-        assert!(
-            events[0]["item"]["value"]["sequence"].as_u64()
-                < events[1]["item"]["value"]["sequence"].as_u64()
+        assert_eq!(
+            events.iter().map(|event| event["item"]["value"]["sequence"].as_u64().unwrap()).collect::<Vec<_>>(),
+            [1, 2, 3, 4],
+            "retained racing observations use the watch sequence, not a snapshot/source-counter mixture"
         );
         assert!(events
             .windows(2)
@@ -342,6 +346,30 @@ async fn security_routes_reach_core_and_watch_is_lease_owned() {
         .await
         .expect("security watch");
     let handle = text(&watch, "handle");
+    tokio::time::timeout(WAIT, async {
+        while !harness
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event["streamId"] == handle)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("initial snapshot delivered before native changes");
+    assert_eq!(
+        harness
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|event| event["streamId"] == handle)
+            .unwrap()["item"]["value"]["sequence"],
+        1,
+        "the public security event guard requires a positive initial observation sequence"
+    );
     let state = harness
         .execute(
             "security.state",
@@ -380,6 +408,19 @@ async fn security_routes_reach_core_and_watch_is_lease_owned() {
     })
     .await
     .expect("native security change forwarded");
+    let sequences = harness
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| event["streamId"] == handle)
+        .map(|event| event["item"]["value"]["sequence"].as_u64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sequences,
+        [1, 2],
+        "snapshot and native event share one watch-local observation order"
+    );
     let removed = harness
         .execute(
             "security.unpair",

@@ -4,6 +4,13 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Give desktop and Tauri security watches positive, ordered observation
+  sequences, and prevent a late unsequenced desktop snapshot from replacing
+  a newer matching event. Snapshot failures remain observable.
+- Retry centrally retained cleanup from unpublished failed scan acquisitions
+  before admitting another scan, within the new caller's original budget and
+  cancellation. Published scan ownership is never bypassed; refused cleanup
+  remains owned and retryable.
 - Correct an upstream BlueZ 5.87 UUID-filter callback/data argument reversal
   that crashes the daemon during service-filtered discovery. The maintained
   daemon producer advances to `5.87-ubm.3`; the authority contract remains

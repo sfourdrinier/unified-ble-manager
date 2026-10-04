@@ -35,6 +35,224 @@ async fn open() -> DesktopCentral<FakeRadio> {
         .expect("open")
 }
 
+async fn retain_failed_start_cleanup(central: &DesktopCentral<FakeRadio>, cancel: bool) {
+    central.boundary().block_op(FaultOp::StartScan);
+    central
+        .boundary()
+        .fail_next(FaultOp::StopScan, "compensation refused");
+    let ctl = OpControl::budget_ms(10);
+    let ticket = ctl.ticket.clone();
+    let starting = tokio::spawn({
+        let central = central.clone();
+        async move { central.start_scan("unpublished", &[], ctl).await }
+    });
+    wait_for_call(central, "start_scan").await;
+    if cancel {
+        central.cancel(&ticket).await.expect("cancel");
+    } else {
+        tokio::time::advance(Duration::from_millis(11)).await;
+    }
+    let error = starting
+        .await
+        .expect("join")
+        .expect_err("start interrupted");
+    assert_eq!(
+        error.code_str(),
+        if cancel {
+            "operation.aborted"
+        } else {
+            "operation.timed-out"
+        }
+    );
+    assert!(
+        central.active_scan_id().is_some(),
+        "failed cleanup remains owned"
+    );
+    assert!(central.resource_counters().await.compensation_failures > 0);
+    central.boundary().unblock_op(FaultOp::StartScan);
+}
+
+async fn failed_start_can_retry(cancel: bool) {
+    let central = open().await;
+    retain_failed_start_cleanup(&central, cancel).await;
+    let old = central.active_scan_id().expect("cleanup identity");
+    let replacement = central
+        .start_scan("replacement", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("new start retries unpublished cleanup");
+    assert_ne!(replacement.operation_id(), &old);
+    assert_eq!(
+        central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| call.as_str() == "stop_scan")
+            .count(),
+        2
+    );
+    assert!(central.boundary().scan_active());
+    stop_owned_scan(&central)
+        .await
+        .expect("replacement cleanup");
+}
+
+#[tokio::test(start_paused = true)]
+async fn timed_out_unpublished_start_cleanup_is_retried_before_next_start() {
+    failed_start_can_retry(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_unpublished_start_cleanup_is_retried_before_next_start() {
+    failed_start_can_retry(true).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn refused_unpublished_cleanup_retry_retains_exact_identity() {
+    let central = open().await;
+    retain_failed_start_cleanup(&central, true).await;
+    let old = central.active_scan_id().expect("cleanup identity");
+    central
+        .boundary()
+        .fail_next(FaultOp::StopScan, "retry refused");
+    let error = central
+        .start_scan("replacement", &[], OpControl::budget_ms(5000))
+        .await
+        .expect_err("cleanup refused");
+    assert_eq!(error.code_str(), "scan.stop-failed");
+    assert_eq!(central.active_scan_id(), Some(old));
+    assert_eq!(
+        central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| call.as_str() == "start_scan")
+            .count(),
+        1
+    );
+    central
+        .start_scan("replacement", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("later retry");
+    stop_owned_scan(&central).await.expect("cleanup");
+}
+
+#[tokio::test(start_paused = true)]
+async fn held_unpublished_cleanup_retry_obeys_new_caller_budget() {
+    let central = open().await;
+    retain_failed_start_cleanup(&central, true).await;
+    let old = central.active_scan_id().expect("cleanup identity");
+    central.boundary().block_op(FaultOp::StopScan);
+    let error = central
+        .start_scan("replacement", &[], OpControl::budget_ms(25))
+        .await
+        .expect_err("held cleanup bounded");
+    assert_eq!(error.code_str(), "operation.timed-out");
+    assert_eq!(central.active_scan_id(), Some(old));
+    central.boundary().unblock_op(FaultOp::StopScan);
+    central
+        .start_scan("replacement", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("retry after held cleanup");
+    stop_owned_scan(&central).await.expect("cleanup");
+}
+
+#[tokio::test(start_paused = true)]
+async fn concurrent_unpublished_cleanup_retries_share_stop_without_touching_new_owner() {
+    let central = open().await;
+    retain_failed_start_cleanup(&central, true).await;
+    central.boundary().block_op(FaultOp::StopScan);
+    let first = tokio::spawn({
+        let central = central.clone();
+        async move {
+            central
+                .start_scan("first", &[], OpControl::budget_ms(5000))
+                .await
+        }
+    });
+    while central
+        .boundary()
+        .calls()
+        .iter()
+        .filter(|call| call.as_str() == "stop_scan")
+        .count()
+        < 2
+    {
+        tokio::task::yield_now().await;
+    }
+    let second = tokio::spawn({
+        let central = central.clone();
+        async move {
+            central
+                .start_scan("second", &[], OpControl::budget_ms(5000))
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+    central.boundary().unblock_op(FaultOp::StopScan);
+    let (first, second) = tokio::join!(first, second);
+    let outcomes = [first.expect("first join"), second.expect("second join")];
+    assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter_map(|outcome| outcome.as_ref().err())
+            .next()
+            .expect("second owner refused")
+            .code_str(),
+        "scan.already-active"
+    );
+    assert_eq!(
+        central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| call.as_str() == "stop_scan")
+            .count(),
+        2
+    );
+    assert!(
+        central.boundary().scan_active(),
+        "replacement remains active"
+    );
+    stop_owned_scan(&central)
+        .await
+        .expect("replacement cleanup");
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_unpublished_cleanup_retry_retains_debt_for_later_caller() {
+    let central = open().await;
+    retain_failed_start_cleanup(&central, true).await;
+    let old = central.active_scan_id().expect("cleanup identity");
+    central.boundary().block_op(FaultOp::StopScan);
+    let ctl = OpControl::unbounded();
+    let ticket = ctl.ticket.clone();
+    let retry = tokio::spawn({
+        let central = central.clone();
+        async move { central.start_scan("cancelled-retry", &[], ctl).await }
+    });
+    while central
+        .boundary()
+        .calls()
+        .iter()
+        .filter(|call| call.as_str() == "stop_scan")
+        .count()
+        < 2
+    {
+        tokio::task::yield_now().await;
+    }
+    central.cancel(&ticket).await.expect("cancel retry");
+    let error = retry.await.expect("join").expect_err("retry interrupted");
+    assert_eq!(error.code_str(), "operation.aborted");
+    assert_eq!(central.active_scan_id(), Some(old));
+    central.boundary().unblock_op(FaultOp::StopScan);
+    central
+        .start_scan("later-caller", &[], OpControl::budget_ms(5000))
+        .await
+        .expect("later retry");
+    stop_owned_scan(&central).await.expect("cleanup");
+}
+
 /// Wait until the fake radio records `call` (the racing driver reached the
 /// radio), bounded so a wedged driver fails the test instead of hanging it.
 async fn wait_for_call(central: &DesktopCentral<FakeRadio>, call: &str) {
@@ -382,6 +600,21 @@ async fn r15_failed_stop_retains_scan_then_retry_settles_terminal() {
         "same scan identity retained"
     );
     assert!(central.boundary().scan_active(), "the OS scan is still on");
+    let retry_start = central
+        .start_scan("other-owner", &[], OpControl::budget_ms(5000))
+        .await
+        .expect_err("published scan remains owned");
+    assert_eq!(retry_start.code_str(), "scan.already-active");
+    assert_eq!(
+        central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| call.as_str() == "stop_scan")
+            .count(),
+        1,
+        "new start never retries another published owner's stop"
+    );
     let stopped = central
         .stop_scan(session.operation_id(), OpControl::unbounded())
         .await

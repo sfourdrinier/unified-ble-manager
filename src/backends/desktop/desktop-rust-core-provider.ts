@@ -1113,6 +1113,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private readonly ticketsByCorrelation = new Map<string, string>()
   private readonly adapterTransitions = new Set<CoreBoundedStream<AdapterStateSnapshot<string>>>()
   private readonly securityWatches = new Map<string, Set<CoreBoundedStream<PeerSecurityEvent>>>()
+  private readonly securityObservedWatches = new WeakSet<CoreBoundedStream<PeerSecurityEvent>>()
   private readonly pendingAddresses = new Map<string, PeerAddressDescriptor>()
   private readonly addressTypes = new Map<string, 'public' | 'random' | null>()
   private readonly readinessWatches = new Set<ReadinessWatch>()
@@ -3284,10 +3285,17 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         // BlueZ watches did; a state the OS cannot read ends it `source-failed`.
         this.central.securityState({ peerId: nativePeerId }).then(
           state => {
+            // The read has no source revision. A matching observation already
+            // delivered to this watch wins over its unordered admission snapshot;
+            // another peer/watch must not suppress this watch's initial state.
+            if (!this.securityWatches.get(peerId)?.has(stream) || this.securityObservedWatches.has(stream)) return
             const record: PeerSecurityEvent = Object.freeze({
               kind: 'state',
               peerId,
-              sequence: this.securitySequence,
+              // A current-state snapshot is a delivered observation too. Its
+              // ordering shares the provider's sequence with subsequent events,
+              // rather than borrowing the native event counter's initial zero.
+              sequence: ++this.securitySequence,
               state: this.securityState(state)
             })
             if (stream.emit(record, 256).terminated) watches.delete(stream)
@@ -3394,6 +3402,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       state: this.securityState(state)
     })
     for (const stream of [...watches]) {
+      this.securityObservedWatches.add(stream)
       if (stream.emit(record, 256).terminated) watches.delete(stream)
     }
   }
@@ -3409,11 +3418,10 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       })
       return
     }
-    if (typeof event.sequence === 'number') this.securitySequence = Math.max(this.securitySequence, event.sequence)
     if (typeof event.peerId !== 'string' || event.state === null || event.state === undefined) return
     const peerId = this.peerIdsByNativeId.get(event.peerId)
     if (peerId === undefined) return
-    this.deliverSecurityState(String(peerId), event.sequence ?? 0, event.state)
+    this.deliverSecurityState(String(peerId), ++this.securitySequence, event.state)
   }
 
   // -- connections -----------------------------------------------------------
