@@ -90,18 +90,33 @@ describe('IPC direct peer-reference connection', () => {
 })
 
 describe('Electron public manager façade', () => {
-  test('projects unsupported security capabilities when IPC has no remote security backend', async () => {
+  test('retains native security capabilities and routes its measured state', async () => {
     const current = bootstrap()
     const invoke = jest.fn(async request => {
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: current }
+      if (request.envelope?.command === 'security.state')
+        return {
+          kind: 'route',
+          payload: {
+            state: {
+              bond: 'not-bonded',
+              encryption: 'unknown',
+              authentication: 'unknown',
+              secureConnections: 'unknown',
+              pairingPossible: null,
+              measuredAtMonotonicMs: 1,
+              limitations: []
+            }
+          }
+        }
       throw new Error(`unexpected routed request ${request.kind}`)
     })
     const manager = await createElectronRendererBleManager({
       transport: { invoke, subscribe: () => () => undefined, acknowledge: async () => ({ kind: 'event.ack' }) }
     })
 
-    expect(manager.capabilities.get('security:state')).toMatchObject({ state: 'unsupported' })
-    await expect(manager.security.state({ id: 'peer-1' })).resolves.toMatchObject({ bond: 'unsupported' })
+    expect(manager.capabilities.get('security:state')).toMatchObject({ state: 'limited' })
+    await expect(manager.security.state({ id: 'peer-1' })).resolves.toMatchObject({ bond: 'not-bonded' })
   })
 
   test('rejects malformed public operation options before routing IPC', async () => {

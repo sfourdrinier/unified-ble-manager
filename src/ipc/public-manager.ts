@@ -68,7 +68,7 @@ import type {
   BleAdapterStateWatch
 } from '../public/ble-adapter'
 import { assertDirectConnectionCapability } from '../public/capabilities'
-import type { BleCapabilities, CapabilityDescriptor, FeatureId } from '../public/capabilities'
+import type { BleCapabilities, CapabilityDescriptor } from '../public/capabilities'
 import { BUILT_IN_FEATURE_IDS } from '../backend-contract/capabilities'
 import {
   createPublicGattDatabase,
@@ -88,6 +88,7 @@ import type { BlePeerDirectory } from '../public/peer-directory'
 import { isPeerReference } from '../public/peer-reference'
 import type { PeerReference } from '../public/peer-reference'
 import { createPublicSecurity } from '../public/security'
+import { createIpcSecurityBackend } from './security'
 import type { BleSecurity } from '../public/security'
 import {
   BleCleanupError,
@@ -163,22 +164,15 @@ export class IpcPublicManagerAdapter implements BleManager {
   ) {
     this.requireScanPlan = options.requireScanPlan ?? false
     this.gattDeliverySelection = options.gattDeliverySelection ?? 'unknown'
-    // The renderer inherits the main process's capability snapshot, where a
-    // BlueZ backend may well advertise peer:address-targeting and an Android
-    // backend may advertise scan:platform-options. The versioned IPC surface
-    // carries no radio address and does not serialize ScanOptions.platform -
-    // scan() below rejects both before IPC - so advertising either capability
-    // would tell a renderer the feature exists and then fail every call.
-    // Project them as unsupported instead, which is what fail-closed means
-    // for a capability the transport cannot express.
-    this.capabilities = withIpcInexpressibleCapabilitiesUnsupported(
-      options.capabilities ?? ipc.capabilities,
-      Object.freeze(['peer:address-targeting', 'scan:platform-options'])
-    )
+    // The instantiated authority supplies native capabilities. IPC preserves
+    // targeting and platform options instead of masking supported mechanisms.
+    this.capabilities = options.capabilities ?? ipc.capabilities
     this.adapter = options.adapter ?? createIpcAdapter(ipc)
     this.diagnostics = options.diagnostics ?? diagnosticsUnavailable()
     this.peers = options.peers ?? createIpcPeerDirectory(ipc)
-    this.security = createPublicSecurity(undefined, this.peers, this.capabilities, () => globalThis.performance.now())
+    this.security = createPublicSecurity(createIpcSecurityBackend(ipc), this.peers, this.capabilities, () =>
+      globalThis.performance.now()
+    )
     this.discovery = Object.freeze({
       kind: options.discoveryKind ?? ipc.bootstrap.discovery?.kind ?? discoveryKindFromCapabilities(this.capabilities)
     })
@@ -190,14 +184,15 @@ export class IpcPublicManagerAdapter implements BleManager {
       if (options.observation?.reportLostAfterMs !== undefined) {
         throw contractError('capability.unavailable', 'scan', 'ipc-public-manager.scan.report-lost-after')
       }
-      if (options.platform !== undefined) {
+      if (options.platform !== undefined && !capabilityUsable(this.capabilities.get('scan:platform-options'))) {
         throw contractError('capability.unsupported', 'scan', 'ipc-public-manager.scan.platform-options')
       }
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       const normalizedQuery = normalizeScanQuery(options.query)
-      if (scanQueryTargetsAddresses(normalizedQuery)) {
-        // The versioned IPC advertisement schema carries no radio address, so an addresses
-        // clause can never match here; fail closed instead of silently observing nothing.
+      if (
+        scanQueryTargetsAddresses(normalizedQuery) &&
+        !capabilityUsable(this.capabilities.get('peer:address-targeting'))
+      ) {
         throw contractError('capability.unsupported', 'scan', 'ipc-public-manager.scan.addresses')
       }
       const session = await this.ipc.scan(
@@ -267,11 +262,8 @@ export class IpcPublicManagerAdapter implements BleManager {
     try {
       assertPublicConnectOptions(options)
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
-      assertIpcConnectionOptions(options)
       assertDirectConnectionCapability(this.capabilities.get('connection:direct'), 'ipc-public-manager.connect.direct')
-      if (isPeerAddressTarget(peer)) {
-        // Capability is reported unsupported above, so this is the single,
-        // consistent failure a renderer can observe.
+      if (isPeerAddressTarget(peer) && !capabilityUsable(this.capabilities.get('peer:address-targeting'))) {
         throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.connect.address')
       }
       if (isReferenceLike(peer) && !isPeerReference(peer)) {
@@ -289,14 +281,21 @@ export class IpcPublicManagerAdapter implements BleManager {
         : peer
       if (resolvedPeer === null)
         throw contractError('peer.not-found', 'connection', 'ipc-public-manager.connect-reference')
-      const peerId = typeof resolvedPeer === 'string' ? resolvedPeer : resolvedPeer.id
+      const peerId = isPeerAddressTarget(resolvedPeer)
+        ? { address: resolvedPeer.address, addressType: resolvedPeer.addressType ?? 'public' }
+        : typeof resolvedPeer === 'string'
+          ? resolvedPeer
+          : resolvedPeer.id
       const base = await this.ipc.connect(peerId, {
+        intent: options.intent,
+        transport: options.transport,
+        preferredPhy: options.preferredPhy,
         signal: normalized.signal ?? undefined,
         deadline: normalized.deadline
       })
       return new IpcPublicConnection(
         base,
-        resolvedPeer,
+        isPeerAddressTarget(resolvedPeer) ? base.peerId : resolvedPeer,
         this.capabilities,
         this.gattDeliverySelection,
         this.provisionalSubscriptions
@@ -907,6 +906,7 @@ function toIpcScanOptions(
   const delivery = resolveStreamPolicy(options.delivery ?? 'balanced')
   return {
     query,
+    platform: options.platform,
     signal: signal ?? undefined,
     deadline,
     stream: {
@@ -926,16 +926,8 @@ function isReferenceLike(value: unknown): boolean {
   )
 }
 
-function assertIpcConnectionOptions(options: ConnectOptions): void {
-  if (options.intent === 'when-available') {
-    throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.connect.when-available')
-  }
-  if (options.preferredPhy !== undefined) {
-    throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.connect.preferred-phy')
-  }
-  if (options.transport !== undefined) {
-    throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.connect.transport')
-  }
+function capabilityUsable(value: CapabilityDescriptor | undefined): boolean {
+  return value !== undefined && (value.state === 'supported' || value.state === 'limited')
 }
 
 /** @internal Shared IPC lifecycle projection used by the Tauri and Electron façade. */
@@ -1533,26 +1525,3 @@ function discoveryKindFromCapabilities(capabilities: BleCapabilities): BleManage
 }
 
 /** Reports capabilities the versioned IPC surface cannot express as unsupported, leaving the rest untouched. */
-function withIpcInexpressibleCapabilitiesUnsupported(
-  capabilities: BleCapabilities,
-  hidden: readonly FeatureId[]
-): BleCapabilities {
-  const asUnsupported = (descriptor: CapabilityDescriptor): CapabilityDescriptor =>
-    Object.freeze({ ...descriptor, state: 'unsupported' as const, limits: descriptor.limits })
-  return {
-    supports: id => (hidden.includes(id) ? false : capabilities.supports(id)),
-    get: id => {
-      const descriptor = capabilities.get(id)
-      if (!hidden.includes(id) || descriptor === undefined) return descriptor
-      return asUnsupported(descriptor)
-    },
-    require: id => {
-      const descriptor = capabilities.require(id)
-      return hidden.includes(id) ? asUnsupported(descriptor) : descriptor
-    },
-    list: () =>
-      Object.freeze(
-        capabilities.list().map(descriptor => (hidden.includes(descriptor.id) ? asUnsupported(descriptor) : descriptor))
-      )
-  }
-}

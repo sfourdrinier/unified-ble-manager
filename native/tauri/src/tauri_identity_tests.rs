@@ -66,7 +66,10 @@ fn version_offer() -> BTreeMap<String, IpcValue> {
         ("capabilitySchema", range("capability-schema", 1)),
         ("eventSchema", range("event-schema", 1)),
         ("traceFormat", range("trace-format", 1)),
-        ("ipcProtocol", range("ipc-protocol", 4)),
+        (
+            "ipcProtocol",
+            range("ipc-protocol", super::IPC_PROTOCOL_VERSION),
+        ),
     ]) else {
         panic!("the version offer is an object");
     };

@@ -1566,23 +1566,37 @@ function recorderForMain(central: DesktopRustCoreCentral) {
               must not duplicate those policies.
             </p>
             <p>
-              The renderer and main negotiate the IPC protocol at bootstrap; both offer exactly version 4. The caller's
-              deadline crosses as a relative <code>budgetMs</code> that main admits against its own monotonic clock at
-              receipt (the renderer's <code>performance.now()</code> instant has a different time origin), and main
-              rejects an absolute renderer <code>deadline</code> as <code>protocol.malformed</code>. Normalized errors
-              may carry <code>commit</code> (<code>not-dispatched</code>, <code>uncertain</code>, or <code>null</code>).
-              Version 4 adds the attachment rebind described below. A renderer and main built from different package
-              versions where one side speaks protocol 3 or older fail at bootstrap with
-              <code>protocol.incompatible</code>, in either direction, before a lease is registered or any operation
-              runs, so preload, renderer bundle and main must ship from the same package version. The IPC channel name
-              (<code>unified-ble-manager:v2</code>) is unchanged so the refusal arrives as a typed error rather than a
-              missing handler.
+              Security authorization also comes from trusted main-process facts. The sender returned by
+              <code>authenticate(event)</code> may include <code>securityPermissions</code>:
+              <code>security:state</code> authorizes state and watch, <code>security:pair</code> authorizes pairing,
+              <code>security:cancel-pairing</code> authorizes cancellation, <code>security:unpair</code> authorizes bond
+              removal, and <code>security:custom-ceremony</code> authorizes custom responses. An omitted list defaults
+              to no security permissions. Grant only the operations your policy allows for that authenticated
+              window/session; never copy grants from a renderer request. The grant remains fixed for the attachment. The
+              reference driver grants the first four explicitly and leaves custom ceremony denied. Permissions authorize
+              a route; the attached native backend still determines capability and reports the operation's actual
+              result.
             </p>
             <p>
-              <strong>Adapter loss and the attachment rebind (protocol 4).</strong> An adapter loss moves the
-              main-process manager to the backend's new attachment (new backend and adapter generations); the manager
-              itself stays alive. Main, never a renderer, then rebinds every active renderer lease to that attachment
-              and announces it on the reserved <code>attachment</code> stream as one event whose item is
+              The renderer and main negotiate the IPC protocol at bootstrap; both offer exactly version 5. Version 5
+              adds security routes, address targeting, connection intent and platform scan-option forwarding. A
+              capability still describes the instantiated backend's implementation; transport support does not invent
+              native support. The caller's deadline crosses as a relative <code>budgetMs</code> that main admits against
+              its own monotonic clock at receipt (the renderer's <code>performance.now()</code> instant has a different
+              time origin), and main rejects an absolute renderer <code>deadline</code> as
+              <code>protocol.malformed</code>. Normalized errors may carry
+              <code>commit</code> (<code>not-dispatched</code>, <code>uncertain</code>, or <code>null</code>). Version 4
+              adds the attachment rebind described below. A renderer and main built from different package versions
+              where one side speaks protocol 4 or older fail at bootstrap with <code>protocol.incompatible</code>, in
+              either direction, before a lease is registered or any operation runs, so preload, renderer bundle and main
+              must ship from the same package version. The IPC channel name (<code>unified-ble-manager:v2</code>) is
+              unchanged so the refusal arrives as a typed error rather than a missing handler.
+            </p>
+            <p>
+              <strong>Adapter loss and the attachment rebind (introduced in protocol 4).</strong> An adapter loss moves
+              the main-process manager to the backend's new attachment (new backend and adapter generations); the
+              manager itself stays alive. Main, never a renderer, then rebinds every active renderer lease to that
+              attachment and announces it on the reserved <code>attachment</code> stream as one event whose item is
               <code
                 >{ kind: 'value', value: { kind: 'backend-restarted', schemaVersion: 1, previousAttachmentId,
                 attachmentId, attachment } }</code

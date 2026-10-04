@@ -10,10 +10,10 @@ import { isJsonObject, toJsonValue, type JsonObject } from '../protocol.ts'
 import { args, defineCommand, ScenarioError, type ScenarioCommand } from '../scenario-core.ts'
 import { BleScenario, IDLE_BLE_STATE, withTimeout, type BleScenarioState } from './ble-scenario.ts'
 
-function parseManufacturer(raw: JsonObject) {
+function parseManufacturer(raw: JsonObject, requirePrefix = true) {
   const hasCompany = raw.manufacturerCompanyIdentifier !== undefined
   const hasPrefix = raw.manufacturerPrefix !== undefined
-  if (hasCompany !== hasPrefix)
+  if ((!hasCompany && hasPrefix) || (requirePrefix && hasCompany !== hasPrefix))
     throw new ScenarioError(
       'scenario.invalid-argument',
       'manufacturerCompanyIdentifier and manufacturerPrefix must be paired'
@@ -22,6 +22,7 @@ function parseManufacturer(raw: JsonObject) {
   const companyIdentifier = args.number(raw, 'manufacturerCompanyIdentifier', -1, { min: 0, max: 65535 })
   if (!Number.isSafeInteger(companyIdentifier))
     throw new ScenarioError('scenario.invalid-argument', 'manufacturerCompanyIdentifier must be an integer')
+  if (!hasPrefix) return [{ companyIdentifier }]
   const prefix = raw.manufacturerPrefix
   if (!Array.isArray(prefix) || prefix.length === 0)
     throw new ScenarioError('scenario.invalid-argument', 'manufacturerPrefix must be a nonempty byte array')
@@ -56,7 +57,7 @@ function parseAlternative(value: unknown): ChooseFilter {
   })
   if (value.localNamePrefix !== undefined && typeof value.localNamePrefix !== 'string')
     throw new ScenarioError('scenario.invalid-argument', 'alternative localNamePrefix must be a string')
-  const manufacturerData = parseManufacturer(value)
+  const manufacturerData = parseManufacturer(value, false)
   return {
     ...(serviceUuids === undefined ? {} : { serviceUuids }),
     ...(value.localNamePrefix === undefined ? {} : { localNamePrefix: value.localNamePrefix }),
@@ -101,27 +102,48 @@ export class AccessoryChooserScenario extends BleScenario<BleScenarioState> {
         (inactiveProbe
           ? 'Explicit inactive native-refusal probe; requires observed inactive state and reaches public manager.choose without the ordinary foreground precheck. Unexpected selection fails and releases its owner. '
           : 'Foreground system picker; selection only, connect separately. ') +
-        '{namePrefix?: string (default SIM Polar H10), timeoutMs?: integer 1..60000, manufacturerCompanyIdentifier?: uint16, manufacturerPrefix?: nonempty byte array, alternativeFilters?: array of serviceUuids/localNamePrefix/paired manufacturer selectors}. Alternatives append OR branches to the default conjunction. Manufacturer arguments must be paired and captured from the actual advertisement.',
+        '{namePrefix?: string (default SIM Polar H10), timeoutMs?: integer 1..60000, manufacturerCompanyIdentifier?: uint16, manufacturerPrefix?: nonempty byte array, alternativeFilters?: array of serviceUuids/localNamePrefix/manufacturer selectors, filters?: nonempty array of the same selectors}. Explicit filters REPLACE the default and cannot mix with namePrefix/manufacturer/alternativeFilters arguments; alternatives append OR branches to the default conjunction. Default manufacturer arguments must be paired; prefixes must match the actual advertisement.',
       presets: [
         { label: 'Choose SIM H10', args: {} },
+        { label: 'Choose service-only H10', args: { filters: [{ serviceUuids: ['180d'] }] } },
+        { label: 'Choose company-only H10', args: { filters: [{ manufacturerCompanyIdentifier: 107 }] } },
         { label: '3-second picker deadline', args: { timeoutMs: 3000 } }
       ],
       parse: raw => {
         const timeoutMs = args.number(raw, 'timeoutMs', 30000, { min: 1, max: 60000 })
         if (!Number.isSafeInteger(timeoutMs))
           throw new ScenarioError('scenario.invalid-argument', 'timeoutMs must be an integer')
+        if (raw.filters !== undefined) {
+          if (
+            !Array.isArray(raw.filters) ||
+            raw.filters.length === 0 ||
+            ['namePrefix', 'manufacturerCompanyIdentifier', 'manufacturerPrefix', 'alternativeFilters'].some(
+              key => raw[key] !== undefined
+            )
+          )
+            throw new ScenarioError(
+              'scenario.invalid-argument',
+              'Explicit filters require a nonempty array and cannot mix with default/OR selectors'
+            )
+          return { timeoutMs, filters: raw.filters.map(parseAlternative) }
+        }
         const manufacturerData = parseManufacturer(raw)
         const alternatives = raw.alternativeFilters
         if (alternatives !== undefined && !Array.isArray(alternatives))
           throw new ScenarioError('scenario.invalid-argument', 'alternativeFilters must be an array')
         return {
-          namePrefix: args.optionalString(raw, 'namePrefix') ?? 'SIM Polar H10',
           timeoutMs,
-          manufacturerData,
-          alternativeFilters: alternatives === undefined ? [] : alternatives.map(parseAlternative)
+          filters: [
+            {
+              serviceUuids: [HEART_RATE_SERVICE],
+              localNamePrefix: args.optionalString(raw, 'namePrefix') ?? 'SIM Polar H10',
+              ...(manufacturerData === undefined ? {} : { manufacturerData })
+            },
+            ...(alternatives === undefined ? [] : alternatives.map(parseAlternative))
+          ]
         }
       },
-      run: ({ namePrefix, timeoutMs, manufacturerData, alternativeFilters }) => {
+      run: ({ timeoutMs, filters }) => {
         if (this.sampling || this.connecting || this.pendingSubscriptions > 0)
           throw new ScenarioError('scenario.busy', 'A prior selected subscription is still settling')
         return this.runJourney(async signal => {
@@ -151,14 +173,7 @@ export class AccessoryChooserScenario extends BleScenario<BleScenarioState> {
           }
           this.patchBase({ phase: 'choosing' })
           const peer = await manager.choose({
-            filters: [
-              {
-                serviceUuids: [HEART_RATE_SERVICE],
-                localNamePrefix: namePrefix,
-                ...(manufacturerData === undefined ? {} : { manufacturerData })
-              },
-              ...alternativeFilters
-            ],
+            filters,
             timeoutMs,
             signal
           })

@@ -48,12 +48,25 @@ test('system setup returns an attachment-bound authorized peer, never fabricated
 test.each([
   { acceptAllDevices: true },
   { filters: [{ serviceUuids: ['180d', '180f'], localNamePrefix: 'Sensor' }] },
-  { filters: [{ serviceUuids: ['180d'] }] },
+  { filters: [{ localNamePrefix: 'Sensor' }] },
   { filters: [] }
 ])('unsupported filters cannot silently widen setup: %j', async input => {
   const { choose, binding } = fixture()
   await expect(choose(input)).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
   expect(binding.chooseAccessory).not.toHaveBeenCalled()
+})
+
+test.each([
+  [{ serviceUuids: ['180d'] }, { serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb' }],
+  [{ manufacturerData: [{ companyIdentifier: 107 }] }, { companyIdentifier: 107, manufacturerPrefix: [] }],
+  [
+    { manufacturerData: [{ companyIdentifier: 107, dataPrefix: new Uint8Array() }] },
+    { companyIdentifier: 107, manufacturerPrefix: [] }
+  ]
+])('Apple admits a declared service or company without optional name/data constraints: %j', async (filter, native) => {
+  const { choose, binding } = fixture()
+  expect((await choose({ filters: [filter] })).sources).toEqual(['origin-authorized'])
+  expect(JSON.parse(binding.chooseAccessory.mock.calls[0][1]).filters).toEqual([native])
 })
 
 test('pre-abort and elapsed entropy acquisition budget prevent native allocation', async () => {

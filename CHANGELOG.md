@@ -2,6 +2,37 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## Unreleased
+
+- Route public Electron/Tauri security operations to the same native authority
+  through individually scoped IPC permissions. Preserve state and pairing
+  outcomes, cancellation, retryable watch cleanup and backend limitations;
+  supported custom ceremonies retain one-shot challenge ownership and local
+  callback deadlines without crossing host clock origins.
+- Fail closed on custom-ceremony stream failures and overflow, independently
+  attempt native security-watch release and iterator retirement with bounded
+  drains, and retain unresolved cleanup for retry. Sequenced Tauri security
+  events cannot be overwritten by a racing unsequenced initial snapshot.
+- Add a shared reference-app security scenario for actual public state, system
+  pairing, bounded watch and cancellation. Unpair requires explicit confirmation;
+  stopping a scenario never removes a bond. Reference-host grants remain explicit.
+- Forward supported address targeting, address scan selectors, connection intent
+  and platform scan options across desktop IPC. Preserve resolved peer identity,
+  advertised addresses and connectability; do not silently substitute direct
+  connection or invent support for unimplemented native options.
+- Require desktop IPC protocol 5 on both sides before operation admission, so an
+  older host cannot silently ignore forwarded targeting, intent or scan options.
+  Keep native capability limitations independent of transport support.
+- Admit Apple AccessorySetupKit service-only and company-ID-only chooser filters.
+  Names and manufacturer-data prefixes are optional refinements; malformed IDs,
+  undeclared selectors, name-only and unfiltered requests remain refused before
+  picker allocation.
+- Correct Tauri, Electron and CLI Linux setup guidance: native authority resolves
+  and pins the BlueZ daemon owner by default. An explicit owner policy is an
+  optional stricter restriction, not an implementation attestation or a required
+  application lookup. The maintained daemon integration and explicit deployment
+  requirement are unchanged.
+
 ## [5.0.0-rc.17] - 2026-10-03
 
 ### Before upgrading

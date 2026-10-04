@@ -3,5 +3,13 @@
   "identifier": "main",
   "description": "BLE access for the proving consumer's main window only.",
   "windows": ["main"],
-  "permissions": ["core:default", "unified-ble-manager:default", "allow-reference-process-continuation"]
+  "permissions": [
+    "core:default",
+    "unified-ble-manager:default",
+    "allow-reference-process-continuation",
+    "unified-ble-manager:allow-security-state",
+    "unified-ble-manager:allow-security-pair",
+    "unified-ble-manager:allow-security-cancel-pairing",
+    "unified-ble-manager:allow-security-unpair"
+  ]
 }

@@ -33,6 +33,8 @@ use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, Ip
 const MAX_PENDING_EVENTS: usize = 256;
 #[path = "peer_directory.rs"]
 mod peer_directory;
+#[path = "security.rs"]
+mod security;
 const MAX_CORRELATIONS: usize = 256;
 const COMPLETED_CORRELATION_TTL: Duration = Duration::from_secs(30);
 /// Delivery pacing between core polls (scan observations and notification
@@ -51,8 +53,8 @@ fn btleplug_runtime() -> tokio::runtime::Handle {
 
 #[derive(Clone, Debug, Default)]
 pub struct BtleplugDispatcherOptions {
-    /// Trusted Linux host attestation of implemented LE-only lifecycle methods.
-    /// Omission permits scanning, not connections; never supplied by a renderer.
+    /// Optional stricter Linux daemon-owner restriction, supplied only by trusted host code.
+    /// Native authority resolves and pins the owner by default; this is not implementation attestation.
     pub connection_policy: Option<ubm_desktop::boundary::BluezConnectionPolicy>,
     /// The adapter the shared central runs on, by its selectable identity
     /// (`ubm_desktop::btleplug_backend::list_adapters` labels; BlueZ `hci0`,
@@ -152,6 +154,8 @@ struct CallerState {
     databases: HashMap<String, CoreDatabase>,
     subscriptions: HashMap<String, CoreSubscription>,
     connection_events: HashMap<String, ConnectionEventResource>,
+    security_watches: HashMap<String, security::SecurityWatch>,
+    security_watch_releases: HashSet<String>,
     operations: HashMap<String, TrackedOperation>,
     completed_correlations: HashMap<String, Instant>,
     pending_events: HashSet<String>,
@@ -1313,6 +1317,8 @@ impl BtleplugDispatcher {
                 databases: HashMap::new(),
                 subscriptions: HashMap::new(),
                 connection_events: HashMap::new(),
+                security_watches: HashMap::new(),
+                security_watch_releases: HashSet::new(),
                 operations: HashMap::new(),
                 completed_correlations: HashMap::new(),
                 pending_events: HashSet::new(),
@@ -1720,6 +1726,21 @@ impl BtleplugDispatcher {
         self.refuse_stale_attachment(route_attachment, command)
             .await?;
         match command {
+            "security.state"
+            | "security.pair"
+            | "security.cancel-pairing"
+            | "security.unpair"
+            | "security.watch.subscribe"
+            | "security.watch.unsubscribe" => {
+                if binary_payload.is_some() {
+                    return Err(DispatchError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        "ipc",
+                        command,
+                    ));
+                }
+                self.security_route(caller, command, payload, ctl).await
+            }
             "peers.resolve" | "peers.known" | "peers.connected" | "peers.bonded"
             | "peers.authorized" | "peers.restored" => {
                 if binary_payload.is_some() {
@@ -1982,6 +2003,10 @@ impl BtleplugDispatcher {
         payload: BTreeMap<String, IpcValue>,
         ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
+        if payload.contains_key("platform") {
+            return Err(DispatchError::new(BleErrorCode::CapabilityUnsupported, "capability", "scan.start.platform-options")
+                .platform("The instantiated desktop authority has no platform scan-options implementation; options are never silently discarded"));
+        }
         let query_value = payload.get("query").ok_or_else(|| {
             DispatchError::new(
                 BleErrorCode::ProtocolViolation,
@@ -1998,7 +2023,6 @@ impl BtleplugDispatcher {
             .iter()
             .map(|value| parse_uuid(value, "tauri.scan-services"))
             .collect::<Result<Vec<_>, _>>()?;
-        let diagnostic_plan = diagnostic_scan_plan(&decoded_query);
         let attachment = self.ensure_adapter().await?;
         let key = caller_key(caller);
         let lease = expected_lease(&payload, "tauri.scan-lease")?;
@@ -2022,6 +2046,19 @@ impl BtleplugDispatcher {
         // operation id are all core-owned. A concurrent scan fails here with
         // the core's own verdict — verbatim, never a dispatcher guess.
         let authority = self.ensure_authority().await?;
+        let native_capabilities = authority
+            .capability_descriptors()
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
+        let addresses_visible = native_capabilities.iter().any(|capability| {
+            capability.id() == "peer:address-targeting"
+                && matches!(
+                    capability.state(),
+                    ubm_core::central::CapabilityState::Supported
+                        | ubm_core::central::CapabilityState::Limited
+                )
+        });
+        let diagnostic_plan = diagnostic_scan_plan(&decoded_query, addresses_visible);
         let service_uuid_strings: Vec<String> =
             service_uuids.iter().map(|uuid| uuid.to_string()).collect();
         let scan_id = authority
@@ -2264,7 +2301,101 @@ impl BtleplugDispatcher {
         payload: BTreeMap<String, IpcValue>,
         ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
-        let peer_id = required_string(&payload, "peerId", "tauri.connect-peer")?;
+        match payload.get("intent") {
+            None => {}
+            Some(IpcValue::String(intent)) if intent == "direct" => {}
+            Some(IpcValue::String(intent)) if intent == "when-available" => {
+                return Err(DispatchError::new(
+                    BleErrorCode::CapabilityUnsupported,
+                    "capability",
+                    "connection.connect.when-available",
+                )
+                .platform(
+                    "The instantiated desktop authority has no deferred-connect implementation",
+                ))
+            }
+            _ => {
+                return Err(DispatchError::new(
+                    BleErrorCode::ArgumentInvalid,
+                    "connection",
+                    "tauri.connect-intent",
+                ))
+            }
+        }
+        if let Some(value) = payload.get("transport") {
+            if !matches!(value, IpcValue::String(value) if value == "le" || value == "auto") {
+                return Err(DispatchError::new(
+                    BleErrorCode::ArgumentInvalid,
+                    "connection",
+                    "tauri.connect-transport",
+                ));
+            }
+        }
+        if payload
+            .get("preferredPhy")
+            .is_some_and(|value| !matches!(value, IpcValue::Array(values) if values.is_empty()))
+        {
+            return Err(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported,
+                "capability",
+                "connection.connect.phy",
+            )
+            .platform("The instantiated desktop authority has no connect PHY implementation"));
+        }
+        let authority = self.ensure_authority().await?;
+        let peer_id = match (payload.get("peerId"), payload.get("address")) {
+            (Some(IpcValue::String(peer)), None) if !peer.is_empty() => peer.clone(),
+            (None, Some(address)) => {
+                let address = into_object(address.clone(), "tauri.connect-address")?;
+                if address
+                    .keys()
+                    .any(|key| !["address", "addressType"].contains(&key.as_str()))
+                {
+                    return Err(DispatchError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        "ipc",
+                        "tauri.connect-address",
+                    ));
+                }
+                let target = required_string(&address, "address", "tauri.connect-address")?;
+                let kind = match required_string(&address, "addressType", "tauri.connect-address")?
+                    .as_str()
+                {
+                    "public" => ubm_desktop::AddressType::Public,
+                    "random" => ubm_desktop::AddressType::Random,
+                    _ => {
+                        return Err(DispatchError::new(
+                            BleErrorCode::ArgumentInvalid,
+                            "connection",
+                            "tauri.connect-address-type",
+                        ))
+                    }
+                };
+                // A core ticket names one operation, not the whole two-stage
+                // acquisition. Preserve the original absolute budget and
+                // bridge cancellation to the resolution's child ticket; the
+                // parent ticket remains available for connection admission.
+                let resolution_control = OpControl::new(ctl.budget, OpTicket::new());
+                let resolution =
+                    authority.resolve_address(&target, kind, resolution_control.clone());
+                tokio::pin!(resolution);
+                let resolved = tokio::select! {
+                    answer = &mut resolution => answer,
+                    _ = ctl.ticket.cancelled() => {
+                        resolution_control.ticket.request_cancel();
+                        resolution.await
+                    }
+                };
+                resolved.map_err(|error| DispatchError::from_core(&error))?
+            }
+            _ => {
+                return Err(DispatchError::new(
+                    BleErrorCode::ProtocolMalformed,
+                    "ipc",
+                    "tauri.connect-target",
+                ))
+            }
+        };
         let key = caller_key(caller);
         let expected = expected_lease(&payload, "tauri.connect-lease")?;
         {
@@ -2286,7 +2417,6 @@ impl BtleplugDispatcher {
         // echo back to the core.
         // The core lease is internal: it takes no number from the 4.x counter.
         let lease = self.internal_id("lease");
-        let authority = self.ensure_authority().await?;
         let connection = authority
             .connect(&peer_id, &lease, ctl)
             .await
@@ -2891,6 +3021,14 @@ impl BtleplugDispatcher {
                 if caller_state.retired || caller_state.attachment.attachment_id != previous {
                     continue;
                 }
+                // The attachment-rebind event terminalizes renderer streams;
+                // old-generation native security receivers must retire too.
+                caller_state.security_watch_releases.extend(
+                    caller_state
+                        .security_watches
+                        .drain()
+                        .map(|(handle, _watch)| handle),
+                );
                 let next = attachment_of(
                     current,
                     adapter_name
@@ -4631,6 +4769,12 @@ impl BtleplugDispatcher {
             match state.callers.get_mut(key) {
                 Some(caller_state) => {
                     caller_state.retired = true;
+                    caller_state.security_watch_releases.extend(
+                        caller_state
+                            .security_watches
+                            .drain()
+                            .map(|(handle, _watch)| handle),
+                    );
                     true
                 }
                 None => false,
@@ -4924,6 +5068,7 @@ fn is_release_command(command: &str) -> bool {
             | "gatt.database.release"
             | "connection.disconnect"
             | "connection.events.unsubscribe"
+            | "security.watch.unsubscribe"
     )
 }
 
@@ -5116,7 +5261,7 @@ fn scan_properties_match_optional(
 }
 
 /// Verbatim core observation mapping: a [`PeerSnapshot`] becomes the exact
-/// IPC observation wire shape (`peerId`, `localName`, `rssi`,
+/// IPC observation wire shape (`peerId`, `address`, `connectable`, `localName`, `rssi`,
 /// `txPowerLevel`, `serviceUuids`, `manufacturerData`, `serviceData`, `origin`) with
 /// no filtering, merging, or re-sampling. The radio facts cross unchanged;
 /// delivery policy is the core's.
@@ -5143,6 +5288,17 @@ fn core_scan_observation(snapshot: &ubm_desktop::PeerSnapshot) -> IpcValue {
         .collect();
     object([
         ("peerId", string(snapshot.id.clone())),
+        (
+            "address",
+            snapshot.address.clone().map_or(IpcValue::Null, string),
+        ),
+        (
+            "connectable",
+            snapshot
+                .extras
+                .connectable
+                .map_or(IpcValue::Null, IpcValue::Bool),
+        ),
         ("origin", string(snapshot.extras.source.as_str())),
         (
             "localName",
@@ -5493,7 +5649,7 @@ fn adapter_state_payload_live(attachment: &Attachment, reading: &AdapterReading)
 /// deadline as a relative `budgetMs`, `commit` on every normalized error,
 /// `delivery` on subscriptions and connection-lifecycle events; a webview
 /// offering only 2 is refused at bootstrap as `protocol.incompatible`.
-pub(crate) const IPC_PROTOCOL_VERSION: i64 = 4;
+pub(crate) const IPC_PROTOCOL_VERSION: i64 = 5;
 
 /// The reserved stream of attachment rebinds (IPC protocol 4; TypeScript
 /// `IPC_ATTACHMENT_STREAM_ID`).
@@ -6135,34 +6291,35 @@ mod tests {
             ("capabilitySchema", offer_range("capability-schema", 1)),
             ("eventSchema", offer_range("event-schema", 1)),
             ("traceFormat", offer_range("trace-format", 1)),
-            ("ipcProtocol", offer_range("ipc-protocol", 4)),
+            (
+                "ipcProtocol",
+                offer_range("ipc-protocol", super::IPC_PROTOCOL_VERSION),
+            ),
         ]) else {
             panic!("the version offer must be an object");
         };
         offer
     }
 
-    // IPC protocol 4 adds the host-announced attachment rebind (the
-    // `attachment` stream, `backend-restarted`) after an adapter reset; a
-    // protocol-3 webview would keep routing on a replaced attachment, so the
-    // plugin speaks 4 only. An older or newer-only webview fails at bootstrap
-    // as protocol.incompatible, before any operation can be admitted.
+    // Protocol 5 adds typed address targets and connection/scan options. A
+    // protocol-4 host could ignore those fields and silently substitute its
+    // defaults; exact negotiation prevents that before any radio operation.
     #[test]
-    fn version_offer_requires_ipc_protocol_4_and_refuses_an_old_webview() {
-        assert_eq!(super::IPC_PROTOCOL_VERSION, 4);
+    fn version_offer_requires_ipc_protocol_5_and_refuses_an_old_webview() {
+        assert_eq!(super::IPC_PROTOCOL_VERSION, 5);
         let mut old = current_offer();
-        old.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 3));
+        old.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 4));
         let error = negotiate_ipc_versions(&old).expect_err("an old webview must be refused");
         assert_eq!(error.code, BleErrorCode::ProtocolIncompatible);
 
         let mut newer = current_offer();
-        newer.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 5));
+        newer.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 6));
         let error =
             negotiate_ipc_versions(&newer).expect_err("a newer-only webview must be refused");
         assert_eq!(error.code, BleErrorCode::ProtocolIncompatible);
 
         let super::IpcValue::Object(versions) =
-            negotiate_ipc_versions(&current_offer()).expect("protocol 4 must negotiate")
+            negotiate_ipc_versions(&current_offer()).expect("protocol 5 must negotiate")
         else {
             panic!("the negotiated versions must be an object");
         };
@@ -6173,7 +6330,7 @@ mod tests {
             ipc.get("selected"),
             Some(&object([
                 ("axis", string("ipc-protocol")),
-                ("value", super::number(4))
+                ("value", super::number(super::IPC_PROTOCOL_VERSION))
             ]))
         );
     }
@@ -6226,7 +6383,7 @@ mod tests {
                     "selected",
                     object([
                         ("axis", string("ipc-protocol")),
-                        ("value", super::number(4))
+                        ("value", super::number(super::IPC_PROTOCOL_VERSION))
                     ])
                 ),
                 (
@@ -6237,14 +6394,14 @@ mod tests {
                             "minimum",
                             object([
                                 ("axis", string("ipc-protocol")),
-                                ("value", super::number(4))
+                                ("value", super::number(super::IPC_PROTOCOL_VERSION))
                             ])
                         ),
                         (
                             "maximum",
                             object([
                                 ("axis", string("ipc-protocol")),
-                                ("value", super::number(4))
+                                ("value", super::number(super::IPC_PROTOCOL_VERSION))
                             ])
                         )
                     ])
@@ -6257,14 +6414,14 @@ mod tests {
                             "minimum",
                             object([
                                 ("axis", string("ipc-protocol")),
-                                ("value", super::number(4))
+                                ("value", super::number(super::IPC_PROTOCOL_VERSION))
                             ])
                         ),
                         (
                             "maximum",
                             object([
                                 ("axis", string("ipc-protocol")),
-                                ("value", super::number(4))
+                                ("value", super::number(super::IPC_PROTOCOL_VERSION))
                             ])
                         )
                     ])
@@ -6521,6 +6678,8 @@ mod tests {
                 databases: std::collections::HashMap::new(),
                 subscriptions: std::collections::HashMap::new(),
                 connection_events: std::collections::HashMap::new(),
+                security_watches: std::collections::HashMap::new(),
+                security_watch_releases: std::collections::HashSet::new(),
                 operations: std::collections::HashMap::new(),
                 completed_correlations: std::collections::HashMap::new(),
                 pending_events: std::collections::HashSet::new(),

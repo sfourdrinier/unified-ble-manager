@@ -75,6 +75,8 @@ export interface ScanClause {
 }
 
 interface CompactScanAdvertisement {
+  readonly address?: string | null
+  readonly connectable?: boolean | null
   readonly provenance?: ObservationSource
   readonly origin?: ObservationOrigin
   readonly peerId: string
@@ -117,9 +119,12 @@ export function normalizeScanObservation(observation: ScanObservation): Normaliz
       ...(observation.provenance === undefined ? {} : { provenance: observation.provenance }),
       ...(observation.origin === undefined ? {} : { origin: observation.origin }),
       ...(peerReference === undefined ? {} : { peerReference }),
+      ...(observation.address == null
+        ? {}
+        : { address: Object.freeze({ value: canonicalBleAddress(observation.address), type: 'opaque' as const }) }),
       localName: observation.localName,
       rssi: observation.rssi,
-      connectable: null,
+      connectable: observation.connectable ?? null,
       serviceUuids: Object.freeze(observation.serviceUuids.map(uuid => String(canonicalUuid(uuid)))),
       manufacturerData: Object.freeze(
         observation.manufacturerData.map(entry =>
@@ -566,7 +571,7 @@ function isIpcAdvertisement(value: ScanObservation): value is CompactScanAdverti
     hasExactObservationKeys(
       value,
       ['peerId', 'localName', 'rssi', 'serviceUuids', 'manufacturerData', 'serviceData'],
-      ['peerReference', 'txPowerLevel', 'provenance', 'origin']
+      ['peerReference', 'txPowerLevel', 'provenance', 'origin', 'address', 'connectable']
     ) &&
     isIpcAdvertisementValues(value)
   )
@@ -580,6 +585,16 @@ function isIpcAdvertisementValues(value: ScanObservation): boolean {
     (candidate.origin === undefined || isObservationOrigin(candidate.origin)) &&
     typeof candidate.peerId === 'string' &&
     candidate.peerId.length > 0 &&
+    // Extended fields belong to the complete IPC advertisement projection,
+    // not an unscoped normalized observation with a peerId appended.
+    ((candidate.address === undefined && candidate.connectable === undefined) ||
+      candidate.txPowerLevel !== undefined) &&
+    (candidate.connectable === undefined ||
+      candidate.connectable === null ||
+      typeof candidate.connectable === 'boolean') &&
+    (candidate.address === undefined ||
+      candidate.address === null ||
+      (typeof candidate.address === 'string' && /^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(candidate.address))) &&
     (candidate.peerReference === undefined || isPeerReference(candidate.peerReference)) &&
     (candidate.localName === null || typeof candidate.localName === 'string') &&
     (candidate.rssi === null || (typeof candidate.rssi === 'number' && Number.isFinite(candidate.rssi))) &&

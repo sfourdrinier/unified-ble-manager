@@ -42,7 +42,7 @@ function argument(name) {
     index !== -1 &&
     (process.argv[index + 1] === undefined || process.argv[index + 1].startsWith('--'))
   )
-    throw new Error('--bluez-daemon-owner requires the explicitly attested daemon unique owner')
+    throw new Error('--bluez-daemon-owner requires an explicit stricter daemon unique-owner restriction')
   return index === -1 ? undefined : process.argv[index + 1]
 }
 
@@ -60,7 +60,10 @@ function authenticate(event) {
   return {
     authenticatedClientId: `electron-renderer-${event.sender.id}`,
     authenticatedWindowScope: `window-${window === null ? 'none' : window.id}`,
-    authenticatedSessionScope: 'default-session'
+    authenticatedSessionScope: 'default-session',
+    // Trusted reference-app authorization, never a renderer-supplied grant.
+    // Custom ceremony is intentionally not granted by this system-only harness.
+    securityPermissions: ['security:state', 'security:pair', 'security:cancel-pairing', 'security:unpair']
   }
 }
 

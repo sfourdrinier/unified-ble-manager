@@ -94,12 +94,15 @@ sandboxed controls, the idle claim, unknown-token rejection and normal Quit.
 It does not prove radio or background data collection.
 # Trusted BlueZ daemon policy
 
-Launch trusted main with `--backend bluez --bluez-daemon-owner :1.N` or
-`UBM_BLUEZ_DAEMON_OWNER=:1.N` (the flag wins). The value must be an explicitly
-verified unique D-Bus owner implementing LE1 lifecycle methods, not a guessed
-version or automatic attestation. The public factory validates it, and daemon
-replacement requires fresh trusted configuration. Other backends reject it;
-omission does not permit Linux connection acquisition and never enables a
-Device1/legacy fallback. Main passes one policy to the process owner shared by
-ordinary manager and continuation operations. Renderers/scenarios cannot choose
-it, and offline journal access still opens no central.
+Launch trusted main with `--backend bluez`. The native authority resolves and pins
+the daemon owner by default and validates its lease/GATT contract. The maintained
+daemon integration still requires explicit deployment; see
+[`BLUEZ_DEPLOYMENT.md`](../docs/BLUEZ_DEPLOYMENT.md).
+
+`--bluez-daemon-owner :1.N` or `UBM_BLUEZ_DAEMON_OWNER=:1.N` (the flag wins)
+is an optional stricter owner restriction, not implementation attestation.
+The public factory validates the unique name and refuses replacement or mismatch;
+updating a deliberately pinned daemon requires fresh trusted configuration.
+Other backends reject this option. No Device1/legacy fallback exists. Main's
+ordinary manager and continuation operations share the native process authority.
+Renderers/scenarios cannot choose this policy; offline journal access opens no central.

@@ -38,6 +38,14 @@ development, run the webview frontend with
 `build.devUrl`), then open the driver from the window. Launch commands and the
 protocol are in [`../examples-shared/driver/README.md`](../examples-shared/driver/README.md).
 
+Trusted `UBM_TAURI_ADAPTER=hci0` selects an exact native adapter identity at
+process launch (for example, the client adapter on a two-adapter Linux test
+machine). Empty or whitespace-only values are rejected; identities are never
+trimmed or substituted. Unset keeps native selection unchanged: one adapter
+is selected, several adapters fail with `adapter.ambiguous`, and an unknown
+identity fails with `adapter.selection-required`. This is host configuration,
+not a renderer command or scenario input.
+
 The driver's `process-continuation` scenario uses an application-scoped Rust
 command, not the BLE attachment bootstrap. It shares the plugin's retained
 dispatcher/native engine; webview reload does not dispose that process owner.
@@ -67,13 +75,14 @@ This controlled-exit policy cannot retain volatile state after an unexpected
 OS kill, crash, or power loss; durable journals require explicit recording opt-in.
 # Trusted BlueZ daemon policy
 
-On Linux, launch the trusted Rust application with
-`UBM_BLUEZ_DAEMON_OWNER=:1.N`, substituting an explicitly verified unique D-Bus
-owner implementing LE1 lifecycle methods. Rust configures the retained dispatcher
-once; ordinary managers and process continuation share it. Native admission
-validates the unique name and binds the policy to that daemon lifetime. No
-automatic attestation or Device1/legacy fallback occurs; omission leaves Linux
-connection acquisition unavailable. Non-Linux launches reject this environment
-option. A daemon restart requires a new trusted launch configuration. This is not
-a renderer command or scenario input, and offline journal access remains free of
-central acquisition.
+On Linux, the native authority resolves and pins the daemon owner by default and
+validates its lease/GATT contract. The maintained daemon integration still needs
+explicit deployment; see [`BLUEZ_DEPLOYMENT.md`](../docs/BLUEZ_DEPLOYMENT.md).
+
+Trusted `UBM_BLUEZ_DAEMON_OWNER=:1.N` adds an optional stricter owner restriction,
+not implementation attestation. Rust configures the retained dispatcher once;
+ordinary managers and process continuation share it. Native admission validates
+the unique name and refuses a mismatch or replacement; a deliberately pinned
+daemon restart needs updated trusted launch configuration. Non-Linux launches
+reject this option. No Device1/legacy fallback exists. This is not a renderer
+command or scenario input, and offline journal access remains free of central acquisition.

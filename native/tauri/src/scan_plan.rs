@@ -138,7 +138,14 @@ pub(crate) fn decode_normalized_scan_query(value: &IpcValue) -> Result<DecodedSc
     })
 }
 
-pub(crate) fn diagnostic_scan_plan(query: &DecodedScanQuery) -> IpcValue {
+pub(crate) fn diagnostic_scan_plan(query: &DecodedScanQuery, addresses_visible: bool) -> IpcValue {
+    let mut visible_query = query.clone();
+    if addresses_visible {
+        visible_query
+            .unavailable
+            .retain(|predicate| predicate.field != "addresses");
+    }
+    let query = &visible_query;
     let limitations = query
         .predicates
         .iter()
@@ -808,7 +815,7 @@ fn describe_clause_set(
 fn observation_field_available(field: &str) -> bool {
     matches!(
         field,
-        "localName" | "rssi" | "serviceUuids" | "manufacturerData" | "serviceData"
+        "names" | "rssi" | "services" | "manufacturerData" | "serviceData"
     )
 }
 
@@ -1376,6 +1383,30 @@ fn ipc_object<'a>(entries: impl IntoIterator<Item = (&'a str, IpcValue)>) -> Ipc
 mod tests {
     use super::*;
 
+    #[test]
+    fn address_residual_availability_follows_instantiated_authority() {
+        let mut decoded =
+            decode_normalized_scan_query(&query_with_digest(&canonical_service_query_digest()))
+                .unwrap();
+        let address = Predicate {
+            clause_set: "anyOf",
+            clause_index: 0,
+            field: "addresses",
+            operator: "equals",
+        };
+        decoded.predicates.push(address.clone());
+        decoded.unavailable.push(address);
+        for (visible, count) in [(false, 1), (true, 0)] {
+            let IpcValue::Object(plan) = diagnostic_scan_plan(&decoded, visible) else {
+                panic!("plan object");
+            };
+            let Some(IpcValue::Array(unavailable)) = plan.get("unavailable") else {
+                panic!("unavailable array");
+            };
+            assert_eq!(unavailable.len(), count);
+        }
+    }
+
     fn query_with_digest(digest: &str) -> IpcValue {
         IpcValue::Object(
             [
@@ -1439,7 +1470,7 @@ mod tests {
         let decoded =
             decode_normalized_scan_query(&query_with_digest(&canonical_service_query_digest()))
                 .expect("canonical query must decode");
-        let plan = diagnostic_scan_plan(&decoded);
+        let plan = diagnostic_scan_plan(&decoded, false);
 
         assert_eq!(
             decoded.native_service_uuids,

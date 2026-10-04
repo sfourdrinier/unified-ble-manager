@@ -264,7 +264,7 @@ async function open(platform) {
 
 describe('Electron main <-> renderer: adapter off and on', () => {
   test('speaks IPC protocol 4', () => {
-    expect(IPC_PROTOCOL_VERSION).toBe(4)
+    expect(IPC_PROTOCOL_VERSION).toBe(5)
     expect(IPC_ATTACHMENT_STREAM_ID).toBe('attachment')
   })
 

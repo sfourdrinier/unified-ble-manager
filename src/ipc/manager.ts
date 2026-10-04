@@ -211,6 +211,9 @@ interface UnresolvedProvisional {
 }
 
 export interface IpcManagerOperationOptions {
+  readonly intent?: import('../backend-contract/backend').ConnectionOptions['intent']
+  readonly transport?: 'le' | 'auto'
+  readonly preferredPhy?: import('../backend-contract/backend').ConnectionOptions['preferredPhy']
   readonly signal?: AbortSignal
   readonly timeoutMs?: number
   readonly deadline?: number | null
@@ -225,6 +228,7 @@ export interface IpcManagerOperationOptions {
 }
 
 export interface IpcScanOptions extends IpcManagerOperationOptions {
+  readonly platform?: import('../public/ble-manager').ScanPlatformOptions
   readonly query?: NormalizedScanQuery
   readonly serviceUuids?: readonly string[]
   readonly manufacturerData?: readonly { readonly companyId: number; readonly dataPrefix?: Readonly<Uint8Array> }[]
@@ -246,6 +250,8 @@ export interface IpcServiceData {
 }
 
 export interface IpcAdvertisement {
+  readonly address?: string | null
+  readonly connectable?: boolean | null
   readonly provenance?: ObservationSource
   readonly origin?: ObservationOrigin
   readonly peerId: string
@@ -309,7 +315,10 @@ export interface IpcDescriptorRecord extends SerializableRecord {
 interface StreamSink {
   readonly closeWithReason: (reason: StreamTerminalNotice['reason'], error?: NormalizedBleError | null) => void
   readonly deliver: (streamId: string, item: SerializableRecord) => void
-  readonly notifyOwnerTerminal: (reason: StreamTerminalNotice['reason']) => void | Promise<CleanupRecord>
+  readonly notifyOwnerTerminal: (
+    reason: StreamTerminalNotice['reason'],
+    error?: NormalizedBleError | null
+  ) => void | Promise<CleanupRecord>
   readonly cleanupScope: 'local' | 'lease-owned'
 }
 
@@ -407,6 +416,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       'scan.start',
       Object.freeze({
         query,
+        ...(options.platform === undefined ? {} : { platform: { ...options.platform } }),
         serviceUuids: Object.freeze([...(options.serviceUuids ?? [])]),
         manufacturerData: Object.freeze(manufacturerData),
         localNamePrefix: options.localNamePrefix ?? null,
@@ -493,13 +503,27 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     throw new AggregateError([admissionError, cleanupError], 'IPC scan admission cleanup failed')
   }
 
-  async connect(peerId: string, options: IpcManagerOperationOptions = {}): Promise<IpcConnection> {
-    if (typeof peerId !== 'string' || peerId.length === 0) {
+  async connect(
+    peerId: string | import('../backend-contract/backend').PeerAddressDescriptor,
+    options: IpcManagerOperationOptions = {}
+  ): Promise<IpcConnection> {
+    if (typeof peerId === 'string' && peerId.length === 0) {
       throw contractError('argument.invalid', 'connection', 'ipc-manager.connect.peer-id')
     }
     const startedAt = globalThis.performance?.now() ?? null
     const deadline = operationDeadline(options)
-    const payload = await this.route('connection.connect', Object.freeze({ peerId, deadline }), null, options.signal)
+    const payload = await this.route(
+      'connection.connect',
+      Object.freeze({
+        ...(typeof peerId === 'string' ? { peerId } : { address: { ...peerId } }),
+        deadline,
+        ...(options.intent === undefined ? {} : { intent: options.intent }),
+        ...(options.transport === undefined ? {} : { transport: options.transport }),
+        ...(options.preferredPhy === undefined ? {} : { preferredPhy: [...options.preferredPhy] })
+      }),
+      null,
+      options.signal
+    )
     // The native answer arrived but the deadline had already passed (a
     // clamped timer, typically): no link came up in time, so the attempt is
     // the peer not answering (`connection.failed`, finding 161), and the
@@ -514,7 +538,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     const provisional = decodeProvisionalConnectIdentity(payload)
     const admissionError = validateProvisionalConnectIdentity(
       provisional,
-      peerId,
+      typeof peerId === 'string' ? peerId : (provisional.peerId ?? ''),
       String(this.bootstrap.rendererLease.leaseId)
     )
     if (admissionError !== null) {
@@ -688,7 +712,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     isValue: (value: unknown) => value is Value,
     limits: StreamLimits = REMOTE_STREAM_LIMITS,
     overflowPolicy: OverflowPolicy = 'drop-oldest',
-    onTerminal?: (reason: StreamTerminalNotice['reason']) => void | Promise<CleanupRecord>,
+    onTerminal?: (
+      reason: StreamTerminalNotice['reason'],
+      error?: NormalizedBleError | null
+    ) => void | Promise<CleanupRecord>,
     cleanupScope: 'local' | 'lease-owned' = 'local',
     beforeReplay?: (stream: BoundedAsyncStream<Value>) => void
   ): BoundedAsyncStream<Value> {
@@ -740,10 +767,14 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         const reason = requiredTerminalReason(item.reason, 'ipc-manager.event')
         upstreamLoss = cumulativeStreamLoss(upstreamLoss, item, true)
         reportKnownLoss('drop-oldest')
-        source.finishWithReason(reason, requiredTerminalError(item.error, 'ipc-manager.event'))
+        const error = requiredTerminalError(item.error, 'ipc-manager.event')
+        source.finishWithReason(reason, error)
         this.streams.delete(streamId)
         this.discardPendingStream(streamId)
-        this.captureOwnerCleanup(() => onTerminal?.(reason), cleanupScope)
+        this.captureOwnerCleanup(
+          () => (error == null ? onTerminal?.(reason) : onTerminal?.(reason, error)),
+          cleanupScope
+        )
         return
       }
       throw contractError('protocol.malformed', 'ipc', 'ipc-manager.stream-item-kind')
@@ -751,8 +782,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     const sink: StreamSink = {
       closeWithReason: (reason, error) => source.closeWithReason(reason, error),
       deliver,
-      notifyOwnerTerminal: reason => {
-        return onTerminal?.(reason)
+      notifyOwnerTerminal: (reason, error) => {
+        return error == null ? onTerminal?.(reason) : onTerminal?.(reason, error)
       },
       cleanupScope
     }
@@ -771,7 +802,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       const terminal = this.pumpTerminal
       const reason = terminal?.reason ?? 'source-failed'
       source.closeWithReason(reason, terminal?.error ?? null)
-      this.captureOwnerCleanup(() => onTerminal?.(reason), cleanupScope)
+      this.captureOwnerCleanup(
+        () => (terminal?.error == null ? onTerminal?.(reason) : onTerminal?.(reason, terminal.error)),
+        cleanupScope
+      )
       return source
     }
     if (tombstone !== undefined) {
@@ -1003,8 +1037,9 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     if (this.streams.get(streamId) !== sink) return
     this.streams.delete(streamId)
     this.discardPendingStream(streamId)
-    sink.closeWithReason('source-failed', this.eventFailureError(error))
-    this.captureOwnerCleanup(() => sink.notifyOwnerTerminal('source-failed'), sink.cleanupScope)
+    const cause = this.eventFailureError(error)
+    sink.closeWithReason('source-failed', cause)
+    this.captureOwnerCleanup(() => sink.notifyOwnerTerminal('source-failed', cause), sink.cleanupScope)
   }
 
   private noteEventTransportHealth(notice: IpcEventTransportHealthNotice): void {
@@ -1020,7 +1055,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     this.clearPendingAccounting()
     for (const sink of sinks) {
       sink.closeWithReason(cause, error)
-      this.captureOwnerCleanup(() => sink.notifyOwnerTerminal(cause), sink.cleanupScope)
+      this.captureOwnerCleanup(() => sink.notifyOwnerTerminal(cause, error), sink.cleanupScope)
     }
   }
 
@@ -1368,6 +1403,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       command === 'connection.disconnect' ||
       command === 'connection.events.unsubscribe' ||
       command === 'gatt.unsubscribe' ||
+      command === 'security.watch.unsubscribe' ||
       command === 'gatt.database.release'
     )
   }
@@ -1540,14 +1576,6 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   }
 }
 
-const REMOTE_SECURITY_CAPABILITY_IDS = new Set<string>([
-  BUILT_IN_FEATURE_IDS.securityState,
-  BUILT_IN_FEATURE_IDS.securityPair,
-  BUILT_IN_FEATURE_IDS.securityCancelPairing,
-  BUILT_IN_FEATURE_IDS.securityUnpair,
-  BUILT_IN_FEATURE_IDS.securityCustomCeremony
-])
-
 const REMOTE_RENDERER_UNSUPPORTED_CAPABILITY_IDS = new Set<string>([
   BUILT_IN_FEATURE_IDS.connectionRequestMtu,
   BUILT_IN_FEATURE_IDS.connectionPriority,
@@ -1562,11 +1590,9 @@ export function projectRemoteCapabilities(snapshot: IpcCapabilitySnapshotV2): Ip
     ...snapshot,
     descriptors: Object.freeze(
       snapshot.descriptors.map(descriptor =>
-        REMOTE_SECURITY_CAPABILITY_IDS.has(descriptor.id)
-          ? unsupportedRemoteSecurityDescriptor(descriptor)
-          : REMOTE_RENDERER_UNSUPPORTED_CAPABILITY_IDS.has(descriptor.id)
-            ? unsupportedRemoteRendererDescriptor(descriptor)
-            : descriptor
+        REMOTE_RENDERER_UNSUPPORTED_CAPABILITY_IDS.has(descriptor.id)
+          ? unsupportedRemoteRendererDescriptor(descriptor)
+          : descriptor
       )
     )
   })
@@ -1594,26 +1620,6 @@ function unsupportedRemoteRendererDescriptor(descriptor: CapabilityDescriptor): 
       limitations
     }),
     limitations
-  })
-}
-
-function unsupportedRemoteSecurityDescriptor(descriptor: CapabilityDescriptor): CapabilityDescriptor {
-  const limitation = Object.freeze({
-    code: 'ipc-security-backend-unavailable',
-    explanation: 'This desktop IPC projection does not currently route a native security backend.',
-    affectedGuarantee: 'security operation support over trusted-host IPC'
-  })
-  return Object.freeze({
-    ...descriptor,
-    state: 'unsupported' as const,
-    evidence: Object.freeze({
-      ...descriptor.evidence,
-      receiptId: `ipc-security-unavailable-${descriptor.id}`,
-      evidenceLevel: 'blocked' as const,
-      sourceDigest: 'ipc-security-projection-v1',
-      limitations: Object.freeze([limitation])
-    }),
-    limitations: Object.freeze([limitation])
   })
 }
 
@@ -3389,6 +3395,15 @@ function isIpcAdvertisement(value: unknown): value is IpcAdvertisement {
     return false
   }
   const peerId: unknown = Reflect.get(value, 'peerId')
+  const address: unknown = Reflect.get(value, 'address')
+  const connectable: unknown = Reflect.get(value, 'connectable')
+  if (connectable !== undefined && connectable !== null && typeof connectable !== 'boolean') return false
+  if (
+    address !== undefined &&
+    address !== null &&
+    (typeof address !== 'string' || !/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(address))
+  )
+    return false
   const localName: unknown = Reflect.get(value, 'localName')
   const rssi: unknown = Reflect.get(value, 'rssi')
   const txPowerLevel: unknown = Reflect.get(value, 'txPowerLevel')

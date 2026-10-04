@@ -2,7 +2,7 @@
 
 # Bonding / pairing
 
-The 4.0 API exposes security through `manager.security`, while capability truth
+The 5.x API exposes security through `manager.security`, while capability truth
 comes from the typed feature registrations of the backend attached to a manager,
 never from a host name, static table, or simulated radio. The controlling
 contract is [Current 5.0 authority](README.md#current-50-authority).
@@ -27,6 +27,15 @@ Applications must inspect the attached backend's registered feature and its
 limitations before presenting a pairing flow. If no supported feature
 registration exists, pairing is unavailable; applications must not infer
 availability from Android, React Native, Electron, or a test backend.
+
+Electron renderers and Tauri webviews use the same public security façade over
+authenticated IPC. Trusted main-process permissions or Tauri command scopes
+authorize each operation separately; an untrusted payload cannot grant them.
+The instantiated native authority still determines capability and outcome.
+`PeerSecurityState.measuredAtMonotonicMs` retains the backend's monotonic clock
+origin, not the renderer's; do not subtract a local renderer clock from it.
+Pairing challenge deadlines are different: their remaining budget crosses IPC
+and the callback receives a deadline in its own local monotonic clock.
 
 The default ceremony is system-mediated. A custom `PairingAgent` is accepted
 only when `security:custom-ceremony` is advertised. Its challenges contain a

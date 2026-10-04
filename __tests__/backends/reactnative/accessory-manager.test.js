@@ -34,6 +34,21 @@ test('ordinary RN factory exposes native ASK choose with scoped peer identity an
   await manager.destroy()
 })
 
+test.each([
+  [{ serviceUuids: ['180d'] }, { serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb' }],
+  [{ manufacturerData: [{ companyIdentifier: 107 }] }, { companyIdentifier: 107, manufacturerPrefix: [] }]
+])('ordinary RN factory forwards identifier-only ASK filtering: %j', async (filter, nativeFilter) => {
+  const manager = await createReactNativeBleManager()
+  try {
+    const peer = await manager.choose({ filters: [filter], timeoutMs: 30000 })
+    expect(peer.sources).toEqual(['origin-authorized'])
+    expect(JSON.parse(mockNative.chooseAccessory.mock.calls[0][1]).filters).toEqual([nativeFilter])
+    expect(mockNative.opsInvoked('scan.start')).toEqual([])
+  } finally {
+    await manager.destroy()
+  }
+})
+
 test('unavailable host remains continuous-scan and cannot allocate a setup session', async () => {
   mockNative.accessoryChooserAvailable.mockResolvedValue(false)
   const manager = await createReactNativeBleManager()

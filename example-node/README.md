@@ -60,13 +60,15 @@ A CLI has no app lifecycle, so the `background` scenario reports its app state
 as `untracked`. Running this is a manual live check, not release evidence.
 # Trusted BlueZ daemon policy
 
-For Linux connections, pass `--backend bluez --bluez-daemon-owner :1.N`
-or set trusted launch environment `UBM_BLUEZ_DAEMON_OWNER=:1.N`. Replace the
-placeholder with the explicitly verified unique D-Bus owner of a daemon that
-implements LE1 lifecycle methods. The CLI flag takes precedence. This is a host
-attestation, not automatic discovery or a version guess; the public factory
-validates the name and the backend binds it to that daemon lifetime. A restart
-requires a new trusted launch configuration. No Device1/legacy fallback exists.
-Omission does not grant connection authority. Other backends reject this option.
-Ordinary managers and process continuation borrow the same configured owner;
-offline recordings do not acquire a radio. Scenarios cannot set this policy.
+For Linux, `--backend bluez` uses the maintained daemon integration described in
+[`BLUEZ_DEPLOYMENT.md`](../docs/BLUEZ_DEPLOYMENT.md). The native authority resolves and pins
+the daemon owner by default, and validates its lease/GATT contract; no application
+lookup is required. Installation remains an explicit host action.
+
+`--bluez-daemon-owner :1.N` or trusted `UBM_BLUEZ_DAEMON_OWNER=:1.N` adds an
+optional stricter owner restriction (the CLI flag wins), not implementation
+attestation. The public factory validates the unique name and refuses a mismatch
+or replacement; a deliberately pinned restart needs updated trusted configuration.
+Other backends reject this option. No Device1/legacy fallback exists. Ordinary
+managers and process continuation share native authority; offline recordings do
+not acquire a radio. Scenarios cannot set this policy.

@@ -39,7 +39,7 @@ export type {
 
 /** The Node BlueZ factory's options, for the Electron-main BlueZ provider. */
 export interface ElectronMainBluezProviderOptions extends DesktopCoreProviderOptions {
-  /** Trusted LE-bearer implementation/daemon-owner attestation; omission permits scanning only. */
+  /** Optional stricter daemon-owner restriction; native authority resolves and pins the owner by default. */
   readonly connectionPolicy?: BluezConnectionPolicy
   /** The D-Bus bus BlueZ is reached on (`'system'` by default). */
   readonly busKind?: BluezBusKind

@@ -408,6 +408,7 @@ const PEER_ACQUIRING = [
   ['ecg', 'start', {}],
   ['background', 'start', { autoReconnect: false }],
   ['restoration', 'start', { autoReconnect: false }],
+  ['security', 'select', {}],
   ['h10-capture', 'capture', {}],
   ['w6-shared-scan', 'start', {}],
   ['w6-generation-fence', 'start', {}],

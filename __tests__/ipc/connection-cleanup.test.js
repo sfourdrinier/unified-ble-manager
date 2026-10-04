@@ -2,7 +2,7 @@ const { IpcBleManager, IpcConnection, inspectIpcProvisionalAdmissionForTests } =
 const { BackendContractError } = require('../../src/backend-contract/errors')
 const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
 
-function negotiated(axis, value = axis === 'ipc-protocol' ? 4 : 1) {
+function negotiated(axis, value = axis === 'ipc-protocol' ? 5 : 1) {
   const selected = { axis, value }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }

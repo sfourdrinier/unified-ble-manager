@@ -33,6 +33,26 @@ background mode and the existing stable restoration identity/native continuation
 configuration. ASK needs iOS 18+, and this name-prefix selector needs 18.2+.
 The newer ASK-qualified relaunch cases require iOS/iPadOS 26+.
 
+Apple also accepts **service-only** and **company-ID-only** filters. A service
+filter needs its matching `NSAccessorySetupBluetoothServices` declaration; a
+company filter needs its matching `NSAccessorySetupBluetoothCompanyIdentifiers`
+declaration. Neither requires a name or manufacturer-data prefix. Those are
+optional additional constraints; a name-only filter and unfiltered selection
+remain unsupported by ASK. This follows Apple's
+[discovery descriptor requirements](https://developer.apple.com/documentation/accessorysetupkit/asdiscoverydescriptor).
+For the affected picker acceptance, run `filters: [{ serviceUuids: ['180d'] }]`
+and `filters: [{ manufacturerData: [{ companyIdentifier: 107 }] }]` separately
+against the advertising simulator. Record an actual OS selection and subsequent
+positive HRS value; native admission or a mock selection alone is not radio proof.
+The reference scenario's `choose` command accepts replacement selectors as
+`{ "filters": [{ "serviceUuids": ["180d"] }] }` or
+`{ "filters": [{ "manufacturerCompanyIdentifier": 107 }] }`. Its matching
+“Choose service-only H10” and “Choose company-only H10” presets use these exact
+arguments. Replacement `filters` cannot be mixed with `namePrefix`, top-level
+manufacturer arguments or `alternativeFilters`, so a default name/service
+branch cannot accidentally qualify an identifier-only test. Use the existing
+`connect-selected` and `sample-selected-hr` commands afterward on the same owner.
+
 The current `example-expo/app.json` declares these ASK keys through Expo
 `ios.infoPlist`; verify them in the generated native app before qualification.
 The existing scenario screens and authenticated remote registry expose

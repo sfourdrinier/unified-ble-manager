@@ -40,6 +40,9 @@ enum AccessoryChoiceAdmission {
 
   static func validFilter(_ filter: [String: Any]) -> Bool {
     guard Set(filter.keys).isSubset(of: ["serviceUuid", "namePrefix", "companyIdentifier", "manufacturerPrefix"]) else { return false }
+    // A Bluetooth service or company is ASK's required selector. Optional
+    // name/manufacturer-data constraints cannot replace it.
+    guard filter["serviceUuid"] != nil || filter["companyIdentifier"] != nil else { return false }
     if let service = filter["serviceUuid"] { guard let text = service as? String, validUuid(text) else { return false } }
     if let name = filter["namePrefix"] { guard let text = name as? String, !text.isEmpty, text.utf8.count <= 1024 else { return false } }
     if let company = filter["companyIdentifier"] { guard let value = integer(company), (0...65535).contains(value) else { return false } }

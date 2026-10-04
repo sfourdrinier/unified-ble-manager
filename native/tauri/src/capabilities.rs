@@ -146,7 +146,12 @@ pub(crate) fn snapshot(
             "descriptors",
             IpcValue::Array(
                 TAURI_CAPABILITIES.iter().map(|id| {
-                    if matches!(*id, "connection:direct" | "background:desktop-maintain-connection") && native.iter().any(|row| row.id() == *id && matches!(row.state(), ubm_core::central::CapabilityState::Unsupported | ubm_core::central::CapabilityState::Unavailable)) {
+                    if matches!(*id, "peer:address-targeting" | "connection:when-available" | "scan:platform-options" | "security:state" | "security:pair" | "security:cancel-pairing" | "security:unpair" | "security:custom-ceremony" | "security:pairing-generation") {
+                        let row = native.iter().find(|row| row.id() == *id);
+                        let state = row.map(|row| row.state()).unwrap_or(ubm_core::central::CapabilityState::Unsupported);
+                        let reason = row.map(|row| row.limitations().join("; ")).unwrap_or_else(|| "native-mechanism-not-implemented".to_owned());
+                        descriptor(id, state.as_str(), "capability.truth-limits-evidence-and-binding", &reason, "The existing IPC route delegates to the instantiated desktop authority. Its implementation limits are preserved; a missing native mechanism is not a claim that the operating system cannot implement it.")
+                    } else if matches!(*id, "connection:direct" | "background:desktop-maintain-connection") && native.iter().any(|row| row.id() == *id && matches!(row.state(), ubm_core::central::CapabilityState::Unsupported | ubm_core::central::CapabilityState::Unavailable)) {
                         let row = native.iter().find(|row| row.id() == *id).expect("instance row checked");
                         descriptor(id, row.state().as_str(), "capability.truth-limits-evidence-and-binding", &row.limitations().join("; "), "The instantiated native radio reports this mechanism unavailable; its reason is preserved without substituting a platform matrix.")
                     } else if matches!(*id, "peer:resolve-reference" | "peer:known" | "peer:system-connected") {
@@ -351,6 +356,45 @@ mod tests {
                 "peer:system-connected",
             ] {
                 assert_eq!(row(&snapshot, id).0, state.as_str());
+            }
+        }
+    }
+
+    #[test]
+    fn routed_security_and_address_capabilities_preserve_native_truth() {
+        use ubm_core::central::{CapabilityDescriptor, CapabilityState, EvidenceLevel};
+        for state in [
+            CapabilityState::Limited,
+            CapabilityState::Unsupported,
+            CapabilityState::Unavailable,
+        ] {
+            let native = [
+                "security:state",
+                "security:pair",
+                "security:cancel-pairing",
+                "security:unpair",
+                "peer:address-targeting",
+            ]
+            .map(|id| {
+                CapabilityDescriptor::new(
+                    id,
+                    state,
+                    &[("availability", 1)],
+                    &["native-test-limit"],
+                    "test",
+                    EvidenceLevel::Deterministic,
+                    "test",
+                    "test",
+                    &["test"],
+                )
+                .unwrap()
+            });
+            let projected = snapshot("generation", &native);
+            for descriptor in &native {
+                assert_eq!(
+                    row(&projected, descriptor.id()),
+                    (state.as_str().to_owned(), "native-test-limit".to_owned())
+                );
             }
         }
     }

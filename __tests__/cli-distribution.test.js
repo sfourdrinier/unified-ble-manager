@@ -141,7 +141,7 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         compatibility: expect.objectContaining({
           npmRange: '^5.0.0-rc.17',
           crateRange: '^5.0.0-rc.17',
-          ipcProtocol: 4
+          ipcProtocol: 5
         })
       })
     )
@@ -162,7 +162,7 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         host: 'tauri',
         liveRadio: false,
         proofBoundary: 'compile-config-loadability',
-        ipcProtocol: 4
+        ipcProtocol: 5
       })
     )
   })
@@ -195,7 +195,9 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
 
     const nodeText = fs.readFileSync(path.join(directory, 'node-factory.fragment.ts'), 'utf8')
     expect(nodeText).toContain("connectionPolicy: { mode: 'le-bearer', daemonUniqueOwner }")
-    expect(nodeText).toContain('Omission permits scanning only')
+    expect(nodeText).toContain('Native authority resolves and pins the daemon owner')
+    expect(nodeText).toContain('Optional stricter owner restriction')
+    expect(nodeText).not.toContain('Omission permits scanning only')
     expect(nodeText).toContain('createCoreBluetoothBleManager')
     expect(nodeText).toContain('createWinRtBleManager')
     expect(nodeText).toContain('createBluezBleManager')
@@ -248,7 +250,7 @@ describe('PR11 Tauri crate and testkit contracts', () => {
       expect.objectContaining({
         npmRange: expect.stringMatching(currentCandidateRange),
         crateRange: expect.stringMatching(currentCandidateRange),
-        ipcProtocol: 4,
+        ipcProtocol: 5,
         contractRevision: require('../contracts/src/version').CONTRACT_REVISION
       })
     )

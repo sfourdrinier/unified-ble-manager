@@ -7,11 +7,12 @@
 // anyway, rather than assuming either way.
 
 import type { DiscoveryEvent, PublicScanObservation, ScanQuery, ScanSession } from 'unified-ble-manager'
+import { normalizeScanQuery } from 'unified-ble-manager/advanced'
 import { HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
 import type { DriverHost } from '../host.ts'
 import type { JsonObject, JsonValue } from '../protocol.ts'
 import { describeError, toJsonValue } from '../protocol.ts'
-import { args, defineCommand, type ScenarioCommand } from '../scenario-core.ts'
+import { args, defineCommand, ScenarioError, type ScenarioCommand } from '../scenario-core.ts'
 import { BleScenario, IDLE_BLE_STATE, POLAR_H10_QUERY, appendRecent, type BleScenarioState } from './ble-scenario.ts'
 
 const FILTERS = ['none', 'h10', 'heart-rate-service'] as const
@@ -21,6 +22,23 @@ const QUERIES: Readonly<Record<ScanFilter, ScanQuery | undefined>> = {
   none: undefined,
   h10: POLAR_H10_QUERY,
   'heart-rate-service': { anyOf: [{ services: { any: [HEART_RATE_SERVICE] } }] }
+}
+
+function queryWithAddresses(filter: ScanFilter, raw: JsonObject) {
+  const query = QUERIES[filter]
+  if (raw.addresses === undefined) return query
+  if (!Array.isArray(raw.addresses) || raw.addresses.length === 0)
+    throw new ScenarioError('scenario.invalid-argument', 'addresses must be a nonempty string array')
+  const supplied = raw.addresses.map(address => {
+    if (typeof address !== 'string') throw new ScenarioError('scenario.invalid-argument', 'addresses must contain strings')
+    return address
+  })
+  // Public normalization owns address syntax/canonicalization; do not maintain
+  // a second MAC parser in the reference app.
+  const addresses = normalizeScanQuery({ anyOf: [{ addresses: supplied }] }).anyOf?.[0]?.addresses
+  if (addresses === undefined || addresses === null)
+    throw new ScenarioError('scenario.invalid-argument', 'addresses did not produce a selector')
+  return { anyOf: (query?.anyOf ?? [{}]).map(clause => ({ ...clause, addresses })) }
 }
 
 export type PeerRow = {
@@ -75,17 +93,21 @@ export class ScanDetailsScenario extends BleScenario<ScanDetailsState> {
   protected readonly commands: Readonly<Record<string, ScenarioCommand>> = {
     scan: defineCommand({
       label: 'Scan',
-      description: `args: {filter?: ${FILTERS.join(' | ')}, duplicates?: "coalesced" | "all", durationMs?: number (default 10000)}`,
+      description: `args: {filter?: ${FILTERS.join(' | ')}, addresses?: nonempty string array (AND with chosen filter; public/static radio addresses, not durable identity), duplicates?: "coalesced" | "all", durationMs?: number (default 10000)}`,
       presets: [
         { label: 'Unfiltered, all duplicates, 10 s', args: { filter: 'none', duplicates: 'all' } },
         { label: 'Unfiltered, coalesced, 10 s', args: { filter: 'none', duplicates: 'coalesced' } },
         { label: 'H10 filter, all duplicates, 10 s', args: { filter: 'h10', duplicates: 'all' } }
       ],
-      parse: raw => ({
-        filter: args.oneOf(raw, 'filter', FILTERS, 'none'),
-        duplicates: args.oneOf(raw, 'duplicates', ['coalesced', 'all'], 'all'),
-        durationMs: args.number(raw, 'durationMs', 10_000, { min: 500, max: 120_000 })
-      }),
+      parse: raw => {
+        const filter = args.oneOf(raw, 'filter', FILTERS, 'none')
+        return {
+          filter,
+          query: queryWithAddresses(filter, raw),
+          duplicates: args.oneOf(raw, 'duplicates', ['coalesced', 'all'], 'all'),
+          durationMs: args.number(raw, 'durationMs', 10_000, { min: 500, max: 120_000 })
+        }
+      },
       run: options => this.scan(options)
     }),
     stop: this.stopCommand
@@ -104,16 +126,16 @@ export class ScanDetailsScenario extends BleScenario<ScanDetailsState> {
     this.replace({ ...this.snapshot(), ...patch })
   }
 
-  private scan(options: { filter: ScanFilter; duplicates: 'coalesced' | 'all'; durationMs: number }): Promise<JsonObject> {
+  private scan(options: { filter: ScanFilter; query: ScanQuery | undefined; duplicates: 'coalesced' | 'all'; durationMs: number }): Promise<JsonObject> {
     return this.runJourney(async signal => {
       this.peers = new Map()
       this.patchScan({ filter: options.filter, duplicates: options.duplicates, durationMs: options.durationMs })
       const { manager } = await this.createManager(signal)
       this.patchBase({ phase: 'scanning' })
-      const session = await manager.scan({ query: QUERIES[options.filter], duplicates: options.duplicates, delivery: 'balanced', signal, timeoutMs: Math.floor(options.durationMs) })
+      const session = await manager.scan({ query: options.query, duplicates: options.duplicates, delivery: 'balanced', signal, timeoutMs: Math.floor(options.durationMs) })
       this.own('scan.stop', () => session.stop())
       this.patchScan({ planDigest: session.plan?.queryDigest ?? null })
-      this.emit('scan-started', { plan: toJsonValue(session.plan), options: { ...options } })
+      this.emit('scan-started', { plan: toJsonValue(session.plan), options: toJsonValue(options) })
       void this.watchScanState(session)
       if (session.events !== undefined) void this.watchDiscovery(session.events)
       const startedAt = this.runtime.now()

@@ -2891,6 +2891,7 @@ impl RadioBoundary for FakeRadio {
         address_type: AddressType,
     ) -> Result<String, DesktopError> {
         self.record("resolve_address");
+        self.gate(FaultOp::ResolveAddress).await;
         if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::ResolveAddress) {
             return Err(scripted(
                 DesktopError::adapter_unavailable("peer.address-targeting").with_detail(detail),

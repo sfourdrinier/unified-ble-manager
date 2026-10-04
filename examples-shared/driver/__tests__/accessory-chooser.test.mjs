@@ -535,6 +535,63 @@ test('OR alternatives append strict public filters without replacing the default
   await registry.dispatch('accessory-chooser', 'cancel', {})
 })
 
+for (const [label, filters, expected] of [
+  ['service-only', [{ serviceUuids: ['180d'] }], [{ serviceUuids: ['180d'] }]],
+  ['company-only', [{ manufacturerCompanyIdentifier: 107 }], [{ manufacturerData: [{ companyIdentifier: 107 }] }]]
+]) {
+  test(`${label} explicit selector replaces default service/name and retains selected connect ownership`, async () => {
+    const { manager, calls, subscriptions } = createFakeManager({ discovery: 'system-chooser' })
+    const original = manager.choose.bind(manager)
+    manager.choose = input => {
+      assert.deepEqual(input.filters, expected)
+      return original(input)
+    }
+    const registry = createScenarioRegistry(
+      createFakeHost({ manager, adapterHostManager: manager => ({ manager, prepare: async () => undefined }) })
+    )
+    const preset = registry
+      .get('accessory-chooser')
+      .describe()
+      .commands.find(command => command.name === 'choose')
+      .presets.find(preset => preset.label === `Choose ${label} H10`)
+    assert.deepEqual(preset.args, { filters })
+    const selected = await registry.dispatch('accessory-chooser', 'choose', { filters })
+    assert.equal(selected.connection, 'not-requested')
+    await registry.dispatch('accessory-chooser', 'connect-selected', {})
+    assert.equal(calls.filter(call => call.startsWith('connect')).length, 1)
+    const sample = registry.dispatch('accessory-chooser', 'sample-selected-hr', { timeoutMs: 1000 })
+    while (subscriptions.length === 0) await Promise.resolve()
+    subscriptions[0].values.push({
+      kind: 'value',
+      value: { value: new Uint8Array([0, 72]), delivery: 'notification', sequence: 1, observedAtMonotonicMs: 1 }
+    })
+    assert.equal((await sample).bpm, 72)
+    assert.ok(!calls.some(call => call.startsWith('find')))
+    await registry.dispatch('accessory-chooser', 'cancel', {})
+    assert.ok(calls.includes('connection.release'))
+    assert.ok(calls.includes('manager.destroy'))
+  })
+}
+
+test('explicit selectors refuse malformed or ambiguous default/OR arguments before allocation', async () => {
+  for (const input of [
+    { filters: [] },
+    { filters: null },
+    { filters: {} },
+    { filters: [{}] },
+    { filters: [{ manufacturerPrefix: [1] }] },
+    ...['namePrefix', 'manufacturerCompanyIdentifier', 'manufacturerPrefix', 'alternativeFilters'].map(key => ({
+      filters: [{ serviceUuids: ['180d'] }],
+      [key]: key === 'namePrefix' ? 'SIM' : []
+    }))
+  ]) {
+    const { manager, calls } = createFakeManager({ discovery: 'system-chooser' })
+    const registry = createScenarioRegistry(createFakeHost({ manager }))
+    await assert.rejects(registry.dispatch('accessory-chooser', 'choose', input), { code: 'scenario.invalid-argument' })
+    assert.deepEqual(calls, [])
+  }
+})
+
 test('malformed alternative JSON refuses before manager allocation', async () => {
   for (const alternativeFilters of [
     null,

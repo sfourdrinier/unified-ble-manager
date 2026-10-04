@@ -10,7 +10,7 @@ const { normalizeScanQuery } = require('../src/public/scan-query')
 const { snapshotScanPlan } = require('../src/backend-contract/scan-planning')
 
 function negotiated(axis) {
-  const selected = version(axis, axis === 'ipc-protocol' ? 4 : 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 5 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -1780,7 +1780,7 @@ describe('Electron deadline budget across process clocks', () => {
 // PR210-73: the renderer/main wire changed (relative `budgetMs`, `commit` on
 // errors), so the IPC protocol is 3. A mixed pair fails at bootstrap as
 // protocol.incompatible, in both directions, before any operation.
-describe('Electron IPC protocol version 3', () => {
+describe('Electron IPC protocol version 5', () => {
   const { IPC_PROTOCOL_VERSION } = require('../src/ipc/protocol')
   const { negotiateVersion } = require('../src/backend-contract/primitives')
   const { BackendContractError } = require('../src/backend-contract/errors')
@@ -1810,27 +1810,33 @@ describe('Electron IPC protocol version 3', () => {
     }
   }
 
-  test('the renderer offers exactly IPC protocol 4', () => {
-    expect(IPC_PROTOCOL_VERSION).toBe(4)
-    expect(IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol).toEqual(protocolRange(4))
+  test('the renderer offers exactly IPC protocol 5', () => {
+    expect(IPC_PROTOCOL_VERSION).toBe(5)
+    expect(IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol).toEqual(protocolRange(5))
   })
 
-  test('new main refuses an old renderer at bootstrap with no lease and no effects', async () => {
-    const connect = jest.fn()
-    const current = createRouter({ connect })
-    const sender = trusted('old-renderer')
-    const oldOffer = { ...IPC_CLIENT_COMPATIBILITY_OFFER, ipcProtocol: protocolRange(3) }
+  test.each([3, 4])(
+    'new main refuses protocol %s renderer at bootstrap with no lease and no effects',
+    async oldVersion => {
+      const connect = jest.fn()
+      const current = createRouter({ connect })
+      const sender = trusted('old-renderer')
+      const oldOffer = { ...IPC_CLIENT_COMPATIBILITY_OFFER, ipcProtocol: protocolRange(oldVersion) }
 
-    await expect(current.router.dispatch(sender, { kind: 'bootstrap', offer: oldOffer })).rejects.toMatchObject({
-      normalized: { code: 'protocol.incompatible' }
-    })
-    expect(current.router.resources).toHaveProperty('size', 0)
-    expect(connect).not.toHaveBeenCalled()
+      await expect(current.router.dispatch(sender, { kind: 'bootstrap', offer: oldOffer })).rejects.toMatchObject({
+        normalized: { code: 'protocol.incompatible' }
+      })
+      expect(current.router.resources).toHaveProperty('size', 0)
+      expect(connect).not.toHaveBeenCalled()
 
-    const response = await current.router.dispatch(sender, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
-    expect(response.bootstrap.versions.ipcProtocol.selected).toEqual(version('ipc-protocol', 4))
-    await current.router.destroy()
-  })
+      const response = await current.router.dispatch(sender, {
+        kind: 'bootstrap',
+        offer: IPC_CLIENT_COMPATIBILITY_OFFER
+      })
+      expect(response.bootstrap.versions.ipcProtocol.selected).toEqual(version('ipc-protocol', 5))
+      await current.router.destroy()
+    }
+  )
 
   test('new renderer refuses an old main that cannot negotiate protocol 4', async () => {
     const transport = {
@@ -1853,10 +1859,10 @@ describe('Electron IPC protocol version 3', () => {
     expect(transport.invoke.mock.calls.map(([request]) => request.kind)).toEqual(['bootstrap'])
   })
 
-  test('new renderer refuses a bootstrap that selected protocol 3 and releases its lease', async () => {
+  test.each([3, 4])('new renderer refuses bootstrap protocol %s and releases its lease', async oldVersion => {
     const transport = {
       invoke: jest.fn(async request => {
-        if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: clientBootstrap(3) }
+        if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: clientBootstrap(oldVersion) }
         if (request.kind === 'release') return { kind: 'release', cleanup: released() }
         throw new Error(`unexpected ${request.kind}`)
       }),

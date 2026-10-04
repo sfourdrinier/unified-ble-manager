@@ -1,8 +1,5 @@
 // __tests__/ipc-address-targeting-capability.test.js
-// The renderer inherits the main process's capability snapshot, so a BlueZ
-// backend advertising peer:address-targeting would otherwise make the IPC
-// surface claim a feature its versioned schema cannot carry — every call then
-// failing. Fail-closed means the capability must read as unsupported there.
+// IPC preserves the instantiated authority's address-targeting capability.
 const { IpcPublicManagerAdapter } = require('../src/ipc/public-manager')
 
 function descriptor(id, state) {
@@ -20,10 +17,7 @@ function descriptor(id, state) {
 
 /** Stands in for a main-process snapshot that does advertise the capability. */
 function capabilitiesAdvertisingAddressTargeting() {
-  const all = [
-    descriptor('peer:address-targeting', 'supported'),
-    descriptor('connection:direct', 'supported')
-  ]
+  const all = [descriptor('peer:address-targeting', 'supported'), descriptor('connection:direct', 'supported')]
   return {
     supports: id => all.some(entry => entry.id === id && entry.state === 'supported'),
     get: id => all.find(entry => entry.id === id),
@@ -36,13 +30,20 @@ function capabilitiesAdvertisingAddressTargeting() {
   }
 }
 
-function ipcManagerWith(capabilities) {
+function ipcManagerWith(
+  capabilities,
+  connect = async () => {
+    throw new Error('native refusal')
+  },
+  scan = async () => {
+    throw new Error('native refusal')
+  }
+) {
   const ipc = {
     capabilities,
     bootstrap: { discovery: { kind: 'scan' } },
-    connect: async () => {
-      throw new Error('the transport should never be reached for an address target')
-    }
+    connect,
+    scan
   }
   return new IpcPublicManagerAdapter(ipc, {
     capabilities,
@@ -52,16 +53,16 @@ function ipcManagerWith(capabilities) {
 }
 
 describe('IPC address-targeting capability honesty', () => {
-  test('reports the capability as unsupported even when the host advertises it', () => {
+  test('retains the capability advertised by the native authority', () => {
     const manager = ipcManagerWith(capabilitiesAdvertisingAddressTargeting())
-    expect(manager.capabilities.get('peer:address-targeting').state).toBe('unsupported')
-    expect(manager.capabilities.supports('peer:address-targeting')).toBe(false)
+    expect(manager.capabilities.get('peer:address-targeting').state).toBe('supported')
+    expect(manager.capabilities.supports('peer:address-targeting')).toBe(true)
   })
 
   test('list() agrees with get(), so enumeration cannot disagree with a lookup', () => {
     const manager = ipcManagerWith(capabilitiesAdvertisingAddressTargeting())
     const listed = manager.capabilities.list().find(entry => entry.id === 'peer:address-targeting')
-    expect(listed.state).toBe('unsupported')
+    expect(listed.state).toBe('supported')
   })
 
   test('leaves every other capability untouched', () => {
@@ -70,10 +71,70 @@ describe('IPC address-targeting capability honesty', () => {
     expect(manager.capabilities.supports('connection:direct')).toBe(true)
   })
 
-  test('connecting to an address fails closed rather than reaching the transport', async () => {
-    const manager = ipcManagerWith(capabilitiesAdvertisingAddressTargeting())
-    await expect(manager.connect({ address: '98:75:96:A2:14:34' })).rejects.toThrow(
-      /capability\.unsupported: ipc-public-manager\.connect\.address/
+  test('connecting to an address reaches IPC without scanning and retains default public address type', async () => {
+    const connect = jest.fn(async () => {
+      throw new Error('native refusal')
+    })
+    const manager = ipcManagerWith(capabilitiesAdvertisingAddressTargeting(), connect)
+    await expect(manager.connect({ address: '98:75:96:A2:14:34' })).rejects.toThrow('native refusal')
+    expect(connect.mock.calls[0][0]).toEqual({ address: '98:75:96:A2:14:34', addressType: 'public' })
+  })
+
+  test('native unsupported capability remains unsupported and cannot dispatch', async () => {
+    const capabilities = capabilitiesAdvertisingAddressTargeting()
+    capabilities.get('peer:address-targeting').state = 'unsupported'
+    const connect = jest.fn()
+    const manager = ipcManagerWith(capabilities, connect)
+    await expect(manager.connect({ address: '98:75:96:A2:14:34' })).rejects.toMatchObject({
+      code: 'capability.unsupported'
+    })
+    expect(connect).not.toHaveBeenCalled()
+  })
+
+  test('address-filtered scan receives a matching compact native observation', async () => {
+    const { CoreBoundedStream } = require('../src/core/bounded-stream')
+    const { capacity } = require('../src/backend-contract/primitives')
+    const observations = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(8192), reservedControlCapacity: capacity(1) },
+      'error'
     )
+    const scan = jest.fn(async () => ({ plan: null, observations, stop: async () => observations.close() }))
+    const manager = ipcManagerWith(capabilitiesAdvertisingAddressTargeting(), undefined, scan)
+    const session = await manager.scan({ query: { anyOf: [{ addresses: ['aa:bb:cc:dd:ee:ff'] }] }, duplicates: 'all' })
+    expect(scan.mock.calls[0][0].query.anyOf[0].addresses).toEqual(['AA:BB:CC:DD:EE:FF'])
+    const next = session.observations[Symbol.asyncIterator]().next()
+    observations.emit(
+      {
+        peerId: 'other',
+        address: '11:22:33:44:55:66',
+        localName: null,
+        rssi: -40,
+        txPowerLevel: null,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: []
+      },
+      1
+    )
+    observations.emit(
+      {
+        peerId: 'target',
+        address: 'AA:BB:CC:DD:EE:FF',
+        localName: null,
+        rssi: -40,
+        txPowerLevel: null,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: []
+      },
+      1
+    )
+    await expect(next).resolves.toMatchObject({
+      value: {
+        kind: 'value',
+        value: { address: { value: 'AA:BB:CC:DD:EE:FF', type: 'opaque' }, peer: { id: 'target' } }
+      }
+    })
+    await session.stop()
   })
 })

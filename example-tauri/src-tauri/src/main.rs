@@ -8,6 +8,13 @@ mod trusted_policy;
 const START_PAGE_ENV: &str = "UBM_TAURI_START_PAGE";
 
 fn main() {
+    let adapter = match std::env::var("UBM_TAURI_ADAPTER") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => panic!("invalid trusted adapter environment: {error}"),
+    };
+    let adapter_id =
+        trusted_policy::adapter_id(adapter).expect("invalid trusted adapter launch configuration");
     let owner = match std::env::var("UBM_BLUEZ_DAEMON_OWNER") {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,
@@ -18,7 +25,7 @@ fn main() {
     let dispatcher = tauri_plugin_unified_ble_manager::BtleplugDispatcher::new(
         tauri_plugin_unified_ble_manager::BtleplugDispatcherOptions {
             connection_policy,
-            ..Default::default()
+            adapter_id,
         },
     );
     let process_dispatcher = dispatcher.clone();

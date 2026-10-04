@@ -91,7 +91,9 @@ fn security_permissions_for(request: &IpcValue) -> Vec<SecurityPermission> {
 
 fn security_permission_for_command(command: &str) -> Option<SecurityPermission> {
     match command {
-        "security.state" => Some(SecurityPermission::State),
+        "security.state" | "security.watch.subscribe" | "security.watch.unsubscribe" => {
+            Some(SecurityPermission::State)
+        }
         "security.pair" => Some(SecurityPermission::Pair),
         "security.cancel-pairing" => Some(SecurityPermission::CancelPairing),
         "security.unpair" => Some(SecurityPermission::Unpair),
@@ -158,6 +160,12 @@ mod tests {
 
     #[test]
     fn security_commands_map_to_independent_permission_atoms() {
+        for command in ["security.watch.subscribe", "security.watch.unsubscribe"] {
+            assert_eq!(
+                security_permissions_for(&route(command)),
+                vec![SecurityPermission::State]
+            );
+        }
         assert_eq!(
             security_permissions_for(&route("security.state")),
             vec![SecurityPermission::State]
