@@ -17,6 +17,10 @@ host-control seam: `chooseAccessory` / `cancelAccessoryChoice` and
 `accessoryChooserAvailable` on the TurboModule. The Apple seam uses strict
 `ubm-accessory-chooser/1` JSON and AccessorySetupKit, not a second radio or Rust
 session. The native facade verifies app allowlists before picker allocation.
+Service UUID matching accepts equivalent short and full BLE UUIDs, but builds
+the ASK descriptor from the first matching `NSAccessorySetupBluetoothServices`
+declaration. This preserves the declared representation required by ASK;
+an undeclared service is refused before session or picker allocation.
 In an ASK-declared app, an ordinary launch and adapter-state observation do not
 create a global-permission CoreBluetooth central before first accessory setup.
 Configured native continuation binds its host first, then checks the OS's actual

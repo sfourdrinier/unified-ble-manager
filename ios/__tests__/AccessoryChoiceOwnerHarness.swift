@@ -11,6 +11,15 @@ import Foundation
     precondition(!AccessoryChoiceAdmission.serviceDeclared("180F", allowed: ["180D"]))
     precondition(!AccessoryChoiceAdmission.serviceDeclared("not-a-uuid", allowed: ["180D"]))
     precondition(!AccessoryChoiceAdmission.serviceDeclared("180D", allowed: ["not-a-uuid"]))
+    // Execute the same UUID builder assigned to ASDiscoveryDescriptor. Semantic
+    // equality alone is insufficient: ASK checks the declared representation.
+    let full = "0000180D-0000-1000-8000-00805F9B34FB"
+    precondition(AccessoryChoiceAdmission.serviceUuidForDescriptor(full, allowed: ["180D"])?.uuidString == "180D")
+    precondition(AccessoryChoiceAdmission.serviceUuidForDescriptor("180D", allowed: [full])?.uuidString == full)
+    precondition(AccessoryChoiceAdmission.serviceUuidForDescriptor(full, allowed: ["180F", "180D", full])?.uuidString == "180D")
+    precondition(AccessoryChoiceAdmission.serviceUuidForDescriptor("180D", allowed: [full, "180D"])?.uuidString == full)
+    precondition(AccessoryChoiceAdmission.serviceUuidForDescriptor("180F", allowed: ["180D"]) == nil)
+    precondition(AccessoryChoiceAdmission.serviceUuidForDescriptor("180D", allowed: ["invalid"]) == nil)
     let owner = AccessoryChoiceOwner()
     var results: [String] = []
     precondition(owner.begin("one") { result, failure in results.append(result ?? failure ?? "empty") } == nil)

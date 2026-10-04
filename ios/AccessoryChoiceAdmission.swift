@@ -30,8 +30,16 @@ enum AccessoryChoiceAdmission {
   }
 
   static func serviceDeclared(_ value: String, allowed: [String]) -> Bool {
-    guard validUuid(value), allowed.allSatisfy(validUuid) else { return false }
+    return serviceUuidForDescriptor(value, allowed: allowed) != nil
+  }
+
+  static func serviceUuidForDescriptor(_ value: String, allowed: [String]) -> CBUUID? {
+    guard validUuid(value), allowed.allSatisfy(validUuid) else { return nil }
     let requested = CBUUID(string: value)
-    return allowed.contains { CBUUID(string: $0) == requested }
+    // ASK compares the descriptor's UUID representation with Info.plist, not
+    // only BLE semantic equality. Select the first equivalent declaration and
+    // construct from that exact representation, never from the public UUID.
+    guard let declared = allowed.first(where: { CBUUID(string: $0) == requested }) else { return nil }
+    return CBUUID(string: declared)
   }
 }

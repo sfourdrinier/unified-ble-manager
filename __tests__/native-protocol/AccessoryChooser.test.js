@@ -16,4 +16,7 @@ test('ASK sources belong to the actual pod, weak-link only iOS, and exclude unav
     native.indexOf('import AccessorySetupKit')
   )
   expect(native.indexOf('Self.items(optionsJson')).toBeLessThan(native.indexOf('ASAccessorySession()'))
+  expect(native).toContain('AccessoryChoiceAdmission.serviceUuidForDescriptor(service, allowed: declaredServices)')
+  expect(native).toContain('descriptor.bluetoothServiceUUID = uuid')
+  expect(native).not.toContain('CBUUID(string: service)')
 })

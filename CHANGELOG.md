@@ -19,6 +19,9 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Changes
 
+- Preserve the app-declared service UUID representation when constructing Apple
+  accessory descriptors, preventing ASK's fatal short/full UUID mismatch while
+  retaining semantic matching and pre-allocation undeclared-service refusal.
 - Allow the faithful Linux H10 simulator to select an explicit Bluetooth adapter
   without changing the system default or falling back to another controller.
 - Normalize Android's internal Companion Device Manager address at the radio

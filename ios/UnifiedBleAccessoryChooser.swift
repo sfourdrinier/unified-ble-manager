@@ -155,8 +155,7 @@ import UIKit
       let descriptor = ASDiscoveryDescriptor()
       var hasIdentity = false
       if let service = filter["serviceUuid"] as? String {
-        guard AccessoryChoiceAdmission.serviceDeclared(service, allowed: declaredServices) else { throw CocoaError(.coderInvalidValue) }
-        let uuid = CBUUID(string: service)
+        guard let uuid = AccessoryChoiceAdmission.serviceUuidForDescriptor(service, allowed: declaredServices) else { throw CocoaError(.coderInvalidValue) }
         descriptor.bluetoothServiceUUID = uuid
       }
       if let name = filter["namePrefix"] as? String, !name.isEmpty, names.contains(name) {
