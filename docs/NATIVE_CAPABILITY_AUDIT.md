@@ -28,6 +28,9 @@ withheld by the library: Apple AccessorySetupKit on eligible iOS applications,
 and Android's existing CompanionDeviceManager association path. Both use
 bounded admission, abort observation and explicit ownership. Android OR filters
 map to CDM filters, preserving name-prefix, service and manufacturer matching.
+The shared public selector policy rejects `acceptAllDevices: true` with nonempty
+filters, and rejects explicit `false` without filters. Android and Web default
+to unfiltered selection where supported; no constraint is silently discarded.
 Apple requires declared accessory identity selectors and rejects undeclared or
 unrepresentable requests before allocating an ASK session. No chooser result
 claims a connection, advertisement name, restoration launch or radio receipt.

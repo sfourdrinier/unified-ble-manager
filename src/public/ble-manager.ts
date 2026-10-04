@@ -525,8 +525,10 @@ export interface FindOptions extends OperationOptions {
  * combinations are refused rather than widened. ASK grants the accessory, not a
  * per-service allowlist, so optionalServices only governs Web service permission. */
 export interface ChooseOptions extends OperationOptions {
+  /** Selection constraints; a nonempty list is mutually exclusive with acceptAllDevices: true. */
   readonly filters?: readonly ChooseFilter[]
   readonly optionalServices?: readonly (string | number)[]
+  /** Defaults to true for absent/empty filters; unsupported on hosts without unfiltered selection. False requires nonempty filters. */
   readonly acceptAllDevices?: boolean
 }
 
@@ -3028,6 +3030,10 @@ export function assertPublicChooseOptions(options: ChooseOptions): void {
   }
   if (options.filters !== undefined && !Array.isArray(options.filters)) {
     throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filters')
+  }
+  const hasFilters = (options.filters?.length ?? 0) > 0
+  if ((options.acceptAllDevices === true && hasFilters) || (options.acceptAllDevices === false && !hasFilters)) {
+    throw contractError('scan.filter-invalid', 'chooser', 'public-ble-manager.choose.selection-mode')
   }
   if (options.filters !== undefined) {
     for (const filter of options.filters) {

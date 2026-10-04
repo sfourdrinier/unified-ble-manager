@@ -27,6 +27,9 @@ All notable changes to `unified-ble-manager` are documented here.
   weakening explicit-operation busy refusals or forgetting cleanup failures.
 - Add a bounded positive HRS sample on the reference chooser's same owned
   connection, with cancellation, deadline and retryable cleanup evidence.
+- Reject conflicting chooser selection modes before native allocation instead
+  of dropping constraints. Android's unfiltered default matches Web; Apple
+  preserves its genuine unfiltered setup limitation.
 - Share CI/publication Electron smoke launching, including a Linux virtual
   display, while preserving synthetic-addon admission and process failures.
 - Preserve buffered connection lifecycle platform details within an explicit
