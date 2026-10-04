@@ -26,6 +26,7 @@ const files = [
   'unit/test-ubm-att-exchange.c', 'unit/test-ubm-bonded-notify.c',
   'unit/test-ubm-device.c', 'unit/test-ubm-gatt-projection.c',
   'unit/test-ubm-gatt-state.c', 'unit/test-ubm-le-lease.c', 'unit/test-ubm-refresh.c',
+  'unit/test-ubm-scan-filter.c',
 ];
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-bluez-patch-owner-'));
 try {

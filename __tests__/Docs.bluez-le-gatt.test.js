@@ -2,6 +2,13 @@ const fs = require('node:fs')
 const path = require('node:path')
 const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
 
+test('current BlueZ deployment commands use the sealed producer release identity', () => {
+  const manifest = JSON.parse(read('vendor/bluez/source-asset-manifest.json'))
+  const releases = read('docs/BLUEZ_DEPLOYMENT.md').match(/\b5\.87-ubm\.\d+/g)
+  expect(releases).not.toBeNull()
+  expect(new Set(releases)).toEqual(new Set([manifest.distribution.release]))
+})
+
 test('Tauri Linux setup describes native owner binding and optional stricter policy', () => {
   const guide = read('docs/TAURI.md')
   expect(guide).toContain('resolves and pins')

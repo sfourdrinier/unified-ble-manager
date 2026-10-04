@@ -4,6 +4,14 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Correct an upstream BlueZ 5.87 UUID-filter callback/data argument reversal
+  that crashes the daemon during service-filtered discovery. The maintained
+  daemon producer advances to `5.87-ubm.3`; the authority contract remains
+  `(1,2,1)`. Installation is still a separate explicit host operation.
+- Make the Electron reference host use the exported renderer protocol channel,
+  and avoid accessing Tauri continuation ownership before startup initialization.
+  Validate shipped Tauri security permission objects through the actual ACL
+  loader and scope deserializer, not fabricated permission mocks.
 - Route public Electron/Tauri security operations to the same native authority
   through individually scoped IPC permissions. Preserve state and pairing
   outcomes, cancellation, retryable watch cleanup and backend limitations;

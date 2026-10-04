@@ -29,7 +29,7 @@ make -j1 src/builtin.h src/bluetoothd unit/test-gatt
 cc -std=c11 -Wall -Wextra -Werror -I. unit/test-ubm-gatt-state.c \
   -o unit/test-ubm-gatt-state
 ./unit/test-ubm-gatt-state
-for test_name in gatt-projection refresh device bonded-notify att-exchange; do
+for test_name in gatt-projection refresh device bonded-notify att-exchange scan-filter; do
   # pkg-config provides ordinary compiler/linker argument lists, not file names.
   # shellcheck disable=SC2046
   cc -std=gnu11 -DHAVE_CONFIG_H -DUBM_NOTIFY_TRACKED -Werror=implicit-function-declaration \
@@ -44,6 +44,7 @@ done
 dbus-run-session -- ./unit/test-ubm-device
 ./unit/test-ubm-bonded-notify
 ./unit/test-ubm-att-exchange
+./unit/test-ubm-scan-filter
 for row in pending-count pending-disable removed transition unbonded-peer dormant-peer \
   registration-refused pending-registration-refused client-registration-refused \
   pending-queue-refused client-queue-refused io-refused \

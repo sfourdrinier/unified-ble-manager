@@ -20,6 +20,9 @@ const { trustedDesktopOptions } = require('../../example-node/trusted-options.cj
 const { pathToFileURL } = require('node:url')
 const { app, BrowserWindow, ipcMain, Menu, MenuItem } = require('electron')
 const electronMain = require('unified-ble-manager/electron/main')
+// The transport channel is part of the renderer's public protocol boundary,
+// not a main-entrypoint export. Main still owns every native resource.
+const { ELECTRON_BLE_IPC_CHANNEL } = require('unified-ble-manager/electron/renderer')
 const { shutdownProcessSession } = require('./shutdown.cjs')
 const { createProcessSession } = require('./process-session.cjs')
 const { createProcessControls } = require('./process-controls.cjs')
@@ -111,7 +114,7 @@ async function start() {
       let handler = null
       const port = {
         handle(channel, invoke) {
-          if (channel !== electronMain.ELECTRON_BLE_IPC_CHANNEL) throw new Error('unexpected BLE channel')
+          if (channel !== ELECTRON_BLE_IPC_CHANNEL) throw new Error('unexpected BLE channel')
           handler = invoke
         },
         removeHandler() {
@@ -161,7 +164,7 @@ async function start() {
     ipcMain,
     window,
     documentUrl,
-    channel: electronMain.ELECTRON_BLE_IPC_CHANNEL,
+    channel: ELECTRON_BLE_IPC_CHANNEL,
     validateRequest(request) {
       if (request === null || typeof request !== 'object' || Array.isArray(request))
         throw new Error('invalid BLE request')

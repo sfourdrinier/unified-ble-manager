@@ -6,6 +6,15 @@ reconfigures the system daemon. Application integration and deployment require
 separate review and explicit host action. Do not silently apply it, enable
 experimental APIs, grant privileges or upgrade a host.
 
+The current deployment identity is `5.87-ubm.3`, with unchanged Linux authority
+contract `(1,2,1)`. It also corrects the pinned upstream 5.87 UUID discovery
+filter: the upstream call reversed `queue_find`'s callback and match-data
+arguments, causing service-filtered discovery to execute an advertised UUID
+string as a function. The typed equality callback is covered by an executable
+test of the actual daemon filter for matching, nonmatching and empty service
+lists. Older deployment receipts remain evidence for their exact older bytes,
+not qualification of this corrected daemon.
+
 ## Provenance and license
 
 The patch applies only to the official `bluez-5.87.tar.xz`, SHA-256

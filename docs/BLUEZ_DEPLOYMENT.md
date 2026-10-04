@@ -21,7 +21,7 @@ fresh, disjoint directories outside the repository:
 ```sh
 node /absolute/ubm/vendor/bluez/deployment/bundle.mjs \
   /absolute/bluez-5.87.tar.xz /absolute/new-bluez-bundle \
-  /absolute/new-bluez-build-work 5.87-ubm.2
+  /absolute/new-bluez-build-work 5.87-ubm.3
 node --test /absolute/ubm/vendor/bluez/deployment/deployment.test.mjs
 ```
 
@@ -154,7 +154,7 @@ recovery is not a claim that previous physical resources were released.
 
 ```sh
 node /absolute/ubm/vendor/bluez/deployment/activate.mjs rollback \
-  /opt/unified-ble-manager/bluez/5.87-ubm.2-PATCH_HASH_PREFIX/deployment-receipt.json \
+  /opt/unified-ble-manager/bluez/5.87-ubm.3-PATCH_HASH_PREFIX/deployment-receipt.json \
   --confirm-override-removal
 ```
 

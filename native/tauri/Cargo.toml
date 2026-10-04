@@ -29,6 +29,7 @@ ubm-desktop = { path = "../../crates/ubm-desktop" }
 uuid = "1"
 
 [dev-dependencies]
+tauri-utils = { version = "2", features = ["build"] }
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
 
 [build-dependencies]
