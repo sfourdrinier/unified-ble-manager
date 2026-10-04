@@ -54,6 +54,8 @@ export interface ReactNativeRustCoreBinding {
   chooseAccessory?(requestId: string, optionsJson: string, timeoutMs: number): Promise<string>
   cancelAccessoryChoice?(requestId: string): Promise<void>
   accessoryChooserAvailable?(): Promise<boolean>
+  /** Versioned read-only OS-saved ASK list; absent on older native modules. */
+  authorizedAccessories?(): Promise<string>
   /** Verify the sealed binary and protocol revisions without acquiring a session. */
   verifyNativeIdentity(): Promise<void>
   continuationRecordingStatus?(id: string): Promise<string>

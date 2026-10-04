@@ -16,6 +16,14 @@ import AccessorySetupKit
  * queue-confined mutable state.
  */
 enum OwnedCoreBluetoothProtocolRadioSupport {
+  static let centralStateErrorDomain = "CoreBluetooth.CBManagerState"
+  static func operationReadinessFailure(state: CBManagerState) -> NSError? {
+    guard state == .unauthorized else { return nil }
+    // A measured state callback, not an NSError emitted by Apple and not a
+    // statement about CBManager.authorization's independent global scope.
+    return NSError(domain: centralStateErrorDomain, code: state.rawValue,
+      userInfo: [NSLocalizedDescriptionKey: "CoreBluetooth reported CBManagerState.unauthorized for this central"])
+  }
   private static var startupAccessorySession: AnyObject?
   private static var startupAccessoryAuthorization: AppleAccessoryStartupAuthorization?
   static func advertisementDictionary(
@@ -455,11 +463,49 @@ final class ApplePermissionExchange {
   }
 }
 
+/// Queue-confined explicit-operation readiness. The existing Rust request owns
+/// its deadline and cancellation; no independent timer or central is created.
+final class AppleRadioPreparation {
+  private var pending = [String: (NSDictionary?, NSError?) -> Void]()
+
+  func start(_ identifier: String, snapshot: NSDictionary, waitForInitialState: Bool,
+             completion: @escaping (NSDictionary?, NSError?) -> Void) {
+    if waitForInitialState && Self.waiting(snapshot) { pending[identifier] = completion }
+    else { completion(snapshot, nil) }
+  }
+
+  func update(_ snapshot: NSDictionary) {
+    guard !Self.waiting(snapshot) else { return }
+    let callbacks = pending
+    pending.removeAll()
+    for callback in callbacks.values { callback(snapshot, nil) }
+  }
+
+  func cancel(_ identifier: String, error: NSError) {
+    pending.removeValue(forKey: identifier)?(nil, error)
+  }
+
+  func failAll(_ error: NSError) {
+    let callbacks = pending
+    pending.removeAll()
+    for callback in callbacks.values { callback(nil, error) }
+  }
+
+  private static func waiting(_ snapshot: NSDictionary) -> Bool {
+    if ["unsupported", "unavailable"].contains(snapshot["availability"] as? String) { return false }
+    let authorization = snapshot["authorization"] as? String
+    if ["denied", "restricted", "unavailable"].contains(authorization) { return false }
+    let power = snapshot["power"] as? String
+    return power == "unknown" || power == "resetting"
+  }
+}
+
 /// Finding 179: one Apple Bluetooth permission request over injected seams,
 /// so the harness drives it without allocating a `CBCentralManager` (which
 /// would present the system prompt). The radio owns one and reuses it; the
 /// exchange inside stays single-flight across requests.
 final class ApplePermissionPrompter {
+  private let accessorySetupConfigured: () -> Bool
   private let currentAuthorization: () -> String
   private let ensureCentral: () -> Void
   private let makeError: (Int, String) -> NSError
@@ -470,11 +516,13 @@ final class ApplePermissionPrompter {
     currentAuthorization: @escaping () -> String,
     ensureCentral: @escaping () -> Void,
     schedule: @escaping (UInt64, @escaping () -> Void) -> () -> Void,
-    makeError: @escaping (Int, String) -> NSError
+    makeError: @escaping (Int, String) -> NSError,
+    accessorySetupConfigured: @escaping () -> Bool = { false }
   ) {
     self.currentAuthorization = currentAuthorization
     self.ensureCentral = ensureCentral
     self.makeError = makeError
+    self.accessorySetupConfigured = accessorySetupConfigured
     self.exchange = ApplePermissionExchange(schedule: schedule)
   }
 
@@ -482,11 +530,16 @@ final class ApplePermissionPrompter {
   /// prompt refuses a concurrent one the same way).
   @discardableResult
   func start(timeoutMs: UInt64, completion: @escaping (NSDictionary?, NSError?) -> Void) -> Bool {
+    let word = currentAuthorization()
+    if accessorySetupConfigured() && AppleBluetoothPermissionRequest.decision(authorization: word) == .promptThenWait {
+      completion(nil, makeError(1040,
+        "AccessorySetupKit uses accessory-scoped authorization; this host has no global Bluetooth permission prompt"))
+      return true
+    }
     guard exchange.begin(timeoutMs: timeoutMs, onTimeout: { [weak self] in self?.completeTimeout() }) else {
       return false
     }
     self.completion = completion
-    let word = currentAuthorization()
     if AppleBluetoothPermissionRequest.decision(authorization: word) == .promptThenWait {
       ensureCentral()
       return true
@@ -617,6 +670,44 @@ extension OwnedCoreBluetoothProtocolRadioSupport {
     #endif
     completion(.failure(NSError(domain: "UnifiedBleAccessoryStartup", code: 3,
       userInfo: [NSLocalizedDescriptionKey: "AccessorySetupKit is unavailable on this platform"])))
+  }
+
+  /// A read-only snapshot of the current ASK authorization list. Reuse the
+  /// process-owned activated session above; never allocate a CoreBluetooth
+  /// central or open a picker to answer a directory query.
+  static func queryAuthorizedAccessoryList(
+    completion: @escaping (Result<String, NSError>) -> Void,
+    sessionFailure: @escaping (NSError) -> Void
+  ) {
+    guard accessorySetupConfigured(info: Bundle.main.infoDictionary ?? [:]) else {
+      completion(.failure(NSError(domain: "UnifiedBleAccessoryStartup", code: 3,
+        userInfo: [NSLocalizedDescriptionKey: "AccessorySetupKit is not declared or available"])))
+      return
+    }
+    queryAuthorizedAccessories(completion: { result in
+      switch result {
+      case .failure(let error): completion(.failure(error))
+      case .success:
+        #if os(iOS) && !targetEnvironment(macCatalyst)
+        if #available(iOS 18.0, *), let session = startupAccessorySession as? ASAccessorySession,
+           startupAccessoryAuthorization?.isActivated == true {
+          do {
+            let text = try AccessoryChoiceAdmission.authorizedListJson(session.accessories.map { accessory in
+              (bluetoothIdentifier: accessory.bluetoothIdentifier,
+               name: accessory.displayName,
+               authorized: accessory.state == .authorized)
+            })
+            completion(.success(text))
+          } catch {
+            completion(.failure(error as NSError))
+          }
+          return
+        }
+        #endif
+        completion(.failure(NSError(domain: "UnifiedBleAccessoryStartup", code: 5,
+          userInfo: [NSLocalizedDescriptionKey: "Accessory authorization session no longer active"])))
+      }
+    }, sessionFailure: sessionFailure)
   }
 
   static func resumeAuthorizedAccessoryStartup(

@@ -1061,19 +1061,34 @@ bunx eas build --profile development --platform android
               <code>request-permission</code> action on every platform and reports the same shape:
               <code>{ requested, granted, denied, recommendedSettingsTarget }</code>.
             </p>
+            <p>
+              Readiness uses the shared authorization-blocking predicate. A powered-on adapter with
+              <code>unknown</code> or <code>not-determined</code> authorization is ready without rewriting that
+              observation to <code>granted</code>; explicit denial, restriction and unavailability still block. In
+              particular, ASK-authorized Apple accessories do not imply a global Bluetooth permission grant. Pending
+              authorization with unsettled power may still offer an explicit permission action.
+            </p>
             <ul>
               <li>
                 Android shows the runtime prompt (<code>BLUETOOTH_SCAN</code>/<code>BLUETOOTH_CONNECT</code> on API 31+,
                 legacy location below) and answers at once when decided.
               </li>
               <li>
-                Apple (iOS and tvOS) presents the CoreBluetooth prompt on request: the process central is allocated by
-                the request itself, never at startup, so reading <code>manager.readiness()</code> never prompts. A
-                decided authorization answers at once; the request waits for the user's decision otherwise, and accepts
-                an optional <code>timeoutMs</code> and <code>signal</code> (<code>operation.timed-out</code> /
-                <code>operation.aborted</code>; without them it waits like bonding). A restriction (parental
+                Ordinary Apple (iOS and tvOS) apps present the CoreBluetooth prompt on request: the process central is
+                allocated by the request itself, never at startup, so reading <code>manager.readiness()</code> never
+                prompts. A decided authorization answers at once; the request waits for the user's decision otherwise,
+                and accepts an optional <code>timeoutMs</code> and <code>signal</code> (<code>operation.timed-out</code>
+                / <code>operation.aborted</code>; without them it waits like bonding). A restriction (parental
                 controls/MDM) is genuinely unpromptable and refuses <code>capability.unsupported</code> with its reason
                 instead of a denial, matching the <code>unavailable</code> readiness it maps to.
+              </li>
+              <li>
+                ASK-configured iOS apps use accessory-scoped authorization instead. An explicit global permission
+                request while <code>CBManager.authorization</code> remains <code>notDetermined</code> promptly refuses
+                with <code>capability.unsupported</code> and native <code>permissionUnsupported</code>, without
+                allocating a central or arming a global prompt waiter. Decided authorization words retain their ordinary
+                results. Accessory selection and explicit connection admission are separate from a global grant; never
+                retry a global prompt to obtain an ASK accessory grant.
               </li>
               <li>
                 Apple decides from <code>CBManager.authorization</code> (iOS 13.1+, tvOS 13.0+): the class property

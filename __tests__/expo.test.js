@@ -290,13 +290,25 @@ describe('Expo factory', () => {
     })
   })
 
-  test('maps pending permission to one explicit request action without prompting', () => {
+  test('preserves pending authorization without blocking a powered-on adapter', () => {
     const readiness = mapExpoReadiness(adapterState({ authorization: 'not-determined' }))
 
     expect(readiness).toMatchObject({
-      state: 'action-required',
-      actions: [{ kind: 'request-permission', permission: 'bluetooth' }]
+      state: 'ready',
+      adapter: { authorization: 'not-determined', power: 'on' },
+      actions: []
     })
+  })
+
+  test.each(['unknown', 'not-determined'])('uses shared nonblocking authorization for %s without inventing a grant', authorization => {
+    const state = adapterState({ authorization })
+    const result = mapExpoReadiness(state)
+    expect(result.state).toBe('ready')
+    expect(result.adapter).toBe(state)
+    expect(result.actions).toEqual([])
+    expect(mapExpoReadiness(adapterState({ authorization, power: 'off' })).actions).toEqual([
+      { kind: 'enable-bluetooth', systemUiOnly: true }
+    ])
   })
 
   test('maps powered-off, denied, and unsupported states to distinct actions', () => {

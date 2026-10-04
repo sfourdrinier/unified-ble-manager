@@ -1,4 +1,5 @@
 import type { BleConnection, BlePeer, GattDatabase, ChooseFilter } from 'unified-ble-manager'
+import { decodePeerReference } from 'unified-ble-manager'
 import {
   HEART_RATE_SERVICE,
   HEART_RATE_MEASUREMENT_CHARACTERISTIC,
@@ -80,6 +81,19 @@ export class AccessoryChooserScenario extends BleScenario<BleScenarioState> {
     parse: args.none,
     run: async () => toJsonValue(await this.stop())
   })
+  private retainSelection(hosted: HostManager, peer: BlePeer, signal: AbortSignal, event: string) {
+    if (signal.aborted)
+      throw new ScenarioError('scenario.operation-aborted', 'Late selected peer belongs to a stopped run')
+    this.selected = { hosted, peer, signal }
+    this.patchBase({
+      phase: 'selected',
+      device: peer.name ?? peer.id,
+      peer: { id: peer.id, name: peer.name, query: null }
+    })
+    const result = { peer: toJsonValue(peer), connection: 'not-requested', relaunch: 'not-observed' }
+    this.emit(event, result)
+    return result
+  }
   private chooserCommand(inactiveProbe: boolean): ScenarioCommand {
     return defineCommand({
       label: inactiveProbe ? 'Probe native inactive refusal' : 'Choose SIM H10',
@@ -155,17 +169,7 @@ export class AccessoryChooserScenario extends BleScenario<BleScenarioState> {
               'Inactive public chooser unexpectedly returned a selection'
             )
           }
-          if (signal.aborted)
-            throw new ScenarioError('scenario.operation-aborted', 'Late selected peer belongs to a stopped run')
-          this.selected = { hosted, peer, signal }
-          this.patchBase({
-            phase: 'selected',
-            device: peer.name ?? peer.id,
-            peer: { id: peer.id, name: peer.name, query: null }
-          })
-          const result = { peer: toJsonValue(peer), connection: 'not-requested', relaunch: 'not-observed' }
-          this.emit('chooser-selected', result)
-          return result
+          return this.retainSelection(hosted, peer, signal, 'chooser-selected')
         })
       }
     })
@@ -173,6 +177,108 @@ export class AccessoryChooserScenario extends BleScenario<BleScenarioState> {
   protected readonly commands: Readonly<Record<string, ScenarioCommand>> = {
     choose: this.chooserCommand(false),
     'probe-native-inactive-refusal': this.chooserCommand(true),
+    'select-authorized': defineCommand({
+      label: 'Select saved authorized accessory',
+      description:
+        'Read the OS-authorized directory without picker or scan; require one matching origin-authorized peer. reference?: encoded PeerReference, timeoutMs?: integer 1..10000 (default 3000).',
+      parse: raw => {
+        const timeoutMs = args.number(raw, 'timeoutMs', 3000, { min: 1, max: 10000 })
+        if (!Number.isSafeInteger(timeoutMs))
+          throw new ScenarioError('scenario.invalid-argument', 'timeoutMs must be an integer')
+        const encoded = args.optionalString(raw, 'reference')
+        return { timeoutMs, reference: encoded === null ? undefined : decodePeerReference(encoded) }
+      },
+      run: ({ timeoutMs, reference }) => {
+        if (this.sampling || this.connecting || this.pendingSubscriptions > 0)
+          throw new ScenarioError('scenario.busy', 'A prior selected subscription is still settling')
+        return this.runJourney(async signal => {
+          this.selected = null
+          this.connected = null
+          const hosted = await this.createManager(signal, false)
+          const peers = await withTimeout(
+            hosted.manager.peers.authorized({
+              signal,
+              timeoutMs,
+              sources: ['origin-authorized'],
+              ...(reference === undefined ? {} : { references: [reference] })
+            }),
+            timeoutMs,
+            signal,
+            'scenario.authorized-selection-timeout',
+            'Authorized peer directory query'
+          )
+          this.emit('authorized-peers', { peers: toJsonValue(peers) })
+          const peer = peers.length === 1 ? peers[0] : undefined
+          if (peer === undefined || peer.reference?.scope !== 'origin' || !peer.sources?.includes('origin-authorized'))
+            throw new ScenarioError(
+              'scenario.authorized-selection-unavailable',
+              'Require exactly one OS-authorized origin peer; provide its encoded reference when ambiguous'
+            )
+          return this.retainSelection(hosted, peer, signal, 'authorized-selected')
+        })
+      }
+    }),
+    'selected-adapter-state': defineCommand({
+      label: 'Selected adapter state',
+      description: 'Read the existing chooser manager adapter state, including while connection readiness is pending.',
+      parse: args.none,
+      run: async () => {
+        const selected = this.selected
+        if (selected === null || !this.isRunning() || selected.signal.aborted)
+          throw new ScenarioError('scenario.no-selected-peer', 'No still-owned chooser selection')
+        const state = await selected.hosted.manager.adapter.state()
+        if (selected.signal.aborted || this.selected !== selected)
+          throw new ScenarioError('operation.aborted', 'Selection stopped during adapter state read')
+        return toJsonValue(state)
+      }
+    }),
+    'selected-reference': defineCommand({
+      label: 'Selected connected reference',
+      description:
+        'Read the exact still-connected chooser peer from this manager directory; no scan or new owner. timeoutMs?: integer 1..10000 (default 3000).',
+      parse: raw => {
+        const timeoutMs = args.number(raw, 'timeoutMs', 3000, { min: 1, max: 10000 })
+        if (!Number.isSafeInteger(timeoutMs))
+          throw new ScenarioError('scenario.invalid-argument', 'timeoutMs must be an integer')
+        return timeoutMs
+      },
+      run: async timeoutMs => {
+        const selected = this.selected
+        if (selected === null || this.connected === null || !this.isRunning() || selected.signal.aborted)
+          throw new ScenarioError('scenario.no-selected-peer', 'Connect the still-owned chooser selection first')
+        const peers = await withTimeout(
+          selected.hosted.manager.peers.connected({ signal: selected.signal, timeoutMs }),
+          timeoutMs,
+          selected.signal,
+          'scenario.peer-reference-timeout',
+          'Selected peer directory query'
+        )
+        if (selected.signal.aborted || this.selected !== selected)
+          throw new ScenarioError('operation.aborted', 'Selection stopped during peer directory query')
+        const matches = peers.filter(peer => peer.id === selected.peer.id)
+        const peer = matches.length === 1 ? matches[0] : undefined
+        const reference = peer?.reference
+        if (peer?.state?.connection !== 'connected' || reference?.scope !== 'origin')
+          throw new ScenarioError(
+            'scenario.peer-reference-unavailable',
+            'Exact selected peer has no current connected origin reference'
+          )
+        const platform = this.host.identity.host === 'expo' ? this.host.identity.platform : null
+        let nativePeerId: string | null = null
+        if (platform === 'ios' || platform === 'android') {
+          const backendId = platform === 'ios' ? 'unified-ble:react-native-apple' : 'unified-ble:react-native-android'
+          const nativeIdentity =
+            platform === 'ios' ? /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i : /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i
+          if (reference.backendId !== backendId || !nativeIdentity.test(reference.opaqueId))
+            throw new ScenarioError(
+              'scenario.peer-reference-unavailable',
+              'Connected origin reference does not identify this native host peer'
+            )
+          nativePeerId = reference.opaqueId
+        }
+        return { peerId: peer.id, reference: toJsonValue(reference), nativePeerId }
+      }
+    }),
     'connect-selected': defineCommand({
       label: 'Connect selected',
       description: 'Connect and discover the exact peer from this still-owned selection; no scan or second manager.',
@@ -188,7 +294,16 @@ export class AccessoryChooserScenario extends BleScenario<BleScenarioState> {
           throw new ScenarioError('scenario.busy', 'The selected peer already has a connection acquisition')
         this.connecting = true
         try {
-          await selected.hosted.prepare((kind, data) => this.emit(kind, data), selected.signal)
+          // ASK supplies accessory-scoped authorization, not a global grant.
+          // The library's explicit connect owns central initialization and
+          // waits for the real native adapter answer. Other hosts still need
+          // their ordinary permissions/readiness preparation (including CDM).
+          const accessoryAuthorized =
+            this.host.identity.host === 'expo' &&
+            this.host.identity.platform === 'ios' &&
+            selected.peer.sources?.includes('origin-authorized') === true
+          if (!accessoryAuthorized)
+            await selected.hosted.prepare((kind, data) => this.emit(kind, data), selected.signal)
           const connection = await this.connect(selected.hosted.manager, selected.peer, selected.signal)
           const database = await this.discover(connection, selected.signal)
           if (selected.signal.aborted)

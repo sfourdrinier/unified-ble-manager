@@ -19,6 +19,23 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Changes
 
+- Expose the real saved ASK Bluetooth-accessory directory and resolve persisted
+  origin references without another picker or scan. Preserve OS display names
+  as labels, unknown reachability and runtime-scoped capability limits.
+- Initialize the existing Apple central only for explicit ASK radio work and
+  await its actual state under the original operation cancellation/deadline.
+  Prevent late dispatch after cancellation and preserve measured scoped
+  unauthorized detail without rewriting global Bluetooth authorization.
+- Derive Expo readiness from the shared authorization-blocking predicate,
+  preserving actual unknown/not-determined observations on a powered-on adapter
+  rather than demanding or inventing a global Bluetooth grant.
+- Report global permission requests as unsupported in an undecided ASK host,
+  where Apple provides accessory-scoped setup instead of a global prompt; avoid
+  allocating another central or waiting for a permission result that cannot occur.
+- Extend the reference accessory scenario with saved-authorization selection,
+  same-owner adapter diagnostics and connected origin-reference retrieval.
+  Require an unambiguous OS-authorized identity and keep deadline, cancellation
+  and cleanup ownership; never guess native identities from display names.
 - Keep an explicit Apple Bluetooth permission request pending across undecided
   central-state callbacks instead of reporting an invented unavailable refusal.
 - Preserve the app-declared service UUID representation when constructing Apple

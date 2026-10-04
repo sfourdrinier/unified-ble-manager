@@ -40,6 +40,20 @@ replacing declaration, last-wake or recovery data, or blocking an independent
 backlog claim. Missing/null on Android and older hosts means no reported startup
 failure; malformed diagnostic records fail closed. Startup is not an OS wake or
 completed recovery.
+The read-only `authorizedAccessories` TurboModule method returns the versioned
+`ubm-accessory-authorized/1` envelope from that same process-owned ASK session:
+current OS-authorized Bluetooth UUIDs and ASK display labels only. It does not
+open a picker, scan, or create a central. On iOS, `peers.authorized()` maps
+those UUIDs to origin-scoped references with unknown connection/reachability;
+`peers.resolve()` consults the current list only after the Rust owner returns
+no record. This is not physical connection or wake evidence. Non-iOS hosts,
+undeclared apps, and older native bindings explicitly report unsupported for
+`authorized()`; their ordinary unresolved origin references retain the Rust
+directory's `null` result without an ASK fallback.
+An explicit scan or connection in an ASK-configured app may allocate the same
+process CoreBluetooth central and wait for actual `poweredOn` within the
+original Rust operation budget; adapter state, watch, chooser, and this
+directory query do not allocate it. Global authorization remains untouched.
 An explicit Apple permission request retains its bounded native waiter across
 CoreBluetooth delegate updates that still report `notDetermined`. Such an
 update is not a refusal or grant; only a decided authorization, the original

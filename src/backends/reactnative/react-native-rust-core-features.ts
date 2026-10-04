@@ -35,6 +35,8 @@ export interface ReactNativeRustCoreRuntimeFacts {
   /** Whether this Apple host has a configured native restoration authority. */
   readonly appleRestorationConfigured?: boolean
   readonly systemChooserAvailable?: boolean
+  /** Verified native OS-authorized accessory query, not a static Apple promise. */
+  readonly authorizedAccessoryBindingAvailable?: boolean
 }
 
 /** The first Android API level with `BluetoothGatt.readPhy`/`setPreferredPhy`. */
@@ -239,6 +241,28 @@ export function createReactNativeRustCoreFeatureRegistry(
                 'capability.catalog-v2',
                 ['capability.truth-limits-evidence-and-binding'],
                 'discovery:system-chooser.invoke-without-choice'
+              )
+            ]
+          : []),
+        ...(platform === 'apple' &&
+        facts.systemChooserAvailable === true &&
+        facts.authorizedAccessoryBindingAvailable === true
+          ? [
+              operationRegistration(
+                BUILT_IN_FEATURE_IDS.peerOriginAuthorized,
+                implementationVersion,
+                'react-native-rust-core-apple-ask-authorized-v1',
+                'capability.catalog-v2',
+                catalogScenarioIds,
+                'peer:origin-authorized.invoke-without-peer-directory'
+              ),
+              operationRegistration(
+                BUILT_IN_FEATURE_IDS.peerResolveReference,
+                implementationVersion,
+                'react-native-rust-core-apple-ask-resolve-v1',
+                'capability.catalog-v2',
+                catalogScenarioIds,
+                'peer:resolve-reference.invoke-without-peer-directory'
               )
             ]
           : []),

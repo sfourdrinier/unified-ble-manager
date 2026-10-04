@@ -5,6 +5,12 @@ const root = path.join(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8')
 
 describe('Expo native runtime bridge source contract', () => {
+  test('the actual Apple permission bridge preserves ASK unsupported admission distinctly', () => {
+    expect(read('ios/UnifiedBleExpoRuntime.mm')).toContain('case 1040: return @"permissionUnsupported";')
+    const radio = read('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift')
+    expect(radio).toContain('accessorySetupConfigured: {')
+    expect(radio).toContain('OwnedCoreBluetoothProtocolRadioSupport.accessorySetupConfigured(info: Bundle.main.infoDictionary ?? [:])')
+  })
   test('Android refuses to publish a runtime digest without the plugin-owned marker', () => {
     const android = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/expo/UnifiedBleExpoRuntimeModule.java'

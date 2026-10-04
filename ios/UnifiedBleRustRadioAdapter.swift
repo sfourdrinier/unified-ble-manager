@@ -23,6 +23,7 @@ protocol UnifiedBleRustRadioDriver: AnyObject {
   /// Serial queue every driver callback and every adapter mutation runs on.
   var workQueue: DispatchQueue { get }
   func adapterSnapshot(completion: @escaping (NSDictionary) -> Void)
+  func prepareForOperation(operationIdentifier: String, completion: @escaping (NSDictionary?, NSError?) -> Void)
   func restoredPeerSnapshots(completion: @escaping ([NSDictionary]) -> Void)
   func writeLimits(peerIdentifier: String, completion: @escaping (NSDictionary?, NSError?) -> Void)
   func startScan(
@@ -117,6 +118,26 @@ protocol UnifiedBleRustRadioDriver: AnyObject {
 extension OwnedCoreBluetoothProtocolRadio: UnifiedBleRustRadioDriver {
   /// The serial queue every CoreBluetooth object is confined to.
   var workQueue: DispatchQueue { queue }
+
+  /// Explicit scan/connect admission only. ASK starts the existing process
+  /// central without requesting global permission, then awaits its actual
+  /// state. Rust's original request budget/cancellation owns this waiter.
+  func prepareForOperation(operationIdentifier: String, completion: @escaping (NSDictionary?, NSError?) -> Void) {
+    queue.async {
+      guard self.requireUsable({ completion(nil, $0) }) else { return }
+      let authorization = OwnedCoreBluetoothProtocolRadioSupport.currentAuthorizationWord()
+      let accessorySetup = OwnedCoreBluetoothProtocolRadioSupport.accessorySetupConfigured(info: Bundle.main.infoDictionary ?? [:])
+      if accessorySetup && !["denied", "restricted", "unavailable"].contains(authorization) {
+        _ = self.ensureCentral()
+      }
+      if let central = self.central,
+         let failure = OwnedCoreBluetoothProtocolRadioSupport.operationReadinessFailure(state: central.state) {
+        completion(nil, failure); return
+      }
+      self.radioPreparation.start(operationIdentifier, snapshot: self.snapshotOnQueue(),
+                                  waitForInitialState: accessorySetup, completion: completion)
+    }
+  }
 
   func adapterSnapshot(completion: @escaping (NSDictionary) -> Void) {
     queue.async {
@@ -265,7 +286,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
       guard deviceAddresses.isEmpty, scanMode == nil, callbackType == nil, legacy == nil else {
         return finish(id, Self.unsupported("CoreBluetooth has no address filter or Android scan settings"))
       }
-      whenReady(id) {
+      whenReady(id, verb: .startScan) {
         self.driver.startScan(serviceUUIDs: serviceUuids, allowDuplicates: true, operationIdentifier: operationIdentifier) { error in
           if error == nil { self.scanActive = true }
           self.finishUnit(id, error, verb: .startScan)
@@ -288,7 +309,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
       guard preferredPhy.isEmpty else {
         return finish(id, Self.unsupported("CoreBluetooth has no LE PHY control"))
       }
-      whenReady(id) {
+      whenReady(id, verb: .connect) {
         self.driver.connect(peerIdentifier: peerId, operationIdentifier: operationIdentifier) { error in
           self.finishUnit(id, error, verb: .connect)
         }
@@ -529,8 +550,12 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
   /// Legacy `assertAdapterReady`: a scan or connect against an adapter that
   /// cannot serve it fails with the adapter's reason instead of being handed
   /// to CoreBluetooth (which ignores it with an API-misuse log).
-  private func whenReady(_ id: UInt64, _ body: @escaping () -> Void) {
-    driver.adapterSnapshot { snapshot in
+  private func whenReady(_ id: UInt64, verb: Verb, _ body: @escaping () -> Void) {
+    guard let operationIdentifier = inFlight[id] else { return }
+    driver.prepareForOperation(operationIdentifier: operationIdentifier) { snapshot, error in
+      guard self.inFlight[id] == operationIdentifier else { return }
+      if let error { return self.finish(id, Self.failure(error, verb: verb)) }
+      guard let snapshot else { return self.finish(id, Self.platformFailure("CoreBluetooth preparation returned no state")) }
       if let failure = Self.readinessFailure(Self.adapterSnapshot(snapshot)) {
         return self.finish(id, failure)
       }
@@ -689,6 +714,8 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
   static func failure(_ error: NSError, verb: Verb) -> MobileRadioCompletion {
     let detail = "\(error.domain)#\(error.code): \(error.localizedDescription)"
     switch error.domain {
+    case OwnedCoreBluetoothProtocolRadioSupport.centralStateErrorDomain where error.code == CBManagerState.unauthorized.rawValue:
+      return failed("permission-denied", detail, nativeError: error, dispatched: false)
     case CBATTErrorDomain:
       return failed("gatt-status", detail, gattStatus: Int32(exactly: error.code), nativeError: error, dispatched: true)
     case CBErrorDomain:
@@ -738,14 +765,18 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
     switch adapter.authorization {
     case "denied": return failed("permission-denied", reason, dispatched: false)
     case "restricted": return failed("permission-restricted", reason, dispatched: false)
-    case "not-determined": return failed("permission-not-determined", reason, dispatched: false)
+    case "unavailable": return failed("adapter-unavailable", reason, dispatched: false)
     default: break
     }
     switch adapter.power {
     case "on": return nil
     case "off": return failed("adapter-off", reason, dispatched: false)
     case "resetting": return failed("adapter-resetting", reason, dispatched: false)
-    default: return failed("adapter-unavailable", reason, dispatched: false)
+    default:
+      if adapter.authorization == "not-determined" {
+        return failed("permission-not-determined", reason, dispatched: false)
+      }
+      return failed("adapter-unavailable", reason, dispatched: false)
     }
   }
 

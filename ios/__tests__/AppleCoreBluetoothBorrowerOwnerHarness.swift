@@ -8,6 +8,7 @@
 // itself is hardware-verified.
 
 import Foundation
+import CoreBluetooth
 
 @main
 enum AppleCoreBluetoothBorrowerOwnerHarness {
@@ -15,6 +16,7 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
     checkAccessoryStartupAdmission()
     checkPermissionDecision()
     checkAuthorizationWaiters()
+    checkRadioPreparation()
     checkKnownPeerRetrieval()
     let coordinator = OwnedCoreBluetoothBorrowerReleaseCoordinator()
     let first = NSObject()
@@ -186,6 +188,7 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
   static func checkAuthorizationWaiters() {
     var word = "notDetermined"
     var ensured = 0
+    var accessorySetup = false
     var scheduled = [(delayMs: UInt64, work: () -> Void)]()
     func make() -> ApplePermissionPrompter {
       ApplePermissionPrompter(
@@ -197,7 +200,8 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
         },
         makeError: { code, message in
           NSError(domain: "test", code: code, userInfo: [NSLocalizedDescriptionKey: message])
-        }
+        },
+        accessorySetupConfigured: { accessorySetup }
       )
     }
 
@@ -268,5 +272,78 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
     prompter.abandon()
     precondition(answered.count == 1, "teardown answers the waiter")
     precondition(answered[0].0 == nil && answered[0].1?.code == 1021, "teardown reports destruction")
+    accessorySetup = true
+    prompter = make()
+    answered.removeAll()
+    word = "notDetermined"
+    let allocated = ensured
+    let deadlines = scheduled.count
+    precondition(start(prompter))
+    precondition(answered.count == 1 && answered[0].1?.code == 1040, "ASK has no global permission prompt")
+    precondition(answered[0].0 == nil, "ASK scope must not fabricate global permission results")
+    precondition(ensured == allocated && scheduled.count == deadlines, "unsupported ASK prompt must not allocate or arm a five-minute waiter")
+    for decided in ["granted", "denied", "restricted", "unavailable"] {
+      answered.removeAll()
+      word = decided
+      precondition(start(prompter))
+      precondition(answered.count == 1, "decided authorization semantics remain available on ASK hosts")
+      precondition(answered[0].1?.code != 1040, "ASK refusal applies only to undecided global prompts")
+    }
+  }
+
+  static func checkRadioPreparation() {
+    let unauthorized = OwnedCoreBluetoothProtocolRadioSupport.operationReadinessFailure(state: .unauthorized)
+    precondition(unauthorized?.domain == "CoreBluetooth.CBManagerState")
+    precondition(unauthorized?.code == CBManagerState.unauthorized.rawValue)
+    precondition(OwnedCoreBluetoothProtocolRadioSupport.operationReadinessFailure(state: .unknown) == nil)
+    precondition(OwnedCoreBluetoothProtocolRadioSupport.operationReadinessFailure(state: .resetting) == nil)
+    let preparation = AppleRadioPreparation()
+    let pending: NSDictionary = ["availability": "available", "authorization": "notDetermined", "power": "unknown"]
+    let ready: NSDictionary = ["availability": "available", "authorization": "notDetermined", "power": "on"]
+    var answers = [String]()
+    preparation.start("connect", snapshot: pending, waitForInitialState: true) { snapshot, error in
+      precondition(error == nil)
+      precondition(snapshot?["authorization"] as? String == "notDetermined")
+      answers.append("connect")
+    }
+    precondition(answers.isEmpty, "fresh ASK central must not connect before its state callback")
+    preparation.update(pending)
+    precondition(answers.isEmpty)
+    preparation.update(ready)
+    precondition(answers == ["connect"])
+    preparation.update(ready)
+    precondition(answers.count == 1)
+    let cancellation = NSError(domain: "test", code: 1020)
+    preparation.start("cancelled", snapshot: pending, waitForInitialState: true) { _, error in
+      precondition(error === cancellation)
+      answers.append("cancelled")
+    }
+    preparation.cancel("cancelled", error: cancellation)
+    preparation.update(ready)
+    precondition(answers == ["connect", "cancelled"], "late poweredOn must not dispatch a cancelled operation")
+    preparation.start("destroyed", snapshot: pending, waitForInitialState: true) { _, error in
+      precondition(error === cancellation)
+      answers.append("destroyed")
+    }
+    preparation.failAll(cancellation)
+    preparation.update(ready)
+    precondition(answers.count == 3)
+    for authorization in ["denied", "restricted", "unavailable"] {
+      preparation.start(authorization, snapshot: ["authorization": authorization, "power": "unknown"], waitForInitialState: true) { snapshot, error in
+        precondition(error == nil && snapshot?["authorization"] as? String == authorization)
+        answers.append(authorization)
+      }
+    }
+    precondition(answers.count == 6, "negative authorization must not wait for power")
+    preparation.start("legacy", snapshot: pending, waitForInitialState: false) { _, _ in answers.append("legacy") }
+    precondition(answers.last == "legacy", "legacy permission admission must not be silently changed")
+    preparation.start("scoped-refused", snapshot: pending, waitForInitialState: true) { snapshot, error in
+      precondition(snapshot == nil && error === unauthorized)
+      answers.append("scoped-refused")
+    }
+    preparation.failAll(unauthorized!)
+    preparation.update(ready)
+    precondition(answers.last == "scoped-refused")
+    precondition(pending["authorization"] as? String == "notDetermined", "scoped refusal never rewrites global authorization")
   }
 }

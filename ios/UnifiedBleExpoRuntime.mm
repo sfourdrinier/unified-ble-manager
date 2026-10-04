@@ -42,6 +42,7 @@ NSString *ApplePermissionErrorCode(NSInteger code) {
     case 1036: return @"permissionUnavailable";
     case 1037: return @"permissionInProgress";
     case 1038: return @"permissionTimeout";
+    case 1040: return @"permissionUnsupported";
     default: return @"permissionRequestFailed";
   }
 }
@@ -118,6 +119,8 @@ RCT_EXPORT_MODULE(UnifiedBleExpoRuntime)
   // unanswered prompt is bounded by kApplePermissionTimeoutMs. The caller
   // races its own timeout/signal in TypeScript; a late native answer is
   // discarded there.
+  // ASK-configured hosts have no global prompt: an undecided global word is
+  // refused promptly as permissionUnsupported, never converted to a grant.
   static const double kApplePermissionTimeoutMs = 300000;
   if (![request.purpose() isEqualToString:@"scan-and-connect"]) {
     reject(@"permissionInvalidPurpose",

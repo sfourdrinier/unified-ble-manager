@@ -105,6 +105,7 @@ function cargoTargetDirectory() {
   return JSON.parse(result.stdout).target_directory
 }
 const ownedRadioSources = [
+  path.join(root, 'ios/AccessoryChoiceAdmission.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothCentralDelegate.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadio.swift'),

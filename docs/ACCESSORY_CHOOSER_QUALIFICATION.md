@@ -36,7 +36,8 @@ The newer ASK-qualified relaunch cases require iOS/iPadOS 26+.
 The current `example-expo/app.json` declares these ASK keys through Expo
 `ios.infoPlist`; verify them in the generated native app before qualification.
 The existing scenario screens and authenticated remote registry expose
-`accessory-chooser` with `choose`, `connect-selected`, `sample-selected-hr`, and `cancel`/`stop`. It:
+`accessory-chooser` with `choose`, `select-authorized`, `selected-adapter-state`, `connect-selected`,
+`selected-reference`, `sample-selected-hr`, and `cancel`/`stop`. It:
 
 1. Runs only when the app is active, retains the same scenario-owned manager, and reports
    current system-chooser capability before requesting UI.
@@ -47,9 +48,25 @@ localNamePrefix: 'SIM Polar H10' }], timeoutMs: 30000, signal })`.
 4. Provides cancel and an explicit connect-selected action, preserving refused
    cleanup ownership and using the existing report/evidence channel. Selection
    retains the original hosted manager without requesting scan permissions;
-   connect-selected prepares that same host's Bluetooth authorization/readiness
-   before connecting, never constructing a replacement manager or scanning.
-5. `sample-selected-hr({ timeoutMs: 5000 })` subscribes to HRS180D/2A37 on that
+   Android connect-selected prepares that same host's Bluetooth authorization/readiness
+   before connecting. An iOS ASK-origin-authorized selection instead enters the
+   library's explicit native connect admission, which initializes its owned
+   central and waits for actual native readiness without requesting a global
+   Bluetooth grant. Neither path constructs a replacement manager or scans.
+   `selected-adapter-state` reads that owned manager's actual adapter state,
+   including while connection readiness is pending; it neither prepares nor
+   allocates a different manager.
+5. After connection, `selected-reference` asks the **same manager's** connected
+   peer directory for the exact selected public peer ID. It requires one
+   currently connected origin reference. On the Expo iOS host it additionally
+   validates the Apple backend ID and UUID-shaped native opaque ID before
+   returning `nativePeerId` for the trusted continuation controller; the
+   Android host validates its own backend ID and address shape. Other hosts
+   return the public reference with `nativePeerId: null`. The query is bounded
+   and a missing, stale, ambiguous or mismatched record fails without dropping
+   the chooser-owned connection. The initial picker selection's scoped ID is
+   never parsed as a native UUID or used as a display-name lookup.
+6. `sample-selected-hr({ timeoutMs: 5000 })` subscribes to HRS180D/2A37 on that
    exact discovered database, waits for one positive parsed measurement, and
    reports its actual bytes, delivery, sequence, monotonic timestamp and original
    peer/connection/database identities. Its shared deadline bounds subscription
@@ -60,9 +77,19 @@ localNamePrefix: 'SIM Polar H10' }], timeoutMs: 30000, signal })`.
    would construct another manager and cannot prove chooser-to-notification.
 
 For a positive ordinary setup, run `choose` → `connect-selected` →
-`sample-selected-hr` → `stop`; keep the real picker decision and the emitted
+`selected-reference` → `sample-selected-hr` → `stop`; keep the real picker decision and the emitted
 `chooser-hrs-value` plus cleanup records. These commands use the same UI/remote
 registry and manager throughout; the sample alone is not a background receipt.
+To reuse an earlier OS authorization, run `select-authorized` instead of `choose`.
+It calls the public authorized-peer directory without opening a picker or preparing
+the radio and requires exactly one origin-authorized record. If multiple records
+exist, the emitted `authorized-peers` list allows an explicit retry with that
+peer's encoded `PeerReference`; the app never picks a display-name match or the
+first entry. A saved authorization does not prove reachability or an active link.
+For native background intake, use only that matching connected origin reference
+to declare and execute the existing native standing order before releasing the
+chooser owner. An absent reference is a failed handoff, not permission to scan,
+guess the peripheral UUID, or infer it from the scoped public ID.
 
 The existing authenticated `choose` command accepts paired
 `manufacturerCompanyIdentifier` (integer 0..65535) and `manufacturerPrefix`

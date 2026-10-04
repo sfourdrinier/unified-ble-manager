@@ -2,6 +2,7 @@
 
 import { BackendContractError, contractError } from './backend-contract/errors'
 import type { BleErrorCode } from './backend-contract/errors'
+import { isAuthorizationBlocking } from './backend-contract/identity'
 import type { ContinuationRecordingController } from './core/continuation-recording'
 import type { RestorationAdoptionResult } from './backend-contract/restoration'
 import type { BackgroundContinuationResubscribeSelector } from './backend-contract/background-continuation'
@@ -387,24 +388,20 @@ export async function getExpoBleReadiness(
 
 /** Pure readiness mapping shared by both Expo factory forms. */
 export function mapExpoReadiness(adapter: BleAdapterState, configuration?: ExpoRuntimeConfiguration): BleReadiness {
-  if (
-    adapter.availability !== 'available' ||
-    adapter.authorization === 'restricted' ||
-    adapter.authorization === 'unavailable' ||
-    adapter.power === 'unsupported'
-  ) {
+  if (adapter.availability !== 'available' || adapter.power === 'unsupported') {
     return readiness(adapter, 'unavailable', [])
   }
   if (adapter.authorization === 'denied') {
     return readiness(adapter, 'action-required', [{ kind: 'open-settings', target: 'app' }])
   }
-  if (adapter.authorization === 'not-determined') {
-    return readiness(adapter, 'action-required', [{ kind: 'request-permission', permission: 'bluetooth' }])
-  }
+  if (isAuthorizationBlocking(adapter.authorization)) return readiness(adapter, 'unavailable', [])
   if (adapter.power === 'off') {
     return readiness(adapter, 'action-required', [{ kind: 'enable-bluetooth', systemUiOnly: true }])
   }
-  if (adapter.power !== 'on' || adapter.authorization !== 'granted') {
+  if (adapter.power !== 'on') {
+    if (adapter.authorization === 'not-determined') {
+      return readiness(adapter, 'action-required', [{ kind: 'request-permission', permission: 'bluetooth' }])
+    }
     return readiness(adapter, 'action-required', [])
   }
   const legacyLocation = configuration?.permissions?.android?.legacyLocation
@@ -1260,6 +1257,7 @@ function errorCode(error: unknown): string {
 function normalizedPermissionErrorCode(nativeCode: string): BleErrorCode {
   switch (nativeCode) {
     case 'unsupportedPermissionPrompt':
+    case 'permissionUnsupported':
       return 'capability.unsupported'
     case 'permissionRestricted':
       // iOS parental/MDM restrictions: the user cannot change this, so it is

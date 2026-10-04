@@ -32,7 +32,8 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
 
   let queue: DispatchQueue
   /// The process central, allocated on first explicit need (finding 179:
-  /// first allocation prompts while undecided). Never deallocated.
+  /// first allocation prompts while undecided in ordinary non-ASK apps).
+  /// ASK explicit operations use accessory-scoped authorization. Never deallocated.
   var central: CBCentralManager?
   var centralDelegate: OwnedCoreBluetoothCentralDelegate!
   let restoreIdentifierKey: String?
@@ -47,7 +48,10 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       self.queue.asyncAfter(deadline: .now() + .milliseconds(Int(delayMs)), execute: item)
       return { item.cancel() }
     },
-    makeError: { [unowned self] code, message in self.error(code: code, message: message) }
+    makeError: { [unowned self] code, message in self.error(code: code, message: message) },
+    accessorySetupConfigured: {
+      OwnedCoreBluetoothProtocolRadioSupport.accessorySetupConfigured(info: Bundle.main.infoDictionary ?? [:])
+    }
   )
   var peripheralByIdentifier = [String: CBPeripheral]()
   var servicesByPeer = [String: [CBService]]()
@@ -70,6 +74,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
   var activeScanOperationIdentifier: String?
   var restoredPeerIdentifiers = [String]()
   var destroyed = false
+  let radioPreparation = AppleRadioPreparation()
 
   @objc public convenience init(restoreIdentifierKey: String?) {
     self.init(restoreIdentifierKey: restoreIdentifierKey, showPowerAlert: nil)
@@ -487,6 +492,11 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       OwnedCoreBluetoothProtocolRadioSupport.adapterSnapshotDictionary(central: central)
     )
     prompter.authorizationChanged()
+    if let failure = OwnedCoreBluetoothProtocolRadioSupport.operationReadinessFailure(state: central.state) {
+      radioPreparation.failAll(failure)
+    } else {
+      radioPreparation.update(OwnedCoreBluetoothProtocolRadioSupport.adapterSnapshotDictionary(central: central))
+    }
   }
 
   #if os(iOS)
@@ -821,6 +831,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
 
   private func failAllPendingOperationsOnDestroy() {
     let failure = error(code: 1021, message: "The CoreBluetooth protocol radio was destroyed")
+    radioPreparation.failAll(failure)
     let connects = pendingConnect
     let disconnects = pendingDisconnect
     let discoveries = pendingDiscovery

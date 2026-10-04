@@ -79,6 +79,11 @@ public class UnifiedBleRustCoreModule extends NativeUnifiedBleRustCoreSpec {
   public void accessoryChooserAvailable(Promise promise) { promise.resolve(companionChooser.available()); }
 
   @Override
+  public void authorizedAccessories(Promise promise) {
+    promise.reject("UnifiedBleRustCore", "{\"code\":\"capability.unsupported\",\"domain\":\"capability\",\"operation\":\"accessory.authorized\",\"detail\":\"AccessorySetupKit saved accessories are unavailable on Android\"}");
+  }
+
+  @Override
   public void invoke(String sessionId, String op, String argsJson, Promise promise) {
     sessions.invoke(sessionId, op, argsJson, reply(promise));
   }

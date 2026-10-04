@@ -483,6 +483,24 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   // MARK: - Rust-answered identities
 
   public func nativeBuildIdentity() -> String { mobileBuildIdentityJson() }
+
+  /// Reads the OS-saved ASK list without installing a BLE host, radio or
+  /// picker. The process-owned AS session survives a JS module reload.
+  public func authorizedAccessories(_ completion: @escaping (String?, String?) -> Void) {
+    OwnedCoreBluetoothProtocolRadioSupport.queryAuthorizedAccessoryList(completion: { result in
+      switch result {
+      case .success(let text): completion(text, nil)
+      case .failure(let error):
+        completion(nil, error.domain == "UnifiedBleAccessoryStartup" && error.code == 3
+          ? Self.failureJson(code: "capability.unsupported", domain: "capability",
+            operation: "accessory.authorized", detail: error.localizedDescription)
+          : Self.platformFailureJson(error,
+            operation: "accessory.authorized", detail: error.localizedDescription))
+      }
+    }, sessionFailure: { error in
+      self.recordAccessoryStartupFailure(error)
+    })
+  }
   public func contractRevision() -> String { mobileContractRevision() }
   public func wireRevision() -> String { mobileWireRevision() }
 

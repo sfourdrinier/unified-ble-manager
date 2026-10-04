@@ -20,6 +20,24 @@ import Foundation
     precondition(AccessoryChoiceAdmission.serviceUuidForDescriptor("180D", allowed: [full, "180D"])?.uuidString == full)
     precondition(AccessoryChoiceAdmission.serviceUuidForDescriptor("180F", allowed: ["180D"]) == nil)
     precondition(AccessoryChoiceAdmission.serviceUuidForDescriptor("180D", allowed: ["invalid"]) == nil)
+    let savedId = UUID(uuidString: "23288D29-3C2B-4D84-9000-000000000001")!
+    let authorizedJson = try! AccessoryChoiceAdmission.authorizedListJson([
+      (bluetoothIdentifier: savedId, name: "ASK display label", authorized: true),
+      (bluetoothIdentifier: UUID(), name: "not authorized", authorized: false),
+      (bluetoothIdentifier: nil, name: "missing UUID", authorized: true)
+    ])
+    let authorized = try! JSONSerialization.jsonObject(with: Data(authorizedJson.utf8)) as? [String: Any]
+    precondition(authorized?["revision"] as? String == "ubm-accessory-authorized/1")
+    let accessories = authorized?["accessories"] as? [[String: Any]]
+    precondition(accessories?.count == 1 && accessories?[0]["bluetoothIdentifier"] as? String == savedId.uuidString)
+    precondition(accessories?[0]["name"] as? String == "ASK display label")
+    do {
+      _ = try AccessoryChoiceAdmission.authorizedListJson([
+        (bluetoothIdentifier: savedId, name: nil, authorized: true),
+        (bluetoothIdentifier: savedId, name: nil, authorized: true)
+      ])
+      preconditionFailure("duplicate saved identity accepted")
+    } catch {}
     let owner = AccessoryChoiceOwner()
     var results: [String] = []
     precondition(owner.begin("one") { result, failure in results.append(result ?? failure ?? "empty") } == nil)

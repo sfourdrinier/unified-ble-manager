@@ -6,6 +6,32 @@ import CoreFoundation
 /// have different uuidString values but name the same service. Validate first
 /// because CBUUID's string constructor must never receive arbitrary input.
 enum AccessoryChoiceAdmission {
+  /// Serializes only actual ASK-authorized Bluetooth identifiers. Display
+  /// labels remain association metadata, not radio-observed peer names.
+  static func authorizedListJson(
+    _ items: [(bluetoothIdentifier: UUID?, name: String?, authorized: Bool)]
+  ) throws -> String {
+    guard items.count <= 256 else { throw CocoaError(.coderInvalidValue) }
+    var seen = Set<String>()
+    var records = [[String: Any]]()
+    for item in items where item.authorized {
+      guard let identifier = item.bluetoothIdentifier else { continue }
+      let uuid = identifier.uuidString
+      guard !seen.contains(uuid), item.name.map({ $0.utf8.count <= 1024 }) != false else {
+        throw CocoaError(.coderInvalidValue)
+      }
+      seen.insert(uuid)
+      records.append(["bluetoothIdentifier": uuid, "name": item.name ?? NSNull()])
+    }
+    let data = try JSONSerialization.data(withJSONObject: [
+      "revision": "ubm-accessory-authorized/1",
+      "accessories": records
+    ], options: [.sortedKeys])
+    guard data.count <= 131072, let text = String(data: data, encoding: .utf8) else {
+      throw CocoaError(.coderInvalidValue)
+    }
+    return text
+  }
   static func integer(_ value: Any) -> Int? {
     guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
           number.doubleValue.isFinite, number.doubleValue == Double(number.intValue) else { return nil }

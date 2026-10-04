@@ -88,6 +88,21 @@ RCT_EXPORT_MODULE(UnifiedBleRustCore)
   resolve(@([[UnifiedBleAccessoryChooser shared] available]));
 }
 
+- (void)authorizedAccessories:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (self->_accessoryChoicesInvalidated) {
+      rejectWithFailure(reject, @"{\"code\":\"chooser.closed\",\"domain\":\"chooser\",\"operation\":\"accessory.authorized\",\"detail\":\"module invalidated\"}");
+      return;
+    }
+    [[UnifiedBleRustCoreSessions shared] authorizedAccessories:^(NSString *result, NSString *failure) {
+      if (self->_accessoryChoicesInvalidated) {
+        rejectWithFailure(reject, @"{\"code\":\"chooser.closed\",\"domain\":\"chooser\",\"operation\":\"accessory.authorized\",\"detail\":\"module invalidated\"}");
+      } else if (failure != nil) rejectWithFailure(reject, failure);
+      else resolve(result);
+    }];
+  });
+}
+
 - (void)openSession:(NSString *)owner
     expectedWireRevision:(NSString *)expectedWireRevision
                  resolve:(RCTPromiseResolveBlock)resolve

@@ -26,6 +26,12 @@ Restoration directories: `peers.restored()` lists the peers the OS handed back a
 
 `manager.peers` exposes separate `known`, `connected`, `bonded`, `authorized`, and `restored` queries. A backend may report an individual category as unsupported. Web Bluetooth reports origin-authorized devices only when the browser exposes `navigator.bluetooth.getDevices()`; those references are origin-scoped and may represent disconnected or out-of-range devices. Electron and Tauri forward directory queries to their trusted host; they do not infer peer knowledge in the renderer. Support depends on the host's actual radio boundary, and an older host without these routes fails explicitly.
 
+### Saved AccessorySetupKit accessories on iOS
+
+In an iOS app that declares AccessorySetupKit, `peers.authorized()` reads the OS's current authorized-accessory list through the process-owned ASK session. It returns the accessory's actual Bluetooth UUID as an origin-scoped reference and its ASK display name as `name`; that name is not an advertisement or an identity. RSSI and last-advertisement fields are absent, and connection and reachability remain `unknown`. The query neither opens a picker nor scans or creates a CoreBluetooth central. A saved reference can be passed to `peers.resolve()` on a fresh manager; when the Rust directory has no record, the same current ASK list must still contain the exact UUID. A removed authorization does not resolve through this fallback.
+
+The ASK list is not evidence of a live connection, physical reachability, background wake, or a global Bluetooth grant. Service filtering is unsupported because ASK membership does not establish GATT services. `authorized()` on an undeclared app, non-iOS host, or older native binding without this versioned query reports `capability.unsupported`; the library does not substitute an empty directory or a scan. An ordinary unresolved origin reference on such a host keeps the Rust directory's `null` result instead of invoking an unavailable ASK fallback. Query timeout, abort, and owner teardown do not publish late results.
+
 ### CoreBluetooth desktop retrieval
 
 On macOS, `peers.connected({ services: ['180d'] })` asks the existing

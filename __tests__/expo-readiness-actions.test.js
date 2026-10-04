@@ -20,7 +20,7 @@ jest.mock('react-native', () => ({
   NativeModules: {}
 }))
 
-const { createExpoBleManagerWithEnvironment, mapExpoReadiness } = require('../src/expo')
+const { createExpoBleManagerWithEnvironment } = require('../src/expo')
 const { createReactNativeManagerHost } = require('../src/react-native-manager')
 
 /**
@@ -208,7 +208,7 @@ describe.each(['android', 'apple'])('readiness actions are actionable on %s (fin
       recommendedSettingsTarget: 'app'
     })
     const manager = {
-      adapter: { state: jest.fn().mockResolvedValue(adapterState({ authorization: 'not-determined' })) }
+      adapter: { state: jest.fn().mockResolvedValue(adapterState({ authorization: 'not-determined', power: 'unknown' })) }
     }
     createReactNativeManagerHost.mockResolvedValue({
       manager,

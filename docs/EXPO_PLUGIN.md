@@ -98,9 +98,16 @@ The plugin never requests runtime permission during import or prebuild.
 readiness `request-permission` action on every platform and reports the same
 shape: `{ requested, granted, denied, recommendedSettingsTarget }`.
 
+Readiness uses the shared authorization-blocking predicate. A powered-on
+adapter with `unknown` or `not-determined` authorization is ready without
+rewriting that observation to `granted`; explicit denial, restriction and
+unavailability still block. In particular, ASK-authorized Apple accessories
+do not imply a global Bluetooth permission grant. Pending authorization with
+unsettled power may still offer an explicit permission action.
+
 - Android shows the runtime prompt (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on
   API 31+, legacy location below) and answers at once when decided.
-- Apple (iOS and tvOS) presents the CoreBluetooth prompt on request: the
+- Ordinary Apple (iOS and tvOS) apps present the CoreBluetooth prompt on request: the
   process central is allocated by the request itself, never at startup, so
   reading `manager.readiness()` never prompts. A decided authorization
   answers at once; the request waits for the user's decision otherwise, and
@@ -109,6 +116,13 @@ shape: `{ requested, granted, denied, recommendedSettingsTarget }`.
   (parental controls/MDM) is genuinely unpromptable and refuses
   `capability.unsupported` with its reason instead of a denial, matching the
   `unavailable` readiness it maps to.
+- ASK-configured iOS apps use accessory-scoped authorization instead. An
+  explicit global permission request while `CBManager.authorization` remains
+  `notDetermined` promptly refuses with `capability.unsupported` and native
+  `permissionUnsupported`, without allocating a central or arming a global
+  prompt waiter. Decided authorization words retain their ordinary results.
+  Accessory selection and explicit connection admission are separate from a
+  global grant; never retry a global prompt to obtain an ASK accessory grant.
 - Apple decides from `CBManager.authorization` (iOS 13.1+, tvOS 13.0+): the
   class property reads the state without allocating a manager, allocation
   prompts while undecided, and updates arrive via

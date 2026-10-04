@@ -1,9 +1,10 @@
 // src/backends/reactnative/react-native-rust-core-binding.ts
 //
 // The production binding over the `UnifiedBleRustCore` TurboModule
-// (src/NativeUnifiedBleRustCore.ts). Every argument and result crosses the
-// strict `ubm-mobile-wire/1` codec in ./rust-core-wire; nothing here infers a
-// value or substitutes an identity.
+// (src/NativeUnifiedBleRustCore.ts). Session operations cross the strict
+// `ubm-mobile-wire/1` codec in ./rust-core-wire. OS accessory setup and the
+// `ubm-accessory-authorized/1` saved directory are separate versioned native
+// controls, not Rust session envelopes. Neither path guesses a peer identity.
 //
 // Admission (PR210-15, PR210-18) happens in this order, before any radio work:
 //   1. the binary's own `nativeBuildIdentity()`, `contractRevision()` and
@@ -314,6 +315,16 @@ export function createReactNativeRustCoreBinding(
           },
           cancelAccessoryChoice: async (requestId: string): Promise<void> => {
             await call('accessory-cancel', () => native.cancelAccessoryChoice(requestId))
+          }
+        }
+      : {}),
+    ...(options.platform === 'apple' && typeof native.authorizedAccessories === 'function'
+      ? {
+          authorizedAccessories: async (): Promise<string> => {
+            await verifyBinary()
+            const value = await call('accessory-authorized', () => native.authorizedAccessories())
+            if (typeof value !== 'string') throw contractError('protocol.malformed', 'chooser', 'accessory.authorized')
+            return value
           }
         }
       : {}),
