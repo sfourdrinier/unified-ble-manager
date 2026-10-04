@@ -18,16 +18,7 @@ const constraints = [
   [service, name, manufacturer]
 ]
 
-test.each(constraints.map(filters => [filters]))(
-  'shared selection policy rejects accept-all plus constraints: %j',
-  filters => {
-    expect(() => assertPublicChooseOptions({ acceptAllDevices: true, filters })).toThrow(
-      expect.objectContaining({ normalized: expect.objectContaining({ code: 'scan.filter-invalid' }) })
-    )
-  }
-)
-
-test.each(['apple', 'android'])('%s refuses conflicting filters before native resource allocation', async platform => {
+function chooserFixture(platform) {
   const binding = {
     randomBytes: jest.fn(async () => new Uint8Array(16)),
     chooseAccessory: jest.fn(async () =>
@@ -45,6 +36,20 @@ test.each(['apple', 'android'])('%s refuses conflicting filters before native re
     platform === 'apple'
       ? createReactNativeAccessoryChooser(binding, scoped, () => 0)
       : createReactNativeCompanionChooser(services, scoped, () => 0)
+  return { binding, services, scoped, choose }
+}
+
+test.each(constraints.map(filters => [filters]))(
+  'shared selection policy rejects accept-all plus constraints: %j',
+  filters => {
+    expect(() => assertPublicChooseOptions({ acceptAllDevices: true, filters })).toThrow(
+      expect.objectContaining({ normalized: expect.objectContaining({ code: 'scan.filter-invalid' }) })
+    )
+  }
+)
+
+test.each(['apple', 'android'])('%s refuses conflicting filters before native resource allocation', async platform => {
+  const { binding, services, scoped, choose } = chooserFixture(platform)
   for (const filters of constraints) {
     await expect(choose({ acceptAllDevices: true, filters })).rejects.toMatchObject({
       normalized: { code: 'scan.filter-invalid' }
@@ -55,6 +60,48 @@ test.each(['apple', 'android'])('%s refuses conflicting filters before native re
   expect(services.associateCompanion).not.toHaveBeenCalled()
   expect(scoped).not.toHaveBeenCalled()
 })
+
+test.each([-1, 0.5, NaN, Infinity, 65536, Number.MAX_SAFE_INTEGER])(
+  'shared chooser rejects invalid Bluetooth company identifier %s',
+  companyIdentifier => {
+    expect(() =>
+      assertPublicChooseOptions({
+        filters: [{ manufacturerData: [{ companyIdentifier, dataPrefix: new Uint8Array([7]) }] }]
+      })
+    ).toThrow(expect.objectContaining({ normalized: expect.objectContaining({ code: 'scan.filter-invalid' }) }))
+  }
+)
+
+test.each([null, [], {}, { companyIdentifier: '7' }, { companyIdentifier: true }])(
+  'malformed manufacturer entry retains structural argument error: %j',
+  entry => {
+    expect(() => assertPublicChooseOptions({ filters: [{ manufacturerData: [entry] }] })).toThrow(
+      expect.objectContaining({ normalized: expect.objectContaining({ code: 'argument.invalid' }) })
+    )
+  }
+)
+
+test.each(['apple', 'android'])('%s rejects oversized company identifiers before native admission', async platform => {
+  const { binding, services, scoped, choose } = chooserFixture(platform)
+  await expect(
+    choose({ filters: [{ manufacturerData: [{ companyIdentifier: 65536, dataPrefix: new Uint8Array([7]) }] }] })
+  ).rejects.toMatchObject({ normalized: { code: 'scan.filter-invalid' } })
+  expect(binding.randomBytes).not.toHaveBeenCalled()
+  expect(binding.chooseAccessory).not.toHaveBeenCalled()
+  expect(services.associateCompanion).not.toHaveBeenCalled()
+  expect(scoped).not.toHaveBeenCalled()
+})
+
+test.each([0, 65535])(
+  'Bluetooth company identifier boundary %s is preserved on both native routes',
+  companyIdentifier => {
+    const options = { filters: [{ manufacturerData: [{ companyIdentifier, dataPrefix: new Uint8Array([7]) }] }] }
+    expect(() => assertPublicChooseOptions(options)).not.toThrow()
+    for (const platform of ['apple', 'android']) {
+      expect(nativeChooserFilters(options, platform)).toEqual([{ companyIdentifier, manufacturerPrefix: [7] }])
+    }
+  }
+)
 
 test.each([{}, { filters: [] }])('accept-all retains empty/absent filter compatibility: %j', options => {
   expect(() => assertPublicChooseOptions({ ...options, acceptAllDevices: true })).not.toThrow()

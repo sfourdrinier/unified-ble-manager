@@ -535,6 +535,7 @@ export interface ChooseOptions extends OperationOptions {
 export interface ChooseFilter {
   readonly serviceUuids?: readonly (string | number)[]
   readonly manufacturerData?: readonly {
+    /** Bluetooth company identifier: an integer from 0 through 65535. Invalid values fail before host admission. */
     readonly companyIdentifier: number
     readonly dataPrefix?: Readonly<Uint8Array>
   }[]
@@ -3061,11 +3062,18 @@ export function assertPublicChooseOptions(options: ChooseOptions): void {
           if (
             typeof manufacturer !== 'object' ||
             manufacturer === null ||
-            !Number.isSafeInteger(manufacturer.companyIdentifier) ||
-            manufacturer.companyIdentifier < 0 ||
+            Array.isArray(manufacturer) ||
+            typeof manufacturer.companyIdentifier !== 'number' ||
             (manufacturer.dataPrefix !== undefined && !(manufacturer.dataPrefix instanceof Uint8Array))
           ) {
             throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter.manufacturer-entry')
+          }
+          if (
+            !Number.isSafeInteger(manufacturer.companyIdentifier) ||
+            manufacturer.companyIdentifier < 0 ||
+            manufacturer.companyIdentifier > 0xffff
+          ) {
+            throw contractError('scan.filter-invalid', 'chooser', 'public-ble-manager.choose.filter.company-identifier')
           }
         }
       }

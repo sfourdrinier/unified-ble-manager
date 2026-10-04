@@ -37,6 +37,8 @@ All notable changes to `unified-ble-manager` are documented here.
 - Reject conflicting chooser selection modes before native allocation instead
   of dropping constraints. Android's unfiltered default matches Web; Apple
   preserves its genuine unfiltered setup limitation.
+- Reject invalid Bluetooth company identifiers consistently as `scan.filter-invalid`
+  before chooser admission; preserve both valid 16-bit boundaries unchanged.
 - Share CI/publication/local-release Electron smoke launching, including a Linux
   virtual display, while preserving synthetic-addon admission and process failures.
 - Preserve buffered connection lifecycle platform details within an explicit

@@ -267,7 +267,9 @@ const connection = await ble.connect(peer)
 
 For manufacturer filtering, declare the hexadecimal company identifier in
 `NSAccessorySetupBluetoothCompanyIdentifiers` and supply the matching
-`manufacturerData` prefix. Each ASK filter needs a service or company identifier
+`manufacturerData` prefix. Public company identifiers must be integers in
+`0..65535`; invalid values fail as `scan.filter-invalid` before host admission
+on every backend. Each ASK filter needs a service or company identifier
 and a name or manufacturer-data identifier. Filters are alternatives; fields
 within one filter remain conjunctive. A service-only or accept-all request,
 multiple required services/company identifiers in one filter, and undeclared
