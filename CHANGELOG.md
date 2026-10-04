@@ -32,8 +32,8 @@ All notable changes to `unified-ble-manager` are documented here.
 - Reject conflicting chooser selection modes before native allocation instead
   of dropping constraints. Android's unfiltered default matches Web; Apple
   preserves its genuine unfiltered setup limitation.
-- Share CI/publication Electron smoke launching, including a Linux virtual
-  display, while preserving synthetic-addon admission and process failures.
+- Share CI/publication/local-release Electron smoke launching, including a Linux
+  virtual display, while preserving synthetic-addon admission and process failures.
 - Preserve buffered connection lifecycle platform details within an explicit
   16 KiB UTF-8 JSON allowance; snapshot metadata and report oversized details
   as accounted stream overflow after accepted FIFO values drain, rather than

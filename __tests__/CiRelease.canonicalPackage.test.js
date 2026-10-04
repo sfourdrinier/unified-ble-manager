@@ -291,7 +291,7 @@ describe('ci-release canonical package (4.0)', () => {
     expect(sh).toMatch(/classic RN Android assemble required/)
     expect(sh).toContain('scripts/ci/build-napi-addon.js')
     expect(sh).toContain('UBM_SMOKE_USE_SOURCE=1')
-    expect(sh).toContain('scripts/ci/electron-main-smoke.js')
+    expect(sh).toContain('UBM_SMOKE_USE_SOURCE=1 bash scripts/ci/run-electron-main-smoke.sh')
     expect(sh).not.toContain('native/electron/')
     expect(publish).toContain('scripts/ci/check-host-exports.js')
     expect(publish).toContain('Assemble Expo CNG Android debug APK')

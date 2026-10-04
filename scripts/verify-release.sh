@@ -91,7 +91,7 @@ node example-electron/smoke.js
 # native addon under Electron; there is no second node-gyp producer.
 echo "== Shared Rust desktop core under Electron (synthetic radio, no physical claim) =="
 node scripts/ci/build-napi-addon.js
-UBM_SMOKE_USE_SOURCE=1 ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js
+UBM_SMOKE_USE_SOURCE=1 bash scripts/ci/run-electron-main-smoke.sh
 
 echo "== Expo CNG Android path =="
 rm -rf "$ROOT_DIR/example-expo/node_modules/.pnpm/unified-ble-manager@file+.."*
