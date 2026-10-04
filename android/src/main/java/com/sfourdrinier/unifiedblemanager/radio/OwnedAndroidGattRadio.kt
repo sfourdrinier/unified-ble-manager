@@ -1011,7 +1011,7 @@ class OwnedAndroidGattRadio private constructor(
     if (!hasBluetoothConnectPermission()) {
       return OwnedAndroidSecurityState(bond = "unknown", pairingPossible = null)
     }
-    val device = bluetoothAdapter.getRemoteDevice(deviceId)
+    val device = bluetoothAdapter.getRemoteDevice(deviceId.uppercase(Locale.ROOT))
     return try {
       OwnedAndroidSecurityState(
         bond = when (device.bondState) {
@@ -1034,7 +1034,7 @@ class OwnedAndroidGattRadio private constructor(
     callback: (String, OwnedAndroidSecurityState) -> Unit
   ): Long {
     val bluetoothAdapter = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
-    val device = bluetoothAdapter.getRemoteDevice(deviceId)
+    val device = bluetoothAdapter.getRemoteDevice(deviceId.uppercase(Locale.ROOT))
     if (isAlreadyPaired(device.bondState, device.type, transport)) {
       if (!postNow { callback("alreadyPaired", OwnedAndroidSecurityState("bonded", true)) }) {
         callback("alreadyPaired", OwnedAndroidSecurityState("bonded", true))
@@ -1156,7 +1156,7 @@ class OwnedAndroidGattRadio private constructor(
    * (`connectGatt(…, TRANSPORT_LE, phy)`, API 26+); 0 keeps the platform default.
    */
   fun connect(deviceId: String, autoConnect: Boolean, phyMask: Int = 0) {
-    val key = deviceId.uppercase()
+    val key = deviceId.uppercase(Locale.ROOT)
     check(!pendingGattTeardowns.containsKey(key)) {
       "Android GATT cleanup is still pending for $deviceId"
     }
@@ -1238,7 +1238,8 @@ class OwnedAndroidGattRadio private constructor(
     pendingReconnect.remove(key)
     val a = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
     val device = try {
-      a.getRemoteDevice(deviceId)
+      // CDM MacAddress.toString() can be lowercase; key is the canonical adapter address.
+      a.getRemoteDevice(key)
     } catch (throwable: Exception) {
       throw IllegalStateException("Android rejected Bluetooth device $deviceId", throwable)
     }

@@ -44,6 +44,7 @@ fn usage() -> String {
          Options:\n\
          \x20 --profile <path>       JSON device profile (default: built-in stock-h10)\n\
          \x20 --name <name>          Advertised name, must start SIM (overrides profile)\n\
+         \x20 --adapter <hciN>       Linux only: exact adapter; missing/refused never falls back\n\
          \x20 --control-bind <addr>  Control port bind address (default 127.0.0.1)\n\
          \x20 --control-port <port>  JSON-lines TCP control port (default 17935)\n\
          \x20 --control-token <tok>  Control port token (or H10SIM_TOKEN / --control-token-file)\n\
@@ -257,6 +258,7 @@ fn main() -> ExitCode {
     let mut tolerance_p50 = compare::Tolerances::default().p50_relative;
     let mut tolerance_ms = compare::Tolerances::default().min_abs_ms;
     let mut linux_advertising = LinuxAdvertising::default();
+    let mut adapter_name: Option<String> = None;
 
     let mut args = std::env::args().skip(1).peekable();
     while let Some(arg) = args.next() {
@@ -276,6 +278,14 @@ fn main() -> ExitCode {
                     let name = value(&mut args, "--name")?;
                     advertisement::validate_simulator_name(&name)?;
                     config.name = name;
+                }
+                "--adapter" => {
+                    let name = value(&mut args, "--adapter")?;
+                    linux_advertising::hci_index(&name)?;
+                    if !cfg!(target_os = "linux") {
+                        return Err("--adapter is supported only on Linux".to_string());
+                    }
+                    adapter_name = Some(name);
                 }
                 "--control-bind" => control_bind = value(&mut args, "--control-bind")?,
                 "--control-port" => {
@@ -520,6 +530,7 @@ fn main() -> ExitCode {
             driver_url,
             timing_profile,
             linux_advertising,
+            adapter_name,
             run_mode,
         )
     }
@@ -543,6 +554,7 @@ fn run(
     driver_url: Option<String>,
     timing_profile: timing::TimingProfile,
     linux_advertising: LinuxAdvertising,
+    adapter_name: Option<String>,
     run_mode: control::RunMode,
 ) -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -563,6 +575,7 @@ fn run(
         driver_url,
         timing_profile,
         linux_advertising,
+        adapter_name,
         run_mode,
     )) {
         Ok(()) => ExitCode::SUCCESS,
@@ -681,6 +694,7 @@ async fn serve(
     driver_url: Option<String>,
     timing_profile: timing::TimingProfile,
     linux_advertising: LinuxAdvertising,
+    adapter_name: Option<String>,
     run_mode: control::RunMode,
 ) -> Result<(), Fatal> {
     let mut log = EventLog::new();
@@ -704,7 +718,7 @@ async fn serve(
     let sample_clock_boot = Instant::now();
 
     let (radio_tx, mut radio_rx) = mpsc::channel::<RadioEvent>(256);
-    let mut radio = PlatformRadio::open(radio_tx)
+    let mut radio = PlatformRadio::open_with_adapter(radio_tx, adapter_name.as_deref())
         .await
         .map_err(|error| error.to_string())?;
 

@@ -312,9 +312,21 @@ module (`src/bluer_radio.rs`) is not compiled on macOS at all, so a Linux
   [--timing-profile fixtures/h10-fingerprints/<real>.json] [--timing-seed 7]
   [--control-bind 127.0.0.1] [--control-port 17935] [--control-token-file token.txt]
   [--driver ws://127.0.0.1:8795/host] [--linux-advertising bluez|mgmt-legacy]
+  [--adapter hci1] # Linux only: exact controller; no fallback
 ```
 
 Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
+
+On Linux, `--adapter hci1` binds GATT, advertising, alias ownership and scoped
+cleanup to that exact controller. Omission preserves BlueZ's default adapter.
+A malformed, missing or refused requested adapter fails visibly; it never
+switches controllers. This does not change BlueZ's global default or another
+adapter's settings. As with the existing simulator, the selected adapter is
+powered for use and its temporary simulator alias is restored on shutdown.
+After building on Linux, `node tests/adapter-cli.cjs "$PWD/target/debug/h10-sim"`
+checks actual CLI admission/default vectors and a missing controller's refusal.
+The refusal case opens the existing D-Bus session to list adapters, but does not
+power a controller, register GATT or advertise; all other cases are radio-free.
 
 - **macOS: launch from Terminal.app** (or whichever terminal owns the window),
   because Bluetooth permission follows the launching process. The sim waits up

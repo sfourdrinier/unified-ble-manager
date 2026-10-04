@@ -286,14 +286,40 @@ impl PeripheralRadio for BluerRadio {
     }
 
     async fn open(events: mpsc::Sender<RadioEvent>) -> Result<Self, RadioError> {
+        Self::open_with_adapter(events, None).await
+    }
+
+    async fn open_with_adapter(
+        events: mpsc::Sender<RadioEvent>,
+        requested: Option<&str>,
+    ) -> Result<Self, RadioError> {
         let daemon = DaemonWatch::open().await?;
         let session = bluer::Session::new()
             .await
             .map_err(|error| backend_error("open session", error))?;
-        let adapter = session
-            .default_adapter()
-            .await
-            .map_err(|error| backend_error("open adapter", error))?;
+        let adapter = if requested.is_some() {
+            let names = session
+                .adapter_names()
+                .await
+                .map_err(|error| backend_error("list adapters", error))?;
+            let selected = linux_advertising::select_requested_adapter(requested, &names)
+                .map_err(RadioError)?;
+            match selected {
+                Some(name) => session
+                    .adapter(&name)
+                    .map_err(|error| backend_error("open requested adapter", error))?,
+                None => {
+                    return Err(RadioError(
+                        "explicit adapter selection lost its requested identity".to_string(),
+                    ))
+                }
+            }
+        } else {
+            session
+                .default_adapter()
+                .await
+                .map_err(|error| backend_error("open adapter", error))?
+        };
         adapter
             .set_powered(true)
             .await

@@ -2,6 +2,11 @@
 
 package com.sfourdrinier.unifiedblemanager.rustcore
 
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanFilter
 import android.companion.AssociationInfo
 import android.companion.AssociationRequest
@@ -9,8 +14,10 @@ import android.companion.BluetoothDeviceFilter
 import android.companion.BluetoothLeDeviceFilter
 import android.companion.CompanionDeviceManager
 import android.content.Context
+import android.net.MacAddress
 import android.os.Build
 import com.facebook.react.bridge.ReactApplicationContext
+import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import java.util.regex.Pattern
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -19,6 +26,9 @@ import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.any
 import org.mockito.ArgumentMatchers.anyBoolean
 import org.mockito.ArgumentMatchers.anyInt
+import org.mockito.ArgumentMatchers.eq
+import org.mockito.Mockito.doAnswer
+import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.mockConstruction
 import org.mockito.Mockito.never
@@ -33,6 +43,76 @@ import org.mockito.Mockito.verify
  * device, which is how the wrong association happened).
  */
 class ReactCompanionChooserTest {
+  @Test
+  fun selectedCompanionLowercaseMacOpensTheExactAndroidGattDevice() {
+    val reactContext = mock(ReactApplicationContext::class.java)
+    val manager = mock(CompanionDeviceManager::class.java)
+    doReturn(manager).`when`(reactContext).getSystemService(Context.COMPANION_DEVICE_SERVICE)
+    doReturn(mock(android.app.Activity::class.java)).`when`(reactContext).currentActivity
+    mockConstruction(BluetoothLeDeviceFilter.Builder::class.java, { builder, _ ->
+      doReturn(mock(BluetoothLeDeviceFilter::class.java)).`when`(builder).build()
+    }).use {
+      mockConstruction(AssociationRequest.Builder::class.java, { builder, _ ->
+        doReturn(builder).`when`(builder).addDeviceFilter(any())
+        doReturn(builder).`when`(builder).setSingleDevice(anyBoolean())
+        doReturn(mock(AssociationRequest::class.java)).`when`(builder).build()
+      }).use {
+        val chooser = ReactCompanionChooser(reactContext, 33) { true }
+        var selected: CompanionAssociation? = null
+        chooser.associate(null, null) { selected = it.getOrThrow() }
+        val callback = ArgumentCaptor.forClass(CompanionDeviceManager.Callback::class.java)
+        verify(manager).associate(any(AssociationRequest::class.java), callback.capture(), org.mockito.ArgumentMatchers.isNull())
+        val mac = mock(MacAddress::class.java)
+        doReturn("dc:56:7b:d9:e8:a4").`when`(mac).toString()
+        val info = mock(AssociationInfo::class.java)
+        doReturn(10).`when`(info).id
+        doReturn(mac).`when`(info).deviceMacAddress
+        callback.value.onAssociationCreated(info)
+        org.junit.Assert.assertEquals("dc:56:7b:d9:e8:a4", selected!!.peerId)
+
+        val context = mock(Context::class.java)
+        val bluetoothManager = mock(BluetoothManager::class.java)
+        val adapter = mock(BluetoothAdapter::class.java)
+        val device = mock(BluetoothDevice::class.java)
+        val gatt = mock(BluetoothGatt::class.java)
+        doReturn(BluetoothDevice.BOND_BONDED).`when`(device).bondState
+        doReturn(BluetoothDevice.DEVICE_TYPE_LE).`when`(device).type
+        doReturn(bluetoothManager).`when`(context).getSystemService(Context.BLUETOOTH_SERVICE)
+        doReturn(adapter).`when`(bluetoothManager).adapter
+        doAnswer { invocation ->
+          val address = invocation.getArgument<String>(0)
+          require(address == "DC:56:7B:D9:E8:A4") { "Android rejected lowercase address" }
+          device
+        }.`when`(adapter).getRemoteDevice(any(String::class.java))
+        doReturn(gatt).`when`(device).connectGatt(eq(context), eq(false), any(BluetoothGattCallback::class.java), eq(BluetoothDevice.TRANSPORT_LE))
+        val radio = OwnedAndroidGattRadio(context, post = { action -> action(); true }, scheduleDelayed = { _, _ -> true })
+        radio.connect(selected!!.peerId!!, false)
+        org.junit.Assert.assertEquals("bonded", radio.securityState(selected!!.peerId!!).bond)
+        org.junit.Assert.assertEquals(0L, radio.pair(selected!!.peerId!!, "le") { _, _ -> })
+        verify(adapter, org.mockito.Mockito.times(3)).getRemoteDevice("DC:56:7B:D9:E8:A4")
+      }
+    }
+  }
+
+  @Test
+  fun invalidSelectedAddressStillReportsAndroidAdapterRejection() {
+    val context = mock(Context::class.java)
+    val bluetoothManager = mock(BluetoothManager::class.java)
+    val adapter = mock(BluetoothAdapter::class.java)
+    doReturn(bluetoothManager).`when`(context).getSystemService(Context.BLUETOOTH_SERVICE)
+    doReturn(adapter).`when`(bluetoothManager).adapter
+    val rejection = IllegalArgumentException("invalid Bluetooth address")
+    org.mockito.Mockito.doThrow(rejection).`when`(adapter).getRemoteDevice("NOT-A-MAC")
+    val radio = OwnedAndroidGattRadio(context, post = { action -> action(); true }, scheduleDelayed = { _, _ -> true })
+
+    val error = org.junit.Assert.assertThrows(IllegalStateException::class.java) {
+      radio.connect("not-a-mac", false)
+    }
+    assertTrue(error.message!!.contains("Android rejected Bluetooth device not-a-mac"))
+    org.junit.Assert.assertSame(rejection, error.cause)
+    verify(adapter).getRemoteDevice("NOT-A-MAC")
+  }
+
   @Test
   fun heldAndRefusedCancellationRetainsExactOwnerForRetry() {
     val context = mock(ReactApplicationContext::class.java)

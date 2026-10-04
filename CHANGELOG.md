@@ -19,6 +19,11 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Changes
 
+- Allow the faithful Linux H10 simulator to select an explicit Bluetooth adapter
+  without changing the system default or falling back to another controller.
+- Normalize Android's internal Companion Device Manager address at the radio
+  adapter lookup so lowercase association MACs can open GATT, inspect bond
+  state and pair. Public peer IDs and scoped references remain opaque.
 - Keep first Apple accessory setup free of startup-created global Bluetooth
   managers, while preserving genuine restoration launches and native collection
   for authorized Bluetooth accessories. Retain structured startup failures

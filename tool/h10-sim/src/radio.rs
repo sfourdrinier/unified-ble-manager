@@ -462,6 +462,20 @@ pub trait PeripheralRadio: Send {
     async fn open(events: mpsc::Sender<RadioEvent>) -> Result<Self, RadioError>
     where
         Self: Sized;
+    async fn open_with_adapter(
+        events: mpsc::Sender<RadioEvent>,
+        adapter: Option<&str>,
+    ) -> Result<Self, RadioError>
+    where
+        Self: Sized,
+    {
+        if adapter.is_some() {
+            return Err(RadioError(
+                "explicit adapter selection is supported only by the Linux BlueZ radio".to_string(),
+            ));
+        }
+        Self::open(events).await
+    }
     async fn is_powered(&mut self) -> Result<bool, RadioError>;
     async fn is_advertising(&mut self) -> Result<bool, RadioError>;
     async fn start_advertising(&mut self, name: &str, uuids: &[Uuid]) -> Result<(), RadioError>;
