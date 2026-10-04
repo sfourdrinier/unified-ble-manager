@@ -27,6 +27,8 @@ All notable changes to `unified-ble-manager` are documented here.
   weakening explicit-operation busy refusals or forgetting cleanup failures.
 - Add a bounded positive HRS sample on the reference chooser's same owned
   connection, with cancellation, deadline and retryable cleanup evidence.
+  Prepare manufacturer-prefix and OR-selector controls and an explicit inactive
+  public-chooser probe; keep consumer declarations separate from radio evidence.
 - Reject conflicting chooser selection modes before native allocation instead
   of dropping constraints. Android's unfiltered default matches Web; Apple
   preserves its genuine unfiltered setup limitation.

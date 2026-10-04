@@ -12,7 +12,8 @@
       "infoPlist": {
         "NSAccessorySetupKitSupports": ["Bluetooth"],
         "NSAccessorySetupBluetoothServices": ["180D"],
-        "NSAccessorySetupBluetoothNames": ["SIM Polar H10"]
+        "NSAccessorySetupBluetoothNames": ["SIM Polar H10"],
+        "NSAccessorySetupBluetoothCompanyIdentifiers": ["006B"]
       }
     },
     "android": {

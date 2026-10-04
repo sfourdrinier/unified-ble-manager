@@ -1,13 +1,67 @@
-import type { BleConnection, BlePeer, GattDatabase } from 'unified-ble-manager'
+import type { BleConnection, BlePeer, GattDatabase, ChooseFilter } from 'unified-ble-manager'
 import {
   HEART_RATE_SERVICE,
   HEART_RATE_MEASUREMENT_CHARACTERISTIC,
   parseHeartRateMeasurement
 } from 'unified-ble-manager/profiles/heart-rate'
 import type { DriverHost, HostManager } from '../host.ts'
-import { toJsonValue } from '../protocol.ts'
+import { isJsonObject, toJsonValue, type JsonObject } from '../protocol.ts'
 import { args, defineCommand, ScenarioError, type ScenarioCommand } from '../scenario-core.ts'
 import { BleScenario, IDLE_BLE_STATE, withTimeout, type BleScenarioState } from './ble-scenario.ts'
+
+function parseManufacturer(raw: JsonObject) {
+  const hasCompany = raw.manufacturerCompanyIdentifier !== undefined
+  const hasPrefix = raw.manufacturerPrefix !== undefined
+  if (hasCompany !== hasPrefix)
+    throw new ScenarioError(
+      'scenario.invalid-argument',
+      'manufacturerCompanyIdentifier and manufacturerPrefix must be paired'
+    )
+  if (!hasCompany) return undefined
+  const companyIdentifier = args.number(raw, 'manufacturerCompanyIdentifier', -1, { min: 0, max: 65535 })
+  if (!Number.isSafeInteger(companyIdentifier))
+    throw new ScenarioError('scenario.invalid-argument', 'manufacturerCompanyIdentifier must be an integer')
+  const prefix = raw.manufacturerPrefix
+  if (!Array.isArray(prefix) || prefix.length === 0)
+    throw new ScenarioError('scenario.invalid-argument', 'manufacturerPrefix must be a nonempty byte array')
+  const bytes = prefix.map(value => {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 255)
+      throw new ScenarioError('scenario.invalid-argument', 'manufacturerPrefix entries must be bytes')
+    return value
+  })
+  return [{ companyIdentifier, dataPrefix: new Uint8Array(bytes) }]
+}
+
+/** JSON representation mapping only; public manager.choose owns UUID and selector semantics. */
+function parseAlternative(value: unknown): ChooseFilter {
+  if (
+    !isJsonObject(value) ||
+    Object.keys(value).length === 0 ||
+    Object.keys(value).some(
+      key => !['serviceUuids', 'localNamePrefix', 'manufacturerCompanyIdentifier', 'manufacturerPrefix'].includes(key)
+    )
+  )
+    throw new ScenarioError(
+      'scenario.invalid-argument',
+      'alternative filter must contain only supported selector fields'
+    )
+  const services = value.serviceUuids
+  if (services !== undefined && !Array.isArray(services))
+    throw new ScenarioError('scenario.invalid-argument', 'alternative serviceUuids must be an array')
+  const serviceUuids = services?.map(uuid => {
+    if (typeof uuid !== 'string' && (typeof uuid !== 'number' || !Number.isFinite(uuid)))
+      throw new ScenarioError('scenario.invalid-argument', 'alternative service UUID must be a string or finite number')
+    return uuid
+  })
+  if (value.localNamePrefix !== undefined && typeof value.localNamePrefix !== 'string')
+    throw new ScenarioError('scenario.invalid-argument', 'alternative localNamePrefix must be a string')
+  const manufacturerData = parseManufacturer(value)
+  return {
+    ...(serviceUuids === undefined ? {} : { serviceUuids }),
+    ...(value.localNamePrefix === undefined ? {} : { localNamePrefix: value.localNamePrefix }),
+    ...(manufacturerData === undefined ? {} : { manufacturerData })
+  }
+}
 
 export class AccessoryChooserScenario extends BleScenario<BleScenarioState> {
   readonly id = 'accessory-chooser'
@@ -26,11 +80,14 @@ export class AccessoryChooserScenario extends BleScenario<BleScenarioState> {
     parse: args.none,
     run: async () => toJsonValue(await this.stop())
   })
-  protected readonly commands: Readonly<Record<string, ScenarioCommand>> = {
-    choose: defineCommand({
-      label: 'Choose SIM H10',
+  private chooserCommand(inactiveProbe: boolean): ScenarioCommand {
+    return defineCommand({
+      label: inactiveProbe ? 'Probe native inactive refusal' : 'Choose SIM H10',
       description:
-        'Foreground system picker. {namePrefix?: string (default SIM Polar H10), timeoutMs?: integer 1..60000}. Returns authorized selection only; connect separately.',
+        (inactiveProbe
+          ? 'Explicit inactive native-refusal probe; requires observed inactive state and reaches public manager.choose without the ordinary foreground precheck. Unexpected selection fails and releases its owner. '
+          : 'Foreground system picker; selection only, connect separately. ') +
+        '{namePrefix?: string (default SIM Polar H10), timeoutMs?: integer 1..60000, manufacturerCompanyIdentifier?: uint16, manufacturerPrefix?: nonempty byte array, alternativeFilters?: array of serviceUuids/localNamePrefix/paired manufacturer selectors}. Alternatives append OR branches to the default conjunction. Manufacturer arguments must be paired and captured from the actual advertisement.',
       presets: [
         { label: 'Choose SIM H10', args: {} },
         { label: '3-second picker deadline', args: { timeoutMs: 3000 } }
@@ -39,9 +96,18 @@ export class AccessoryChooserScenario extends BleScenario<BleScenarioState> {
         const timeoutMs = args.number(raw, 'timeoutMs', 30000, { min: 1, max: 60000 })
         if (!Number.isSafeInteger(timeoutMs))
           throw new ScenarioError('scenario.invalid-argument', 'timeoutMs must be an integer')
-        return { namePrefix: args.optionalString(raw, 'namePrefix') ?? 'SIM Polar H10', timeoutMs }
+        const manufacturerData = parseManufacturer(raw)
+        const alternatives = raw.alternativeFilters
+        if (alternatives !== undefined && !Array.isArray(alternatives))
+          throw new ScenarioError('scenario.invalid-argument', 'alternativeFilters must be an array')
+        return {
+          namePrefix: args.optionalString(raw, 'namePrefix') ?? 'SIM Polar H10',
+          timeoutMs,
+          manufacturerData,
+          alternativeFilters: alternatives === undefined ? [] : alternatives.map(parseAlternative)
+        }
       },
-      run: ({ namePrefix, timeoutMs }) => {
+      run: ({ namePrefix, timeoutMs, manufacturerData, alternativeFilters }) => {
         if (this.sampling || this.connecting || this.pendingSubscriptions > 0)
           throw new ScenarioError('scenario.busy', 'A prior selected subscription is still settling')
         return this.runJourney(async signal => {
@@ -49,7 +115,12 @@ export class AccessoryChooserScenario extends BleScenario<BleScenarioState> {
           this.connected = null
           const appState = this.host.appState?.current() ?? null
           this.emit('chooser-app-state', { appState: toJsonValue(appState) })
-          if (appState?.foreground === false)
+          if (inactiveProbe && appState?.foreground !== false)
+            throw new ScenarioError(
+              'scenario.inactive-required',
+              'Native refusal probe requires observed inactive app state'
+            )
+          if (!inactiveProbe && appState?.foreground === false)
             throw new ScenarioError(
               'scenario.foreground-required',
               'Bring the app to the foreground before requesting a system picker'
@@ -59,17 +130,31 @@ export class AccessoryChooserScenario extends BleScenario<BleScenarioState> {
           this.emit('chooser-capability', {
             capability: toJsonValue(manager.capabilities.get('discovery:system-chooser'))
           })
-          if (this.host.userGesture !== null) {
+          if (!inactiveProbe && this.host.userGesture !== null) {
             this.patchBase({ phase: 'awaiting-user-gesture' })
             this.emit('user-gesture-required', { reason: 'system accessory chooser' })
             await this.host.userGesture.request(this.id, 'system accessory chooser', signal)
           }
           this.patchBase({ phase: 'choosing' })
           const peer = await manager.choose({
-            filters: [{ serviceUuids: [HEART_RATE_SERVICE], localNamePrefix: namePrefix }],
+            filters: [
+              {
+                serviceUuids: [HEART_RATE_SERVICE],
+                localNamePrefix: namePrefix,
+                ...(manufacturerData === undefined ? {} : { manufacturerData })
+              },
+              ...alternativeFilters
+            ],
             timeoutMs,
             signal
           })
+          if (inactiveProbe) {
+            this.emit('chooser-inactive-unexpected-selection', { peer: toJsonValue(peer) })
+            throw new ScenarioError(
+              'scenario.expected-refusal',
+              'Inactive public chooser unexpectedly returned a selection'
+            )
+          }
           if (signal.aborted)
             throw new ScenarioError('scenario.operation-aborted', 'Late selected peer belongs to a stopped run')
           this.selected = { hosted, peer, signal }
@@ -83,7 +168,11 @@ export class AccessoryChooserScenario extends BleScenario<BleScenarioState> {
           return result
         })
       }
-    }),
+    })
+  }
+  protected readonly commands: Readonly<Record<string, ScenarioCommand>> = {
+    choose: this.chooserCommand(false),
+    'probe-native-inactive-refusal': this.chooserCommand(true),
     'connect-selected': defineCommand({
       label: 'Connect selected',
       description: 'Connect and discover the exact peer from this still-owned selection; no scan or second manager.',

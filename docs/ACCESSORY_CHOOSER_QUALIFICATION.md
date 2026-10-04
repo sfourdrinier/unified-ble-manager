@@ -25,7 +25,9 @@ For the simulator's advertised `SIM Polar H10` prefix, the iPhone app needs:
 A manufacturer-prefix scenario additionally needs the **actual** simulator
 company ID in `NSAccessorySetupBluetoothCompanyIdentifiers`, encoded as the
 documented hexadecimal string; capture its advertisement before choosing a
-prefix. Do not assume arbitrary bytes absent from that advertisement.
+prefix. Do not assume arbitrary bytes absent from that advertisement. The
+reference consumer declares `006B` (Polar company 107) to match the stock H10
+simulator profile; this allowlist is consumer configuration, not radio evidence.
 The consuming app still needs Bluetooth usage descriptions, `bluetooth-central`
 background mode and the existing stable restoration identity/native continuation
 configuration. ASK needs iOS 18+, and this name-prefix selector needs 18.2+.
@@ -61,6 +63,34 @@ For a positive ordinary setup, run `choose` → `connect-selected` →
 `sample-selected-hr` → `stop`; keep the real picker decision and the emitted
 `chooser-hrs-value` plus cleanup records. These commands use the same UI/remote
 registry and manager throughout; the sample alone is not a background receipt.
+
+The existing authenticated `choose` command accepts paired
+`manufacturerCompanyIdentifier` (integer 0..65535) and `manufacturerPrefix`
+(nonempty array of bytes 0..255). They add a conjunctive manufacturer criterion
+to the existing service/name filter, never replace it. After capturing the actual
+stock profile advertisement and confirming company 107/payload `3f155252`, use
+`{ "manufacturerCompanyIdentifier": 107, "manufacturerPrefix": [63, 21, 82, 82] }`.
+If the captured advertisement differs, use its actual values; do not represent
+the profile or this command example as a received advertisement.
+
+`alternativeFilters` appends OR branches to that default conjunction. Each JSON
+branch accepts only `serviceUuids` (string/number array), `localNamePrefix`
+(string), and the paired manufacturer arguments above; byte arrays map to public
+`Uint8Array` values. Example: `{ "alternativeFilters": [{ "serviceUuids":
+["180d"], "localNamePrefix": "SIM Polar H10 Other" }] }`. This permits a
+matching second advertised identity while preserving conjunction inside each
+branch. The parser checks JSON representation; public `manager.choose()` remains
+authoritative for UUID/filter semantics and native capability refusals.
+
+Normal `choose` retains its foreground guard: inactive refusal there is a
+scenario-level result, not a native result. The separate authenticated
+`probe-native-inactive-refusal` command uses the same arguments and owned public
+manager path, requires an observed inactive app state, and deliberately reaches
+`manager.choose()` without the normal foreground precheck. Retain its actual
+native refusal/domain/code. Active/unknown state refuses before allocation;
+an unexpected selected peer is recorded as a failed probe and its manager is
+released, never converted into a fabricated refusal. Neither command proves a
+physical outcome from scripted tests alone.
 
 These commands are available automatically in the current scenario UI; no
 private native command, replacement radio or unauthenticated remote endpoint is
