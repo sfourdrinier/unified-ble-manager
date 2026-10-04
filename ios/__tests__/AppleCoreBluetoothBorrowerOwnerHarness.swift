@@ -238,6 +238,9 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
     precondition(answered.isEmpty, "an undecided prompt waits")
     precondition(ensured == 1, "waiting allocates the central that prompts")
     precondition(!start(prompter), "a concurrent prompt is refused like Android's")
+    prompter.authorizationChanged()
+    precondition(answered.isEmpty, "an undecided delegate update must keep permission pending")
+    precondition(!start(prompter), "an undecided update must preserve single-flight ownership")
     word = "denied"
     prompter.authorizationChanged()
     precondition(answered.count == 1, "the decision settles the waiter")
@@ -249,6 +252,8 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
     answered.removeAll()
     word = "notDetermined"
     precondition(start(prompter), "the prompter is reusable after a decision")
+    prompter.authorizationChanged()
+    precondition(answered.isEmpty, "an undecided update must not cancel the original deadline")
     scheduled.last!.work()
     precondition(answered.count == 1, "an unanswered prompt times out")
     precondition(answered[0].0 == nil && answered[0].1?.code == 1038, "the timeout reports what happened")

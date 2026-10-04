@@ -510,10 +510,15 @@ final class ApplePermissionPrompter {
   }
 
   private func complete(word: String) {
+    // A central may first report unknown/resetting while the user's permission
+    // decision is still pending. Keep the same bounded waiter; this callback
+    // is not a refusal or an authorization answer.
+    let decision = AppleBluetoothPermissionRequest.decision(authorization: word)
+    guard decision != .promptThenWait else { return }
     guard exchange.finish(authorization: word) != nil else { return }
     let completion = self.completion
     self.completion = nil
-    switch AppleBluetoothPermissionRequest.decision(authorization: word) {
+    switch decision {
     case .answerGranted:
       completion?(AppleBluetoothPermissionRequest.result(granted: true), nil)
     case .answerDenied:

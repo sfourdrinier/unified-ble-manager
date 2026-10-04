@@ -19,6 +19,8 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Changes
 
+- Keep an explicit Apple Bluetooth permission request pending across undecided
+  central-state callbacks instead of reporting an invented unavailable refusal.
 - Preserve the app-declared service UUID representation when constructing Apple
   accessory descriptors, preventing ASK's fatal short/full UUID mismatch while
   retaining semantic matching and pre-allocation undeclared-service refusal.

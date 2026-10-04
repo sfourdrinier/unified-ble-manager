@@ -40,6 +40,10 @@ replacing declaration, last-wake or recovery data, or blocking an independent
 backlog claim. Missing/null on Android and older hosts means no reported startup
 failure; malformed diagnostic records fail closed. Startup is not an OS wake or
 completed recovery.
+An explicit Apple permission request retains its bounded native waiter across
+CoreBluetooth delegate updates that still report `notDetermined`. Such an
+update is not a refusal or grant; only a decided authorization, the original
+deadline, or teardown settles the request.
 The ordinary Android public chooser reuses `companion.associate` with its
 additive `filtersJson` selector field; Rust validates and canonicalizes that
 field before the JNI/UniFFI platform request. Omitted `filtersJson` preserves
