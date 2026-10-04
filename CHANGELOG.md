@@ -4,6 +4,22 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+## [5.0.0-rc.18] - 2026-10-04
+
+### Before upgrading
+
+- Desktop IPC now requires protocol 5 on both host and client; upgrade them
+  together. Older hosts fail closed rather than ignoring requested options.
+- Apple desktop and simulators remain ARM64-only. Linux connection/GATT still
+  requires explicit deployment of the maintained BlueZ integration; the UUID
+  filter correction advances its producer to `5.87-ubm.3`.
+- This candidate does not promote backend hardware-evidence labels. Apple
+  picker end-to-end completion, physical Apple TV and actual user-force-quit
+  qualification remain incomplete; observed authorization and subsequent GATT
+  success are not a successful timed chooser receipt.
+
+### Changes
+
 - Preserve available native public/random address types in Tauri scan
   observations. Unknown stays opaque; malformed IPC metadata is rejected and
   actual native metadata-read failures remain visible.
