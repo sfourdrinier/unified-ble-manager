@@ -734,6 +734,12 @@ the existing MAC/UUID canonicalization, and status preserves the validated
 `counters`, `native`, `process`, and `continuationOutcome` fields. Desktop status
 keeps `queuedData`, `lastError`, and `continuationOutcome`; the structural
 `NativeContinuationStatus` union does not invent desktop facts for mobile.
+The separate mobile continuation posture (`continuationStatus`, exposed as
+Expo `continuation.status()`) preserves a structured `startupFailure` independently of the
+declared posture, `lastWake`, and `lastRecovery`. Accessory authorization startup
+failure is not a completed wake/recovery and does not itself prevent claiming an
+already-owned backlog. Its exact native domain/code remain observable until an
+authoritative successful retry; Android/older hosts omit it or report null.
 Native
 failure identities remain authoritative. Callers sequence execute and claim;
 failed disposal retains the cleanup obligation and decoded handoff for retry.

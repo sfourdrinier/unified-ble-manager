@@ -6,6 +6,7 @@ import type { ContinuationRecordingController } from './core/continuation-record
 import type { RestorationAdoptionResult } from './backend-contract/restoration'
 import type { BackgroundContinuationResubscribeSelector } from './backend-contract/background-continuation'
 import type {
+  ContinuationStatus,
   ContinuationRecoveryStatus,
   ContinuationWakeStatus
 } from './backends/reactnative/react-native-continuation-claim'
@@ -129,6 +130,8 @@ export interface ExpoContinuationStatus {
   readonly lastWake: ExpoContinuationWakeReport | null
   /** Latest native recovery outcome, not a replacement for the original OS wake. */
   readonly lastRecovery: ContinuationRecoveryStatus | null
+  /** Native accessory-startup refusal, distinct from wake/recovery; null when absent. */
+  readonly startupFailure: ContinuationStatus['startupFailure']
   /**
    * The host's own qualification of the declaration, when it has one — for
    * example that a declared strategy is validated but not implemented in this
@@ -921,6 +924,7 @@ async function readExpoContinuationStatus(host: ReactNativeManagerHost): Promise
       malformedDeclarations: status.malformedDeclarations,
       lastWake: status.lastWake === null ? null : Object.freeze({ ...status.lastWake }),
       lastRecovery: status.lastRecovery,
+      startupFailure: status.startupFailure,
       detail: status.detail
     })
   } catch (error) {

@@ -11,6 +11,18 @@ const wake = {
   stage: 'task-dispatched'
 }
 
+test('startup diagnostic is nullable for compatible hosts and malformed records fail closed', () => {
+  expect(parseContinuationStatus(status(null)).startupFailure).toBeNull()
+  expect(parseContinuationStatus({ ...status(null), startupFailure: null }).startupFailure).toBeNull()
+  for (const startupFailure of [
+    'failure',
+    {},
+    { code: 'platform.failure', domain: 'platform', operation: 'bootstrap', platform: { code: 550 } }
+  ]) {
+    expect(() => parseContinuationStatus({ ...status(null), startupFailure })).toThrow()
+  }
+})
+
 test('wake success explicitly reports task dispatch or foreground service start, never task completion', () => {
   expect(parseContinuationStatus(status(wake)).lastWake.stage).toBe('task-dispatched')
   expect(

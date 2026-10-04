@@ -838,7 +838,6 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     lock.lock()
     let startupFailure = accessoryStartupFailure
     lock.unlock()
-    if let startupFailure { return completion(nil, startupFailure) }
     var strategy = "record-only"
     var peerId: String?
     var resubscribe = 0
@@ -865,7 +864,8 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     }
     let finish: ([String: Any]) -> Void = { value in
       do {
-        let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+        let reported = try Self.continuationStatusWithStartupFailure(value, failure: startupFailure)
+        let data = try JSONSerialization.data(withJSONObject: reported, options: [.sortedKeys])
         completion(String(decoding: data, as: UTF8.self), nil)
       } catch { completion(nil, Self.failureJson(error, operation: "continuation.status")) }
     }
@@ -892,6 +892,16 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
         finish(updated)
       } catch { completion(nil, Self.failureJson(error, operation: "continuation.status")) }
     })
+  }
+
+  static func continuationStatusWithStartupFailure(_ value: [String: Any], failure: String?) throws -> [String: Any] {
+    var status = value
+    if let failure {
+      status["startupFailure"] = try JSONSerialization.jsonObject(with: Data(failure.utf8))
+    } else {
+      status["startupFailure"] = NSNull()
+    }
+    return status
   }
 
   public func prepareContinuationClaim(maxItems: Double, maxBytes: Double, completion: @escaping (String?, String?) -> Void) {

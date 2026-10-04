@@ -30,7 +30,12 @@ radio work are never discarded to make a picker appear. An explicit Bluetooth
 permission request or radio operation before ASK may create a global central;
 ASK's resulting refusal retains the platform's actual domain, code and reason.
 Authorization-query failures are logged as structured native failures and remain
-observable through `continuationStatus` until an authoritative successful retry.
+observable as structured `continuationStatus.startupFailure` until an
+authoritative successful retry. It retains the native domain/code without
+replacing declaration, last-wake or recovery data, or blocking an independent
+backlog claim. Missing/null on Android and older hosts means no reported startup
+failure; malformed diagnostic records fail closed. Startup is not an OS wake or
+completed recovery.
 The ordinary Android public chooser reuses `companion.associate` with its
 additive `filtersJson` selector field; Rust validates and canonicalizes that
 field before the JNI/UniFFI platform request. Omitted `filtersJson` preserves

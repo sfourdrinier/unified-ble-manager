@@ -102,8 +102,11 @@ state migration remain the operator's separately approved actions.
 Under the freshly resolved unique daemon owner, the selected adapter must
 answer `org.unifiedblemanager.LinuxAuthority1.GetContract` with exact `(1,2,1)`.
 The lease mechanism is `LELease1.ReserveLease(deviceObjectPath, privateReservationId)` then
-`ConnectLease(token)`, with `ReleaseLease(token)` returning `(u,t,t,s)`:
-version, original token, physical LE generation and scoped outcome. Outcomes
+`ConnectLease(token)`, with `ReleaseLease(token)` returning exactly `uttsby`:
+version, original token, physical LE generation, scoped outcome, observed-reason
+presence and raw MGMT reason byte. Only the exact physical-loss callback supplies
+that reason; reservation/protected/indeterminate outcomes do not invent one.
+An absent reason has canonical byte zero. Outcomes
 are `reservation-released` (generation zero, only when no physical effect was
 accepted or is in flight), `physical-released` (nonzero generation), `lease-released-protected`, or
 `lease-released-indeterminate`; a retired lease is not automatically a closed

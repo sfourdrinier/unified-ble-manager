@@ -83,6 +83,31 @@ function managerHost(native, declaration = NATIVE_DECLARATION) {
 }
 
 describe('continuation claim path', () => {
+  it('keeps startup refusal diagnostic separate from valid status and claim ownership', async () => {
+    const native = new DeterministicRustCoreNative({ platform: 'android' })
+    const startupFailure = {
+      code: 'platform.failure',
+      domain: 'platform',
+      operation: 'continuation.bootstrap.accessory-authorization',
+      detail: 'authorization refused',
+      platform: { domain: 'ASErrorDomain', code: '550', message: 'authorization refused', metadata: {} }
+    }
+    native.continuationStatus = async () => JSON.stringify({ ...JSON.parse(STATUS_JSON), startupFailure })
+    native.prepareContinuationClaim = async () =>
+      JSON.stringify({ ...JSON.parse(CLAIM_JSON), claimToken: 'startup-independent' })
+    native.acknowledgeContinuationClaim = async () =>
+      JSON.stringify({ disposed: true, afterCutoffLoss: { items: 0, bytes: 0 }, disposeFailure: null })
+    const host = await managerHost(native, null)
+    try {
+      const status = await host.services.continuationStatus()
+      expect(status.startupFailure).toEqual(startupFailure)
+      expect(status.lastWake.event).toBe('continuation.completed')
+      expect((await host.services.claimContinuationBacklog()).values).toHaveLength(1)
+    } finally {
+      await host.manager.destroy()
+    }
+  })
+
   it('drains the wake backlog with its loss accounting', async () => {
     const native = new DeterministicRustCoreNative({ platform: 'android' })
     native.declareBackgroundContinuation = async () => {}

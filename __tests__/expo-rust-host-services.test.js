@@ -300,7 +300,7 @@ describe('Expo host services on the Rust session', () => {
   })
 
   test('a second associate for an associated device reports already-associated, not a duplicate', async () => {
-    const { native, manager } = await expoManager()
+    const { manager } = await expoManager()
     const first = await manager.association.associate({ name: 'Sensor', serviceUuid: '180D' })
     expect(first).toEqual({
       source: 'associated',
@@ -485,11 +485,32 @@ describe('Expo host services on the Rust session', () => {
       return { native: harness.native, manager }
     }
 
+    test('projects startup refusal without replacing wake status or blocking backlog claim', async () => {
+      const { native, manager } = await continuationManager()
+      const startupFailure = {
+        code: 'platform.failure',
+        domain: 'platform',
+        operation: 'continuation.bootstrap.accessory-authorization',
+        detail: 'refused',
+        platform: { domain: 'ASErrorDomain', code: '550', message: 'refused', metadata: {} }
+      }
+      native.continuationStatus = async () => JSON.stringify({ ...JSON.parse(STATUS), startupFailure })
+      try {
+        const status = await manager.continuation.status()
+        expect(status.startupFailure).toEqual(startupFailure)
+        expect(status.lastWake.event).toBe('continuation.completed')
+        expect((await manager.continuation.claim()).values).toHaveLength(1)
+      } finally {
+        await manager.destroy()
+      }
+    })
+
     test('declares the standing order at open and reports status and backlog with loss accounting', async () => {
       const { manager } = await continuationManager()
       const status = await manager.continuation.status()
       expect(status.strategy).toBe('native')
       expect(status.lastWake.event).toBe('continuation.completed')
+      expect(status.startupFailure).toBeNull()
       const backlog = await manager.continuation.claim()
       expect(backlog.recording).toEqual({ id: 'h10-expo' })
       expect(backlog.values).toHaveLength(1)

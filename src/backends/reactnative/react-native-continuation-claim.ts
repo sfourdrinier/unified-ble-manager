@@ -271,6 +271,8 @@ export interface ContinuationStatus {
   readonly malformedDeclarations: number
   readonly lastWake: ContinuationWakeStatus | null
   readonly lastRecovery: ContinuationRecoveryStatus | null
+  /** Native accessory-startup refusal, not a wake/recovery outcome; absent on older hosts. */
+  readonly startupFailure: WireRemoteFailure | null
   /**
    * The host's reason a declared mechanism is unavailable (for example an
    * Android-specific task/service strategy on Apple); null where it executes.
@@ -304,7 +306,16 @@ export function parseContinuationStatus(value: unknown): ContinuationStatus {
   }
   unexpectedKeys(
     parsed,
-    ['strategy', 'peerId', 'resubscribe', 'malformedDeclarations', 'lastWake', 'lastRecovery', 'detail'],
+    [
+      'strategy',
+      'peerId',
+      'resubscribe',
+      'malformedDeclarations',
+      'lastWake',
+      'lastRecovery',
+      'startupFailure',
+      'detail'
+    ],
     'continuation-status.keys'
   )
   if (typeof parsed.strategy !== 'string' || parsed.strategy.length === 0) {
@@ -327,6 +338,13 @@ export function parseContinuationStatus(value: unknown): ContinuationStatus {
   if (detail !== null && typeof detail !== 'string') {
     throw contractError('protocol.malformed', 'restoration', 'continuation-status.detail')
   }
+  const startupFailure =
+    parsed.startupFailure == null
+      ? null
+      : parseRemoteFailureText(JSON.stringify(parsed.startupFailure), 'continuation-status.startup-failure')
+  if (startupFailure !== null && !startupFailure.ok) {
+    throw contractError('protocol.malformed', 'restoration', 'continuation-status.startup-failure')
+  }
   return Object.freeze({
     strategy: parsed.strategy,
     peerId: parsed.peerId,
@@ -334,6 +352,7 @@ export function parseContinuationStatus(value: unknown): ContinuationStatus {
     malformedDeclarations: parsed.malformedDeclarations,
     lastWake: parseWakeStatus(parsed.lastWake),
     lastRecovery: parseContinuationRecoveryStatus(parsed.lastRecovery),
+    startupFailure: startupFailure === null ? null : startupFailure.value,
     detail
   })
 }

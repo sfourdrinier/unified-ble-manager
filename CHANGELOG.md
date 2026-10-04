@@ -21,7 +21,8 @@ All notable changes to `unified-ble-manager` are documented here.
 
 - Keep first Apple accessory setup free of startup-created global Bluetooth
   managers, while preserving genuine restoration launches and native collection
-  for authorized Bluetooth accessories. Retain observable authorization failures.
+  for authorized Bluetooth accessories. Retain structured startup failures
+  without hiding continuation posture or independently owned backlog.
 - Let retained continuation status join autonomous recovery admission, without
   weakening explicit-operation busy refusals or forgetting cleanup failures.
 - Add a bounded positive HRS sample on the reference chooser's same owned

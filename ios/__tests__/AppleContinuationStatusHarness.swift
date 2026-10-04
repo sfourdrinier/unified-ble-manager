@@ -51,6 +51,19 @@ enum AppleContinuationStatusHarness {
     let sessions = UnifiedBleRustCoreSessions(installer: { _ in
       throw NSError(domain: "harness", code: 1, userInfo: nil)
     })
+    let startupFailure = UnifiedBleRustCoreSessions.platformFailureJson(
+      NSError(domain: "ASErrorDomain", code: 550),
+      operation: "continuation.bootstrap.accessory-authorization", detail: "authorization refused")
+    let original = statusOf(sessions)
+    let reported = try! UnifiedBleRustCoreSessions.continuationStatusWithStartupFailure(original, failure: startupFailure)
+    let diagnostic = reported["startupFailure"] as? [String: Any]
+    let platform = diagnostic?["platform"] as? [String: Any]
+    check(platform?["domain"] as? String == "ASErrorDomain" && platform?["code"] as? String == "550",
+          "startup diagnostic preserves actual native domain/code")
+    check(reported["strategy"] as? String == original["strategy"] as? String && reported["lastWake"] is NSNull,
+          "startup diagnostic does not hide posture or invent a wake")
+    check((try! UnifiedBleRustCoreSessions.continuationStatusWithStartupFailure(original, failure: nil))["startupFailure"] is NSNull,
+          "successful startup retry clears its diagnostic")
     var coldStatus: String?
     sessions.describeNativeContinuation { coldStatus = $0 }
     check(coldStatus == "{\"ok\":true,\"value\":null}", "cold process status must not install the radio: \(coldStatus ?? "nil")")
