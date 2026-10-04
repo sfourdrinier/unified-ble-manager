@@ -84,6 +84,24 @@ pub fn hci_index(adapter_name: &str) -> Result<u16, String> {
         .ok_or_else(|| format!("adapter name {adapter_name:?} is not hciN"))
 }
 
+/// Validate an explicit controller without substituting the default controller.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn select_requested_adapter(
+    requested: Option<&str>,
+    available: &[String],
+) -> Result<Option<String>, String> {
+    let Some(name) = requested else {
+        return Ok(None);
+    };
+    hci_index(name)?;
+    if !available.iter().any(|candidate| candidate == name) {
+        return Err(format!(
+            "requested adapter {name:?} unavailable; available adapters: {available:?}"
+        ));
+    }
+    Ok(Some(name.to_string()))
+}
+
 /// What bluetoothd said when an `LEAdvertisement1` registration failed.
 pub struct BluezRegistrationFailure<'a> {
     /// The D-Bus error is `org.bluez.Error.Failed`.
@@ -454,6 +472,20 @@ mod tests {
         assert_eq!(hci_index("hci12"), Ok(12));
         assert!(hci_index("usb0").is_err());
         assert!(hci_index("hci").is_err());
+    }
+
+    #[test]
+    fn explicit_adapter_selection_never_falls_back() {
+        let available = vec!["hci0".to_string(), "hci1".to_string()];
+        assert_eq!(select_requested_adapter(None, &available).unwrap(), None);
+        assert_eq!(
+            select_requested_adapter(Some("hci1"), &available).unwrap(),
+            Some("hci1".to_string())
+        );
+        assert!(select_requested_adapter(Some("hci2"), &available)
+            .unwrap_err()
+            .contains("unavailable"));
+        assert!(select_requested_adapter(Some("../hci0"), &available).is_err());
     }
 
     #[test]

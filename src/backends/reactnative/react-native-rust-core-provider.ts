@@ -130,12 +130,16 @@ import {
   type WriteResult
 } from '../../backend-contract/operations'
 import { assertPeerReference, encodePeerReference, type PeerReference } from '../../backend-contract/peer-reference'
+import type { Deadline } from '../../backend-contract/primitives'
 import type { CoreTraceSink } from '../../core/trace-recorder'
+import { awaitWithOperationAdmission } from '../../core/unified-ble-core-helpers'
+import { ACCESSORY_CANCELLATION_DRAIN_MS } from './react-native-accessory-chooser'
 import {
   canonicalBleAddress,
   canonicalUuid,
   capacity,
   createAttachmentBoundIdFactory,
+  deadline,
   monotonicTimestamp,
   negotiateCoreVersions,
   negotiateVersion,
@@ -296,6 +300,57 @@ function backendIdFor(platform: ReactNativeRustCorePlatform): string {
   return platform === 'android' ? REACT_NATIVE_ANDROID_BACKEND_ID : REACT_NATIVE_APPLE_BACKEND_ID
 }
 
+const AUTHORIZED_ACCESSORIES_REVISION = 'ubm-accessory-authorized/1'
+const APPLE_PEER_UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i
+
+function parseAuthorizedAccessories(text: string): readonly { bluetoothIdentifier: string; name: string | null }[] {
+  const operation = `${SCOPE}.peers.authorized`
+  if (text.length > 131072) throw contractError('protocol.malformed', 'connection', operation)
+  let value: unknown
+  try {
+    value = JSON.parse(text)
+  } catch {
+    throw contractError('protocol.malformed', 'connection', operation)
+  }
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join(',') !== 'accessories,revision' ||
+    Reflect.get(value, 'revision') !== AUTHORIZED_ACCESSORIES_REVISION
+  ) {
+    throw contractError('protocol.malformed', 'connection', operation)
+  }
+  const items: unknown = Reflect.get(value, 'accessories')
+  if (!Array.isArray(items) || items.length > 256) throw contractError('protocol.malformed', 'connection', operation)
+  const seen = new Set<string>()
+  return Object.freeze(
+    items.map((item: unknown) => {
+      if (
+        typeof item !== 'object' ||
+        item === null ||
+        Array.isArray(item) ||
+        Object.keys(item).sort().join(',') !== 'bluetoothIdentifier,name'
+      ) {
+        throw contractError('protocol.malformed', 'connection', operation)
+      }
+      const identifier: unknown = Reflect.get(item, 'bluetoothIdentifier')
+      const name: unknown = Reflect.get(item, 'name')
+      if (
+        typeof identifier !== 'string' ||
+        !APPLE_PEER_UUID.test(identifier) ||
+        (name !== null && (typeof name !== 'string' || name.length > 1024))
+      ) {
+        throw contractError('protocol.malformed', 'connection', operation)
+      }
+      const canonical = identifier.toUpperCase()
+      if (seen.has(canonical)) throw contractError('protocol.malformed', 'connection', operation)
+      seen.add(canonical)
+      return Object.freeze({ bluetoothIdentifier: canonical, name })
+    })
+  )
+}
+
 function platformIdFor(platform: ReactNativeRustCorePlatform): string {
   return platform === 'android' ? REACT_NATIVE_ANDROID_PLATFORM_ID : REACT_NATIVE_APPLE_PLATFORM_ID
 }
@@ -402,6 +457,7 @@ async function openBackend(
   const continuationDeclared = options.backgroundContinuation !== undefined
   const continuation = normalizeBackgroundContinuation(options.backgroundContinuation)
   const session = await binding.openSession(`${options.owner}/${ownerId}`)
+  const authorizedAccessories = binding.authorizedAccessories
   let backend: ReactNativeRustCoreBackend
   try {
     const state = await session.invoke('adapter.state', {})
@@ -415,12 +471,14 @@ async function openBackend(
           typeof binding.declareBackgroundContinuation === 'function' &&
           typeof binding.continuationStatus === 'function' &&
           typeof binding.prepareContinuationClaim === 'function' &&
-          typeof binding.acknowledgeContinuationClaim === 'function'
+          typeof binding.acknowledgeContinuationClaim === 'function',
+        authorizedAccessoryBindingAvailable: options.platform === 'apple' && authorizedAccessories !== undefined
       },
       state,
       options.trace ?? null,
       leaseId => releaseBackgroundThroughModule(binding, `${options.owner}/${ownerId}/background`, leaseId),
-      continuationAccessFor(binding)
+      continuationAccessFor(binding),
+      authorizedAccessories === undefined ? null : () => authorizedAccessories.call(binding)
     )
   } catch (error) {
     await disposeUnopenedSession(session, error)
@@ -816,6 +874,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   readonly security: RustCoreSecurityBackend | undefined
   /** Session services the Expo layer reaches through the manager (background, companion). */
   readonly hostServices: ReactNativeRustCoreHostServices
+  private readonly askDirectoryAvailable: boolean
 
   private readonly backendInstanceId: BackendInstanceId<string>
   private attachmentRecord: AttachmentRecord<string>
@@ -849,6 +908,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private destroyed = false
   private destroyResult: Promise<CleanupRecord> | null = null
   private sessionDisposed = false
+  private readonly accessoryChoices = new Map<string, () => Promise<void>>()
   private nextOrdinal = 1
   // Legacy per-backend resource counters (origin/main corebluetooth-backend.ts:352-357).
   private nextPeer = 1
@@ -866,7 +926,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     initialState: WireAdapterState,
     private readonly trace: CoreTraceSink | null = null,
     private readonly releaseModuleBackground: ((leaseId: string) => Promise<CleanupRecord>) | null = null,
-    private readonly continuationAccess: ReactNativeContinuationAccess | null = null
+    private readonly continuationAccess: ReactNativeContinuationAccess | null = null,
+    private readonly authorizedAccessories: (() => Promise<string>) | null = null
   ) {
     // Legacy React Native attachment names (origin/main
     // corebluetooth-attachment-lifecycle.ts): the instance is this backend's,
@@ -877,6 +938,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       SCOPE
     )
     ;[this.attachmentRecord, this.identifiers] = this.attachmentFor(initialState)
+    this.askDirectoryAvailable =
+      platform === 'apple' &&
+      runtime.systemChooserAvailable === true &&
+      runtime.authorizedAccessoryBindingAvailable === true &&
+      authorizedAccessories !== null
     this.features = createReactNativeRustCoreFeatureRegistry(
       platform,
       REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION,
@@ -986,8 +1052,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       known: (options: BackendPeerQuery) => this.listPeers('peers.known', 'known', options),
       connected: (options: BackendPeerQuery) => this.listPeers('peers.connected', 'connected', options),
       bonded: (options: BackendPeerQuery) => this.bondedPeers(options),
-      authorized: (_options: BackendPeerQuery) =>
-        Promise.reject(contractError('capability.unsupported', 'connection', `${SCOPE}.peers.authorized`)),
+      authorized: (options: BackendPeerQuery) => this.authorizedPeers(options),
       restored: (options: BackendPeerQuery) => this.restoredPeers(options)
     })
     this.hostServices = Object.freeze({
@@ -999,8 +1064,13 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         readonly title: string
         readonly body?: string
       }) => this.updateBackgroundNotification(request),
-      associateCompanion: (request: { readonly name?: string; readonly serviceUuid?: string }) =>
-        this.associateCompanion(request),
+      associateCompanion: (request: {
+        readonly name?: string
+        readonly serviceUuid?: string
+        readonly filtersJson?: string
+        readonly signal?: AbortSignal | null
+        readonly deadline?: Deadline | null
+      }) => this.associateCompanion(request),
       listCompanionAssociations: () => this.listCompanionAssociations(),
       disassociateCompanion: (request: { readonly associationId: number }) => this.disassociateCompanion(request),
       observePresence: (request: { readonly peerId: string }) => this.observePresence(request),
@@ -1148,6 +1218,15 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     return String(this.peerIdForNative(nativePeerId))
   }
 
+  /** Native system UI is owned by this attachment, not by the module lifetime. */
+  admitAccessoryChoice(requestId: string, cancel: () => Promise<void>): () => void {
+    this.assertOperational(`${SCOPE}.accessory.choose`)
+    this.accessoryChoices.set(requestId, cancel)
+    return () => {
+      if (this.accessoryChoices.get(requestId) === cancel) this.accessoryChoices.delete(requestId)
+    }
+  }
+
   destroy(): Promise<CleanupRecord> {
     if (this.destroyResult === null) {
       const destruction = this.destroyInternal()
@@ -1170,6 +1249,22 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private async destroyInternal(): Promise<CleanupRecord> {
     this.destroyed = true
     const records: CleanupRecord[] = []
+    for (const [requestId, cancel] of [...this.accessoryChoices]) {
+      try {
+        await awaitWithOperationAdmission(
+          cancel(),
+          { signal: null, deadline: deadline(this.now() + ACCESSORY_CANCELLATION_DRAIN_MS) },
+          this.now,
+          `${SCOPE}.accessory.cancel`
+        )
+        if (this.accessoryChoices.get(requestId) === cancel) this.accessoryChoices.delete(requestId)
+      } catch (error) {
+        records.push({
+          state: 'release-failed',
+          failures: [cleanupFailure('session', error, `${SCOPE}.accessory.cancel`)]
+        })
+      }
+    }
     if (this.restorationActivation !== null && this.restoration !== null) {
       await this.restoration.deactivate(this.restorationActivation)
       this.restorationActivation = null
@@ -1186,7 +1281,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       }
       if (disposal.state !== 'released') {
         // The lease stays open so a retried destroy can dispose it again.
-        return disposal
+        return mergeCleanup([...records, disposal])
       }
       this.sessionDisposed = true
       await this.refreshCounters()
@@ -1739,7 +1834,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         scope: reference.scope
       }
     })
-    if (record === null) return null
+    if (record === null) {
+      if (!this.askDirectoryAvailable) return null
+      const authorized = await this.authorizedPeers({ ...options, references: [reference] })
+      return authorized[0] ?? null
+    }
     if (options.sources !== undefined && !options.sources.includes(record.source)) return null
     return this.peerRecord(record, this.originReference(record.peerId))
   }
@@ -1755,6 +1854,38 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       .filter(record => options.sources === undefined || options.sources.includes(record.source))
       .map(record => this.peerRecord(record, this.originReference(record.peerId)))
     return this.filterReferences(records, options, operation)
+  }
+
+  private async authorizedPeers(options: BackendPeerQuery): Promise<readonly BackendPeerRecord<string>[]> {
+    const operation = `${SCOPE}.peers.authorized`
+    this.assertPeerQuery(options, operation)
+    if (!this.askDirectoryAvailable || this.authorizedAccessories === null)
+      throw contractError('capability.unsupported', 'connection', operation)
+    const text = await awaitWithOperationAdmission(this.authorizedAccessories(), options, this.now, operation)
+    if (options.signal?.aborted === true) throw contractError('operation.aborted', 'connection', operation)
+    if (options.deadline !== null && options.deadline <= this.now())
+      throw contractError('operation.timed-out', 'connection', operation)
+    this.assertOperational(operation)
+    const records: BackendPeerRecord<string>[] = parseAuthorizedAccessories(text).map(accessory =>
+      this.peerRecord(
+        {
+          peerId: accessory.bluetoothIdentifier,
+          name: accessory.name,
+          rssi: null,
+          source: 'origin-authorized',
+          reachability: 'unknown',
+          connection: 'unknown',
+          bond: 'unknown',
+          lastSeenAtMonotonicMs: null
+        },
+        this.originReference(accessory.bluetoothIdentifier)
+      )
+    )
+    return this.filterReferences(
+      options.sources !== undefined && !options.sources.includes('origin-authorized') ? [] : records,
+      options,
+      operation
+    )
   }
 
   private async bondedPeers(options: BackendPeerQuery): Promise<readonly BackendPeerRecord<string>[]> {
@@ -3531,13 +3662,22 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private associateCompanion(request: {
     readonly name?: string
     readonly serviceUuid?: string
+    readonly filtersJson?: string
+    readonly signal?: AbortSignal | null
+    readonly deadline?: Deadline | null
   }): Promise<WireOpResults['companion.associate']> {
-    this.assertOperational(`${SCOPE}.companion.associate`)
+    const operation = `${SCOPE}.companion.associate`
+    this.assertOperational(operation)
+    const budget = this.budget({ signal: request.signal ?? null, deadline: request.deadline ?? null }, operation)
+    const operationId = this.mintOperationId('companion')
+    const removeAbort = this.watchAbort(request.signal ?? null, operationId, operation)
     return this.invoke('companion.associate', {
       ...(request.name === undefined ? {} : { name: request.name }),
       ...(request.serviceUuid === undefined ? {} : { serviceUuid: String(canonicalUuid(request.serviceUuid)) }),
-      operationId: this.mintOperationId('companion')
-    })
+      ...(request.filtersJson === undefined ? {} : { filtersJson: request.filtersJson }),
+      ...budget,
+      operationId
+    }).finally(removeAbort)
   }
 
   private listCompanionAssociations(): Promise<WireOpResults['companion.list']> {
@@ -3597,7 +3737,13 @@ export interface ReactNativeRustCoreHostServices {
     readonly title: string
     readonly body?: string
   }): Promise<void>
-  associateCompanion(request: { readonly name?: string; readonly serviceUuid?: string }): Promise<{
+  associateCompanion(request: {
+    readonly name?: string
+    readonly serviceUuid?: string
+    readonly filtersJson?: string
+    readonly signal?: AbortSignal | null
+    readonly deadline?: Deadline | null
+  }): Promise<{
     readonly source: 'associated' | 'already-associated'
     readonly associationId: number
     readonly peerId: string | null

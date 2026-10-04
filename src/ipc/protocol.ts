@@ -248,6 +248,7 @@ export interface IpcConnectionLifecycleEventV2 extends SerializableRecord {
   readonly previous: ConnectionState
   readonly current: ConnectionState
   readonly cause: ConnectionLifecycleCause
+  readonly platform: SerializableRecord | null
 }
 
 /**

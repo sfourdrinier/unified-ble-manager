@@ -20,6 +20,7 @@ import com.facebook.react.bridge.ActivityEventListener
 import com.facebook.react.bridge.ReactApplicationContext
 import com.sfourdrinier.unifiedblemanager.companion.CompanionAssociations
 import java.util.regex.Pattern
+import org.json.JSONArray
 
 /**
  * Companion Device Manager chooser for the Rust route (`AssociateCompanion`),
@@ -45,24 +46,62 @@ class ReactCompanionChooser @JvmOverloads constructor(
   private var pendingAssociationId = 0
   private var uiLaunched = false
   private var nextRequestCode = FIRST_REQUEST_CODE
+  private var pendingActivity: Activity? = null
+  private val cancelledBeforeAdmission = mutableSetOf<(Result<CompanionAssociation>) -> Unit>()
+
+  fun available(): Boolean = sdkInt >= Build.VERSION_CODES.TIRAMISU && hasCompanionFeature()
 
   init {
     reactContext.addActivityEventListener(this)
   }
 
+  @Synchronized
   fun detach() {
+    // Context invalidation must retire the exact UI owner, not merely settle
+    // its promise while leaving the system activity alive. Reuse cancellation
+    // so a refused activity release keeps its owner rather than faking success.
+    pending?.let { cancelAssociation(it) }
     reactContext.removeActivityEventListener(this)
-    reject(
-      RadioPortFailure(
-        RadioFailureKind.CANCELLED,
-        "the React context hosting the companion chooser was invalidated",
-        nativeCode = "associationCancelled"
-      )
-    )
   }
 
   @Synchronized
   override fun associate(name: String?, serviceUuid: String?, onResult: (Result<CompanionAssociation>) -> Unit) {
+    associateRequest(name, serviceUuid, null, onResult)
+  }
+
+  @Synchronized
+  override fun associateWithFilters(filtersJson: String, onResult: (Result<CompanionAssociation>) -> Unit) {
+    associateRequest(null, null, filtersJson, onResult)
+  }
+
+  @Synchronized
+  override fun cancelAssociation(onResult: (Result<CompanionAssociation>) -> Unit): Boolean {
+    if (pending !== onResult) {
+      if (cancelledBeforeAdmission.size >= 64) return false
+      cancelledBeforeAdmission.add(onResult)
+      return true
+    }
+    reactContext.runOnUiQueueThread {
+      synchronized(this) {
+        if (pending !== onResult) return@synchronized
+        try {
+          if (uiLaunched) pendingActivity?.finishActivity(pendingRequestCode)
+          reject(RadioPortFailure(RadioFailureKind.CANCELLED, "Companion chooser cancelled", nativeCode = "associationCancelled"))
+        } catch (error: RuntimeException) {
+          // Keep pending ownership; a refused UI release is not a completed
+          // cancellation and a subsequent attempt may retry it.
+          android.util.Log.w("UBM", "Companion chooser cancellation refused", error)
+        }
+      }
+    }
+    return true
+  }
+
+  private fun associateRequest(name: String?, serviceUuid: String?, filtersJson: String?, onResult: (Result<CompanionAssociation>) -> Unit) {
+    if (cancelledBeforeAdmission.remove(onResult)) {
+      onResult(Result.failure(RadioPortFailure(RadioFailureKind.CANCELLED, "Chooser cancelled before admission")))
+      return
+    }
     if (sdkInt < Build.VERSION_CODES.TIRAMISU || !hasCompanionFeature()) {
       throw RadioPortFailure(
         RadioFailureKind.UNSUPPORTED,
@@ -103,14 +142,17 @@ class ReactCompanionChooser @JvmOverloads constructor(
         "a foreground Activity is required to launch the chooser",
         nativeCode = "associationActivityUnavailable"
       )
-    val request = buildCompanionAssociationRequest(name, serviceUuid)
+    val request = if (filtersJson == null) buildCompanionAssociationRequest(name, serviceUuid)
+      else buildFilteredCompanionAssociationRequest(filtersJson)
     val requestCode = nextRequestCode
     nextRequestCode = if (requestCode == Int.MAX_VALUE) FIRST_REQUEST_CODE else requestCode + 1
     pending = onResult
     pendingRequestCode = requestCode
     pendingAssociationId = 0
     uiLaunched = false
-    manager.associate(request, object : CompanionDeviceManager.Callback() {
+    pendingActivity = activity
+    try {
+      manager.associate(request, object : CompanionDeviceManager.Callback() {
       override fun onDeviceFound(intentSender: IntentSender) = launch(activity, intentSender, onResult, requestCode)
       override fun onAssociationPending(intentSender: IntentSender) = launch(activity, intentSender, onResult, requestCode)
       override fun onAssociationCreated(associationInfo: AssociationInfo) = created(onResult, associationInfo)
@@ -124,7 +166,13 @@ class ReactCompanionChooser @JvmOverloads constructor(
           )
         )
       }
-    }, null)
+      }, null)
+    } catch (error: RuntimeException) {
+      // A synchronous submission refusal accepted no UI obligation. Retire
+      // only this owner; a synchronous callback may already have retired it.
+      if (pending === onResult && !uiLaunched) clear()
+      throw error
+    }
   }
 
   @Synchronized
@@ -194,19 +242,17 @@ class ReactCompanionChooser @JvmOverloads constructor(
   @Synchronized
   private fun launch(activity: Activity, sender: IntentSender, owner: (Result<CompanionAssociation>) -> Unit, requestCode: Int) {
     if (pending !== owner || pendingRequestCode != requestCode || uiLaunched) return
-    try {
-      uiLaunched = true
-      activity.startIntentSenderForResult(sender, requestCode, null, 0, 0, 0)
-    } catch (error: IntentSender.SendIntentException) {
-      rejectIf(
-        owner,
-        RadioPortFailure(
-          RadioFailureKind.PLATFORM,
-          "Companion Device Manager system UI could not be launched",
-          cause = error,
-          nativeCode = "associationUiLaunchFailed"
-        )
-      )
+    reactContext.runOnUiQueueThread {
+      synchronized(this) {
+        if (pending !== owner || pendingRequestCode != requestCode || uiLaunched) return@synchronized
+        try {
+          uiLaunched = true
+          activity.startIntentSenderForResult(sender, requestCode, null, 0, 0, 0)
+        } catch (error: IntentSender.SendIntentException) {
+          rejectIf(owner, RadioPortFailure(RadioFailureKind.PLATFORM,
+            "Companion Device Manager system UI could not be launched", cause = error, nativeCode = "associationUiLaunchFailed"))
+        }
+      }
     }
   }
 
@@ -276,6 +322,7 @@ class ReactCompanionChooser @JvmOverloads constructor(
     pendingRequestCode = 0
     pendingAssociationId = 0
     uiLaunched = false
+    pendingActivity = null
   }
 
   private fun connectPermitted(): Boolean =
@@ -293,6 +340,40 @@ class ReactCompanionChooser @JvmOverloads constructor(
     const val FIRST_REQUEST_CODE = 0x5552
   }
 }
+
+/** Public chooser filters are OR alternatives; each descriptor retains its
+ * service/name/manufacturer conjunction. No regex or manufacturer-prefix widening. */
+internal fun buildFilteredCompanionAssociationRequest(filtersJson: String): AssociationRequest {
+  val entries = JSONArray(filtersJson)
+  require(entries.length() in 1..16) { "invalid system chooser filter count" }
+  val request = AssociationRequest.Builder().setSingleDevice(false)
+  for (index in 0 until entries.length()) {
+    val entry = entries.getJSONObject(index)
+    val filter = BluetoothLeDeviceFilter.Builder()
+    if (entry.has("namePrefix")) {
+      val name = entry.getString("namePrefix")
+      require(name.isNotEmpty())
+      filter.setNamePattern(companionNamePrefixPattern(name))
+    }
+    val scan = ScanFilter.Builder()
+    if (entry.has("serviceUuid")) scan.setServiceUuid(ParcelUuid.fromString(entry.getString("serviceUuid")))
+    if (entry.has("companyIdentifier")) {
+      val company = entry.getInt("companyIdentifier")
+      require(company in 0..65535)
+      val prefix = entry.optJSONArray("manufacturerPrefix") ?: JSONArray()
+      require(prefix.length() <= 512)
+      val bytes = ByteArray(prefix.length()) { byteIndex ->
+        val byte = prefix.getInt(byteIndex); require(byte in 0..255); byte.toByte()
+      }
+      scan.setManufacturerData(company, bytes, ByteArray(bytes.size) { 0xff.toByte() })
+    }
+    filter.setScanFilter(scan.build())
+    request.addDeviceFilter(filter.build())
+  }
+  return request.build()
+}
+
+internal fun companionNamePrefixPattern(prefix: String): Pattern = Pattern.compile("^" + Pattern.quote(prefix) + ".*", Pattern.DOTALL)
 
 /**
  * Builds the Companion Device Manager association request for the chooser.

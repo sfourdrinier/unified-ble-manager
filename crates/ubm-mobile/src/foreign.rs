@@ -129,6 +129,10 @@ struct Shared {
     adapter_label: String,
     next_id: AtomicU64,
     pending: Mutex<HashMap<RequestId, Pending>>,
+    /// CDM UI survives a cancelled waiter until its own native terminal.
+    /// Session ownership is independent of the operation's cancellation.
+    companion_choices: Mutex<HashMap<RequestId, u64>>,
+    companion_settled: Notify,
     late_completions: AtomicU64,
     mismatched_completions: AtomicU64,
     ingress: Mutex<Ingress>,
@@ -256,6 +260,8 @@ impl ForeignRadio {
                 adapter_label,
                 next_id: AtomicU64::new(1),
                 pending: Mutex::new(HashMap::new()),
+                companion_choices: Mutex::new(HashMap::new()),
+                companion_settled: Notify::new(),
                 late_completions: AtomicU64::new(0),
                 mismatched_completions: AtomicU64::new(0),
                 ingress: Mutex::new(Ingress::default()),
@@ -283,10 +289,30 @@ impl ForeignRadio {
         &self,
         make: impl FnOnce(RequestId) -> RadioRequest,
     ) -> Result<RadioCompletion, DesktopError> {
+        self.call_with_owner(None, make).await
+    }
+
+    pub(crate) async fn call_owned_companion(
+        &self,
+        session_id: u64,
+        make: impl FnOnce(RequestId) -> RadioRequest,
+    ) -> Result<RadioCompletion, DesktopError> {
+        self.call_with_owner(Some(session_id), make).await
+    }
+
+    async fn call_with_owner(
+        &self,
+        owner: Option<u64>,
+        make: impl FnOnce(RequestId) -> RadioRequest,
+    ) -> Result<RadioCompletion, DesktopError> {
         let shared = &*self.shared;
         let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
         let request = make(id);
         let kind = request.kind();
+        if let Some(session_id) = owner {
+            debug_assert_eq!(kind, RequestKind::AssociateCompanion);
+            lock(&shared.companion_choices).insert(id, session_id);
+        }
         let (tx, rx) = oneshot::channel();
         lock(&shared.pending).insert(id, Pending { kind, tx });
         let mut guard = PendingGuard {
@@ -319,6 +345,14 @@ impl ForeignRadio {
 
     /// Deliver one platform answer.
     pub fn complete(&self, request_id: RequestId, completion: RadioCompletion) -> CompletionStatus {
+        // A malformed completion cannot prove that the native picker closed.
+        if completion.answers(RequestKind::AssociateCompanion)
+            && lock(&self.shared.companion_choices)
+                .remove(&request_id)
+                .is_some()
+        {
+            self.shared.companion_settled.notify_waiters();
+        }
         let entry = lock(&self.shared.pending).remove(&request_id);
         let Some(pending) = entry else {
             self.shared.late_completions.fetch_add(1, Ordering::Relaxed);
@@ -340,6 +374,47 @@ impl ForeignRadio {
         );
         let _ = pending.tx.send(RadioCompletion::Failed(failure));
         CompletionStatus::Mismatched
+    }
+
+    /// Retry exact CDM cancellations, bounded by one drain interval. Native
+    /// refusal or a held UI queue leaves the obligation owned for retry.
+    pub(crate) async fn release_companion_choices(
+        &self,
+        session_id: u64,
+    ) -> Result<(), DesktopError> {
+        let ids: Vec<_> = lock(&self.shared.companion_choices)
+            .iter()
+            .filter_map(|(id, owner)| (*owner == session_id).then_some(*id))
+            .collect();
+        for id in ids {
+            self.shared.platform.cancel(id);
+        }
+        let settled = async {
+            loop {
+                let notified = self.shared.companion_settled.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if !lock(&self.shared.companion_choices)
+                    .values()
+                    .any(|owner| *owner == session_id)
+                {
+                    return;
+                }
+                notified.await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(1), settled)
+            .await
+            .map_err(|_| {
+                DesktopError::new(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Cleanup,
+                    "companion.associate.release",
+                )
+                .with_detail(
+                    "native companion picker release remains unconfirmed; owner retained for retry",
+                )
+            })
     }
 
     /// Queue one event for the central's event loop. Returns the class
@@ -580,24 +655,26 @@ impl ForeignRadio {
 /// Whether the legacy React Native backends counted this snapshot as a lost
 /// adapter (origin/main `corebluetooth-backend.ts` `handleAdapterState`):
 /// not available, a blocking authorization (`isAuthorizationBlocking`:
-/// denied, restricted, unavailable), or power other than on. Answered as the
+/// denied, restricted, unavailable), or a concrete power-loss state. Unknown
+/// power is not evidence of resetting, including initial central creation.
+/// Answered as the
 /// central's loss state, so the core's once-per-episode reset runs on
-/// exactly those snapshots; `None` is a usable adapter, which ends the
-/// episode. The state is the loss's cause only: the `adapter` records carry
+/// exactly those snapshots; `None` means no measured loss, not necessarily
+/// readiness. Only measured powered-on ends the loss episode; unknown power
+/// preserves it. The state is the loss's cause only: the `adapter` records carry
 /// the platform's own snapshot.
 #[must_use]
 pub fn legacy_loss(snapshot: &AdapterSnapshot) -> Option<AdapterPowerState> {
     match snapshot.power {
         AdapterPower::Off => return Some(AdapterPowerState::PoweredOff),
-        AdapterPower::Resetting | AdapterPower::Unknown => {
+        AdapterPower::Resetting => {
             return Some(AdapterPowerState::Resetting);
         }
         AdapterPower::Unsupported => return Some(AdapterPowerState::Unsupported),
-        AdapterPower::On => {}
+        AdapterPower::On | AdapterPower::Unknown => {}
     }
     match snapshot.availability {
-        AdapterAvailability::Available => {}
-        AdapterAvailability::Unknown => return Some(AdapterPowerState::Resetting),
+        AdapterAvailability::Available | AdapterAvailability::Unknown => {}
         AdapterAvailability::Unavailable | AdapterAvailability::Unsupported => {
             return Some(AdapterPowerState::Unsupported);
         }
@@ -613,10 +690,11 @@ pub fn legacy_loss(snapshot: &AdapterSnapshot) -> Option<AdapterPowerState> {
 }
 
 /// The adapter state the central is told for one platform snapshot: powered
-/// on for a usable adapter, the legacy loss otherwise ([`legacy_loss`]).
+/// on for a usable adapter, unknown for unmeasured power, or the concrete
+/// loss otherwise ([`legacy_loss`]).
 #[must_use]
 pub fn central_adapter_state(snapshot: &AdapterSnapshot) -> AdapterPowerState {
-    legacy_loss(snapshot).unwrap_or(AdapterPowerState::PoweredOn)
+    legacy_loss(snapshot).unwrap_or_else(|| power_state(snapshot))
 }
 
 /// Desktop power projection of the platform adapter facts.
@@ -980,6 +1058,58 @@ impl RadioBoundary for ForeignRadio {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unknown_power_is_an_observation_not_a_reset() {
+        let mut snapshot = super::AdapterSnapshot {
+            availability: super::AdapterAvailability::Available,
+            authorization: super::AdapterAuthorization::NotDetermined,
+            power: super::AdapterPower::Unknown,
+            safe_reason: None,
+        };
+        assert_eq!(super::legacy_loss(&snapshot), None);
+        assert_eq!(
+            super::central_adapter_state(&snapshot),
+            super::AdapterPowerState::Unknown
+        );
+        snapshot.power = super::AdapterPower::Resetting;
+        assert_eq!(
+            super::legacy_loss(&snapshot),
+            Some(super::AdapterPowerState::Resetting)
+        );
+        snapshot.power = super::AdapterPower::Off;
+        assert_eq!(
+            super::legacy_loss(&snapshot),
+            Some(super::AdapterPowerState::PoweredOff)
+        );
+        snapshot.power = super::AdapterPower::On;
+        assert_eq!(
+            super::central_adapter_state(&snapshot),
+            super::AdapterPowerState::PoweredOn
+        );
+        snapshot.power = super::AdapterPower::Unknown;
+        snapshot.authorization = super::AdapterAuthorization::Denied;
+        assert_eq!(
+            super::central_adapter_state(&snapshot),
+            super::AdapterPowerState::Unauthorized
+        );
+        snapshot.authorization = super::AdapterAuthorization::NotDetermined;
+        snapshot.availability = super::AdapterAvailability::Unknown;
+        assert_eq!(super::legacy_loss(&snapshot), None);
+        assert_eq!(
+            super::central_adapter_state(&snapshot),
+            super::AdapterPowerState::Unknown
+        );
+        snapshot.power = super::AdapterPower::On;
+        assert_eq!(
+            super::central_adapter_state(&snapshot),
+            super::AdapterPowerState::PoweredOn
+        );
+        snapshot.availability = super::AdapterAvailability::Unavailable;
+        assert_eq!(
+            super::legacy_loss(&snapshot),
+            Some(super::AdapterPowerState::Unsupported)
+        );
+    }
     use super::*;
 
     struct Stub;
@@ -995,6 +1125,61 @@ mod tests {
             MobilePlatform::Android,
             "stub-adapter".to_owned(),
         )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_companion_remains_owned_until_native_terminal_and_is_session_scoped() {
+        #[derive(Default)]
+        struct HeldPicker(Mutex<Vec<RequestId>>);
+        impl PlatformRadio for HeldPicker {
+            fn submit(&self, _: RadioRequest) {}
+            fn cancel(&self, id: RequestId) {
+                lock(&self.0).push(id);
+            }
+        }
+        let picker = Arc::new(HeldPicker::default());
+        let radio = ForeignRadio::new(picker.clone(), MobilePlatform::Android, "test".into());
+        let mut choice =
+            Box::pin(
+                radio.call_owned_companion(7, |id| RadioRequest::AssociateCompanion {
+                    id,
+                    name: None,
+                    service_uuid: None,
+                    filters_json: None,
+                }),
+            );
+        std::future::poll_fn(|cx| {
+            assert!(choice.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(choice);
+        assert_eq!(*lock(&picker.0), vec![1]);
+        assert!(radio.release_companion_choices(8).await.is_ok());
+        assert_eq!(
+            *lock(&picker.0),
+            vec![1],
+            "unrelated session cannot cancel this UI"
+        );
+        assert!(radio.release_companion_choices(7).await.is_err());
+        assert_eq!(
+            *lock(&picker.0),
+            vec![1, 1],
+            "destroy retries the exact native owner"
+        );
+        assert_eq!(
+            radio.complete(1, RadioCompletion::Unit),
+            CompletionStatus::Late
+        );
+        assert!(radio.release_companion_choices(7).await.is_err());
+        radio.complete(
+            1,
+            RadioCompletion::Failed(PlatformFailure::new(
+                crate::radio::FailureKind::Cancelled,
+                "native picker closed",
+            )),
+        );
+        assert!(radio.release_companion_choices(7).await.is_ok());
     }
 
     /// The connect-section table keeps one entry per peer ever seen: the

@@ -2,7 +2,7 @@
 // scripts/ci/check-napi-artifact-packaging.js
 //
 // UBM 5.0 PACKAGING slice (trackourhealth/bun-mono#1188, U8 vehicle).
-// F01 prerelease lane: the 5.0 candidate is a real 5.0.0-rc.N artifact with
+// Current 5.x stable/candidate lane: each artifact has
 // an explicit native distribution strategy, and nothing here publishes,
 // tags, or merges.
 //
@@ -23,8 +23,7 @@
 //      bindings/uniffi);
 //   B. the npm export map ships none of the 5.0 dev-only surfaces (napi/wasm
 //      artifacts, ubm-desktop consumers, TCK rust-driver, test-only fault
-//      hooks, contracts) and the lane version is exactly a 5.0.0-rc.N
-//      prerelease (never a final 5.x shipment claim, never an older lane);
+//      hooks, contracts) and the version matches the shared stable/RC policy;
 //   C. (--tarball) the packed tarball contains the Rust source trees, the
 //      fingerprint seal, the license trio, the same export guard on the
 //      packed manifest, no .node outside the maintained prebuild paths (zero
@@ -46,6 +45,7 @@
 const fs = require('fs')
 const { createRequire } = require('module')
 const path = require('path')
+const { classifyReleaseVersion } = require('../release/release-version-policy')
 
 const repoRoot = path.resolve(__dirname, '..', '..')
 const SAL_LICENSE_FILE = 'LICENSE-UBM-SOURCE-AVAILABLE-1.0.md'
@@ -187,12 +187,7 @@ function checkSourceExportMap() {
   if (typeof packageJson.version !== 'string' || packageJson.version.length === 0) {
     fail('package.json version must be a non-empty string')
   }
-  if (!/^5\.0\.0-rc\.\d+$/.test(packageJson.version)) {
-    fail(
-      `package.json version ${packageJson.version} is not the 5.0 prerelease lane; ` +
-        'F01 requires exactly 5.0.0-rc.N (never a final 5.x shipment claim, never an older lane)'
-    )
-  }
+  const channel = classifyReleaseVersion(packageJson.version)
   for (const artifact of [SAL_LICENSE_FILE, NOTICE_FILE, CONTRIBUTION_TERMS_FILE]) {
     if (!Array.isArray(packageJson.files) || !packageJson.files.includes(artifact)) {
       fail(`package.json files must include ${artifact}`)
@@ -200,7 +195,7 @@ function checkSourceExportMap() {
   }
   console.log(
     `napi-artifact-packaging-proof: source export map clean ` +
-      `(${Object.keys(packageJson.exports).length} subpaths, no dev-only surface; version ${packageJson.version} is the 5.0.0-rc prerelease lane)`
+      `(${Object.keys(packageJson.exports).length} subpaths, no dev-only surface; version ${packageJson.version}, channel ${channel.npmDistTag})`
   )
 }
 

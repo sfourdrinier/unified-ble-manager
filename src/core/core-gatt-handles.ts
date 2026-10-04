@@ -1,13 +1,13 @@
 // src/core/core-gatt-handles.ts
 
-import { BackendContractError, contractError } from '../backend-contract/errors'
+import { BackendContractError, contractError, optionalPlatformErrorDetail } from '../backend-contract/errors'
 import type { BackendConnection, ConnectionLease, ConnectionState } from '../backend-contract/backend'
 import type {
   ConnectionLifecycleCause,
   ConnectionLifecycleEvent,
   ConnectionLifecycleTerminalCause
 } from '../backend-contract/connection-lifecycle'
-import type { CleanupRecord } from '../backend-contract/errors'
+import type { CleanupRecord, PlatformErrorDetail } from '../backend-contract/errors'
 import type {
   CharacteristicPath,
   ConnectionPath,
@@ -80,7 +80,8 @@ type CurrentDescriptorPath<Attachment extends string> = DescriptorPath<
  * data; enlarging the lifecycle window would only retain stale transitions.
  */
 const connectionLifecycleItemCapacity = 8
-const connectionLifecycleReservedControlCapacity = 256
+const connectionLifecycleReservedControlCapacity = 512
+const connectionLifecyclePlatformByteCapacity = 16 * 1024
 
 /** A generation-bound logical lease over one backend connection. */
 export class CoreConnection<Attachment extends string, Identity extends BackendIdentity<Attachment>> {
@@ -272,7 +273,8 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     previous: ConnectionState,
     current: Extract<ConnectionState, 'disconnected' | 'lost'>,
     cause: ConnectionLifecycleTerminalCause,
-    backendIngressOrdinal: number
+    backendIngressOrdinal: number,
+    platform?: PlatformErrorDetail
   ): void {
     if (this.lifecycleFinished) {
       return
@@ -289,17 +291,21 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
       throw contractError('lifecycle.invariant-violation', 'connection', 'connection-lifecycle.terminal-cause')
     }
     this.acceptBackendIngressOrdinal(backendIngressOrdinal)
-    this.completeLifecycle(cause, backendIngressOrdinal)
+    this.completeLifecycle(cause, backendIngressOrdinal, platform)
   }
 
-  finishLifecycle(cause: ConnectionLifecycleTerminalCause, backendIngressOrdinal: number | null): void {
+  finishLifecycle(
+    cause: ConnectionLifecycleTerminalCause,
+    backendIngressOrdinal: number | null,
+    platform?: PlatformErrorDetail
+  ): void {
     if (this.lifecycleFinished) {
       return
     }
     if (backendIngressOrdinal !== null) {
       this.acceptBackendIngressOrdinal(backendIngressOrdinal)
     }
-    this.completeLifecycle(cause, backendIngressOrdinal)
+    this.completeLifecycle(cause, backendIngressOrdinal, platform)
   }
 
   private acceptBackendIngressOrdinal(backendIngressOrdinal: number): void {
@@ -309,9 +315,13 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     this.lastBackendIngressOrdinal = backendIngressOrdinal
   }
 
-  private completeLifecycle(cause: ConnectionLifecycleTerminalCause, backendIngressOrdinal: number | null): void {
+  private completeLifecycle(
+    cause: ConnectionLifecycleTerminalCause,
+    backendIngressOrdinal: number | null,
+    platform?: PlatformErrorDetail
+  ): void {
     const current = lifecycleTerminalState(cause)
-    this.emitLifecycle(current, cause, backendIngressOrdinal)
+    this.emitLifecycle(current, cause, backendIngressOrdinal, platform)
     this.lifecycleFinished = true
     this.lifecycleStream.finishWithReason(lifecycleTerminalReason(current))
   }
@@ -344,13 +354,15 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
   private emitLifecycle(
     current: ConnectionState,
     cause: ConnectionLifecycleCause,
-    backendIngressOrdinal: number | null
+    backendIngressOrdinal: number | null,
+    platform?: PlatformErrorDetail
   ): void {
     if (!Number.isSafeInteger(this.nextLifecycleSequence)) {
       throw contractError('lifecycle.invariant-violation', 'connection', 'connection-lifecycle.sequence')
     }
     const previous = this.lifecycleState
     this.lifecycleState = current
+    const admittedPlatform = optionalPlatformErrorDetail(platform, 'connection-lifecycle.platform')
     const event: ConnectionLifecycleEvent<Attachment> = Object.freeze({
       kind: 'connection-lifecycle',
       attachment: this.resource.attachment,
@@ -363,10 +375,22 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
       backendIngressOrdinal,
       previous,
       current,
-      cause
+      cause,
+      ...(admittedPlatform === undefined ? {} : { platform: admittedPlatform })
     })
     this.nextLifecycleSequence += 1
-    this.lifecycleStream.emit(event, connectionLifecycleEventByteLength(event))
+    const eventBytes = connectionLifecycleEventByteLength(event)
+    if (
+      admittedPlatform !== undefined &&
+      utf8ByteLength(JSON.stringify(admittedPlatform)) > connectionLifecyclePlatformByteCapacity
+    ) {
+      this.lifecycleStream.finishForRejectedValue(
+        eventBytes,
+        contractError('stream.overflow', 'connection', 'connection-lifecycle.platform-byte-capacity').normalized
+      )
+      return
+    }
+    this.lifecycleStream.emit(event, eventBytes)
   }
 }
 
@@ -383,20 +407,24 @@ function connectionLifecycleEventByteLength<Attachment extends string>(
 function maximumConnectionLifecycleEventByteLength<Attachment extends string>(
   lease: ConnectionLease<Attachment, string, string>
 ): number {
-  return connectionLifecycleEventByteLength({
-    kind: 'connection-lifecycle',
-    attachment: lease.connection.attachment,
-    attachmentId: lease.connection.attachmentId,
-    peerId: lease.connection.peerId,
-    connectionId: lease.connection.connectionId,
-    connectionGeneration: lease.connection.connectionGeneration,
-    ownerLeaseId: lease.leaseId,
-    sequence: Number.MAX_SAFE_INTEGER,
-    backendIngressOrdinal: Number.MAX_SAFE_INTEGER,
-    previous: 'disconnecting',
-    current: 'disconnected',
-    cause: 'requested-disconnect'
-  })
+  return (
+    connectionLifecyclePlatformByteCapacity +
+    utf8ByteLength(',"platform":') +
+    connectionLifecycleEventByteLength({
+      kind: 'connection-lifecycle',
+      attachment: lease.connection.attachment,
+      attachmentId: lease.connection.attachmentId,
+      peerId: lease.connection.peerId,
+      connectionId: lease.connection.connectionId,
+      connectionGeneration: lease.connection.connectionGeneration,
+      ownerLeaseId: lease.leaseId,
+      sequence: Number.MAX_SAFE_INTEGER,
+      backendIngressOrdinal: Number.MAX_SAFE_INTEGER,
+      previous: 'disconnecting',
+      current: 'disconnected',
+      cause: 'requested-disconnect'
+    })
+  )
 }
 
 function lifecycleTerminalState(cause: ConnectionLifecycleTerminalCause): 'disconnected' | 'lost' {

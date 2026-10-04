@@ -30,4 +30,11 @@ export interface ConnectionLifecycleEvent<Attachment extends string> {
   readonly previous: ConnectionState
   readonly current: ConnectionState
   readonly cause: ConnectionLifecycleCause
+  /**
+   * Exact snapshotted native detail, limited to 16 KiB of UTF-8 JSON in the
+   * connection lifecycle stream. An oversized observation ends that stream
+   * with explicit overflow/error accounting; it is never silently truncated
+   * or mistaken for successful lifecycle delivery. Resource cleanup is separate.
+   */
+  readonly platform?: import('./errors').PlatformErrorDetail
 }

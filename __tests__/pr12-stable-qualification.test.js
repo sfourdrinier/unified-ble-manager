@@ -8,8 +8,8 @@ const pkg = JSON.parse(read('package.json'))
 
 describe('PR12 package identity qualification', () => {
   test('package identity is the 5.0.0 release candidate', () => {
-    expect(pkg.version).toBe('5.0.0-rc.16')
-    expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe('5.0.0-rc.16')
+    expect(pkg.version).toBe('5.0.0-rc.17')
+    expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe('5.0.0-rc.17')
   })
 
   test('consumer docs identify the stable source without inventing publication or backend support', () => {

@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 5.0.0-rc.16 | Documentation</title>
+    <title>unified-ble-manager 5.0.0-rc.17 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>5.0.0-rc.16</code></div>
+          <div class="mb1"><code>5.0.0-rc.17</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -64,7 +64,7 @@
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
-            <p>This source targets <code>5.0.0-rc.16</code>; verify the published version in the npm registry.</p>
+            <p>This source targets <code>5.0.0-rc.17</code>; verify the published version in the npm registry.</p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -136,6 +136,8 @@
               The 5.0 candidate is on npm <code>next</code>; npm <code>latest</code> remains the stable 4.0 line.
               Install the exact candidate and commit the resolved lockfile for a known native rebuild:
             </p>
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.17
+</code></pre>
             <p>
               Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
               on Android 12+, add <code>NSBluetoothAlwaysUsageDescription</code> on iOS, run pods, and rebuild.
@@ -143,16 +145,52 @@
             <h4>Expo / CNG v2</h4>
             <p>
               The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. After the npm
-              registry lists <code>5.0.0-rc.16</code>, install that exact version and keep it in your lockfile while
+              registry lists <code>5.0.0-rc.17</code>, install that exact version and keep it in your lockfile while
               validating the native build:
             </p>
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.17
+</code></pre>
             <p>The package does not run in Expo Go.</p>
             <p>Expo also needs a native build and development client:</p>
+            <pre><code>pnpm add expo@^57.0.0 expo-dev-client
+</code></pre>
             <p>
               Add the plugin (full option table: <a href="EXPO_PLUGIN.md"><code>EXPO_PLUGIN.md</code></a
               >):
             </p>
+            <pre><code>{
+  "expo": {
+    "plugins": [
+      [
+        "unified-ble-manager",
+        {
+          "requiredHardware": false,
+          "permissions": {
+            "bluetoothAlways": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices",
+            "android": {
+              "neverForLocation": false,
+              "legacyLocation": "auto"
+            }
+          },
+          "background": {
+            "ios": {
+              "mode": "central"
+            },
+            "android": {
+              "mode": "none"
+            }
+          }
+        }
+      ]
+    ]
+  }
+}
+</code></pre>
             <p>Then generate native projects and run a development build:</p>
+            <pre><code>npx expo prebuild
+npx expo run:ios
+# or: npx expo run:android
+</code></pre>
             <p>
               The packed-host proof is narrower than a full Expo app build. After <code>prepack</code>,
               <code>node scripts/ci/packed-host-consumer-check.js</code> installs the tarball (not the source tree) and
@@ -174,6 +212,15 @@
               After installing pods, a generic iOS simulator compile uses the following command (replace
               <code>MyApp</code> with your workspace and scheme):
             </p>
+            <pre><code>xcodebuild \
+  -workspace ios/MyApp.xcworkspace \
+  -scheme MyApp \
+  -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' \
+  ARCHS=arm64 \
+  CODE_SIGNING_ALLOWED=NO \
+  build
+</code></pre>
             <p>
               For a tvOS simulator build, use <code>-sdk appletvsimulator</code> and
               <code>-destination 'generic/platform=tvOS Simulator'</code> with the same <code>ARCHS=arm64</code>. This
@@ -184,18 +231,91 @@
               The plugin writes the manifest. Android 12+ still needs a runtime request. The library will not do this
               for you.
             </p>
+            <pre><code>import { PermissionsAndroid, Platform } from 'react-native'
+
+async function ensureAndroidBluetoothPermission(): Promise&#x3C;void> {
+  if (Platform.OS !== 'android') {
+    return
+  }
+  if (Platform.Version &#x3C; 31) {
+    const location = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION)
+    if (location !== PermissionsAndroid.RESULTS.GRANTED) {
+      throw new Error('Location permission was not granted. Android 11 and below need it to scan.')
+    }
+    return
+  }
+  const result = await PermissionsAndroid.requestMultiple([
+    PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+    PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT
+  ])
+  const scan = result[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN]
+  const connect = result[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT]
+  if (scan !== PermissionsAndroid.RESULTS.GRANTED || connect !== PermissionsAndroid.RESULTS.GRANTED) {
+    throw new Error('Bluetooth permission was not granted.')
+  }
+}
+</code></pre>
             <h3>3. Create one manager and keep it</h3>
             <h4>Bare React Native</h4>
+            <pre><code>import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
+
+const manager = await createReactNativeBleManager()
+</code></pre>
             <h4>Expo</h4>
             <p>
               Expo uses its first-class factory, which adds Expo readiness, permission, settings, background,
               association, and restoration surfaces:
             </p>
+            <pre><code>import { createExpoBleManager } from 'unified-ble-manager/expo'
+
+const manager = await createExpoBleManager()
+</code></pre>
             <p>
               The host factory owns ephemeral identity generation. Restoration-bound identity comes from the trusted
               native host and native configuration; application code does not pass client, manager, or host-session IDs.
             </p>
+            <h4>Optional native system chooser</h4>
+            <p>
+              Both factories also expose the same <code>manager.choose()</code> when the instantiated host reports
+              <code>discovery:system-chooser</code>: Android uses CompanionDeviceManager on API 33+ devices with
+              companion setup support; eligible iOS apps use AccessorySetupKit on iOS 18+ (name prefixes require 18.2+).
+              It is an explicit alternative to scanning, not a fallback or a second manager:
+            </p>
+            <pre><code>const selected = await manager.choose({
+  filters: [{ serviceUuids: ['180d'], localNamePrefix: 'SIM Polar H10' }],
+  timeoutMs: 30000
+})
+const connection = await manager.connect(selected)
+const database = await connection.discover()
+// Use this database, then release the connection and eventually the manager.
+</code></pre>
+            <p>
+              Choose requires foreground system UI and the consuming app's declarations. iOS apps must declare actual
+              ASK service/name/company allowlists in Info.plist; Expo consumers can use <code>ios.infoPlist</code>. See
+              <a href="BACKGROUND.md#apple-accessory-setup-and-relaunch-eligibility">the complete native setup guide</a>
+              and <a href="ACCESSORY_CHOOSER_QUALIFICATION.md">the prepared reference-app qualification procedure</a>.
+              An undeclared or unrepresentable filter is refused before OS picker allocation, never silently broadened.
+              A selected peer's name may be null; an Android association label is not an advertisement name. Selection
+              does not connect, scan, or prove a relaunch. Abort/deadline suppresses late selection without secretly
+              revoking persistent OS authorization. Destroy cancels owned picker work; retain and retry a refused
+              cleanup receipt.
+            </p>
+            <p>
+              ASK is unavailable on tvOS, macOS and Mac Catalyst. On unavailable hosts the public chooser reports
+              <code>capability.unsupported</code>; use the runtime capability report, not a static platform guess. Web
+              uses its own user-activation and origin permission rules. <code>optionalServices</code> governs Web
+              service permissions, not ASK's device-wide authorization.
+            </p>
             <h3>4. Check the adapter, then run the loop</h3>
+            <pre><code>const adapter = await manager.adapter.state()
+if (
+  adapter.power !== 'on' ||
+  adapter.availability !== 'available' ||
+  ['denied', 'restricted', 'unavailable'].includes(adapter.authorization)
+) {
+  throw new Error(`Bluetooth is not ready: ${adapter.power} / ${adapter.authorization}`)
+}
+</code></pre>
             <p>
               Never gate on a bare <code>authorization !== 'granted'</code>. Only an explicit refusal —
               <code>'denied'</code>, <code>'restricted'</code>, <code>'unavailable'</code> — blocks. The other values
@@ -210,6 +330,23 @@
               → <code>destroy</code>) from the root <a href="../README.md"><code>README.md</code></a
               >:
             </p>
+            <pre><code>import { HEART_RATE_SERVICE, parseHeartRateMeasurement } from 'unified-ble-manager/profiles/heart-rate'
+
+try {
+  const peer = await manager.find({
+    query: { anyOf: [{ services: { any: [HEART_RATE_SERVICE] } }] },
+    timeoutMs: 20_000,
+    select: 'first'
+  })
+
+  await manager.withDiscoveredConnection(peer, { timeoutMs: 15_000 }, async ({ gatt }) => {
+    const bytes = await gatt.characteristic(HEART_RATE_SERVICE, '2A37').read({ timeoutMs: 10_000 })
+    consume(parseHeartRateMeasurement(bytes))
+  })
+} finally {
+  await manager.destroy()
+}
+</code></pre>
             <p>
               Each <code>timeoutMs</code> is scoped to its public operation. More recipes:
               <a href="TUTORIALS.md"><code>TUTORIALS.md</code></a> and <a href="HELPERS.md"><code>HELPERS.md</code></a
@@ -290,6 +427,20 @@
               public operation options.
             </p>
             <h2>Scan, connect, and discover</h2>
+            <pre><code>import { BleError } from 'unified-ble-manager'
+import { HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
+
+const controller = new AbortController()
+const peer = await manager.find({
+  query: { anyOf: [{ services: { any: [HEART_RATE_SERVICE] } }] },
+  timeoutMs: 20_000,
+  signal: controller.signal,
+  select: 'first'
+})
+const connection = await manager.connect(peer, { signal: controller.signal, timeoutMs: 15_000 })
+const database = await connection.discover({ signal: controller.signal, timeoutMs: 15_000 })
+const snapshot = database.snapshot()
+</code></pre>
             <p>
               The public <code>BlePeer</code> snapshot carries <code>name</code> (from normalized
               <code>localName</code>), <code>rssi</code>, a scoped reference when the host can issue one, and the last
@@ -297,6 +448,14 @@
             </p>
             <h2>Read and write</h2>
             <p>Use generation-bound objects from the current discovery. Do not invent occurrences or generations.</p>
+            <pre><code>import { encodeResetEnergyExpended } from 'unified-ble-manager/profiles/heart-rate'
+
+const battery = database.characteristic('180F', '2A19', {
+  serviceOccurrence: 0,
+  characteristicOccurrence: 0
+})
+const bytes = await battery.read({ signal: controller.signal, timeoutMs: 5000 })
+</code></pre>
             <p>
               Battery Level is optional relative to Heart Rate Service. Catch only <code>gatt.not-found</code> or
               <code>gatt.property-not-supported</code> if the peripheral may omit it.
@@ -305,19 +464,82 @@
               Heart Rate Control Point is conditional (Energy Expended). Resolve it separately and write only after it
               exists:
             </p>
+            <pre><code>try {
+  const hrsControl = database.characteristic('180D', '2A39', {
+    serviceOccurrence: 0,
+    characteristicOccurrence: 0
+  })
+  const receipt = await hrsControl.write(encodeResetEnergyExpended(), {
+    signal: controller.signal,
+    timeoutMs: 5000,
+    response: 'required'
+  })
+} catch (error) {
+  if (!(error instanceof BleError) || (error.code !== 'gatt.not-found' &#x26;&#x26; error.code !== 'gatt.property-not-supported')) {
+    throw error
+  }
+}
+</code></pre>
             <p>
               A new connection or rediscovery needs a fresh snapshot and fresh paths. Stale paths throw
               <code>gatt.stale-handle</code>.
             </p>
             <h2>Notifications</h2>
+            <pre><code>const measurement = database.characteristic('180D', '2A37')
+const subscription = await measurement.subscribe({
+  signal: controller.signal,
+  timeoutMs: 15_000,
+  stream: 'balanced'
+})
+// Apple/Electron CoreBluetooth: do not measurement.read() while this
+// subscription is active. Use `item.value` below, or unsubscribe first.
+
+try {
+  for await (const item of subscription.values) {
+    if (item.kind === 'value') {
+      consumeBytes(item.value.value)
+    } else if (item.kind === 'overflow') {
+      reportDataLoss(item)
+    } else {
+      handleTerminalNotice(item)
+      break
+    }
+  }
+} finally {
+  const cleanup = await subscription.remove()
+  if (cleanup.state === 'release-failed') {
+    throw new Error('The notification subscription did not release cleanly.')
+  }
+}
+</code></pre>
             <p>The stream is bounded. Overflow is a real event, not silent loss.</p>
             <h2>Disconnect and destroy</h2>
+            <pre><code>const connectionCleanup = await connection.release()
+if (connectionCleanup.state === 'release-failed') {
+  throw new Error('The connection did not release cleanly.')
+}
+
+const managerCleanup = await manager.destroy()
+if (managerCleanup.state === 'release-failed') {
+  throw new Error('The manager did not release cleanly.')
+}
+</code></pre>
             <p>After <code>destroy()</code>, the manager admits no new operation.</p>
             <h2>Restoration and presence (known peers)</h2>
             <p>
               Reconnecting to a peer the app already connected to needs no scan, but the wake-up is platform-specific
               and every step is app-owned:
             </p>
+            <pre><code>// Android: the peer id recorded by an earlier connect.
+await ble.association.associate({ name: 'Sensor' })
+await ble.presence.observe({ peerId })
+const restored = await ble.peers.restored()
+const known = restored.find(peer => peer.id === peerId)
+if (known === undefined) {
+  throw new Error('The associated peer has not appeared yet.')
+}
+const connection = await ble.connect(known.id, { intent: 'when-available', timeoutMs: 15_000 })
+</code></pre>
             <p>
               On iOS, <code>restoration.claim()</code> adopts the OS journal after the system relaunches the app.
               <code>when-available</code> is Android-only: use a durable restored <code>PeerReference</code> with
@@ -365,6 +587,29 @@
               façade methods shown here.
             </p>
             <h2>Find, connect, and discover</h2>
+            <pre><code>import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
+import { HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
+
+const ble = await createReactNativeBleManager()
+const abort = new AbortController()
+
+try {
+  const peer = await ble.find({
+    query: { anyOf: [{ services: { any: [HEART_RATE_SERVICE] } }] },
+    signal: abort.signal,
+    timeoutMs: 15_000,
+    select: 'first'
+  })
+
+  await ble.withDiscoveredConnection(peer, { signal: abort.signal, timeoutMs: 15_000 }, async ({ gatt }) => {
+    const characteristic = gatt.service(HEART_RATE_SERVICE).characteristic('2a37')
+    const bytes = await characteristic.read({ signal: abort.signal, timeoutMs: 5_000 })
+    consume(bytes)
+  })
+} finally {
+  await ble.destroy()
+}
+</code></pre>
             <p>
               <code>find()</code> owns and stops its scan. <code>withConnection()</code> and
               <code>withDiscoveredConnection()</code> release their connection lease even when the operation or callback
@@ -386,6 +631,22 @@
               GATT objects are generation-bound views. Subscribe through the characteristic object and always remove the
               returned subscription:
             </p>
+            <pre><code>const characteristic = gatt.service(HEART_RATE_SERVICE).characteristic('2a37')
+const subscription = await characteristic.subscribe({
+  signal: abort.signal,
+  timeoutMs: 10_000,
+  stream: 'balanced'
+})
+
+try {
+  for await (const event of subscription.values) {
+    if (event.kind === 'value') consume(event.value.value)
+    break
+  }
+} finally {
+  await subscription.remove()
+}
+</code></pre>
             <p>
               Values are <code>Uint8Array</code>; notification events retain their delivery mode, monotonic observation
               time, and sequence number. Do not retain a GATT object after disconnect, service change, or rediscovery.
@@ -496,6 +757,36 @@
               alone is therefore not an attribute address. Commands operate on the generation-bound path returned by
               discovery and fail with <code>gatt.ambiguous-path</code> when the selector is not specific enough.
             </p>
+            <pre><code>import { defaultScanDelivery, firstNotification } from 'unified-ble-manager/advanced'
+import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
+import {
+  HEART_RATE_SERVICE,
+  heartRateMeasurementSelector
+} from 'unified-ble-manager/profiles/heart-rate'
+
+const snapshot = await database.snapshot()
+
+// This is valid only when the snapshot has exactly one HRS measurement.
+const path = await resolveCharacteristicPath(snapshot, heartRateMeasurementSelector())
+
+// For a repeated service, choose an occurrence from this specific snapshot.
+const selectedService = snapshot.services.find(
+  service => service.path.serviceUuid === HEART_RATE_SERVICE &#x26;&#x26; String(service.path.serviceOccurrence) === '1'
+)
+if (selectedService === undefined) {
+  throw new Error('The requested HRS service occurrence was not discovered.')
+}
+const selectedPath = await resolveCharacteristicPath(
+  snapshot,
+  heartRateMeasurementSelector({ serviceOccurrence: String(selectedService.path.serviceOccurrence) })
+)
+
+const bytes = await firstNotification(database, selectedPath, {
+  signal: abortController.signal,
+  deadline: journeyDeadline,
+  delivery: defaultScanDelivery()
+})
+</code></pre>
             <p>
               Selector occurrences may be copied from a current snapshot. Full paths, database generations, and
               connection generations must never be constructed manually. A profile selector only describes the match;
@@ -507,6 +798,37 @@
               It forwards the caller's <code>AbortSignal</code>, deadline, write mode, and subscription delivery limits
               without changing them.
             </p>
+            <pre><code>import { defaultScanDelivery, firstNotification } from 'unified-ble-manager/advanced'
+import {
+  readBatteryLevel,
+  resetHeartRateEnergyExpended,
+  subscribeHeartRateMeasurements
+} from 'unified-ble-manager/profiles/standard-commands'
+
+const delivery = defaultScanDelivery()
+const operation = { signal: abortController.signal, deadline: journeyDeadline }
+const batteryPercent = await readBatteryLevel(database, operation)
+const subscription = await subscribeHeartRateMeasurements(database, {
+  ...operation,
+  delivery
+}, { serviceOccurrence: '0' })
+const measurement = await firstNotification(database, selectedPath, { ...operation, delivery })
+
+try {
+  for await (const item of subscription.values) {
+    if (item.kind === 'value') {
+      // Parse the receiver-owned bytes with parseHeartRateMeasurement(item.value.value).
+    }
+  }
+} finally {
+  const cleanup = await subscription.remove()
+  if (cleanup.state === 'release-failed') {
+    throw new Error('The Heart Rate subscription did not release cleanly.')
+  }
+}
+
+await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-response' })
+</code></pre>
             <p>
               The subscriber owns the subscription until <code>remove()</code> settles. Closing it is required even
               after an abort, stream terminal notice, or consumer error.
@@ -604,6 +926,15 @@
               framework-neutral <code>desktop-native</code> host kind; browser and React Native backends require their
               own host integration and cannot be driven from a Node shell.
             </p>
+            <p>
+              Connection disconnect and lease release return <code>BackendConnectionCleanupRecord</code>. Its optional
+              <code>platform</code> detail is the operation's own observed result for that exact connection generation,
+              not an inferred reason or a lookup of a later connection. Include the same detail on terminal backend
+              connection events when available. The shared core preserves the first terminal observation even when event
+              delivery is delayed; it exposes platform detail on the public lifecycle terminal and returns only
+              <code>state</code> and <code>failures</code> in the public cleanup receipt. An unobserved platform reason
+              remains absent, and failed cleanup is not a confirmed connection end.
+            </p>
             <h2>Scan planning contract</h2>
             <p>
               The additive PR9 backend contract exposes <code>ScanPlan</code>, <code>BackendScanPlanner</code>, and the
@@ -637,7 +968,7 @@
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in this <code>5.0.0-rc.16</code> source. Those options match the schema
+              Use the v2 plugin options in this <code>5.0.0-rc.17</code> source. Those options match the schema
               introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
@@ -645,7 +976,7 @@
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.16
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.17
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
@@ -730,19 +1061,39 @@ bunx eas build --profile development --platform android
               <code>request-permission</code> action on every platform and reports the same shape:
               <code>{ requested, granted, denied, recommendedSettingsTarget }</code>.
             </p>
+            <p>
+              Readiness uses the shared authorization-blocking predicate. A powered-on adapter with
+              <code>unknown</code> or <code>not-determined</code> authorization is ready without rewriting that
+              observation to <code>granted</code>; explicit denial, restriction and unavailability still block. In
+              particular, ASK-authorized Apple accessories do not imply a global Bluetooth permission grant. Pending
+              authorization with unsettled power may still offer an explicit permission action.
+            </p>
             <ul>
               <li>
                 Android shows the runtime prompt (<code>BLUETOOTH_SCAN</code>/<code>BLUETOOTH_CONNECT</code> on API 31+,
                 legacy location below) and answers at once when decided.
               </li>
               <li>
-                Apple (iOS and tvOS) presents the CoreBluetooth prompt on request: the process central is allocated by
-                the request itself, never at startup, so reading <code>manager.readiness()</code> never prompts. A
-                decided authorization answers at once; the request waits for the user's decision otherwise, and accepts
-                an optional <code>timeoutMs</code> and <code>signal</code> (<code>operation.timed-out</code> /
-                <code>operation.aborted</code>; without them it waits like bonding). A restriction (parental
+                Ordinary Apple (iOS and tvOS) apps present the CoreBluetooth prompt on request: the process central is
+                allocated by the request itself, never at startup, so reading <code>manager.readiness()</code> never
+                prompts. A decided authorization answers at once; the request waits for the user's decision otherwise,
+                and accepts an optional <code>timeoutMs</code> and <code>signal</code> (<code>operation.timed-out</code>
+                / <code>operation.aborted</code>; without them it waits like bonding). A restriction (parental
                 controls/MDM) is genuinely unpromptable and refuses <code>capability.unsupported</code> with its reason
                 instead of a denial, matching the <code>unavailable</code> readiness it maps to.
+              </li>
+              <li>
+                ASK-configured iOS apps use accessory-scoped authorization instead. An explicit global permission
+                request while <code>CBManager.authorization</code> remains <code>notDetermined</code> promptly refuses
+                with <code>capability.unsupported</code> and native <code>permissionUnsupported</code>, without
+                allocating a central or arming a global prompt waiter. Decided authorization words retain their ordinary
+                results. Accessory selection and explicit connection admission are separate from a global grant; never
+                retry a global prompt to obtain an ASK accessory grant. Startup authorization and concurrent
+                saved-accessory directory reads join the same process-owned ASK activation and its original deadline,
+                rather than opening another session or refusing merely because activation is pending. Each admitted
+                caller receives the activation result once; invalidation retires the session and preserves the native
+                failure. At most 64 pending readers are retained, with an explicit refusal if that bound is exhausted.
+                Public caller cancellation and deadlines remain independent of this shared native activation.
               </li>
               <li>
                 Apple decides from <code>CBManager.authorization</code> (iOS 13.1+, tvOS 13.0+): the class property
@@ -946,7 +1297,7 @@ await manager.background.updateNotification({
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              This source targets <code>5.0.0-rc.16</code>. Main executes the shared Rust core
+              This source targets <code>5.0.0-rc.17</code>. Main executes the shared Rust core
               (<code>DesktopCentral</code>) through one N-API addon. Tagged releases ship it prebuilt for macOS Apple
               Silicon (<code>arm64</code>) and Windows/Linux <code>arm64</code>/<code>x64</code>. The addon is Node-API,
               so one binary serves Node and modern Electron alike.
@@ -987,6 +1338,18 @@ await manager.background.updateNotification({
               >.
             </p>
             <p>In the renderer, after preload hands you an authenticated transport:</p>
+            <pre><code>import { createElectronRendererBleManager } from 'unified-ble-manager/electron/renderer'
+
+const abort = new AbortController()
+const manager = await createElectronRendererBleManager({ transport })
+const scan = await manager.scan({
+  query: { anyOf: [{ services: { any: ['180d'] } }] },
+  signal: abort.signal,
+  timeoutMs: 15_000
+})
+await scan.stop()
+await manager.destroy()
+</code></pre>
             <p>
               The low-level <code>ElectronRendererBleClient</code> is an implementation seam for the transport and
               tests, not an application API.
@@ -1000,6 +1363,32 @@ await manager.background.updateNotification({
                 authors wiring an explicit backend.
               </p>
             </blockquote>
+            <pre><code>import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } from 'unified-ble-manager/advanced'
+import {
+  coreBluetoothCompatibility,
+  createElectronMainCoreBluetoothBackendProvider
+} from 'unified-ble-manager/electron/main'
+
+const now = () => performance.now()
+const provider = createElectronMainCoreBluetoothBackendProvider({ now })
+const adapters = await provider.listAdapters()
+if (adapters[0] === undefined) {
+  throw new Error('No adapter is available.')
+}
+const manager = await createBleManagerFromProvider(
+  {
+    provider,
+    selection: { selectedAdapterId: adapters[0].adapterId },
+    coreCompatibility: coreBluetoothCompatibility,
+    manager: {
+      clientId: 'electron-main-client',
+      managerId: 'electron-main-manager',
+      ownerMode: 'owning'
+    }
+  },
+  { ...DEFAULT_BLE_MANAGER_OPTIONS, now }
+)
+</code></pre>
             <p>Main and renderer stay split:</p>
             <ul>
               <li>
@@ -1064,6 +1453,13 @@ await manager.background.updateNotification({
               <strong>existing main-process Rust central</strong> to the controller. Main retains the native owner while
               windows close or reload; renderer destruction is not a request to stop a process-owned recorder.
             </p>
+            <pre><code>import { createNativeContinuationController } from 'unified-ble-manager/electron/main'
+import type { DesktopRustCoreCentral } from 'unified-ble-manager/electron/main'
+
+function recorderForMain(central: DesktopRustCoreCentral) {
+  return createNativeContinuationController(central)
+}
+</code></pre>
             <p>
               Only trusted main code may call <code>execute</code>, <code>status</code> and <code>claim</code>. This
               adds no renderer IPC privilege: expose any application-specific commands through your existing
@@ -1138,13 +1534,10 @@ await manager.background.updateNotification({
               core bounds the operation with that budget. Without one, the core's liveness backstops apply.
             </p>
             <p>
-              <strong>Legacy node-gyp boundaries (5.0 only, Phase 4 deletion):</strong> the TypeScript
-              CoreBluetooth/WinRT backends and their node-gyp addons
-              (<code>native/electron/{corebluetooth,winrt}</code>) remain in source until the Rust path is verified end
-              to end, but no public entrypoint reaches them. For the record of what is being retired: the WinRT addon
-              implements native boundary protocol v2, whose private boundary fixes scan ownership at
-              <code>startScan(scanToken, serviceUuids, onAdvertisement)</code> and requires the
-              <code>onScanTerminal(listener)</code> registration method.
+              Only the shared Rust desktop core is produced for Node/Electron distribution. The unreachable C++
+              CoreBluetooth/WinRT addons and their private loaders have been removed. The canonical matrix retains macOS
+              arm64 and Windows/Linux x64 and arm64; native identity, hash and packed-content checks still apply. Source
+              builds use the same Rust producer, not a parallel node-gyp implementation.
             </p>
             <h2>IPC integration requirements</h2>
             <p>Install one <code>ElectronMainBleBinding</code> on <code>ipcMain</code> with:</p>
@@ -1231,6 +1624,9 @@ await manager.background.updateNotification({
               ABI, or live-radio behavior. Applications must enable and verify their actual Electron security settings
               in an Electron runtime.
             </p>
+            <pre><code>pnpm prepack
+node scripts/ci/pack-install-smoke.js
+</code></pre>
             <p>
               <code>node example-electron/smoke.js</code> is a local published-entrypoint public-manager scenario only.
               It is useful as a fast deterministic check, but it does not substitute for the packed router/client
@@ -1250,6 +1646,9 @@ await manager.background.updateNotification({
               <code>UBM_NAPI_ADDON</code> to its absolute path. It is used exclusively, and its digests are still
               checked:
             </p>
+            <pre><code>node scripts/ci/build-napi-addon.js
+UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + process.arch').node" your-electron-command
+</code></pre>
             <p>
               With Node-API v8, an Electron-targeted rebuild is never required because Electron's module ABI differs
               from Node's. The Electron load smoke verifies identity and runs a synthetic central; it does not start a

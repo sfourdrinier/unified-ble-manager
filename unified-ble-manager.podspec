@@ -31,6 +31,9 @@ Pod::Spec.new do |s|
     "ios/UnifiedBleRustCoreSessions.swift",
     "ios/UnifiedBleRustCoreAdapterState.swift",
     "ios/UnifiedBleRustRadioAdapter.swift",
+    "ios/AccessoryChoiceOwner.swift",
+    "ios/AccessoryChoiceAdmission.swift",
+    "ios/UnifiedBleAccessoryChooser.swift",
     "ios/Generated/**/*.swift",
     "ios/NativeProtocol/**/*.{h,m,mm}",
     "ios/Owned/OwnedCoreBluetoothCentralDelegate.swift",
@@ -49,6 +52,7 @@ Pod::Spec.new do |s|
   s.preserve_paths = base_preserve_paths
   s.resource_bundles = { 'BlePlx' => ['ios/PrivacyInfo.xcprivacy'] }
   s.frameworks = "CoreBluetooth", "Security"
+  s.ios.weak_frameworks = "AccessorySetupKit"
   # Do not add -fmodules/-fcxx-modules: React Native's source build owns the
   # C++ module configuration and duplicate definitions otherwise become possible.
   s.compiler_flags = "-DOWNED_COREBLUETOOTH_RADIO=1"

@@ -24,6 +24,7 @@ extension OwnedCoreBluetoothProtocolRadio {
   }
 
   private func cancelPendingOperation(_ operationIdentifier: String) {
+    radioPreparation.cancel(operationIdentifier, error: error(code: 1020, message: "The radio operation was cancelled"))
     var cleanup = pendingCancellationCleanup[operationIdentifier] ?? PendingCancellationCleanup()
     if activeScanOperationIdentifier == operationIdentifier {
       central?.stopScan()

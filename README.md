@@ -20,7 +20,7 @@ root import does not pick a radio. Package SemVer and backend support labels are
 independent: each radio backend keeps its evidence-derived label. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
-This source tree is versioned `5.0.0-rc.16`. Install the exact version shown in the npm
+This source tree is versioned `5.0.0-rc.17`. Install the exact version shown in the npm
 registry. During release preparation, the version in `package.json` can be ahead
 of npm until the matching tag-driven workflow publishes it; the registry and
 GitHub release remain authoritative.
@@ -56,7 +56,7 @@ links in one fetch. Agents contributing to this repository start at
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.16
+pnpm add unified-ble-manager@5.0.0-rc.17
 ```
 
 Installable with npm, yarn, or Bun. This repository uses pnpm. Bun as a runtime is not a tested host.
@@ -246,7 +246,7 @@ try {
 
 Battery Level and Heart Rate Control Point are optional or conditional; see [`docs/TUTORIALS.md`](docs/TUTORIALS.md). Persistent subscriptions also live there.
 
-Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. The [complete Web Bluetooth guide](docs/WEB.md) and [TypeScript/Vite example](example-web/) cover chooser permissions, authorized peers, bounded operations, notifications, structured errors, and safe cleanup. Tauri and the Electron renderer use different host entrypoints — see those host pages.
+Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. React Native and Expo can explicitly use that same public chooser with Android CDM or eligible iOS AccessorySetupKit, then connect the selection through the same manager; setup is not a scan or a relaunch receipt. Native eligibility, declarations and refusals are in [Getting Started](docs/GETTING_STARTED.md#optional-native-system-chooser). The [complete Web Bluetooth guide](docs/WEB.md) and [TypeScript/Vite example](example-web/) cover browser chooser permissions, authorized peers, bounded operations, notifications, structured errors, and safe cleanup. Tauri and the Electron renderer use different host entrypoints — see those host pages.
 
 ## Why the API looks like this
 
@@ -392,7 +392,7 @@ after disconnect, service change, or rediscovery.
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship the Node-API desktop-core prebuild for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
-`5.0.0-rc.16` publishes to npm `next`; bare installs still select the 4.0
+`5.0.0-rc.17` publishes to npm `next`; bare installs still select the 4.0
 `latest` line. Stable 5.x versions will publish to `latest`. Publication uses
 npm trusted publishing/OIDC with provenance.
 

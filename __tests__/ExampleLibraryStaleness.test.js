@@ -109,7 +109,7 @@ describe('example library staleness guard', () => {
   test('copy refresh guidance preserves the lockfile and uses supported force recopy', () => {
     const outcome = inspectExampleLibrary({ repo: repoFacts(), copy: copyFacts({ identity: 'other' }) })
     const advice = describeLibraryOutcome(outcome)
-    expect(advice).toContain('install --force --frozen-lockfile')
+    expect(advice).toContain('install-example-dependencies.js <example> --force --frozen-lockfile')
     expect(advice).not.toContain('rm -rf')
     expect(advice).not.toContain('--no-frozen-lockfile')
   })
@@ -183,8 +183,8 @@ describe('the Expo example runs the guard before it builds a native host', () =>
   test('Apple CI exercises both guards and triggers when they change', () => {
     const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'apple-ci.yml'), 'utf8')
     const changes = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8')
-    const install = workflow.indexOf('pnpm --dir example-expo install --no-frozen-lockfile')
-    const peerAlign = workflow.indexOf('npx expo install --fix')
+    const install = workflow.indexOf('node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile')
+    const peerAlign = workflow.indexOf('node examples-shared/dev/install-example-dependencies.js --expo-fix example-expo')
     const prepare = workflow.indexOf('node examples-shared/dev/prepare-example-ios.js example-expo')
     const prebuild = workflow.indexOf('npx expo prebuild --clean --no-install --platform ios')
     const restoration = workflow.indexOf('node examples-shared/dev/verify-expo-ios-restoration.js example-expo')

@@ -98,17 +98,12 @@ describe('retired 3.x architecture absence', () => {
     expect(remainingPaths).toEqual([])
   })
 
-  test('keeps native CoreBluetooth on the contract boundary only', () => {
-    const coreBluetoothBoundarySource = fs.readFileSync(
-      path.join(rootDirectory, 'native/electron/corebluetooth/index.js'),
-      'utf8'
-    )
-
-    expect(fs.existsSync(path.join(rootDirectory, 'native/electron/bluez/index.js'))).toBe(false)
-    expect(coreBluetoothBoundarySource).toContain('createContractBoundary')
-    expect(coreBluetoothBoundarySource).not.toContain('createPort')
-    expect(coreBluetoothBoundarySource).not.toContain('wrapAsBlePort')
-    expect(coreBluetoothBoundarySource).not.toContain('Base64')
+  test('keeps only the production shared desktop loader', () => {
+    expect(fs.existsSync(path.join(rootDirectory, 'native/electron/corebluetooth/index.js'))).toBe(false)
+    expect(fs.existsSync(path.join(rootDirectory, 'native/electron/winrt/index.js'))).toBe(false)
+    const loader = fs.readFileSync(path.join(rootDirectory, 'native/desktop-core/index.js'), 'utf8')
+    expect(loader).toContain('loadExactPrebuild')
+    expect(loader).not.toContain('wrapAsBlePort')
   })
 
   test('ships no retired example, UI bridge, or benchmark architecture', () => {

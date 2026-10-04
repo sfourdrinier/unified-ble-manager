@@ -259,6 +259,7 @@ pub enum MobileRadioRequest {
         id: u64,
         name: Option<String>,
         service_uuid: Option<String>,
+        filters_json: Option<String>,
     },
     ListCompanion {
         id: u64,
@@ -454,10 +455,12 @@ impl From<&RadioRequest> for MobileRadioRequest {
                 id,
                 name,
                 service_uuid,
+                filters_json,
             } => Self::AssociateCompanion {
                 id: *id,
                 name: name.clone(),
                 service_uuid: service_uuid.clone(),
+                filters_json: filters_json.clone(),
             },
             RadioRequest::ListCompanion { id } => Self::ListCompanion { id: *id },
             RadioRequest::DisassociateCompanion { id, association_id } => {
@@ -1297,6 +1300,46 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn companion_filters_survive_the_actual_uniffi_request_codec() {
+        for filters_json in [
+            None,
+            Some(
+                r#"[{"namePrefix":"SIM","companyIdentifier":107,"manufacturerPrefix":[0,255]}]"#
+                    .to_owned(),
+            ),
+        ] {
+            let radio = RadioRequest::AssociateCompanion {
+                id: u64::MAX - 1,
+                name: None,
+                service_uuid: None,
+                filters_json: filters_json.clone(),
+            };
+            let mapped = MobileRadioRequest::from(&radio);
+            assert_eq!(
+                mapped,
+                MobileRadioRequest::AssociateCompanion {
+                    id: u64::MAX - 1,
+                    name: None,
+                    service_uuid: None,
+                    filters_json
+                }
+            );
+            let mut bytes = Vec::new();
+            <MobileRadioRequest as uniffi::FfiConverter<crate::UniFfiTag>>::write(
+                mapped.clone(),
+                &mut bytes,
+            );
+            let mut remaining = bytes.as_slice();
+            let decoded = <MobileRadioRequest as uniffi::FfiConverter<crate::UniFfiTag>>::try_read(
+                &mut remaining,
+            )
+            .expect("real UniFFI codec decodes companion selector");
+            assert_eq!(decoded, mapped);
+            assert!(remaining.is_empty());
+        }
+    }
+
     struct Recorder {
         tx: Mutex<mpsc::Sender<MobileRadioRequest>>,
     }
@@ -1387,6 +1430,42 @@ mod tests {
             unreachable!("envelope arrives");
         };
         assert!(envelope.contains("\"power\":\"on\""), "{envelope}");
+        // ASK authorization returns a UUID before UBM has ever scanned or
+        // remembered it. That UUID must reach the actual native radio route;
+        // CoreBluetooth's retrievePeripherals resolves OS-authorized peers.
+        let chosen = "12345678-1234-1234-1234-123456789ABC";
+        for (ordinal, verb) in ["connect", "disconnect"].iter().enumerate() {
+            let (result_tx, result_rx) = mpsc::channel();
+            session.invoke(
+                format!("connection.{verb}"),
+                format!(r#"{{"peerId":"{chosen}","lease":"ask-lease","operationId":"ask-{verb}","budgetMs":5000,"admission":{}}}"#, ordinal + 1),
+                Box::new(Capture { tx: Mutex::new(result_tx) }),
+            );
+            let request = request_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "chosen peer route failed: {error}; result={:?}",
+                        result_rx.try_recv()
+                    )
+                });
+            let id = match request {
+                MobileRadioRequest::Connect { id, peer_id, .. } if *verb == "connect" => {
+                    assert_eq!(peer_id, chosen);
+                    id
+                }
+                MobileRadioRequest::Disconnect { id, peer_id } if *verb == "disconnect" => {
+                    assert_eq!(peer_id, chosen);
+                    id
+                }
+                other => panic!("unexpected chosen-peer radio request: {other:?}"),
+            };
+            assert_eq!(host.complete(id, MobileRadioCompletion::Unit), "delivered");
+            let result = result_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("real host completes chosen-peer operation");
+            assert!(result.contains("\"ok\":true"), "{result}");
+        }
         assert_eq!(
             host.ingest(MobileRadioIngress::Dropped {
                 ingress_class: "bogus".to_owned(),

@@ -42,9 +42,12 @@ mkdir -p "$REGEN/kotlin" "$REGEN/swift" "$REGEN/python"
 node normalize-generated.js "$REGEN"
 
 echo "--- uniffi: reproducibility (regen must match committed recipe)"
-diff -r generated/kotlin "$REGEN/kotlin" && echo "kotlin reproducible"
-diff -r generated/swift "$REGEN/swift" && echo "swift reproducible"
-diff -r generated/python "$REGEN/python" && echo "python reproducible"
+diff -r generated/kotlin "$REGEN/kotlin"
+echo "kotlin reproducible"
+diff -r generated/swift "$REGEN/swift"
+echo "swift reproducible"
+diff -r generated/python "$REGEN/python"
+echo "python reproducible"
 
 echo "--- uniffi: Python exchange through the generated scaffolding"
 PYRUN=target/pyrun

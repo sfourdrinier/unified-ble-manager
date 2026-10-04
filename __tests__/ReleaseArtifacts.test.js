@@ -21,7 +21,7 @@ describe('open-source release policies and dependency artifacts', () => {
     expect(security).toContain('GitHub Security Advisory')
     expect(security).toContain('Do not put vulnerability details in a public issue')
     expect(security).toContain('Supported versions')
-    expect(support).toContain('Platform/backend support labels are a separate evidence-backed dimension')
+    expect(support.replace(/\s+/g, ' ')).toContain('Platform/backend support labels are a separate evidence-backed dimension')
     expect(support).toContain('generated/PLATFORM_SUPPORT.md')
     expect(governance).toContain('Backend contract governance')
     expect(governance).toContain('ADR')

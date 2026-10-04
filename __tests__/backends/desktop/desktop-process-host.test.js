@@ -2,6 +2,7 @@
 
 const { createDesktopProcessHostFromBackend } = require('../../../src/desktop-process-host')
 const h = require('../../helpers/desktop-rust-core-harness')
+const { withHostCleanup } = require('../../helpers/desktop-process-host-cleanup')
 
 jest.setTimeout(30000)
 
@@ -119,44 +120,48 @@ test.each(['bluez', 'corebluetooth', 'winrt'])(
 test('native cleanup refusal remains retryable and post-close backlog stays reachable', async () => {
   const { backend, stage } = await h.openBackend('corebluetooth')
   const host = await createDesktopProcessHostFromBackend(backend, { now: () => performance.now() })
-  const peerId = ids.corebluetooth
-  await stage.stageServices(peerId, h.hrmServices())
-  await host.continuation.execute(declaration(peerId))
-  await stage.stageNotification({
-    peerId,
-    serviceUuid: h.HRM_SERVICE,
-    characteristicUuid: h.HRM_MEASUREMENT,
-    value: Buffer.from([0, 74])
+  await withHostCleanup(host, async () => {
+    const peerId = ids.corebluetooth
+    await stage.stageServices(peerId, h.hrmServices())
+    await host.continuation.execute(declaration(peerId))
+    await stage.stageNotification({
+      peerId,
+      serviceUuid: h.HRM_SERVICE,
+      characteristicUuid: h.HRM_MEASUREMENT,
+      value: Buffer.from([0, 74])
+    })
+    await h.awaitContinuationQueuedData(host.continuation, 1)
+    await stage.failNextRadioOp('disconnect', 'retained native disconnect refusal')
+    const failed = await host.destroy()
+    expect(failed.state).toBe('release-failed')
+    expect(failed.failures.length).toBeGreaterThan(0)
+    await expect(host.createManager()).rejects.toMatchObject({ code: 'lifecycle.destroyed' })
+    expect(await host.destroy()).toEqual({ state: 'released', failures: [] })
+    const backlog = await host.continuation.claim()
+    expect(backlog.values.map(item => [...item.value])).toContainEqual([0, 74])
+    expect(backlog.disposed).toBe(true)
   })
-  await h.awaitContinuationQueuedData(host.continuation, 1)
-  await stage.failNextRadioOp('disconnect', 'retained native disconnect refusal')
-  const failed = await host.destroy()
-  expect(failed.state).toBe('release-failed')
-  expect(failed.failures.length).toBeGreaterThan(0)
-  await expect(host.createManager()).rejects.toMatchObject({ code: 'lifecycle.destroyed' })
-  expect(await host.destroy()).toEqual({ state: 'released', failures: [] })
-  const backlog = await host.continuation.claim()
-  expect(backlog.values.map(item => [...item.value])).toContainEqual([0, 74])
-  expect(backlog.disposed).toBe(true)
 })
 
 test('successful host close preserves positive native backlog for explicit later claim', async () => {
   const { backend, stage } = await h.openBackend('corebluetooth')
   const host = await createDesktopProcessHostFromBackend(backend, { now: () => performance.now() })
-  const peerId = ids.corebluetooth
-  await stage.stageServices(peerId, h.hrmServices())
-  await host.continuation.execute(declaration(peerId))
-  await stage.stageNotification({
-    peerId,
-    serviceUuid: h.HRM_SERVICE,
-    characteristicUuid: h.HRM_MEASUREMENT,
-    value: Buffer.from([0, 75])
+  await withHostCleanup(host, async () => {
+    const peerId = ids.corebluetooth
+    await stage.stageServices(peerId, h.hrmServices())
+    await host.continuation.execute(declaration(peerId))
+    await stage.stageNotification({
+      peerId,
+      serviceUuid: h.HRM_SERVICE,
+      characteristicUuid: h.HRM_MEASUREMENT,
+      value: Buffer.from([0, 75])
+    })
+    await h.awaitContinuationQueuedData(host.continuation, 1)
+    expect(await host.destroy()).toEqual({ state: 'released', failures: [] })
+    const backlog = await host.continuation.claim()
+    expect(backlog.values.map(item => [...item.value])).toContainEqual([0, 75])
+    expect(backlog.disposed).toBe(true)
   })
-  await h.awaitContinuationQueuedData(host.continuation, 1)
-  expect(await host.destroy()).toEqual({ state: 'released', failures: [] })
-  const backlog = await host.continuation.claim()
-  expect(backlog.values.map(item => [...item.value])).toContainEqual([0, 75])
-  expect(backlog.disposed).toBe(true)
 })
 
 test('initialization cleanup failure exposes exact native retry owner', async () => {

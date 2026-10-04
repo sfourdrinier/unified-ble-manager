@@ -83,8 +83,8 @@ describe('Expo readiness surface', () => {
     [
       'not-determined permission',
       adapterState({ authorization: 'not-determined' }),
-      'action-required',
-      [{ kind: 'request-permission', permission: 'bluetooth' }]
+      'ready',
+      []
     ],
     [
       'powered off adapter',
@@ -115,7 +115,7 @@ describe('Expo readiness surface', () => {
   })
 
   test('uses the trusted native permission bridge for a pending adapter permission action', async () => {
-    const manager = managerFor(adapterState({ authorization: 'not-determined' }))
+    const manager = managerFor(adapterState({ authorization: 'not-determined', power: 'unknown' }))
     createReactNativeApplicationHost.mockResolvedValue({ manager: manager, services: {}, claimRestoration: jest.fn() })
 
     const result = await createExpoBleManager()

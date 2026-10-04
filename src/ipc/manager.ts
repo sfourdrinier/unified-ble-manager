@@ -4,6 +4,7 @@ import {
   BLE_ERROR_CODES,
   BLE_ERROR_DOMAINS,
   contractError,
+  optionalPlatformErrorDetail,
   type BleCommitUncertainty,
   type CleanupFailure,
   type CleanupRecord,
@@ -1745,6 +1746,10 @@ export class IpcConnection {
     for await (const event of subscription.events) {
       if (event.kind === 'terminal') {
         this.invalidateDatabases().catch(() => undefined)
+        if (event.reason === 'owner-released' && (await this.awaitAppReleaseOutcome())) {
+          this.finishAppReleasedLifecycle()
+          return
+        }
         this.lifecycleEvents.finishWithReason(
           requiredTerminalReason(event.reason, 'ipc-manager.connection-lifecycle'),
           requiredTerminalError(event.error, 'ipc-manager.connection-lifecycle')
@@ -3304,6 +3309,7 @@ function isIpcNotificationValue(value: unknown): value is IpcNotificationValue {
 function isIpcConnectionLifecycleEvent(value: unknown): value is SerializableRecord {
   if (!isSerializableRecord(value)) return false
   const record = value
+  optionalPlatformErrorDetail(record.platform, 'ipc-manager.lifecycle.platform')
   return (
     record.kind === 'connection-lifecycle' &&
     record.schemaVersion === 2 &&

@@ -1,6 +1,6 @@
 // src/electron/connection-event-codec.ts
 
-import { contractError } from '../backend-contract/errors'
+import { contractError, optionalPlatformErrorDetail, serializePlatformErrorDetail } from '../backend-contract/errors'
 import type { SerializableRecord, SerializableValue } from '../backend-contract/primitives'
 import type {
   ElectronAdapterStateV2,
@@ -134,6 +134,7 @@ function decodeConnectionLifecycleEvent(value: SerializableValue | undefined): E
   if (attachment.attachmentId !== attachmentId) {
     throw contractError('protocol.violation', 'ipc', 'electron-renderer.connection-lifecycle-attachment')
   }
+  const platform = optionalPlatformErrorDetail(event.platform, 'electron.lifecycle.platform')
   return Object.freeze({
     kind: 'connection-lifecycle',
     schemaVersion: ELECTRON_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION,
@@ -151,7 +152,8 @@ function decodeConnectionLifecycleEvent(value: SerializableValue | undefined): E
     backendIngressOrdinal: event.backendIngressOrdinal,
     previous: event.previous,
     current: event.current,
-    cause: event.cause
+    cause: event.cause,
+    platform: platform === undefined ? null : serializePlatformErrorDetail(platform)
   })
 }
 

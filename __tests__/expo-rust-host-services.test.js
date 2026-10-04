@@ -26,6 +26,68 @@ async function expoManager(platform = 'android', overrides = {}) {
 }
 
 describe('Expo host services on the Rust session', () => {
+  test('Expo Android public choose forwards filtered CDM admission through the real session serializer', async () => {
+    const harness = rustCoreHarness({ platform: 'android' })
+    const manager = await createExpoBleManagerWithEnvironment({
+      ...environment(harness, {
+        now: () => performance.now(),
+        rustCore: { ...harness.binding, accessoryChooserAvailable: async () => true }
+      }),
+      expo: EXPO
+    })
+    const peer = await manager.choose({
+      filters: [
+        {
+          serviceUuids: ['180d'],
+          localNamePrefix: 'SIM Polar H10',
+          manufacturerData: [{ companyIdentifier: 107, dataPrefix: new Uint8Array([1, 2]) }]
+        }
+      ]
+    })
+    expect(peer.sources).toEqual(['origin-authorized'])
+    expect(peer.name).toBeNull()
+    const args = harness.native.opsInvoked('companion.associate')[0]
+    expect(JSON.parse(args.filtersJson)).toEqual([
+      {
+        serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb',
+        namePrefix: 'SIM Polar H10',
+        companyIdentifier: 107,
+        manufacturerPrefix: [1, 2]
+      }
+    ])
+    expect(args.budgetMs).toBeGreaterThan(0)
+    await manager.destroy()
+  })
+  test('Expo public composition preserves native system chooser and attachment ownership', async () => {
+    const harness = rustCoreHarness({ platform: 'apple' })
+    const chooseAccessory = jest.fn(async () =>
+      JSON.stringify({
+        revision: 'ubm-accessory-chooser/1',
+        peripheralIdentifier: '12345678-1234-1234-1234-123456789abc',
+        name: 'SIM Polar H10'
+      })
+    )
+    const manager = await createExpoBleManagerWithEnvironment({
+      ...environment(harness, {
+        now: () => performance.now(),
+        rustCore: {
+          ...harness.binding,
+          accessoryChooserAvailable: async () => true,
+          chooseAccessory,
+          cancelAccessoryChoice: async () => undefined
+        }
+      }),
+      expo: EXPO
+    })
+    expect(manager.discovery.kind).toBe('hybrid')
+    const peer = await manager.choose({ filters: [{ serviceUuids: ['180d'], localNamePrefix: 'SIM Polar H10' }] })
+    expect(peer.sources).toEqual(['origin-authorized'])
+    expect(chooseAccessory).toHaveBeenCalledTimes(1)
+    await manager.destroy()
+    await expect(
+      manager.choose({ filters: [{ serviceUuids: ['180d'], localNamePrefix: 'SIM Polar H10' }] })
+    ).rejects.toMatchObject({ code: 'lifecycle.destroyed' })
+  })
   test('acquires and releases one explicit connected-device background lease; a second release is a no-op', async () => {
     const { native, manager } = await expoManager()
     const lease = await manager.background.acquire({ kind: 'connected-device', reason: 'active workout' })
@@ -170,20 +232,16 @@ describe('Expo host services on the Rust session', () => {
 
   test('presence observation is unsupported on Apple with the owner reason, and needs a known peer', async () => {
     const { manager } = await expoManager('apple')
-    await expect(manager.presence.observe({ peerId: 'C0FFEE00-0000-4000-8000-000000000001' })).rejects.toMatchObject(
-      {
-        constructor: BleError,
-        code: 'capability.unsupported',
-        operation: 'expo.presence.observe'
-      }
-    )
-    await expect(manager.presence.unobserve({ peerId: 'C0FFEE00-0000-4000-8000-000000000001' })).rejects.toMatchObject(
-      {
-        constructor: BleError,
-        code: 'capability.unsupported',
-        operation: 'expo.presence.unobserve'
-      }
-    )
+    await expect(manager.presence.observe({ peerId: 'C0FFEE00-0000-4000-8000-000000000001' })).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'capability.unsupported',
+      operation: 'expo.presence.observe'
+    })
+    await expect(manager.presence.unobserve({ peerId: 'C0FFEE00-0000-4000-8000-000000000001' })).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'capability.unsupported',
+      operation: 'expo.presence.unobserve'
+    })
     await manager.destroy()
 
     const android = await expoManager()
@@ -242,7 +300,7 @@ describe('Expo host services on the Rust session', () => {
   })
 
   test('a second associate for an associated device reports already-associated, not a duplicate', async () => {
-    const { native, manager } = await expoManager()
+    const { manager } = await expoManager()
     const first = await manager.association.associate({ name: 'Sensor', serviceUuid: '180D' })
     expect(first).toEqual({
       source: 'associated',
@@ -359,7 +417,14 @@ describe('Expo host services on the Rust session', () => {
     }
     const CLAIM = JSON.stringify({
       consumerCount: 1,
-      selectors: [{ serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb', serviceOccurrence: 1, characteristicUuid: '00002a37-0000-1000-8000-00805f9b34fb', characteristicOccurrence: 1 }],
+      selectors: [
+        {
+          serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb',
+          serviceOccurrence: 1,
+          characteristicUuid: '00002a37-0000-1000-8000-00805f9b34fb',
+          characteristicOccurrence: 1
+        }
+      ],
       batches: [
         JSON.stringify({
           more: false,
@@ -398,7 +463,8 @@ describe('Expo host services on the Rust session', () => {
     async function continuationManager() {
       const harness = rustCoreHarness({ platform: 'android' })
       harness.native.declareBackgroundContinuation = async () => {}
-      harness.native.prepareContinuationClaim = async () => JSON.stringify({ ...JSON.parse(CLAIM), claimToken: 'expo-claim', recording: { id: 'h10-expo' } })
+      harness.native.prepareContinuationClaim = async () =>
+        JSON.stringify({ ...JSON.parse(CLAIM), claimToken: 'expo-claim', recording: { id: 'h10-expo' } })
       harness.native.acknowledgeContinuationClaim = async token => {
         expect(token).toBe('expo-claim')
         return JSON.stringify({ disposed: true, afterCutoffLoss: { items: 0, bytes: 0 }, disposeFailure: null })
@@ -419,11 +485,32 @@ describe('Expo host services on the Rust session', () => {
       return { native: harness.native, manager }
     }
 
+    test('projects startup refusal without replacing wake status or blocking backlog claim', async () => {
+      const { native, manager } = await continuationManager()
+      const startupFailure = {
+        code: 'platform.failure',
+        domain: 'platform',
+        operation: 'continuation.bootstrap.accessory-authorization',
+        detail: 'refused',
+        platform: { domain: 'ASErrorDomain', code: '550', message: 'refused', metadata: {} }
+      }
+      native.continuationStatus = async () => JSON.stringify({ ...JSON.parse(STATUS), startupFailure })
+      try {
+        const status = await manager.continuation.status()
+        expect(status.startupFailure).toEqual(startupFailure)
+        expect(status.lastWake.event).toBe('continuation.completed')
+        expect((await manager.continuation.claim()).values).toHaveLength(1)
+      } finally {
+        await manager.destroy()
+      }
+    })
+
     test('declares the standing order at open and reports status and backlog with loss accounting', async () => {
       const { manager } = await continuationManager()
       const status = await manager.continuation.status()
       expect(status.strategy).toBe('native')
       expect(status.lastWake.event).toBe('continuation.completed')
+      expect(status.startupFailure).toBeNull()
       const backlog = await manager.continuation.claim()
       expect(backlog.recording).toEqual({ id: 'h10-expo' })
       expect(backlog.values).toHaveLength(1)
@@ -433,7 +520,12 @@ describe('Expo host services on the Rust session', () => {
       ])
       expect(backlog.disposed).toBe(true)
       await manager.destroy()
-      expect(await manager.continuation.recordings.prepare('h10-expo', { maxItems: 10, maxBytes: 4096 })).toEqual({ token: null, records: [], bytes: 0, more: false })
+      expect(await manager.continuation.recordings.prepare('h10-expo', { maxItems: 10, maxBytes: 4096 })).toEqual({
+        token: null,
+        records: [],
+        bytes: 0,
+        more: false
+      })
     })
 
     test('a native module without the claim answers unsupported, never an invented backlog', async () => {

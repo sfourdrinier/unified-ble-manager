@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
-import { FlatList } from 'react-native'
+import { ReferenceFlatList } from '../../../components/atoms/ReferenceFlatList/ReferenceFlatList'
 import { AppButton, AppText, ScreenDefaultContainer } from '../../../components/atoms'
 import { BleDevice, RemoteDriverBadge } from '../../../components/molecules'
 import { useBleScreenWork } from '../../../hooks/useBleScreenWork'
@@ -30,12 +30,14 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
     let active = true
     void BLEService.watchAdapterState(state => {
       if (active) setAdapter(`${state.power} / ${state.availability} / ${state.authorization}`)
-    }).then(release => {
-      if (active) stop = release
-      else void release()
-    }).catch(error => {
-      console.error('[DashboardScreen.adapterWatch] Adapter state watch failed:', error)
     })
+      .then(release => {
+        if (active) stop = release
+        else void release()
+      })
+      .catch(error => {
+        console.error('[DashboardScreen.adapterWatch] Adapter state watch failed:', error)
+      })
     return () => {
       active = false
       if (stop !== null) void stop()
@@ -145,45 +147,51 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
       {/* Finding 231: the screen is taller than a phone. Its body is the
           discovered-peer list, so the controls ride in the list header:
           one scroller, and no virtualized list nested in a ScrollView. */}
-      <FlatList
+      <ReferenceFlatList
         style={{ flex: 1 }}
         keyboardShouldPersistTaps="handled"
         ListHeaderComponent={
           <>
-      {isConnecting ? (
-        <DropDown>
-          <AppText style={{ fontSize: 30 }}>Connecting</AppText>
-        </DropDown>
-      ) : null}
-      <RemoteDriverBadge />
-      <AppButton label="Test scenarios (Polar H10, ECG, scan, MTU…)" onPress={() => navigation.navigate('SCENARIOS_SCREEN')} />
-      <AppButton label="Live dashboard: Polar H10 tiles" onPress={() => navigation.navigate('LIVE_DASHBOARD_SCREEN')} />
-      <AppButton label="Scan with canonical manager" onPress={() => void startScan()} />
-      <AppButton label="Check Expo readiness" onPress={() => void inspectReadiness()} />
-      <AppButton label="Inspect plan and diagnostics" onPress={inspectDiagnostics} />
-      <AppButton label="Expo diagnostics" onPress={() => navigation.navigate('EXPO_DIAGNOSTICS_SCREEN')} />
-      <AppButton label="Claim native restoration (iOS)" onPress={() => void claimRestoration()} />
-      <AppButton label="Show restored peers (Android)" onPress={() => void inspectRestoredPeers()} />
-      <AppButton label="Create redacted support bundle" onPress={() => void createSupportBundle()} />
-      {adapter === null ? null : <AppText>Adapter: {adapter}</AppText>}
-      <AppButton label="Stop scan" onPress={() => void stopScan(work, setError)} />
-      <AppButton label="Go to nRF test" onPress={() => navigation.navigate('DEVICE_NRF_TEST_SCREEN')} />
-      <AppButton
-        label="Connect/disconnect test"
-        onPress={() => navigation.navigate('DEVICE_CONNECT_DISCONNECT_TEST_SCREEN')}
-      />
-      <AppButton label="Manager lifecycle" onPress={() => navigation.navigate('INSTANCE_DESTROY_SCREEN')} />
-      <AppButton
-        label="Explicit release test"
-        onPress={() => navigation.navigate('DEVICE_ON_DISCONNECT_TEST_SCREEN')}
-      />
-      {error === null ? null : <AppText>BLE error: {error}</AppText>}
-      {readiness === null ? null : <AppText>Readiness: {readiness}</AppText>}
-      {planDigest === null ? null : <AppText>Scan plan digest: {planDigest}</AppText>}
-      {diagnosticCounters === null ? null : <AppText>Resource counters: {diagnosticCounters}</AppText>}
-      {restoration === null ? null : <AppText>Restoration: {restoration}</AppText>}
-      {restoredPeers === null ? null : <AppText>Restored peers: {restoredPeers}</AppText>}
-      {supportBundle === null ? null : <AppText>Support bundle: {supportBundle}</AppText>}
+            {isConnecting ? (
+              <DropDown>
+                <AppText style={{ fontSize: 30 }}>Connecting</AppText>
+              </DropDown>
+            ) : null}
+            <RemoteDriverBadge />
+            <AppButton
+              label="Test scenarios (Polar H10, ECG, scan, MTU…)"
+              onPress={() => navigation.navigate('SCENARIOS_SCREEN')}
+            />
+            <AppButton
+              label="Live dashboard: Polar H10 tiles"
+              onPress={() => navigation.navigate('LIVE_DASHBOARD_SCREEN')}
+            />
+            <AppButton label="Scan with canonical manager" onPress={() => void startScan()} />
+            <AppButton label="Check Expo readiness" onPress={() => void inspectReadiness()} />
+            <AppButton label="Inspect plan and diagnostics" onPress={inspectDiagnostics} />
+            <AppButton label="Expo diagnostics" onPress={() => navigation.navigate('EXPO_DIAGNOSTICS_SCREEN')} />
+            <AppButton label="Claim native restoration (iOS)" onPress={() => void claimRestoration()} />
+            <AppButton label="Show restored peers (Android)" onPress={() => void inspectRestoredPeers()} />
+            <AppButton label="Create redacted support bundle" onPress={() => void createSupportBundle()} />
+            {adapter === null ? null : <AppText>Adapter: {adapter}</AppText>}
+            <AppButton label="Stop scan" onPress={() => void stopScan(work, setError)} />
+            <AppButton label="Go to nRF test" onPress={() => navigation.navigate('DEVICE_NRF_TEST_SCREEN')} />
+            <AppButton
+              label="Connect/disconnect test"
+              onPress={() => navigation.navigate('DEVICE_CONNECT_DISCONNECT_TEST_SCREEN')}
+            />
+            <AppButton label="Manager lifecycle" onPress={() => navigation.navigate('INSTANCE_DESTROY_SCREEN')} />
+            <AppButton
+              label="Explicit release test"
+              onPress={() => navigation.navigate('DEVICE_ON_DISCONNECT_TEST_SCREEN')}
+            />
+            {error === null ? null : <AppText>BLE error: {error}</AppText>}
+            {readiness === null ? null : <AppText>Readiness: {readiness}</AppText>}
+            {planDigest === null ? null : <AppText>Scan plan digest: {planDigest}</AppText>}
+            {diagnosticCounters === null ? null : <AppText>Resource counters: {diagnosticCounters}</AppText>}
+            {restoration === null ? null : <AppText>Restoration: {restoration}</AppText>}
+            {restoredPeers === null ? null : <AppText>Restored peers: {restoredPeers}</AppText>}
+            {supportBundle === null ? null : <AppText>Support bundle: {supportBundle}</AppText>}
           </>
         }
         data={foundPeers}

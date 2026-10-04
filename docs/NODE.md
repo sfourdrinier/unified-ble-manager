@@ -10,7 +10,7 @@ The root import does not open an adapter. Pick the entrypoint for your OS:
 | `unified-ble-manager/node/winrt`         | Windows | shared Rust core over WinRT         |
 | `unified-ble-manager/node/bluez`         | Linux   | shared Rust core over BlueZ         |
 
-All three execute one shared Rust core (`DesktopCentral` in `crates/ubm-desktop`, btleplug plus narrow OS adapters) through one N-API addon. This source targets `5.0.0-rc.16`. Tagged releases ship the addon prebuilt for `linux-x64`, `linux-arm64`, `darwin-arm64`, `win32-x64` and `win32-arm64`, under `native/desktop-core/prebuilds/<platform>-<arch>/`. A normal install compiles nothing and needs no Rust toolchain. The app no longer needs `dbus-next` on Linux.
+All three execute one shared Rust core (`DesktopCentral` in `crates/ubm-desktop`, btleplug plus narrow OS adapters) through one N-API addon. This source targets `5.0.0-rc.17`. Tagged releases ship the addon prebuilt for `linux-x64`, `linux-arm64`, `darwin-arm64`, `win32-x64` and `win32-arm64`, under `native/desktop-core/prebuilds/<platform>-<arch>/`. A normal install compiles nothing and needs no Rust toolchain. The app no longer needs `dbus-next` on Linux.
 
 macOS desktop support is Apple Silicon (`arm64`) only. Windows and Linux desktop support includes `arm64` and `x64`.
 Intel macOS desktop is outside the UBM support policy; this is a package policy,
@@ -89,24 +89,42 @@ Source mode, for contributors only: `UBM_NAPI_ADDON=/absolute/path/to/ubm_echo.<
 
 `createBluezBleManager`, `createBluezProcessHost`, `createDbusNextBluezBackendProvider` and Electron main's `createElectronMainBluezBackendProvider` share these trusted host options.
 
-`connectionPolicy: { mode: 'le-bearer', daemonUniqueOwner }` attests that the
-current unique D-Bus owner of `org.bluez` actually implements LE-only bearer
-connect/disconnect. Obtain and verify that owner in trusted host setup; do not
-copy an example owner string. An introspection entry alone is not proof: BlueZ
-5.85 can expose an unimplemented LE interface. The backend checks the owner pin
-before connection effects and never substitutes a restarted daemon or generic
+The shared Rust authority resolves and pins the current unique D-Bus owner of
+`org.bluez` itself. Applications do not copy daemon owner strings. Optional
+`connectionPolicy: { mode: 'le-bearer', daemonUniqueOwner }` restricts construction
+to a deliberately supplied owner; it is not an implementation attestation.
+An introspection entry alone is not proof: BlueZ can expose an unimplemented
+LE interface. The selected adapter must answer the versioned
+`LinuxAuthority1.GetContract` lease/GATT handshake `(1,2,1)`. Lease revision 2
+includes the actual, exact-generation MGMT disconnect observation in a physical
+release answer; older daemon revisions are refused rather than losing that
+detail when the release reply precedes the event. The backend checks
+the owner pin before connection effects and never substitutes a restarted daemon or generic
 device-wide `Device1.Connect`/`Disconnect`. It does not run privileged commands,
 modify daemon configuration, or add a compatibility fallback.
 
-Migration from earlier candidates: omission leaves scanning available but
-connection acquisition and LE GATT discovery unsupported. Use a daemon with the implemented LE bearer
-API and explicitly attest its current owner; older unsupported implementations
-must be upgraded, not opted into device-wide lifecycle behavior. There is no
+The native release answer is also bound to the caller's original peer, lease and
+public connection generation. Its observed platform detail reaches the public
+lifecycle terminal directly from that answer, without waiting for event delivery.
+The public cleanup receipt remains `state` and `failures`; an unobserved reason
+remains absent, and a refused release retains ownership for retry.
+
+Migration from earlier candidates: omission selects native owner binding, not
+scan-only admission. Actual LE lifecycle and strict discovery support still
+require the corresponding implemented daemon mechanisms; automatic owner
+binding does not create those mechanisms or claim readiness. A retired manager
+never transfers its leases to a replacement daemon. Construct a fresh manager
+to resolve the replacement owner after the old ownership is settled. There is no
 legacy policy mode. The same policy applies to a process host's borrowed managers
 and native continuation because they share its central. Policy is BlueZ-only;
 CoreBluetooth and WinRT reject it.
 
-Accepted LE connect/disconnect replies remain owned when a caller cancels.
+Accepted token-bound LE connect/release replies remain owned when a caller cancels.
+An exact terminal release observation may remain as one peer/generation fact
+after native obligations reach zero, so an original cancelled or concurrent
+waiter can consume its own answer. The matching public transition consumes it;
+newer peer admission supersedes it. This retained fact is not a live native lease
+or ACK maintenance debt, and it cannot supply a reason for a newer connection.
 An indeterminate reply is not permission to resend the effect or acquire a new
 generation; a refused release stays retryable. Resolving an unknown address uses
 separately owned, adapter-scoped LE discovery, never `ConnectDevice`. Its accepted
@@ -146,9 +164,18 @@ Radio work is refused before any radio effect, with the 4.x per-OS admission:
 
 - **CoreBluetooth** checks authorization first (`permission.denied`, `permission.restricted`, `permission.not-determined`), then availability (`adapter.unavailable`), then power (`adapter.powered-off`, `adapter.resetting`).
 - **WinRT** checks availability first, then authorization, then power.
-- **BlueZ** refuses only on lifecycle, as the dbus-next backend did.
+- **BlueZ** additionally verifies the pinned daemon's implemented Linux authority
+  before connection/GATT admission. Scanning does not claim that capability.
 
-An adapter loss is a power-off, resetting, unsupported, revoked authorization, a removed adapter, or a restarted bluetoothd. It tears down everything live. In-flight operations settle `operation.reset`. Scans and subscriptions end `source-failed`. Links are released: CoreBluetooth and WinRT emit `connection-state-changed` with reason `adapter`, while BlueZ invalidates them without an event. The backend generation advances (`1`, `2`, … as the 4.x backends numbered it), so every connection, database and subscription handle from before the loss is stale; peer handles stay usable. CoreBluetooth and BlueZ then emit `backend-restarted`. Each OS keeps the sequence its 4.x backend had. The manager survives the loss and binds the new generation, so a connection supervisor reconnects when the adapter returns and a release of anything the loss ended answers `released` (4.x destroyed the manager on a loss).
+Adapter loss invalidates affected connection, database and subscription generations;
+it does not authorize guessing that an outstanding native release succeeded.
+BlueZ owner replacement retires the original authority and fails closed. Old
+tokens retain their original owner/device/generation, and cleanup never routes
+them to a replacement daemon. A fresh manager resolves the replacement owner
+and verifies its contract; old peer handles are not rebinding credentials.
+Physical LE loss carries its authenticated generation and actual MGMT reason,
+so a buffered old event cannot invalidate a newer connection. An ATT/database
+invalidation is not proof of physical ACL termination.
 
 The core publishes lifecycle, scan-end, security, write-readiness and adapter-reset events on bounded queues (256 each). A backend that falls behind is told how many it missed, and re-reads the core's own state rather than guessing: every live link's connection state and generation, and its database state (`connection-lost`, `database-changed`, or the adapter-loss sequence above while the adapter is lost); which scan the core still owns (a scan it no longer owns ends `source-failed`); and each watched peer's security state and write readiness. A link the core still reports live and current gets no event.
 

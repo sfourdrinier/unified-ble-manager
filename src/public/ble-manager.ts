@@ -18,6 +18,7 @@ import {
   createAttachmentBoundPeerId
 } from '../backend-contract/primitives'
 import type { PeerId } from '../backend-contract/primitives'
+import { utf8ByteLength } from '../backend-contract/serializable'
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
 import type {
@@ -89,7 +90,7 @@ import {
 } from '../backend-contract/connection-controls'
 import { MAX_PUBLIC_SCAN_STATE_BYTES, MAX_PUBLIC_SCAN_STATE_ENTRIES } from './scan-state-budget'
 import type { CleanupRecord as PublicCleanupRecord } from './cleanup'
-import { toPublicCleanupRecord } from './cleanup'
+import { toPublicCleanupRecord, toPublicPlatformErrorDetail, type PublicPlatformErrorDetail } from './cleanup'
 import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream } from './streams'
 
 export type { ConnectionPriority } from '../backend-contract/connection-controls'
@@ -128,6 +129,8 @@ export interface BleConnectionEvent {
   readonly cause: ConnectionLifecycleCause
   readonly connectionGeneration: string
   readonly sequence: number
+  /** The native owner's observed cause detail; absent when none was reported. */
+  readonly platform?: PublicPlatformErrorDetail
 }
 
 export type BleControlObservationState = 'measured' | 'unavailable' | 'unsupported'
@@ -517,15 +520,22 @@ export interface FindOptions extends OperationOptions {
   readonly platform?: ScanPlatformOptions
 }
 
+/** System selection, not connection. Web chooses a permitted device; configured
+ * mobile hosts may perform OS accessory setup/association. Unsupported selector
+ * combinations are refused rather than widened. ASK grants the accessory, not a
+ * per-service allowlist, so optionalServices only governs Web service permission. */
 export interface ChooseOptions extends OperationOptions {
+  /** Selection constraints; a nonempty list is mutually exclusive with acceptAllDevices: true. */
   readonly filters?: readonly ChooseFilter[]
   readonly optionalServices?: readonly (string | number)[]
+  /** Defaults to true for absent/empty filters; unsupported on hosts without unfiltered selection. False requires nonempty filters. */
   readonly acceptAllDevices?: boolean
 }
 
 export interface ChooseFilter {
   readonly serviceUuids?: readonly (string | number)[]
   readonly manufacturerData?: readonly {
+    /** Bluetooth company identifier: an integer from 0 through 65535. Invalid values fail before host admission. */
     readonly companyIdentifier: number
     readonly dataPrefix?: Readonly<Uint8Array>
   }[]
@@ -2674,6 +2684,7 @@ function mapPublicConnectionEvents(
               throw publicConnectionTerminalError(item.value.reason, item.value.error ?? null)
             }
             const event = item.value.value
+            const platform = toPublicPlatformErrorDetail(event.platform)
             return {
               done: false,
               value: Object.freeze({
@@ -2682,7 +2693,8 @@ function mapPublicConnectionEvents(
                 current: event.current,
                 cause: event.cause,
                 connectionGeneration: String(event.connectionGeneration),
-                sequence: event.sequence
+                sequence: event.sequence,
+                ...(platform === null ? {} : { platform })
               })
             }
           }
@@ -2728,18 +2740,25 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
       stream.closeWithReason(this.terminalReason)
     }
     const iterator = stream[Symbol.asyncIterator]()
+    let winningError: Error | null = null
+    let returned = false
     return {
       next: async () => {
+        if (returned) return { done: true, value: undefined }
+        if (winningError !== null) throw winningError
         const item = await iterator.next()
-        if (this.retainedError !== null) throw this.retainedError
         if (item.done) return { done: true, value: undefined }
         if (item.value.kind === 'value') return { done: false, value: item.value.value }
-        if (item.value.kind === 'overflow') {
-          throw contractError('stream.overflow', 'connection', 'public-connection.events')
+        if (item.value.kind === 'overflow' || item.value.reason === 'overflow') {
+          winningError = contractError('stream.overflow', 'connection', 'public-connection.events')
+        } else if (this.retainedError !== null) {
+          winningError = this.retainedError
         }
+        if (winningError !== null) throw winningError
         return { done: true, value: undefined }
       },
       return: async () => {
+        returned = true
         this.subscribers.delete(stream)
         await iterator.return()
         return { done: true, value: undefined }
@@ -2756,8 +2775,9 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
   private async pump(): Promise<void> {
     try {
       for await (const event of this.source) {
+        const eventBytes = utf8ByteLength(JSON.stringify(event))
         for (const subscriber of [...this.subscribers]) {
-          const result = subscriber.emit(event, 512)
+          const result = subscriber.emit(event, eventBytes)
           if (result.terminated) this.subscribers.delete(subscriber)
         }
       }
@@ -2783,7 +2803,7 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
 
   private closeSubscribers(reason: 'closed' | 'source-failed'): void {
     for (const subscriber of this.subscribers) {
-      subscriber.closeWithReason(reason)
+      subscriber.finishWithReason(reason)
       this.subscribers.delete(subscriber)
     }
   }
@@ -3012,6 +3032,10 @@ export function assertPublicChooseOptions(options: ChooseOptions): void {
   if (options.filters !== undefined && !Array.isArray(options.filters)) {
     throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filters')
   }
+  const hasFilters = (options.filters?.length ?? 0) > 0
+  if ((options.acceptAllDevices === true && hasFilters) || (options.acceptAllDevices === false && !hasFilters)) {
+    throw contractError('scan.filter-invalid', 'chooser', 'public-ble-manager.choose.selection-mode')
+  }
   if (options.filters !== undefined) {
     for (const filter of options.filters) {
       if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) {
@@ -3038,11 +3062,18 @@ export function assertPublicChooseOptions(options: ChooseOptions): void {
           if (
             typeof manufacturer !== 'object' ||
             manufacturer === null ||
-            !Number.isSafeInteger(manufacturer.companyIdentifier) ||
-            manufacturer.companyIdentifier < 0 ||
+            Array.isArray(manufacturer) ||
+            typeof manufacturer.companyIdentifier !== 'number' ||
             (manufacturer.dataPrefix !== undefined && !(manufacturer.dataPrefix instanceof Uint8Array))
           ) {
             throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter.manufacturer-entry')
+          }
+          if (
+            !Number.isSafeInteger(manufacturer.companyIdentifier) ||
+            manufacturer.companyIdentifier < 0 ||
+            manufacturer.companyIdentifier > 0xffff
+          ) {
+            throw contractError('scan.filter-invalid', 'chooser', 'public-ble-manager.choose.filter.company-identifier')
           }
         }
       }

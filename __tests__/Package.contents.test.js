@@ -55,6 +55,7 @@ describe('published package contains the files and scripts it claims', () => {
         'native-protocol/rn-apple-boundary.ts',
         'native-protocol/rn-android-boundary.ts',
         'react-native-app-manager.ts',
+        'react-native-public-manager.ts',
         'node-host-manager.ts',
         'desktop-process-host.ts',
         'desktop-process-initialization.ts',
@@ -96,7 +97,7 @@ describe('published package contains the files and scripts it claims', () => {
     expect(packInstallSmokeSource).toContain('./external-deterministic-backend.cjs')
     expect(packInstallSmokeSource).toContain('identity.valid-all-axis-negotiation')
     expect(packInstallSmokeSource).toContain('--prefer-offline')
-    expect(packInstallSmokeSource).toContain("require('node-addon-api/package.json')")
+    expect(packInstallSmokeSource).not.toContain("require('node-addon-api/package.json')")
     expect(packInstallSmokeSource).toContain("const semver = require('semver')")
     expect(packInstallSmokeSource).not.toContain('linkHostExpoConfigPlugins')
     expect(packInstallSmokeSource).not.toContain('linkOptionalBluezDependency')
@@ -142,12 +143,9 @@ describe('published package contains the files and scripts it claims', () => {
       'react-native': { optional: true }
     })
     expect(packageJson.peerDependenciesMeta).not.toHaveProperty('dbus-next')
-    expect(packageJson.optionalDependencies).toMatchObject({
-      'node-addon-api': '8.9.0',
-      'node-gyp': '12.4.0'
-    })
-    expect(packageJson.optionalDependencies).not.toHaveProperty('@expo/config-plugins')
-    expect(packageJson.optionalDependencies).not.toHaveProperty('dbus-next')
+    expect(packageJson.optionalDependencies ?? {}).toEqual({})
+    expect(packageJson.optionalDependencies ?? {}).not.toHaveProperty('@expo/config-plugins')
+    expect(packageJson.optionalDependencies ?? {}).not.toHaveProperty('dbus-next')
     expect(packageJson.dependencies).toEqual({ '@babel/runtime': '^7.29.7' })
     expect(packageJson.devDependencies.webpack).toBe('5.109.2')
     expect(packInstallSmokeSource).toContain('createPackedBrowserBundleConsumer')
@@ -201,39 +199,23 @@ describe('published package contains the files and scripts it claims', () => {
     expect(thirdPartyFixtureManifest.devDependencies).toEqual({ typescript: '5.8.3' })
   })
 
-  test('publishes self-contained Electron native build inputs and direct native loaders', () => {
-    expect(() => require('../native/electron/corebluetooth')).not.toThrow()
-    const coreBluetoothLoader = fs.readFileSync(
-      path.join(root, 'native', 'electron', 'corebluetooth', 'index.js'),
-      'utf8'
-    )
-    const winRtLoader = fs.readFileSync(path.join(root, 'native', 'electron', 'winrt', 'index.js'), 'utf8')
-    const tarballVerifierSource = fs.readFileSync(tarballVerifier, 'utf8')
-
-    expect(packageJson.optionalDependencies).toMatchObject({
-      'node-addon-api': '8.9.0',
-      'node-gyp': '12.4.0'
-    })
+  test('publishes only the shared desktop loader without exclusive retired build dependencies', () => {
+    expect(() => require('../native/desktop-core')).not.toThrow()
+    const loader = fs.readFileSync(path.join(root, 'native/desktop-core/index.js'), 'utf8')
+    const verifier = fs.readFileSync(tarballVerifier, 'utf8')
+    expect(packageJson.optionalDependencies ?? {}).toEqual({})
     expect(packageJson.peerDependencies).toMatchObject({ expo: '^57.0.0' })
     expect(packageJson.peerDependenciesMeta).toMatchObject({ expo: { optional: true } })
     expect(packageJson.dependencies).toEqual({ '@babel/runtime': '^7.29.7' })
-    expect(packageJson.devDependencies.expo).toBe('^57.0.0')
-    expect(packageJson.devDependencies.semver).toBe('^7.8.5')
     expect(packageJson.devDependencies).not.toHaveProperty('node-addon-api')
     expect(packageJson.devDependencies).not.toHaveProperty('node-gyp')
-    expect(coreBluetoothLoader).toContain("require('../../load-node-api-addon')")
-    expect(coreBluetoothLoader).toContain("addonName: 'unified_ble_corebluetooth'")
-    expect(coreBluetoothLoader).not.toMatch(/require\(['"]bindings['"]\)/)
-    expect(coreBluetoothLoader).not.toMatch(/\bbindings\b/)
-    expect(winRtLoader).toContain("require('../../load-node-api-addon')")
-    expect(winRtLoader).toContain("addonName: 'unified_ble_winrt'")
-    expect(winRtLoader).not.toMatch(/\bbindings\b/)
-    expect(tarballVerifierSource).toContain('requiredElectronNativeSourceEntries')
-    expect(tarballVerifierSource).toContain('assertNoUndeclaredElectronNativeRuntimeLoaders')
-    expect(tarballVerifierSource).toContain("'node-addon-api'")
-    expect(tarballVerifierSource).toContain("'node-gyp'")
-    expect(tarballVerifierSource).toContain("'package/CHANGELOG.md'")
-    expect(tarballVerifierSource).toContain("'package/RELEASE.md'")
+    expect(loader).toContain("require('../load-node-api-addon')")
+    expect(loader).toContain('loadExactPrebuild')
+    expect(verifier).toContain('requiredElectronNativeSourceEntries')
+    expect(verifier).toContain('assertNoUndeclaredElectronNativeRuntimeLoaders')
+    expect(verifier).toContain('Retired desktop producer in packed artifact')
+    expect(verifier).toContain("'package/CHANGELOG.md'")
+    expect(verifier).toContain("'package/RELEASE.md'")
   })
 
   test('rejects Noble-family runtime dependencies and runtime imports while leaving documentation and tests unscanned', () => {

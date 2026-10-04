@@ -208,7 +208,7 @@ export const DESKTOP_RUST_CORE_PARITY: readonly DesktopRustCoreParityRow[] = Obj
     ['winrt'],
     'descriptor writes accepted only with-response ("Windows GATT descriptors do not support write-without-response")',
     implemented(
-      'the same with-response-only rule, refused before dispatch (native/electron/winrt/src/winrt-boundary.inc:1181)'
+      'DesktopRustCoreBackend.writeDescriptor rejects without-response before dispatch; DesktopCentral::write_descriptor takes no mode'
     )
   ),
   row(

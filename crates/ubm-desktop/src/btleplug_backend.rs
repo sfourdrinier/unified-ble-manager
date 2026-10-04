@@ -56,6 +56,114 @@ use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
 /// finish inside it becomes a [`RadioCloseFailure`] receipt.
 pub const CLOSE_SCOPE_BOUND: Duration = Duration::from_secs(5);
 
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+struct LinuxLeaseClient {
+    peripheral: Peripheral,
+    owner: String,
+    peer: String,
+    events: mpsc::Sender<RadioEvent>,
+}
+
+#[cfg(target_os = "linux")]
+impl crate::os::linux_lease::LeaseClient for LinuxLeaseClient {
+    async fn replay_loss(&self, generation: u64, reason: u8) -> Result<(), DesktopError> {
+        self.events
+            .try_send(RadioEvent::LinuxPhysicalLost {
+                peer_id: self.peer.clone(),
+                physical_generation: generation,
+                reason,
+            })
+            .map_err(|error| {
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Connection,
+                    "connection.connect",
+                )
+                .with_detail(format!(
+                    "authenticated early physical loss could not reach its owner: {error}"
+                ))
+            })
+    }
+    fn allocate_reservation(&self) -> Result<u64, DesktopError> {
+        self.peripheral
+            .allocate_le_reservation_id()
+            .map_err(|error| DesktopError::connection_failed(error.to_string()).with_os(&error))
+    }
+    async fn acknowledge(&self, token: u64) -> Result<(), DesktopError> {
+        self.peripheral
+            .acknowledge_le_lease(&self.owner, token)
+            .await
+            .map_err(|error| {
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Cleanup,
+                    "radio.close.le-lease-ack",
+                )
+                .with_detail(error.to_string())
+                .with_os(&error)
+            })
+    }
+    async fn reserve(&self, reservation: u64) -> Result<u64, DesktopError> {
+        self.peripheral
+            .reserve_le_lease(&self.owner, reservation)
+            .await
+            .map_err(|error| DesktopError::connection_failed(error.to_string()).with_os(&error))
+    }
+    async fn recover(&self, reservation: u64) -> Result<Option<u64>, DesktopError> {
+        self.peripheral
+            .recover_le_lease(&self.owner, reservation)
+            .await
+            .map_err(|error| {
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Cleanup,
+                    "connection.disconnect",
+                )
+                .with_detail(error.to_string())
+                .with_os(&error)
+            })
+    }
+    async fn connect(&self, token: u64) -> Result<u64, DesktopError> {
+        self.peripheral
+            .connect_le_lease(&self.owner, token)
+            .await
+            .map_err(|error| DesktopError::connection_failed(error.to_string()).with_os(&error))
+    }
+    async fn release(
+        &self,
+        token: u64,
+        generation: Option<u64>,
+    ) -> Result<crate::os::linux_lease::Receipt, DesktopError> {
+        use crate::os::linux_lease::{Receipt, Scope};
+        use btleplug::platform::LeLeaseReleaseScope;
+        let receipt = self
+            .peripheral
+            .release_le_lease(&self.owner, token, generation)
+            .await
+            .map_err(|error| {
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Cleanup,
+                    "connection.disconnect",
+                )
+                .with_detail(error.to_string())
+                .with_os(&error)
+            })?;
+        Ok(Receipt {
+            token: receipt.token,
+            generation: receipt.physical_generation,
+            disconnect_reason: receipt.disconnect_reason,
+            scope: match receipt.scope {
+                LeLeaseReleaseScope::PhysicalReleased => Scope::Physical,
+                LeLeaseReleaseScope::ReservationReleased => Scope::Reservation,
+                LeLeaseReleaseScope::LeaseReleasedProtected => Scope::Protected,
+                LeLeaseReleaseScope::LeaseReleasedIndeterminate => Scope::Indeterminate,
+            },
+        })
+    }
+}
+
 /// Event-stream drops that found the stream lock contended (PR210-26); see
 /// [`drop_event_stream`].
 static CONTENDED_RADIO_DROPS: AtomicU64 = AtomicU64::new(0);
@@ -822,6 +930,8 @@ pub struct BtleplugRadio {
     forwarders: Arc<StdMutex<HashMap<String, ForwarderEntry>>>,
     gatt_work: GattWorkQueue,
     #[cfg(target_os = "linux")]
+    linux_leases: crate::os::linux_lease::Ledger<LinuxLeaseClient>,
+    #[cfg(target_os = "linux")]
     gatt_control_failure: Arc<StdMutex<Option<DesktopError>>>,
     #[cfg(target_os = "linux")]
     gatt_peer_failures: Arc<StdMutex<HashMap<String, DesktopError>>>,
@@ -852,6 +962,8 @@ pub struct BtleplugRadio {
     bluez: Result<Arc<crate::os::linux::Bluez>, DesktopError>,
     #[cfg(target_os = "linux")]
     bluez_connection_policy: Option<crate::boundary::BluezConnectionPolicy>,
+    #[cfg(target_os = "linux")]
+    bluez_connection_contract: Result<(), DesktopError>,
     /// The BlueZ bond-change watcher task (Linux), aborted with the radio.
     #[cfg(target_os = "linux")]
     bluez_watch: Option<tokio::task::JoinHandle<()>>,
@@ -948,7 +1060,8 @@ impl BtleplugRadio {
         Self::open_on_with_policy(spawn, adapter_id, bus, None).await
     }
 
-    /// Open with an explicit trusted-host BlueZ LE daemon attestation.
+    /// Bind Linux authority to the current daemon natively. An explicit host
+    /// owner pin adds a restriction; omission never selects Device1 fallback.
     /// Other platforms reject a supplied BlueZ policy before allocation.
     pub async fn open_on_with_policy(
         spawn: tokio::runtime::Handle,
@@ -987,7 +1100,7 @@ impl BtleplugRadio {
         let (notifications, notification_rx) = mpsc::channel(NOTIFICATION_CAP);
         let (os_events_tx, os_events) = mpsc::channel(OS_EVENT_CAP);
         #[cfg(target_os = "linux")]
-        let bluez = crate::os::linux::Bluez::open_with_le_owner(
+        let bluez = crate::os::linux::Bluez::open_authority(
             &adapter_label,
             bus,
             connection_policy.as_ref().map(|policy| match policy {
@@ -997,6 +1110,19 @@ impl BtleplugRadio {
             }),
         )
         .await;
+        #[cfg(target_os = "linux")]
+        let bluez_connection_contract = match &bluez {
+            Ok(authority) => authority.verify_connection_contract().await,
+            Err(error) => Err(error.clone()),
+        };
+        #[cfg(target_os = "linux")]
+        let connection_policy = bluez.as_ref().ok().and_then(|authority| {
+            authority
+                .bound_owner()
+                .map(|owner| crate::boundary::BluezConnectionPolicy::LeBearer {
+                    daemon_unique_owner: owner.to_owned(),
+                })
+        });
         #[cfg(target_os = "linux")]
         let (bluez_watch, bluez_gatt_watch) = match &bluez {
             Ok(bluez) => match bluez.watch_security(os_events_tx.clone(), &spawn).await {
@@ -1033,6 +1159,8 @@ impl BtleplugRadio {
             forwarders: Arc::new(StdMutex::new(HashMap::new())),
             gatt_work: GattWorkQueue::default(),
             #[cfg(target_os = "linux")]
+            linux_leases: crate::os::linux_lease::Ledger::default(),
+            #[cfg(target_os = "linux")]
             gatt_control_failure: Arc::new(StdMutex::new(None)),
             #[cfg(target_os = "linux")]
             gatt_peer_failures: Arc::new(StdMutex::new(HashMap::new())),
@@ -1047,6 +1175,8 @@ impl BtleplugRadio {
             bluez,
             #[cfg(target_os = "linux")]
             bluez_connection_policy: connection_policy,
+            #[cfg(target_os = "linux")]
+            bluez_connection_contract,
             #[cfg(target_os = "linux")]
             bluez_watch,
             #[cfg(target_os = "linux")]
@@ -1118,11 +1248,14 @@ impl BtleplugRadio {
 
     #[cfg(target_os = "linux")]
     fn bluez_owner(&self, operation: &str) -> Result<&str, DesktopError> {
+        self.bluez_connection_contract
+            .as_ref()
+            .map_err(Clone::clone)?;
         match &self.bluez_connection_policy {
             Some(crate::boundary::BluezConnectionPolicy::LeBearer { daemon_unique_owner }) => Ok(daemon_unique_owner),
             None => Err(DesktopError::new(BleErrorCode::CapabilityUnsupported,
                 BleErrorDomain::Capability, operation).with_detail(
-                    "BlueZ LE lifecycle requires a trusted host attestation for the current unique daemon owner implementing org.bluez.Bearer.LE1; Device1 fallback is not supported")),
+                    "BlueZ LE lifecycle requires a natively bound unique daemon owner and implemented LinuxAuthority1/LELease1; Device1 fallback is not supported")),
         }
     }
 
@@ -1747,6 +1880,13 @@ async fn drain_gatt_forwarders(
         peer_id,
         retire,
     );
+    drain_retired_forwarders(retired, deferred).await;
+}
+
+async fn drain_retired_forwarders(
+    retired: Vec<ForwarderEntry>,
+    deferred: &Mutex<VecDeque<RadioEvent>>,
+) {
     for entry in retired {
         let scope = entry.scope();
         let lost = entry.task.drain(FORWARDER_DRAIN_BOUND).await;
@@ -3138,6 +3278,7 @@ fn property_flags(flags: CharPropFlags) -> PropertyFlags {
 /// a protocol constant rather than rendered text. Off Linux nothing reaches
 /// here — CoreBluetooth and WinRT report a missing peer as `Ok(false)`
 /// rather than as an error — so no `cfg` gate is needed.
+#[cfg(any(test, not(target_os = "linux")))]
 fn disconnect_error_confirms_released(error: &btleplug::Error) -> bool {
     match error {
         btleplug::Error::Platform(detail) => matches!(
@@ -3212,6 +3353,32 @@ fn sorted_service_data(sections: &HashMap<uuid::Uuid, Vec<u8>>) -> Vec<ServiceDa
 }
 
 impl RadioBoundary for BtleplugRadio {
+    #[cfg(target_os = "linux")]
+    async fn accept_physical_loss(&self, peer: &str, generation: u64, reason: u8) -> bool {
+        if !self
+            .linux_leases
+            .physical_lost_observed(peer, generation, reason)
+            .await
+        {
+            return false;
+        }
+        self.gatt.evict(peer);
+        let retired = retire_peer_forwarders(
+            &mut self.forwarders.lock().expect("forwarder table"),
+            &mut self.cleanup_debt.lock().expect("cleanup debt"),
+            peer,
+            PeerRetirement::LinkEndedRetainingNotifySession,
+        );
+        let deferred = Arc::clone(&self.deferred);
+        self.spawn.spawn(async move {
+            drain_retired_forwarders(retired, &deferred).await;
+        });
+        if let Err(error) = self.release_link_state(peer) {
+            OS_RELEASE_FAILURES.fetch_add(1, Ordering::Relaxed);
+            eprintln!("ubm-desktop: observed physical loss retained local state debt: {error:?}");
+        }
+        true
+    }
     async fn connected_peers(
         &self,
         services: &[String],
@@ -3310,7 +3477,7 @@ impl RadioBoundary for BtleplugRadio {
 
     fn connection_capability_limitation(&self) -> Option<&'static str> {
         #[cfg(target_os = "linux")]
-        if self.bluez_connection_policy.is_none() {
+        if self.bluez_connection_policy.is_none() || self.bluez_connection_contract.is_err() {
             return Some(crate::capabilities::BLUEZ_LE_AUTHORITY_REQUIRED);
         }
         None
@@ -3400,9 +3567,21 @@ impl RadioBoundary for BtleplugRadio {
         }
         let peripheral = self.peripheral_by_id(peer_id).await?;
         #[cfg(target_os = "linux")]
-        let connected = peripheral.connect_le(owner).await;
+        self.linux_leases
+            .clone()
+            .connect(
+                peer_id.to_owned(),
+                LinuxLeaseClient {
+                    peripheral: peripheral.clone(),
+                    owner: owner.to_owned(),
+                    peer: peer_id.to_owned(),
+                    events: self._os_events_tx.clone(),
+                },
+            )
+            .await?;
         #[cfg(not(target_os = "linux"))]
         let connected = peripheral.connect().await;
+        #[cfg(not(target_os = "linux"))]
         connected
             .map_err(|error| DesktopError::connection_failed(error.to_string()).with_os(&error))?;
         // Windows: hold the link like the legacy addon's connect did. A
@@ -3421,22 +3600,34 @@ impl RadioBoundary for BtleplugRadio {
     }
 
     async fn disconnect(&self, peer_id: &str) -> Result<(), DesktopError> {
+        self.disconnect_with_observation(peer_id).await.map(|_| ())
+    }
+
+    async fn disconnect_with_observation(
+        &self,
+        peer_id: &str,
+    ) -> Result<crate::boundary::DisconnectObservation, DesktopError> {
         // T-R2: straight to the radio, as legacy went straight to
         // `peripheral.disconnect()` — no pre-disconnect `is_connected()`
         // query (an extra D-Bus read the legacy path never made).
         #[cfg(target_os = "linux")]
-        let disconnected = match &self.bluez_connection_policy {
-            None => Ok(()), // No acquisition can be admitted by this radio.
-            Some(crate::boundary::BluezConnectionPolicy::LeBearer {
-                daemon_unique_owner,
-            }) => {
-                self.adapter
-                    .disconnect_le(peer_id, daemon_unique_owner)
-                    .await
-            }
+        let receipt = self
+            .linux_leases
+            .clone()
+            .release_with_observation(peer_id)
+            .await?;
+        #[cfg(target_os = "linux")]
+        let observation = crate::boundary::DisconnectObservation {
+            platform: receipt
+                .disconnect_reason
+                .map(crate::boundary::bluez_disconnect_observation),
+            physical_generation: receipt.physical_generation,
         };
         #[cfg(not(target_os = "linux"))]
+        let observation = crate::boundary::DisconnectObservation::default();
+        #[cfg(not(target_os = "linux"))]
         let disconnected = self.peripheral_by_id(peer_id).await?.disconnect().await;
+        #[cfg(not(target_os = "linux"))]
         if let Err(error) = disconnected {
             // T-R1: a removed device object is not a failure of this
             // release — it is the answer. BlueZ drops the D-Bus object, so
@@ -3459,8 +3650,35 @@ impl RadioBoundary for BtleplugRadio {
                 .with_os(&error));
             }
         }
-        self.gatt.evict(peer_id);
-        self.release_link_state(peer_id)
+        #[cfg(target_os = "linux")]
+        if let Some(result) =
+            self.linux_leases
+                .with_release_scope(peer_id, observation.physical_generation, || {
+                    self.gatt.evict(peer_id);
+                    self.release_link_state(peer_id)
+                })
+        {
+            result?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.gatt.evict(peer_id);
+            self.release_link_state(peer_id)?;
+        }
+        Ok(observation)
+    }
+
+    fn consume_disconnect_observation(
+        &self,
+        peer_id: &str,
+        observation: &crate::boundary::DisconnectObservation,
+    ) {
+        #[cfg(target_os = "linux")]
+        if let Some(generation) = observation.physical_generation {
+            self.linux_leases.consume_terminal(peer_id, generation);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (peer_id, observation);
     }
 
     async fn discover(&self, peer_id: &str) -> Result<Vec<ServiceSnapshot>, DesktopError> {
@@ -3878,6 +4096,37 @@ impl RadioBoundary for BtleplugRadio {
 
     async fn finish_close(&self) -> Vec<DesktopError> {
         let mut failures = Vec::new();
+        #[cfg(target_os = "linux")]
+        for peer in self.linux_leases.peers() {
+            match tokio::time::timeout(CLOSE_SCOPE_BOUND, self.linux_leases.clone().release(&peer))
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => failures.push(error),
+                Err(_) => failures.push(
+                    DesktopError::new(
+                        BleErrorCode::OperationTimedOut,
+                        BleErrorDomain::Cleanup,
+                        "radio.close.le-lease",
+                    )
+                    .with_detail(format!(
+                        "lease cleanup for {peer} remains owned; retry transport cleanup"
+                    )),
+                ),
+            }
+        }
+        #[cfg(target_os = "linux")]
+        match tokio::time::timeout(CLOSE_SCOPE_BOUND, self.linux_leases.retry_maintenance()).await {
+            Ok(debt) => failures.extend(debt),
+            Err(_) => failures.push(
+                DesktopError::new(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Cleanup,
+                    "radio.close.le-lease-ack",
+                )
+                .with_detail("lease acknowledgment housekeeping remains owned"),
+            ),
+        }
         if tokio::time::timeout(CLOSE_SCOPE_BOUND, self.gatt_work.drain())
             .await
             .is_err()
@@ -4347,6 +4596,18 @@ impl RadioBoundary for BtleplugRadio {
                 }
                 Step::Os(Some(RadioEvent::Disconnected(peer_id))) => {
                     self.observe_link_ended(peer_id).await;
+                }
+                #[cfg(target_os = "linux")]
+                Step::Os(Some(RadioEvent::LinuxPhysicalLost {
+                    peer_id,
+                    physical_generation,
+                    reason,
+                })) => {
+                    return Some(RadioEvent::LinuxPhysicalLost {
+                        peer_id,
+                        physical_generation,
+                        reason,
+                    });
                 }
                 Step::Os(Some(event)) => return Some(event),
                 Step::Os(None) => {}

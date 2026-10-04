@@ -1,6 +1,7 @@
 // src/backend-contract/errors.ts
 
-import type { SerializableRecord } from './primitives'
+import type { SerializableRecord, SerializableValue } from './primitives'
+import { snapshotSerializableRecord } from './serializable'
 
 export const BLE_ERROR_CODES = Object.freeze([
   'protocol.incompatible',
@@ -93,6 +94,59 @@ export interface PlatformErrorDetail {
   readonly code: string
   readonly safeMessage: string
   readonly metadata: SerializableRecord
+}
+
+/** Validated data-only lifecycle detail; omission never invents a native cause. */
+export function optionalPlatformErrorDetail(value: unknown, operation: string): PlatformErrorDetail | undefined {
+  if (value === undefined || value === null) return undefined
+  if (
+    !isPlatformRecord(value) ||
+    typeof value.domain !== 'string' ||
+    value.domain.length === 0 ||
+    typeof value.code !== 'string' ||
+    value.code.length === 0 ||
+    typeof value.safeMessage !== 'string' ||
+    !isPlatformRecord(value.metadata)
+  ) {
+    throw contractError('protocol.malformed', 'boundary', operation)
+  }
+  return Object.freeze({
+    domain: value.domain,
+    code: value.code,
+    safeMessage: value.safeMessage,
+    metadata: snapshotSerializableRecord(value.metadata).value
+  })
+}
+
+function isPlatformRecord(value: unknown): value is SerializableRecord {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    !(value instanceof Uint8Array) &&
+    serializablePlatformValue(value, new WeakSet())
+  )
+}
+
+function serializablePlatformValue(value: unknown, active: WeakSet<object>): value is SerializableValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (typeof value !== 'object') return false
+  if (value instanceof Uint8Array) return true
+  if (active.has(value)) return false
+  active.add(value)
+  const valid = Object.values(value).every(entry => serializablePlatformValue(entry, active))
+  active.delete(value)
+  return valid
+}
+
+export function serializePlatformErrorDetail(platform: PlatformErrorDetail): SerializableRecord {
+  return snapshotSerializableRecord({
+    domain: platform.domain,
+    code: platform.code,
+    safeMessage: platform.safeMessage,
+    metadata: platform.metadata
+  }).value
 }
 /**
  * Whether the operation that failed may be repeated. `never` includes an

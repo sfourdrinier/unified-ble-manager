@@ -2,10 +2,7 @@
 
 'use strict'
 
-const {
-  createCoreBluetoothBackendProvider
-} = require('../../../src/backends/corebluetooth/corebluetooth-provider')
-const { prepareNativeCoreBluetoothBoundary } = require('../../../src/backends/corebluetooth/corebluetooth-native-boundary')
+const { createCoreBluetoothBackendProvider } = require('../../../src/backends/corebluetooth/corebluetooth-provider')
 
 function poweredOn() {
   return { availability: 'available', authorization: 'granted', power: 'on', safeReason: null }
@@ -46,19 +43,5 @@ describe('CoreBluetooth provider boundary preparation', () => {
 
     await expect(provider.listAdapters()).rejects.toBe(failure)
     expect(destroy).toHaveBeenCalledTimes(1)
-  })
-
-  test('removes a synchronously satisfied native state listener exactly once', async () => {
-    const remove = jest.fn()
-    const boundary = {
-      adapterSnapshot: () => poweredOn(),
-      onAdapterState: listener => {
-        listener(poweredOn())
-        return remove
-      }
-    }
-
-    await expect(prepareNativeCoreBluetoothBoundary(boundary)).resolves.toBeUndefined()
-    expect(remove).toHaveBeenCalledTimes(1)
   })
 })

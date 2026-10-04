@@ -1,6 +1,12 @@
 // src/ipc/public-manager.ts
 
-import { BackendContractError, BLE_ERROR_CODES, contractError, type CleanupRecord } from '../backend-contract/errors'
+import {
+  BackendContractError,
+  BLE_ERROR_CODES,
+  contractError,
+  optionalPlatformErrorDetail,
+  type CleanupRecord
+} from '../backend-contract/errors'
 import type { ConnectionLifecycleCause } from '../backend-contract/connection-lifecycle'
 import type { BoundedAsyncStream, StreamTerminalNotice } from '../backend-contract/streams'
 import type {
@@ -1049,6 +1055,10 @@ export function mapIpcConnectionEvents(
                 readIpcConnectionField(value, 'cause', 'ipc-public-manager.connection-event')
               )
               const sequence = readIpcConnectionField(value, 'sequence', 'ipc-public-manager.connection-event')
+              const platform = optionalPlatformErrorDetail(
+                readIpcConnectionField(value, 'platform', 'ipc-public-manager.connection-event'),
+                'ipc-public-manager.lifecycle.platform'
+              )
               if (
                 readIpcConnectionField(value, 'attachmentId', 'ipc-public-manager.connection-event') !==
                   expected.attachmentId ||
@@ -1077,7 +1087,8 @@ export function mapIpcConnectionEvents(
                   current,
                   cause,
                   connectionGeneration: expected.connectionGeneration,
-                  sequence
+                  sequence,
+                  ...(platform === undefined ? {} : { platform })
                 })
               }
             }

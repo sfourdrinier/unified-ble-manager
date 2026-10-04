@@ -3276,6 +3276,7 @@ async fn pr210_11_a_stale_generation_matches_nothing() {
             connection_generation: Some("generation-from-an-older-link".to_owned()),
             database_generation: None,
             kind: LifecycleKind::LinkLost,
+            platform: None,
         })
         .await;
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -3291,6 +3292,55 @@ async fn pr210_11_a_stale_generation_matches_nothing() {
             )
             .await
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lifecycle_platform_fact_survives_active_and_early_stream_delivery() {
+    for ready_first in [true, false] {
+        let harness = Harness::new().await;
+        let link = harness.connect("peer-a").await;
+        harness.connection_events(&link, "platform-events").await;
+        if ready_first {
+            harness.ready("platform-events").await;
+        }
+        let generation = harness
+            .with_caller(|caller| caller.connections[&link.handle].core_generation.clone())
+            .await;
+        harness
+            .dispatcher
+            .apply_lifecycle_event(&LifecycleEvent {
+                sequence: 99,
+                peer_id: "peer-a".into(),
+                peer_key: "peer-a".into(),
+                connection_generation: Some(generation),
+                database_generation: None,
+                kind: LifecycleKind::LinkLost,
+                platform: Some(
+                    PlatformDetail::new("bluez-mgmt", "8")
+                        .with_metadata("disconnectReason", PlatformValue::Int(8))
+                        .with_metadata("wide", PlatformValue::Int(i64::MAX)),
+                ),
+            })
+            .await;
+        if !ready_first {
+            harness.ready("platform-events").await;
+        }
+        let items = harness.wait_items("platform-events", 3).await;
+        assert_eq!(items[1]["value"]["cause"], "peer-link-loss");
+        assert_eq!(
+            items[1]["value"]["connectionGeneration"],
+            link.generation.as_str()
+        );
+        assert_eq!(items[1]["value"]["platform"]["domain"], "bluez-mgmt");
+        assert_eq!(
+            items[1]["value"]["platform"]["metadata"]["disconnectReason"],
+            8
+        );
+        assert_eq!(
+            items[1]["value"]["platform"]["metadata"]["wide"],
+            i64::MAX.to_string()
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

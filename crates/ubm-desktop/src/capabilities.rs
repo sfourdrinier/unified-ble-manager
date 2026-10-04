@@ -733,8 +733,9 @@ fn register_for(
 /// Limitation code for rows with no implementation yet.
 const NOT_IMPLEMENTED: &str = "not-implemented";
 
-/// Instance-specific reason for a scan-capable BlueZ radio without LE authority.
-pub const BLUEZ_LE_AUTHORITY_REQUIRED: &str = "bluez-le-bearer-attestation-required";
+/// Instance-specific reason for a scan-capable BlueZ radio whose pinned daemon
+/// does not implement the versioned lifecycle/lease/GATT authority contract.
+pub const BLUEZ_LE_AUTHORITY_REQUIRED: &str = "bluez-linux-authority-contract-required";
 
 /// Apply the instantiated radio's connection refusal, not a platform assumption.
 /// Deterministic and other host radios keep their own registered capabilities.

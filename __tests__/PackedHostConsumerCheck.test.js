@@ -8,6 +8,17 @@ const {
 const root = path.join(__dirname, '..')
 
 describe('packed Expo/Tauri/React consumer release gate', () => {
+  test('bundles the real packed Tauri entrypoint alongside static Tauri core without rewriting installed sources', () => {
+    const runner = fs.readFileSync(path.join(root, 'scripts/ci/packed-host-consumer-check.js'), 'utf8')
+    const fixture = fs.readFileSync(path.join(root, '__tests__/fixtures/tauri-bundler/main.js'), 'utf8')
+    const config = fs.readFileSync(path.join(root, '__tests__/fixtures/tauri-bundler/vite.config.mjs'), 'utf8')
+    expect(runner).toContain('runTauriBundlerConsumer(consumer)')
+    expect(fixture).toContain("from 'unified-ble-manager/tauri'")
+    expect(fixture).toContain("from '@tauri-apps/api/core'")
+    expect(config).toContain('throw new Error')
+    expect(config).not.toContain('transform(')
+    expect(config).not.toContain('alias:')
+  })
   test('derives host coverage from conditional package export targets', () => {
     const exportsMap = {
       './renamed-expo-entry': {

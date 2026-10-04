@@ -120,7 +120,7 @@ impl BluetoothSession {
             .await?;
         if current != owner {
             return Err(failure(
-                "the attested BlueZ daemon owner changed; a new host attestation is required",
+                "the bound BlueZ daemon owner changed; create a fresh manager to resolve and verify native authority",
             ));
         }
         Ok(())

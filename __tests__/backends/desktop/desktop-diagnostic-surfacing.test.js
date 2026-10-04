@@ -73,12 +73,15 @@ function interpose(harness) {
             const queued = control.replace[property]
             if (queued !== undefined && queued.length > 0) return queued.shift()
             if (control.throwOnce.delete(property)) throw new Error(`${property} failed`)
-            if (!control.fail.has(property)) return Reflect.apply(value, target, [])
+            // A native read can already be in flight when the test arms failure.
+            // Intercept its answer too, rather than allowing the loss to bypass
+            // the injected pump failure depending on scheduling.
+            let event = await Reflect.apply(value, target, [])
+            if (!control.fail.has(property)) return event
             let swallowed = 0
-            for (;;) {
-              const event = await Reflect.apply(value, target, [])
-              if (event === null || event === undefined) break
+            while (event !== null && event !== undefined) {
               swallowed += 1
+              event = await Reflect.apply(value, target, [])
             }
             if (swallowed === 0) return null
             control.fail.delete(property)
@@ -159,6 +162,24 @@ function traceEvents(manager) {
 }
 
 const LAGGED = Object.freeze({ kind: 'lagged', missed: 1 })
+
+test('armed lifecycle failure intercepts a native read already in flight', async () => {
+  let completeRead
+  const pendingRead = new Promise(resolve => {
+    completeRead = resolve
+  })
+  const central = { takeLifecycleEvent: jest.fn().mockReturnValueOnce(pendingRead).mockResolvedValue(null) }
+  const harness = { binding: { openSynthetic: async () => central, openProduction: async () => central } }
+  const control = interpose(harness)
+  const wrapped = await harness.binding.openSynthetic()
+  const read = wrapped.takeLifecycleEvent()
+  expect(central.takeLifecycleEvent).toHaveBeenCalledTimes(1)
+  control.fail.add('takeLifecycleEvent')
+  completeRead({ kind: 'event', state: 'disconnected' })
+  await expect(read).rejects.toThrow('takeLifecycleEvent failed after swallowing 1 event(s)')
+  expect(control.swallowed.takeLifecycleEvent).toBe(1)
+  expect(control.fail.has('takeLifecycleEvent')).toBe(false)
+})
 
 describe('every desktop diagnostic warning reaches the public diagnostic trace', () => {
   test.each(PLATFORMS)('%s: reconciled lags of every core event stream', async platform => {
@@ -259,6 +280,12 @@ describe('a lost core event stream is typed, never diagnostic-only', () => {
       const { lease } = await connectAndDiscover(backend, stage)
       control.fail.add('takeLifecycleEvent')
       await stage.stageLinkLoss('peer-1')
+      const warning = await nextEvent(
+        events,
+        event => event.kind === 'diagnostic-warning' && event.code === 'core-event-pump-failed',
+        5000
+      )
+      expect(warning.detail.code).toBe('platform.transport')
       const lost = await nextEvent(events, event => event.kind === 'connection-lost', 5000)
       expect(lost.connection.connectionId).toEqual(lease.connection.connectionId)
       expect(control.swallowed.takeLifecycleEvent).toBeGreaterThan(0)

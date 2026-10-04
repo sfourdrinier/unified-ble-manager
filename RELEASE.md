@@ -14,6 +14,13 @@ This document is the canonical release procedure for `unified-ble-manager`.
 - Stable npm dist-tag: `latest`
 - Current 5.0 prerelease npm dist-tag: `next`. The 4.0 stable line remains on `latest` until a final 5.0 release.
 
+The current publisher and packaging guards share
+`scripts/release/release-version-policy.js`: stable `5.x.y` selects `latest`;
+numbered `5.x.y-rc.N` candidates select `next`. Numeric components cannot have
+leading zeroes or exceed safe integers; unapproved prerelease channels, build
+metadata, other majors and mismatched package/tag identities are refused.
+Historical immutable tags retain their original publisher source and behavior.
+
 Releases are tag-driven and published by GitHub Actions through npm trusted publishing/OIDC. Do not use a long-lived `NPM_TOKEN` or publish a normal release from a developer laptop.
 
 ## Trusted publisher configuration
@@ -106,7 +113,7 @@ once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
 history. `4.0.28` is immutable tagged history. The unpublished
 `v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
-The current candidate is `5.0.0-rc.16`; rc.14 is immutable published history.
+The prepared candidate is `5.0.0-rc.17`; rc.16 and rc.14 are immutable published history.
 The immutable `v5.0.0-rc.15` tag remains unpublished: its publisher was cancelled
 before npm publication when the Apple architecture policy changed.
 
@@ -136,7 +143,35 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
-## Releasing 5.0.0-rc.16
+## Releasing 5.0.0-rc.17
+
+Release only from the exact current `main` commit after the integrated
+completion PR and canonical CI succeed. Verify package, implementation, Tauri
+compatibility, changelog, generated metadata and packed artifact all identify
+`5.0.0-rc.17`. Push a new annotated `v5.0.0-rc.17` tag only after those gates
+pass; the existing workflow publishes to npm `next` with provenance and creates
+a GitHub prerelease. Never publish manually or move an earlier tag.
+
+This candidate adds native ASK/CDM chooser integration and owned cancellation,
+authoritative Linux lease recovery and disconnect detail, complete TV reference
+consumer packaging, shared Rust-only desktop distribution, restored HTML
+examples and stable-version publication admission. Exercise the actual
+refreshed artifacts with focused chooser ownership, lease recovery, event
+projection and packed-consumer regressions, then the existing cross-platform
+and release gates. Preserve any hardware evidence's exact source/artifact and
+scenario scope; synthetic radios, private buses and builds are not new physical
+qualification. Runtime changes require their relevant qualification, but this
+release identity update alone does not require another phone campaign.
+
+Keep current platform limitations visible: Apple desktop and simulators are
+arm64-only; Linux connection/GATT needs the documented daemon integration.
+The candidate does not promote backend support labels or claim stable 5.0.
+
+## Releasing 5.0.0-rc.16 (historical)
+
+`v5.0.0-rc.16` is immutable published history. The following preserves its
+release procedure and acceptance scope; do not execute its tag instructions
+again.
 
 Release only from the exact current `main` commit after the focused corrections
 and Apple Silicon-only distribution PRs and canonical CI succeed. Verify `package.json` and the changelog
@@ -792,7 +827,7 @@ may be bypassed to make a release pass.
 For a valid version tag, `.github/workflows/publish.yml`:
 
 1. checks out the tagged commit and builds Node-API v8 prebuilds for macOS `arm64` and Windows/Linux `arm64`/`x64` native runners;
-2. loads each prebuild under Node and the same file under Electron;
+2. loads each prebuild under Node and the same file under Electron through the shared `scripts/ci/run-electron-main-smoke.sh` launcher (Linux uses Xvfb and `--no-sandbox`; other hosts retain normal Electron launch). Missing addons and smoke failures remain fatal; this synthetic check makes no physical-radio claim;
 3. assembles and hashes the complete prebuild matrix into `native/PREBUILDS.json`;
 4. verifies tag name and `package.json` version agree;
 5. classifies the npm dist-tag (`4.0.0-rc.*` and later stables to `latest`; other prereleases to `next`);
@@ -823,7 +858,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.0-rc.16
+version=5.0.0-rc.17
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -834,7 +869,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `next` resolves to `5.0.0-rc.16`, while `latest` remains on the 4.0 stable
+- npm `next` resolves to `5.0.0-rc.17`, while `latest` remains on the 4.0 stable
   line; a stable release moves `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
@@ -842,7 +877,7 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.0-rc.16` explicitly and import the documented host
+  `unified-ble-manager@5.0.0-rc.17` explicitly and import the documented host
   entrypoints. A bare install still selects `latest` (the 4.0 line). This
   catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a

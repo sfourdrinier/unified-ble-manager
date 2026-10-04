@@ -1,15 +1,129 @@
 # Strict BlueZ LE GATT discovery
 
 The BlueZ host requires two distinct mechanisms: implemented LE-only bearer
-connect/disconnect under `connectionPolicy: { mode: 'le-bearer', daemonUniqueOwner }`,
+connect/disconnect under a natively resolved, pinned daemon owner,
 and the version-1 `org.unifiedblemanager.LEGatt1.GetSnapshot` extension for
-authoritative LE GATT readiness. Verify the current unique owner in trusted host
-setup; never copy an example owner or silently accept a daemon replacement.
+authoritative LE GATT readiness. The shared Rust authority resolves the current
+unique owner; an optional `daemonUniqueOwner` policy adds a stricter construction
+restriction. Never copy an example owner or silently accept a daemon replacement.
 
 Stock BlueZ's `Device1.ServicesResolved`, exported objects, MTU and successful
 reads are not evidence of successful current LE-specific discovery. Missing or
 unknown private API reports `capability.unsupported`. There is no legacy fallback.
 Scanning does not require this extension; strict connection/GATT work does.
+
+The native authority additionally requires
+`org.unifiedblemanager.LinuxAuthority1.GetContract` on the selected adapter,
+with the exact three-unsigned-integer reply `(1, 2, 1)` for contract, lease and
+GATT observer versions. Missing, malformed or unknown answers refuse lifecycle
+admission and keep their native failure details. The maintained source extension
+supplies the lease producer and fresh GATT observer together. Installing UBM
+alone does not install that derivative daemon.
+
+Lease revision 2's exact `ReleaseLease` reply is `uttsby` (version, original
+token, physical generation, scope, observed-reason presence, raw MGMT byte).
+The reason is captured only from the exact generation's native physical-loss
+callback and retained in the release answer, so reply-before-signal scheduling
+cannot erase it. Absent detail is explicit: presence false and byte 0, never a
+reason inferred from the requested disconnect. Reservation/protected scopes
+carry no invented physical reason. Older scope-only revision 1 is rejected.
+
+## Upstream feasibility and ownership boundary
+
+The inspected upstream input is the official BlueZ 5.87 archive whose exact
+SHA-256 is pinned below. Its `src/bearer.c` implements experimental LE-only
+`Connect`/`Disconnect`: the connection selects LE and the disconnect preserves
+the Classic bearer. However, `bearer_disconnect` schedules the LE ACL teardown
+without tracking D-Bus sender leases. This is **not** an external-client scoped
+release mechanism: another application's live LE connection can be affected.
+The ordinary `Device1` methods are no substitute; their documented lifecycle
+can select another bearer or disconnect all profiles.
+
+The stock `ServicesResolved` property reports the daemon's service view. It
+does not provide the successful current LE ATT discovery/error token required
+by this package. The retained GATT extension addresses that separate proof,
+but it does not add external-client connection leases. Consequently the
+extension must therefore implement both mechanisms rather than borrow stock
+LE disconnect semantics.
+Do not describe the existing private-bus dual-bearer fixture as proof that
+stock BlueZ protects another external LE client.
+
+The maintained source includes the authoritative lease mechanism and versioned
+native capability handshake. Dual-mode/second-client physical qualification
+remains separate: no physical dual-mode peer or second-client test was run during
+this source assessment. SSH host `rtx3090` reports BlueZ 5.72 and one `hci0`
+adapter; neither its daemon nor its system configuration was changed.
+
+Primary references: [BlueZ Device API](https://bluez.readthedocs.io/en/latest/device-api/),
+[BlueZ GATT API](https://bluez.readthedocs.io/en/latest/gatt-api/), and the
+[official source archive](https://www.kernel.org/pub/linux/bluetooth/bluez-5.87.tar.xz).
+
+### Sender-scoped lease implementation
+
+The private protocol reserves a sender-scoped, non-recycled token
+**before** any physical connection request, then associate the accepted async
+connect with that reservation. Cancellation must not erase either the token or
+the accepted reply. Cleanup settles the original accepted work, then releases
+the exact token; a refused or indeterminate physical release remains owned.
+
+The adapter exposes `ReserveLease(device, reservation)`, `RecoverLease(reservation)`,
+`ConnectLease(token)`, `ReleaseLease(token)` and `AckLease(token)`. Reservation
+identities are private native nonces shared across one D-Bus sender's sessions,
+not application transaction IDs. `RecoverLease` never starts work: it either
+recovers the original token or installs an exact cancellation fence before
+returning zero. A late original request cannot acquire a resource after that
+zero answer. Cross-adapter/device retries cannot retarget an original token.
+
+Release replies retain version, exact token, physical LE generation and scope:
+`physical-released`, `reservation-released`, `lease-released-protected`, or
+`lease-released-indeterminate`. Only positive physical termination retires an
+established UBM connection under the current public cleanup contract. Protected
+and indeterminate scopes remain explicit release failures with retry ownership;
+they are not silently converted into successful disconnects. A zero-generation
+reservation receipt proves no accepted physical work, not that a link closed.
+Fresh ATT discovery identity is separate from physical LE generation.
+
+A confirmed token retirement answers a scoped lease question, not necessarily
+a physical ACL question. A positively exclusive UBM-created attachment is
+eligible for last-owner physical teardown. A preexisting connection, protected
+external interest, or indeterminate external interest is not. The native
+receipt must retain that distinction; a retained link is never reported as a
+physically closed ACL. Permanent retention of every UBM-created link is not a
+substitute for implementing exclusive teardown.
+
+The official 5.87 source hook inventory for this implementation is:
+
+| Hook                                                                     | Required ownership fact                                                                   |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `src/bearer.c::bearer_connect`                                           | Distinguish private token-bound creation from stock LE/BREDR requests.                    |
+| `src/bearer.c::bearer_disconnect`                                        | No physical release without a current, positive exclusive-attachment proof.               |
+| `src/device.c::dev_connect` and `connect_profile`                        | Accepted stock-client interest must protect an existing UBM-created LE attachment.        |
+| `src/device.c::pair_device` and `device_connect_le`                      | Pairing/internal/autoconnect initiation is not automatically a UBM-exclusive acquisition. |
+| `src/device.c::device_add_connection` and `device_remove_connection`     | Fence restored/incoming connections and genuine physical loss by attachment generation.   |
+| `src/adapter.c::adapter_add_connection` and its connection-event callers | Kernel-restored and incoming peers cannot acquire optimistic UBM-exclusive status.        |
+
+An adapter-level versioned capability handshake must verify the implemented
+lease and strict GATT observer protocols under the same pinned owner. Owner
+resolution or method introspection alone cannot enable connection capabilities.
+Released-token retry history must be bounded and sender-lifetime scoped without
+reusing a valid token. Sender death, device removal, daemon replacement, delayed
+connect completion, and delayed release replies need production-handler tests.
+The producer fixture executes the actual daemon method tables, admissions,
+retained records and callbacks on a private D-Bus bus, with device/kernel
+boundaries doubled. It covers early cancellation, lost-reply recovery,
+sender-death late acquisition, protected/exclusive teardown, asynchronous
+disconnect refusal/retry and interleaved sender lifetime acknowledgements.
+It is production control-flow proof, not physical dual-mode/second-client proof.
+
+Terminal acknowledgements compact exact sender nonce fences and exact owner token
+ranges without reusing identities or treating unseen gaps as canceled. A live
+daemon retains at most 1024 unresolved lease records, 128 external sender
+interests per peer and 1024 exact fence ranges per sender/owner history. Genuine
+fragmentation/counter exhaustion refuses admission or acknowledgement explicitly;
+it never evicts unresolved debt. Normal completed interleaved sender cycles are
+tested beyond the live-record bound. Keep every allocated native nonce owned
+through Reserve or read-only Recover compensation. Sender death retires its
+history only after accepted physical effects are reconciled.
 
 ## Explicit source preparation
 
@@ -33,6 +147,8 @@ GPL/LGPL terms, recorded by the generated SBOM and license inventory.
 
 ## Deployment boundary
 
+Use the maintained [deployment owner](BLUEZ_DEPLOYMENT.md) to produce a sealed,
+versioned source/binary bundle and reviewed reversible installation plan.
 Deployment is an **explicit host action**, not part of installing the npm
 package. A trusted operator must separately approve and deploy a derivative
 daemon built from the reviewed source, preserve the distribution service's
@@ -60,7 +176,7 @@ A daemon cutover disrupts every client/controller owned by that system service,
 including unrelated applications and simulator peripherals. Stop those owners in
 a coordinated window, retain the original daemon/service configuration and
 state backup, and verify the new unique owner and both required APIs before
-passing its identity to UBM. Reverting a service override does not restore
+creating a fresh UBM manager. Reverting a service override does not restore
 terminated sessions or guarantee reversal of state-file changes. Physical-radio
 tests and an independently reviewed host-specific deployment/rollback procedure
 remain separate from the isolated source gates.

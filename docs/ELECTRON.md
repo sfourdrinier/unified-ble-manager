@@ -4,7 +4,7 @@
 
 Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.
 
-This source targets `5.0.0-rc.16`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
+This source targets `5.0.0-rc.17`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
 
 macOS desktop support is Apple Silicon (`arm64`) only. Windows and Linux desktop support includes `arm64` and `x64`.
 Intel macOS desktop is outside the UBM support policy, including source-built
@@ -218,14 +218,11 @@ against its own clock on receipt, so time queued in main counts against it,
 and the core bounds the operation with that budget. Without one, the core's
 liveness backstops apply.
 
-**Legacy node-gyp boundaries (5.0 only, Phase 4 deletion):** the TypeScript
-CoreBluetooth/WinRT backends and their node-gyp addons
-(`native/electron/{corebluetooth,winrt}`) remain in source until the Rust path
-is verified end to end, but no public entrypoint reaches them. For the record
-of what is being retired: the WinRT addon implements
-native boundary protocol v2, whose private boundary fixes scan ownership at
-`startScan(scanToken, serviceUuids, onAdvertisement)` and requires the
-`onScanTerminal(listener)` registration method.
+Only the shared Rust desktop core is produced for Node/Electron distribution.
+The unreachable C++ CoreBluetooth/WinRT addons and their private loaders have
+been removed. The canonical matrix retains macOS arm64 and Windows/Linux x64
+and arm64; native identity, hash and packed-content checks still apply. Source
+builds use the same Rust producer, not a parallel node-gyp implementation.
 
 ## IPC integration requirements
 

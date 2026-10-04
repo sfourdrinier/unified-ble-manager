@@ -223,6 +223,7 @@ export interface DesktopRustCoreLifecycleEvent {
   readonly connectionGeneration?: string | null
   readonly requested?: boolean | null
   readonly missed?: number | null
+  readonly platform?: string | null
 }
 
 /**
@@ -400,7 +401,7 @@ export interface DesktopRustCoreCentral {
   }>
   disconnect(
     options: { readonly peerId: string; readonly lease: string } & DesktopRustCoreControl
-  ): Promise<'released' | 'already-released'>
+  ): Promise<DesktopRustCoreConnectionReleaseReport>
   readRssi(options: { readonly peerId: string; readonly lease: string } & DesktopRustCoreControl): Promise<number>
   /**
    * Effective ATT MTU of the live link, as the OS reports it (finding 217
@@ -525,6 +526,16 @@ export interface DesktopRustCoreCentral {
     read: (adapterId: string) => Promise<string>,
     set: (adapterId: string, generation: string) => Promise<void>
   ): void
+}
+
+/** Operation-owned, identity-bound private release answer. */
+export interface DesktopRustCoreConnectionReleaseReport {
+  readonly schema: 'ubm-desktop-release/1'
+  readonly state: 'released'
+  readonly peerId: string
+  readonly lease: string
+  readonly connectionGeneration: string | null
+  readonly platform?: string | null
 }
 
 /** Native Rust core entry: opens one dispatch central on the chosen radio. */
@@ -742,6 +753,36 @@ function parsePlatformDetail(text: string): DesktopRustCorePlatformDetail | unde
     entries[key] = entry
   }
   return Object.freeze({ domain, code, message, metadata: Object.freeze(entries) })
+}
+
+export function parseDesktopRustCoreLifecyclePlatform(
+  text: string | null | undefined
+): import('../../backend-contract/errors').PlatformErrorDetail | undefined {
+  if (text === null || text === undefined) return undefined
+  const detail = parsePlatformDetail(text)
+  if (detail === undefined) throw contractError('protocol.malformed', 'boundary', 'desktop.lifecycle.platform')
+  return Object.freeze({
+    domain: detail.domain,
+    code: detail.code,
+    safeMessage: detail.message ?? '',
+    metadata: detail.metadata
+  })
+}
+
+export function parseDesktopRustCoreReleaseReport(
+  value: unknown,
+  expected: { readonly peerId: string; readonly lease: string; readonly connectionGeneration: string | null }
+): import('../../backend-contract/errors').PlatformErrorDetail | undefined {
+  const malformed = () => contractError('protocol.malformed', 'boundary', 'desktop.connection.release-report')
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw malformed()
+  if (Reflect.get(value, 'schema') !== 'ubm-desktop-release/1' || Reflect.get(value, 'state') !== 'released')
+    throw malformed()
+  for (const key of ['peerId', 'lease', 'connectionGeneration']) {
+    if (Reflect.get(value, key) !== Reflect.get(expected, key)) throw malformed()
+  }
+  const platform: unknown = Reflect.get(value, 'platform')
+  if (platform !== undefined && platform !== null && typeof platform !== 'string') throw malformed()
+  return parseDesktopRustCoreLifecyclePlatform(platform)
 }
 
 /**

@@ -936,6 +936,7 @@ pub enum RadioRequest {
         id: RequestId,
         name: Option<String>,
         service_uuid: Option<String>,
+        filters_json: Option<String>,
     },
     /// This app's `CompanionDeviceManager` associations (finding 236: the
     /// record a duplicate check and the cleanup UI read).

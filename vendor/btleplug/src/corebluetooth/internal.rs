@@ -71,6 +71,28 @@ struct CharacteristicInternal {
 }
 
 impl CharacteristicInternal {
+    fn answer_notification_state(&mut self, notifying: bool) {
+        if notifying {
+            if let Some(state) = self.subscribe_future_state.pop_back() {
+                state.lock().unwrap().set_reply(CoreBluetoothReply::Ok);
+            }
+        } else if let Some(state) = self.unsubscribe_future_state.pop_back() {
+            state.lock().unwrap().set_reply(CoreBluetoothReply::Ok);
+        } else if let Some(state) = self.subscribe_future_state.pop_back() {
+            fail(state, super::read_notify::enable_not_notifying_error());
+        }
+    }
+
+    fn fail_notification_state(&mut self, error: crate::PlatformError) {
+        if let Some(state) = self
+            .subscribe_future_state
+            .pop_back()
+            .or_else(|| self.unsubscribe_future_state.pop_back())
+        {
+            fail(state, error);
+        }
+    }
+
     /// UBM patch (UBM_PATCHES.md #14): what this characteristic has in
     /// flight, for the legacy read/notify provenance decisions.
     fn read_notify_state(&self) -> super::read_notify::ReadNotifyState {
@@ -1097,10 +1119,10 @@ impl CoreBluetoothInternal {
             None => match stage {
                 AttributeStage::Value => characteristic.read_future_state.pop_back(),
                 AttributeStage::Write => characteristic.write_future_state.pop_back(),
-                AttributeStage::NotifyState => characteristic
-                    .subscribe_future_state
-                    .pop_back()
-                    .or_else(|| characteristic.unsubscribe_future_state.pop_back()),
+                AttributeStage::NotifyState => {
+                    characteristic.fail_notification_state(error);
+                    return;
+                }
             },
         };
         if let Some(waiter) = waiter {
@@ -1146,9 +1168,7 @@ impl CoreBluetoothInternal {
             self.get_characteristic(peripheral_uuid, service_uuid, characteristic_uuid)
         {
             trace!("Got subscribed event!");
-            if let Some(state) = characteristic.subscribe_future_state.pop_back() {
-                state.lock().unwrap().set_reply(CoreBluetoothReply::Ok);
-            }
+            characteristic.answer_notification_state(true);
         }
     }
 
@@ -1162,14 +1182,7 @@ impl CoreBluetoothInternal {
             self.get_characteristic(peripheral_uuid, service_uuid, characteristic_uuid)
         {
             trace!("Got unsubscribed event!");
-            if let Some(state) = characteristic.unsubscribe_future_state.pop_back() {
-                state.lock().unwrap().set_reply(CoreBluetoothReply::Ok);
-            } else if let Some(state) = characteristic.subscribe_future_state.pop_back() {
-                // UBM patch (UBM_PATCHES.md #14): an enable that left the
-                // characteristic not notifying fails (legacy 411) instead
-                // of waiting forever.
-                fail(state, super::read_notify::enable_not_notifying_error());
-            }
+            characteristic.answer_notification_state(false);
         }
     }
 
@@ -2276,6 +2289,7 @@ mod ubm_instance_tests {
             .expect("characteristic");
         characteristic.read_future_state.push_front(waiter());
         characteristic.subscribe_future_state.push_front(waiter());
+        characteristic.unsubscribe_future_state.push_front(waiter());
         let mut descriptor = DescriptorInternal::new(description());
         descriptor.read_future_state.push_front(waiter());
         descriptor.write_future_state.push_front(waiter());
@@ -2287,13 +2301,72 @@ mod ubm_instance_tests {
             descriptor,
         );
         fail_attribute_waiters(&mut services, &CoreBluetoothReply::Err("gone".into()));
-        assert_eq!(waiters.len(), 4);
+        assert_eq!(waiters.len(), 5);
         for future in waiters {
             assert!(matches!(
                 futures::executor::block_on(future),
                 CoreBluetoothReply::Err(detail) if detail == "gone"
             ));
         }
+    }
+
+    #[test]
+    fn unsubscribe_is_owned_until_the_notification_state_answer() {
+        use futures::FutureExt;
+        let mut services = discovered();
+        let characteristic = services
+            .values_mut()
+            .next()
+            .unwrap()
+            .characteristics
+            .values_mut()
+            .next()
+            .unwrap();
+        let mut answer = super::CoreBluetoothReplyFuture::default();
+        characteristic
+            .unsubscribe_future_state
+            .push_front(answer.get_state_clone());
+        assert!((&mut answer).now_or_never().is_none());
+        assert_eq!(characteristic.unsubscribe_future_state.len(), 1);
+        characteristic.answer_notification_state(true);
+        assert!(
+            (&mut answer).now_or_never().is_none(),
+            "a still-notifying answer cannot confirm disable"
+        );
+        assert_eq!(characteristic.unsubscribe_future_state.len(), 1);
+        characteristic.answer_notification_state(false);
+        assert!(matches!(
+            answer.now_or_never(),
+            Some(super::CoreBluetoothReply::Ok)
+        ));
+        assert!(characteristic.unsubscribe_future_state.is_empty());
+        // A late duplicate callback does not answer the already retired waiter again.
+        characteristic.answer_notification_state(false);
+    }
+
+    #[test]
+    fn rejected_notification_state_answers_unsubscribe_without_forgetting_it_early() {
+        use futures::FutureExt;
+        let mut services = discovered();
+        let characteristic = services
+            .values_mut()
+            .next()
+            .unwrap()
+            .characteristics
+            .values_mut()
+            .next()
+            .unwrap();
+        let mut answer = super::CoreBluetoothReplyFuture::default();
+        characteristic
+            .unsubscribe_future_state
+            .push_front(answer.get_state_clone());
+        assert!((&mut answer).now_or_never().is_none());
+        let refusal = crate::PlatformError::new("corebluetooth", "42", "native disable refused");
+        characteristic.fail_notification_state(refusal.clone());
+        assert!(
+            matches!(answer.now_or_never(), Some(super::CoreBluetoothReply::Failed(error)) if error == refusal)
+        );
+        assert!(characteristic.unsubscribe_future_state.is_empty());
     }
 
     #[test]

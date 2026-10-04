@@ -8,6 +8,7 @@ import { RemoteDriverChannel, type DriverSocketFactory } from './remote-channel.
 import { describeError, toJsonValue } from './protocol.ts'
 import { ScenarioRegistry, type ScenarioRuntime, type StopAllReport } from './scenario-core.ts'
 import { BackgroundScenario } from './scenarios/background.ts'
+import { AccessoryChooserScenario } from './scenarios/accessory-chooser.ts'
 import { ContinuationScenario } from './scenarios/continuation.ts'
 import { ProcessContinuationScenario } from './scenarios/process-continuation.ts'
 import { DeviceInfoScenario } from './scenarios/device-info.ts'
@@ -39,7 +40,8 @@ export const SCENARIO_IDS = [
   'live-dashboard',
   'w6-shared-scan',
   'w6-generation-fence',
-  'w6-slow-drain'
+  'w6-slow-drain',
+  'accessory-chooser'
 ] as const
 
 export function createScenarioRegistry(host: DriverHost): ScenarioRegistry {
@@ -58,7 +60,8 @@ export function createScenarioRegistry(host: DriverHost): ScenarioRegistry {
     new LiveDashboardScenario(host),
     new W6SharedScanScenario(host),
     new W6GenerationFenceScenario(host),
-    new W6SlowDrainScenario(host)
+    new W6SlowDrainScenario(host),
+    new AccessoryChooserScenario(host)
   ])
 }
 
@@ -69,7 +72,11 @@ export interface RemoteDriverSetup {
   readonly createSocket: DriverSocketFactory
 }
 
-export function createRemoteDriver(host: DriverHost, registry: ScenarioRegistry, setup: RemoteDriverSetup): RemoteDriverChannel {
+export function createRemoteDriver(
+  host: DriverHost,
+  registry: ScenarioRegistry,
+  setup: RemoteDriverSetup
+): RemoteDriverChannel {
   return new RemoteDriverChannel({
     url: setup.url,
     noHostReason: setup.reason,

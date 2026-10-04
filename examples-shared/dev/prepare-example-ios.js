@@ -3,18 +3,12 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
-const { spawnSync } = require('node:child_process')
+const { installExampleDependencies, runPnpm } = require('./install-example-dependencies')
 const { main: ensureNative } = require('../../scripts/native/ensure-native')
 const { checkAppleStaging, checkGenerated } = require('../../scripts/release/native-build-identity')
 const { inspectExampleLibrary, readRepoFacts, readCopyFacts, describeLibraryOutcome } = require('./verify-example-library')
 
 const ROOT = path.resolve(__dirname, '..', '..')
-
-function runPnpm(args, env = process.env) {
-  const result = spawnSync('pnpm', args, { cwd: ROOT, env, stdio: 'inherit' })
-  if (result.error !== undefined) throw result.error
-  if (result.status !== 0) throw new Error(`pnpm ${args.join(' ')} failed (exit ${String(result.status)})`)
-}
 
 function prepareExampleIos({ verifyRootIdentity, ensureApple, inspectCopy, verifyCopyApple, refreshCopy }) {
   verifyRootIdentity()
@@ -52,7 +46,7 @@ function main(exampleDir = path.join(ROOT, 'example-expo')) {
       runPnpm(['run', 'prepack'])
       // pnpm --force recopies file:.. dependencies; a normal install may keep
       // its previous store snapshot even when the root RustCore has changed.
-      runPnpm(['--dir', exampleDir, 'install', '--force', '--frozen-lockfile'], {
+      installExampleDependencies(exampleDir, ['--force', '--frozen-lockfile'], {
         ...process.env,
         NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim()
       })

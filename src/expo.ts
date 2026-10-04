@@ -2,10 +2,12 @@
 
 import { BackendContractError, contractError } from './backend-contract/errors'
 import type { BleErrorCode } from './backend-contract/errors'
+import { isAuthorizationBlocking } from './backend-contract/identity'
 import type { ContinuationRecordingController } from './core/continuation-recording'
 import type { RestorationAdoptionResult } from './backend-contract/restoration'
 import type { BackgroundContinuationResubscribeSelector } from './backend-contract/background-continuation'
 import type {
+  ContinuationStatus,
   ContinuationRecoveryStatus,
   ContinuationWakeStatus
 } from './backends/reactnative/react-native-continuation-claim'
@@ -13,7 +15,8 @@ import { Platform, TurboModuleRegistry } from 'react-native'
 import { rehydratePublicError } from './public/error-bridge'
 import { BleError } from './public/errors'
 import type { BleAdapterState } from './public/ble-adapter'
-import { createPublicBleManager, type BleManager } from './public/ble-manager'
+import type { BleManager } from './public/ble-manager'
+import { composeReactNativePublicManager } from './react-native-public-manager'
 import { normalizeBleManagerCreateOptions, type BleManagerCreateOptions } from './public/host-identity'
 import { createReactNativeApplicationHost } from './react-native-app-manager'
 import { createReactNativeManagerHost, type ReactNativeManagerHost } from './react-native-manager'
@@ -128,6 +131,8 @@ export interface ExpoContinuationStatus {
   readonly lastWake: ExpoContinuationWakeReport | null
   /** Latest native recovery outcome, not a replacement for the original OS wake. */
   readonly lastRecovery: ContinuationRecoveryStatus | null
+  /** Native accessory-startup refusal, distinct from wake/recovery; null when absent. */
+  readonly startupFailure: ContinuationStatus['startupFailure']
   /**
    * The host's own qualification of the declaration, when it has one — for
    * example that a declared strategy is validated but not implemented in this
@@ -295,7 +300,7 @@ export async function createExpoBleManager(
     assertExpoRuntimeConfiguration(readinessConfiguration)
     const host = await createReactNativeApplicationHost(options)
     return withExpoRuntime(
-      await createPublicBleManager(host.manager, () => performance.now()),
+      await composeReactNativePublicManager(host, () => performance.now()),
       host,
       readinessConfiguration?.settingsBridge ?? nativeSettingsBridge(nativeRuntime),
       readinessConfiguration?.permissionBridge ?? nativePermissionBridge(nativeRuntime),
@@ -315,7 +320,7 @@ export async function createExpoBleManagerWithEnvironment(
     const readinessConfiguration = environmentExpoRuntimeConfiguration(environment.platform, expo)
     const host = await createReactNativeManagerHost(environment)
     return withExpoRuntime(
-      await createPublicBleManager(host.manager, environment.now),
+      await composeReactNativePublicManager(host, environment.now),
       host,
       expo?.settingsBridge,
       expo?.permissionBridge,
@@ -383,24 +388,20 @@ export async function getExpoBleReadiness(
 
 /** Pure readiness mapping shared by both Expo factory forms. */
 export function mapExpoReadiness(adapter: BleAdapterState, configuration?: ExpoRuntimeConfiguration): BleReadiness {
-  if (
-    adapter.availability !== 'available' ||
-    adapter.authorization === 'restricted' ||
-    adapter.authorization === 'unavailable' ||
-    adapter.power === 'unsupported'
-  ) {
+  if (adapter.availability !== 'available' || adapter.power === 'unsupported') {
     return readiness(adapter, 'unavailable', [])
   }
   if (adapter.authorization === 'denied') {
     return readiness(adapter, 'action-required', [{ kind: 'open-settings', target: 'app' }])
   }
-  if (adapter.authorization === 'not-determined') {
-    return readiness(adapter, 'action-required', [{ kind: 'request-permission', permission: 'bluetooth' }])
-  }
+  if (isAuthorizationBlocking(adapter.authorization)) return readiness(adapter, 'unavailable', [])
   if (adapter.power === 'off') {
     return readiness(adapter, 'action-required', [{ kind: 'enable-bluetooth', systemUiOnly: true }])
   }
-  if (adapter.power !== 'on' || adapter.authorization !== 'granted') {
+  if (adapter.power !== 'on') {
+    if (adapter.authorization === 'not-determined') {
+      return readiness(adapter, 'action-required', [{ kind: 'request-permission', permission: 'bluetooth' }])
+    }
     return readiness(adapter, 'action-required', [])
   }
   const legacyLocation = configuration?.permissions?.android?.legacyLocation
@@ -920,6 +921,7 @@ async function readExpoContinuationStatus(host: ReactNativeManagerHost): Promise
       malformedDeclarations: status.malformedDeclarations,
       lastWake: status.lastWake === null ? null : Object.freeze({ ...status.lastWake }),
       lastRecovery: status.lastRecovery,
+      startupFailure: status.startupFailure,
       detail: status.detail
     })
   } catch (error) {
@@ -1255,6 +1257,7 @@ function errorCode(error: unknown): string {
 function normalizedPermissionErrorCode(nativeCode: string): BleErrorCode {
   switch (nativeCode) {
     case 'unsupportedPermissionPrompt':
+    case 'permissionUnsupported':
       return 'capability.unsupported'
     case 'permissionRestricted':
       // iOS parental/MDM restrictions: the user cannot change this, so it is

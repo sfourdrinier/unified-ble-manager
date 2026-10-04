@@ -1,4 +1,4 @@
-# Isolated BlueZ 5.87 LE GATT observation prototype
+# Maintained BlueZ 5.87 UBM Linux authority extension
 
 This is an explicitly **UBM-private daemon extension**, not a stock BlueZ API
 or a physical-radio qualification. Nothing here installs, launches, replaces or
@@ -50,8 +50,8 @@ sh vendor/bluez/build-test-isolated.sh /absolute/new-source/bluez-5.87
 ```
 
 The build uses one worker and disk-backed, source-local temporary storage.
-It compiles `bluetoothd`, runs the original GATT unit suite and six added
-tests. Only the method-table test starts a **private session bus**, never a
+It compiles `bluetoothd`, runs the original GATT unit suite and added production
+fixtures. The device/lease method-table tests start a **private session bus**, never a
 daemon or a system-bus connection. The tests exercise the production snapshot
 handler/table, queued Service Changed and failed DB-out-of-sync dispatch paths
 (including real cloned clients), initial cached-characteristic replacement and
@@ -90,7 +90,30 @@ failure into full client initialization. The graph fixture includes duplicate
 native Include declarations, whose exported unique targets follow stock BlueZ
 Includes semantics, as well as missing and stale targets.
 
-## Private protocol, version 1
+## Private authority contract 1, lease revision 2, GATT revision 1
+
+The adapter's `LinuxAuthority1.GetContract` verifies the `(1,2,1)` lease and
+GATT-observer contract before native lifecycle capability admission. `LELease1`
+owns reservation, read-only recovery, connection and exact-token release;
+`PhysicalLost(o,t,y)` retains actual physical generation and raw MGMT reason.
+`ReleaseLease` returns exactly `uttsby`: revision2, original token, physical
+generation, release scope, observed-reason presence, and raw MGMT reason byte.
+The reason is retained by the exact physical-loss callback and travels in the
+operation's own reply, independent of client signal/reply scheduling. An absent
+reason has canonical byte0; reservation/protected/indeterminate receipts never
+manufacture an observed physical cause. Revision1 scope-only daemons are refused.
+The real daemon-table fixture tests retained ownership, accepted late work,
+protected versus exclusive release, asynchronous MGMT refusal/retry, exact
+cancellation fences and more than 1024 interleaved completed sender cycles.
+These are producer/control-flow tests with kernel doubles, not radio evidence.
+See [the Linux contract](../../docs/BLUEZ_LE_GATT.md) and
+[maintained deployment](../../docs/BLUEZ_DEPLOYMENT.md) for limits and privileged
+cutover/rollback boundaries. Normal npm installation never installs this daemon.
+
+`regenerate-source-patch.js /absolute/official-archive /absolute/patched-source`
+is the canonical mechanical patch owner. It verifies the pinned archive first,
+diffs only maintained source assets against that baseline, and updates the patch
+digest in the manifest. Do not hand-edit a generated source patch or its hash.
 
 At the existing device object path, `org.unifiedblemanager.LEGatt1.GetSnapshot`
 has no arguments and returns exactly `uttsssiy`:

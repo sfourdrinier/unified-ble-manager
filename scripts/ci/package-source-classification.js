@@ -18,6 +18,7 @@ const internalRuntimeSourceFiles = Object.freeze([
   'native-protocol/rn-jsi-binary-runtime.ts',
   'react-native-manager.ts',
   'react-native-app-manager.ts',
+  'react-native-public-manager.ts',
   'react-native-continuation-recording.ts',
   'react-native-entropy.ts',
   'node-host-manager.ts',
@@ -32,8 +33,7 @@ const internalRuntimeSourceFiles = Object.freeze([
   'desktop-rust-core-exports.ts',
   'node-desktop-manager.ts',
   'desktop-process-host.ts',
-  'desktop-process-initialization.ts',
-  'backends/legacy-native-require.ts'
+  'desktop-process-initialization.ts'
 ])
 
 const publicProfileSourceFiles = Object.freeze([

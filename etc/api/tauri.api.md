@@ -16,7 +16,7 @@ export interface TauriBleProvider { createManager(): Promise<BleManager> }
 - `NativeContinuationControl :: { execute(declaration: BackgroundContinuationDeclaration): Promise<NativeContinuationCompleted>; claim(options?: NativeContinuationClaimOptions | undefined): Promise<ContinuationBacklog>; status(): Promise<NativeContinuationStatus | null> }`
 - `NativeContinuationControlAccess :: { execute(peerId: string, declarationJson: string): Promise<unknown>; describeBacklog(): Promise<unknown>; prepareClaim(maxItems: number, maxBytes: number): Promise<unknown>; acknowledgeClaim(token: string): Promise<unknown> }`
 - `NativeContinuationStatus :: NativeContinuationDesktopStatus | NativeContinuationMobileStatus`
-- `TAURI_PLUGIN_COMPATIBILITY :: Readonly<{ npmRange: "^5.0.0-rc.16"; crateRange: "^5.0.0-rc.16"; ipcProtocol: 4; contractRevision: "C-UBM.0.1.2-DRAFT"; }>`
+- `TAURI_PLUGIN_COMPATIBILITY :: Readonly<{ npmRange: "^5.0.0-rc.17"; crateRange: "^5.0.0-rc.17"; ipcProtocol: 4; contractRevision: "C-UBM.0.1.2-DRAFT"; }>`
 - `TauriBleManagerEnvironment :: { readonly invoke: TauriInvoke; readonly Channel: new <T>() => TauriChannel<T> }`
 - `TauriBleProvider :: { createManager(): Promise<BleManager> }`
 - `createNativeContinuationControl :: (access: NativeContinuationControlAccess, context?: NativeContinuationControlContext) => NativeContinuationControl`

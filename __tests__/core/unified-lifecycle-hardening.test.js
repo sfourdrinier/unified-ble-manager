@@ -22,6 +22,8 @@ const {
 } = require('../../src/backend-contract/capabilities')
 const { CoreBoundedStream } = require('../../src/core/bounded-stream')
 const { awaitSignal } = require('../helpers/async')
+const { ElectronMainBleRouter, ElectronMainBleBinding } = require('../../src/electron-main')
+const { createElectronRendererBleManager } = require('../../src/electron-renderer')
 
 const maximumBytes = 512 * 1024
 
@@ -106,8 +108,35 @@ function managerConstruction(attachedBackend) {
   }
 }
 
-async function createFixture(backendOptions = {}) {
+async function createFixture(backendOptions = {}, lifecyclePlatform) {
   const fixture = createDeterministicTestBackend(backendOptions)
+  if (lifecyclePlatform !== undefined) {
+    const originalEvents = fixture.backend.events.bind(fixture.backend)
+    fixture.backend.events = () => {
+      const stream = originalEvents()
+      const originalIterator = stream[Symbol.asyncIterator].bind(stream)
+      stream[Symbol.asyncIterator] = () => {
+        const iterator = originalIterator()
+        return {
+          next: async () => {
+            const result = await iterator.next()
+            if (!result.done && result.value.kind === 'value' && result.value.value.kind === 'connection-lost') {
+              return {
+                ...result,
+                value: { ...result.value, value: { ...result.value.value, platform: lifecyclePlatform } }
+              }
+            }
+            return result
+          },
+          return: () => iterator.return(),
+          [Symbol.asyncIterator]() {
+            return this
+          }
+        }
+      }
+      return stream
+    }
+  }
   const attachedBackend = await attachBleBackend(fixture.backend, compatibility())
   const authority = createManagerOwnershipAuthority(attachedBackend)
   const manager = await BleManager.create(managerConstruction(attachedBackend), authority, DEFAULT_BLE_MANAGER_OPTIONS)
@@ -203,7 +232,309 @@ function expectNoResources(counters) {
   expect(Object.entries(counters).filter(([, value]) => Number(value) !== 0)).toEqual([])
 }
 
+function lifecycleMessageAtBytes(byteLength, unit = 'x', metadata = {}) {
+  const overhead = Buffer.byteLength(
+    JSON.stringify({
+      domain: 'bluez.mgmt',
+      code: '2',
+      safeMessage: '',
+      metadata: { ...metadata, reason: 2 }
+    })
+  )
+  const available = byteLength - overhead
+  const copies = Math.floor(available / Buffer.byteLength(unit))
+  return unit.repeat(copies) + 'x'.repeat(available - copies * Buffer.byteLength(unit))
+}
+
 describe('UnifiedBleCore lifecycle hardening', () => {
+  test.each([
+    [128, 'requested-disconnect'],
+    [128, 'peer-link-loss'],
+    [16384, 'peer-link-loss'],
+    [16385, 'peer-link-loss']
+  ])(
+    'buffered lifecycle platform byte boundary %i / %s crosses actual Electron main/renderer IPC',
+    async (byteLength, cause) => {
+      const platform = {
+        domain: 'bluez.mgmt',
+        code: '2',
+        safeMessage: lifecycleMessageAtBytes(byteLength, '界'),
+        metadata: { reason: 2 }
+      }
+      const { fixture, manager } = await createFixture({}, platform)
+      const originalConnect = manager.connect.bind(manager)
+      manager.connect = async (...parameters) => {
+        const connection = await originalConnect(...parameters)
+        const resource = connection.connection.resource
+        const originalDisconnect = resource.disconnect.bind(resource)
+        resource.disconnect = async () => ({ ...(await originalDisconnect()), platform })
+        return connection
+      }
+      const router = new ElectronMainBleRouter({
+        manager,
+        maximumMessageBytes: 64 * 1024,
+        maximumOutstandingOperations: 16,
+        maximumRetainedBytes: 512 * 1024,
+        publish: async () => 'terminalized'
+      })
+      const listeners = new Set()
+      const sender = {
+        mainFrame: { routingId: 20, processId: 10 },
+        trusted: {
+          authenticatedClientId: 'lifecycle-renderer',
+          authenticatedWindowScope: 'lifecycle-window',
+          authenticatedSessionScope: 'lifecycle-session'
+        },
+        isDestroyed: () => false,
+        on: () => undefined,
+        once: () => undefined,
+        removeListener: () => undefined,
+        send: (_channel, event) => {
+          for (const listener of listeners) listener(JSON.parse(JSON.stringify(event)))
+        }
+      }
+      let dispatch
+      const binding = new ElectronMainBleBinding({
+        router,
+        authenticate: event => event.sender.trusted,
+        port: {
+          handle: (_channel, handler) => {
+            dispatch = request => handler({ sender, frameId: 20, processId: 10 }, request)
+          },
+          removeHandler: () => undefined
+        }
+      })
+      binding.install()
+      const renderer = await createElectronRendererBleManager({
+        transport: {
+          invoke: request => dispatch(request),
+          subscribe: listener => {
+            listeners.add(listener)
+            return () => listeners.delete(listener)
+          },
+          acknowledge: (rendererLease, eventId) => dispatch({ kind: 'event.ack', rendererLease, eventId })
+        }
+      })
+      try {
+        const connection = await settle(fixture.controller, renderer.connect(peer()))
+        const events = connection.lifecycleEvents[Symbol.asyncIterator]()
+        await events.next()
+        if (cause === 'peer-link-loss') fixture.controller.forceDisconnect(peer())
+        else await settle(fixture.controller, connection.disconnect())
+        await flushMicrotasks()
+        for (let turn = 0; turn < 8; turn += 1) await new Promise(resolve => setImmediate(resolve))
+        if (byteLength <= 16384) {
+          const value = await events.next()
+          const expected = cause === 'requested-disconnect' ? { cause } : { cause, platform }
+          if (cause === 'requested-disconnect' && value.value.cause === 'backend-transition') {
+            await expect(events.next()).resolves.toMatchObject({ value: expected })
+          } else expect(value).toMatchObject({ value: expected })
+          if (cause === 'peer-link-loss') await expect(events.next()).rejects.toMatchObject({ code: 'connection.lost' })
+        } else {
+          await expect(events.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+        }
+        if (cause === 'peer-link-loss') {
+          await expect(events.next()).rejects.toMatchObject({
+            code: byteLength <= 16384 ? 'connection.lost' : 'stream.overflow'
+          })
+          await events.return()
+        }
+        await expect(events.next()).resolves.toMatchObject({ done: true })
+        await expect(connection.release()).resolves.toMatchObject({ state: 'released' })
+      } finally {
+        await settle(fixture.controller, renderer.destroy())
+        await binding.destroy()
+        await settle(fixture.controller, manager.destroy())
+      }
+      expectNoResources(fixture.backend.resourceCounters())
+    }
+  )
+  test('preserves unread accepted lifecycle values before an accounted oversized platform terminal', async () => {
+    const { fixture, manager } = await createFixture()
+    const connection = await settle(fixture.controller, manager.connect(peer(), operation()))
+    const events = connection.events[Symbol.asyncIterator]()
+    const platform = {
+      domain: 'bluez.mgmt',
+      code: '2',
+      safeMessage: lifecycleMessageAtBytes(16385),
+      metadata: { reason: 2 }
+    }
+    const resource = connection.connection.resource
+    const originalDisconnect = resource.disconnect.bind(resource)
+    resource.disconnect = jest.fn(async () => ({ ...(await originalDisconnect()), platform }))
+    try {
+      await expect(settle(fixture.controller, connection.disconnect())).resolves.toEqual({
+        state: 'released',
+        failures: []
+      })
+      const initial = await events.next()
+      expect(initial).toMatchObject({ value: { kind: 'value', value: { current: 'connected' } } })
+      const rejectedEvent = {
+        ...initial.value.value,
+        sequence: 2,
+        previous: 'connected',
+        current: 'disconnected',
+        cause: 'requested-disconnect',
+        platform
+      }
+      expect((await events.next()).value).toMatchObject({
+        kind: 'terminal',
+        reason: 'overflow',
+        droppedItems: 1,
+        droppedBytes: Buffer.byteLength(JSON.stringify(rejectedEvent)),
+        error: { code: 'stream.overflow' }
+      })
+      expect((await events.next()).done).toBe(true)
+      expect(resource.disconnect).toHaveBeenCalledTimes(1)
+    } finally {
+      await settle(fixture.controller, manager.destroy())
+    }
+    expectNoResources(fixture.backend.resourceCounters())
+  })
+
+  test.each([
+    ['disconnect', 'requested-disconnect', 'Observed local-host disconnect', {}],
+    ['release', 'released', 'Observed local-host disconnect', {}],
+    ['disconnect', 'requested-disconnect', '界'.repeat(4096), {}],
+    ['release', 'released', '', { payload: '🙂'.repeat(2048) }],
+    ['disconnect', 'requested-disconnect', lifecycleMessageAtBytes(16384, '界'), {}],
+    [
+      'release',
+      'released',
+      lifecycleMessageAtBytes(16384, '🙂', { payload: '界'.repeat(1024) }),
+      { payload: '界'.repeat(1024) }
+    ],
+    ['disconnect', 'requested-disconnect', lifecycleMessageAtBytes(16385), {}, true],
+    ['release', 'released', lifecycleMessageAtBytes(16385, '界'), {}, true, true],
+    [
+      'disconnect',
+      'requested-disconnect',
+      lifecycleMessageAtBytes(16385, '🙂', { payload: '界'.repeat(1024) }),
+      { payload: '界'.repeat(1024) },
+      true
+    ]
+  ])(
+    'uses bounded buffered own %s observation even while backend event delivery is held (%#)',
+    async (method, cause, safeMessage, metadata, overflow = false, waiting = false) => {
+      const fixture = createDeterministicTestBackend()
+      const originalEvents = fixture.backend.events.bind(fixture.backend)
+      let resumeEvents
+      const eventGate = new Promise(resolve => {
+        resumeEvents = resolve
+      })
+      fixture.backend.events = () => {
+        const stream = originalEvents()
+        const originalIterator = stream[Symbol.asyncIterator].bind(stream)
+        stream[Symbol.asyncIterator] = () => {
+          const iterator = originalIterator()
+          return {
+            next: async () => {
+              await eventGate
+              return iterator.next()
+            },
+            return: () => iterator.return(),
+            [Symbol.asyncIterator]() {
+              return this
+            }
+          }
+        }
+        return stream
+      }
+      const attachedBackend = await attachBleBackend(fixture.backend, compatibility())
+      const authority = createManagerOwnershipAuthority(attachedBackend)
+      const manager = await BleManager.create(
+        managerConstruction(attachedBackend),
+        authority,
+        DEFAULT_BLE_MANAGER_OPTIONS
+      )
+      const connection = await settle(fixture.controller, manager.connect(peer(), operation()))
+      const events = connection.events[Symbol.asyncIterator]()
+      const initial = await events.next()
+      const pendingRead = waiting ? events.next() : null
+      const platform = {
+        domain: 'bluez.mgmt',
+        code: '2',
+        safeMessage,
+        metadata: { ...metadata, reason: 2 }
+      }
+      const resource = connection.connection.resource
+      const originalDisconnect = resource.disconnect.bind(resource)
+      resource.disconnect = jest.fn(async () => ({ ...(await originalDisconnect()), platform }))
+      const expectedPlatform = structuredClone(platform)
+      try {
+        await expect(settle(fixture.controller, connection[method]())).resolves.toEqual({
+          state: 'released',
+          failures: []
+        })
+        platform.metadata.afterAdmission = 'x'.repeat(65536)
+        if (overflow) {
+          const rejectedEvent = {
+            ...initial.value.value,
+            sequence: 2,
+            previous: 'connected',
+            current: 'disconnected',
+            cause,
+            platform: expectedPlatform
+          }
+          const terminal = await (pendingRead ?? events.next())
+          expect(Buffer.byteLength(JSON.stringify(terminal.value))).toBeLessThanOrEqual(
+            Number(connection.events.limits.reservedControlCapacity)
+          )
+          expect(terminal).toMatchObject({
+            value: {
+              kind: 'terminal',
+              reason: 'overflow',
+              droppedItems: 1,
+              droppedBytes: Buffer.byteLength(JSON.stringify(rejectedEvent)),
+              error: { code: 'stream.overflow', domain: 'connection' }
+            }
+          })
+        } else {
+          await expect(events.next()).resolves.toMatchObject({
+            value: { kind: 'value', value: { cause, platform: expectedPlatform } }
+          })
+          await expect(events.next()).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'owner-released' } })
+        }
+        expect(resource.disconnect).toHaveBeenCalledTimes(1)
+        resumeEvents()
+        await flushMicrotasks()
+        await expect(events.next()).resolves.toMatchObject({ done: true })
+      } finally {
+        resumeEvents()
+        await settle(fixture.controller, manager.destroy())
+      }
+      expectNoResources(fixture.backend.resourceCounters())
+    }
+  )
+
+  test('does not terminalize or expose backend observation metadata when disconnect is refused', async () => {
+    const { fixture, manager } = await createFixture()
+    const connection = await settle(fixture.controller, manager.connect(peer(), operation()))
+    const resource = connection.connection.resource
+    const originalDisconnect = resource.disconnect.bind(resource)
+    const failure = {
+      resourceKind: 'connection',
+      error: { code: 'platform.failure', domain: 'cleanup', operation: 'test.disconnect', retryable: true }
+    }
+    resource.disconnect = async () => ({
+      state: 'release-failed',
+      failures: [failure],
+      platform: { domain: 'bluez.mgmt', code: '2', safeMessage: 'Unconfirmed release', metadata: {} }
+    })
+    try {
+      await expect(settle(fixture.controller, connection.disconnect())).resolves.toEqual({
+        state: 'release-failed',
+        failures: [failure]
+      })
+      expect(connection.connection.isCurrent()).toBe(true)
+    } finally {
+      resource.disconnect = originalDisconnect
+      await settle(fixture.controller, connection.disconnect())
+      await settle(fixture.controller, manager.destroy())
+    }
+    expectNoResources(fixture.backend.resourceCounters())
+  })
+
   test('rejects stale, mismatched, and impossible public lifecycle transitions before finishing a connection', async () => {
     const { fixture, manager } = await createFixture()
     const connection = await settle(fixture.controller, manager.connect(peer(), operation()))

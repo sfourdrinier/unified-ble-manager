@@ -315,6 +315,7 @@ export interface PortableConnectionLifecycleEvent {
   readonly previous: 'connecting' | 'connected' | 'disconnecting' | 'disconnected' | 'lost'
   readonly current: 'connecting' | 'connected' | 'disconnecting' | 'disconnected' | 'lost'
   readonly cause: ConnectionLifecycleCause
+  readonly platform?: import('../backend-contract/errors').PlatformErrorDetail
 }
 
 /** A public lifetime boundary for a manager created in any physical package copy. */

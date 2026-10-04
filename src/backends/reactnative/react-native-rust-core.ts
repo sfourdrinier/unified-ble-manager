@@ -50,6 +50,12 @@ export interface RustCoreRestorationIdentityRequest {
 
 /** Native Rust core entry. */
 export interface ReactNativeRustCoreBinding {
+  /** Versioned OS accessory setup; no connection or radio fallback. */
+  chooseAccessory?(requestId: string, optionsJson: string, timeoutMs: number): Promise<string>
+  cancelAccessoryChoice?(requestId: string): Promise<void>
+  accessoryChooserAvailable?(): Promise<boolean>
+  /** Versioned read-only OS-saved ASK list; absent on older native modules. */
+  authorizedAccessories?(): Promise<string>
   /** Verify the sealed binary and protocol revisions without acquiring a session. */
   verifyNativeIdentity(): Promise<void>
   continuationRecordingStatus?(id: string): Promise<string>

@@ -79,6 +79,18 @@ async function managerWithBridge(permissionBridge) {
 }
 
 describe('Expo permissions.request on Apple (finding 179)', () => {
+  test('reports ASK-scoped global permission refusal as unsupported, not a grant or unavailable', async () => {
+    const permissionBridge = jest.fn().mockRejectedValue({
+      code: 'permissionUnsupported',
+      message: 'AccessorySetupKit uses accessory-scoped authorization; no global Bluetooth prompt is available'
+    })
+    const manager = await managerWithBridge(permissionBridge)
+    await expect(manager.permissions.request({ purpose: 'scan-and-connect' })).rejects.toMatchObject({
+      code: 'capability.unsupported',
+      platform: { code: 'permissionUnsupported' }
+    })
+    expect(permissionBridge).toHaveBeenCalledTimes(1)
+  })
   beforeEach(() => {
     jest.clearAllMocks()
     jest.useRealTimers()

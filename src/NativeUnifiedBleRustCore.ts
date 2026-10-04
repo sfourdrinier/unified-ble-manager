@@ -1,11 +1,11 @@
 // src/NativeUnifiedBleRustCore.ts
 //
 // Codegen spec for the production React Native session facade over the
-// process-owned Rust mobile host (docs/MOBILE_RUST_WIRE.md). Every value
-// crossing this boundary is a JSON string written by Rust or a primitive:
-// Java/Swift never parse or re-shape operation arguments or results, so the
-// wire schema exists only in Rust and in rust-core-wire.ts. All methods are
-// asynchronous; nothing blocks the module thread.
+// process-owned Rust mobile host (docs/MOBILE_RUST_WIRE.md). Session invoke
+// and drain use Rust's ubm-mobile-wire/1 JSON unchanged; Java/Swift do not
+// re-shape those operations. The OS accessory chooser and saved-authorized
+// directory are separate versioned native-control JSON seams. All methods
+// are asynchronous; nothing blocks the module thread.
 
 import type { CodegenTypes, TurboModule } from 'react-native'
 import { TurboModuleRegistry } from 'react-native'
@@ -15,6 +15,12 @@ export interface RustCoreSessionWake {
 }
 
 export interface Spec extends TurboModule {
+  /** ubm-accessory-chooser/1 OS setup, available on configured iOS 18+ hosts. */
+  chooseAccessory(requestId: string, optionsJson: string, timeoutMs: number): Promise<string>
+  cancelAccessoryChoice(requestId: string): Promise<void>
+  accessoryChooserAvailable(): Promise<boolean>
+  /** ubm-accessory-authorized/1 OS-saved ASK Bluetooth identifiers; no radio or picker. */
+  authorizedAccessories(): Promise<string>
   /**
    * Admits one session lease on the process host (installing the host on
    * first use). Resolves Rust's admission JSON

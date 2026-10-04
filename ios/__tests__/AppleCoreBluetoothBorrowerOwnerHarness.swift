@@ -8,12 +8,15 @@
 // itself is hardware-verified.
 
 import Foundation
+import CoreBluetooth
 
 @main
 enum AppleCoreBluetoothBorrowerOwnerHarness {
   static func main() {
+    checkAccessoryStartupAdmission()
     checkPermissionDecision()
     checkAuthorizationWaiters()
+    checkRadioPreparation()
     checkKnownPeerRetrieval()
     let coordinator = OwnedCoreBluetoothBorrowerReleaseCoordinator()
     let first = NSObject()
@@ -49,6 +52,132 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
     guard case .noBorrower = coordinator.beginRelease(first, completion: { _ in }) else {
       preconditionFailure("A stale borrower was allowed to release the replacement")
     }
+  }
+
+  static func checkAccessoryStartupAdmission() {
+    let bluetoothIdentifier = UUID()
+    let bluetooth = OwnedCoreBluetoothProtocolRadioSupport.authorizedBluetoothAccessory
+    precondition(!bluetooth(true, nil))
+    precondition(!bluetooth(false, bluetoothIdentifier))
+    precondition(bluetooth(true, bluetoothIdentifier))
+    precondition([(true, nil), (true, bluetoothIdentifier)].contains { bluetooth($0.0, $0.1) })
+    let policy = OwnedCoreBluetoothProtocolRadioSupport.shouldCreateStartupCentral
+    precondition(policy("restore-1", false, [])) // Legacy timing unchanged.
+    precondition(!policy(nil, false, ["restore-1"]))
+    precondition(!policy("restore-1", true, []))
+    precondition(!policy("restore-1", true, ["different-restore"]))
+    precondition(policy("restore-1", true, ["restore-1"]))
+    var installed = false
+    var allocated = 0
+    var failures = [NSError]()
+    let queryFailure = NSError(domain: "ASErrorDomain", code: 550,
+      userInfo: [NSLocalizedDescriptionKey: "CBManagers active with global permissions"])
+    for answer: Result<Bool, NSError> in [.success(false), .success(true), .failure(queryFailure)] {
+      // Production installs/binds the host before beginning a query, including
+      // an injected synchronously answered query. No central is allocated yet.
+      installed = true
+      OwnedCoreBluetoothProtocolRadioSupport.resumeAuthorizedAccessoryStartup(
+        query: { completion in completion(answer) },
+        createCentral: { precondition(installed); allocated += 1 },
+        failure: { failures.append($0) }
+      )
+    }
+    precondition(allocated == 1)
+    precondition(failures.count == 1 && failures[0] === queryFailure)
+    precondition(OwnedCoreBluetoothProtocolRadioSupport.prePermissionSnapshot(authorization: "granted")["power"] as? String == "unknown")
+    for lateReason in [queryFailure, NSError(domain: "UnifiedBleAccessoryStartup", code: 2)] {
+      var answers = 0
+      var lateFailures = [NSError]()
+      var retired = 0
+      let query = AppleAccessoryStartupAuthorization(
+        completion: { _ in answers += 1 },
+        sessionFailure: { lateFailures.append($0) },
+        activated: {}, retire: { retired += 1 }
+      )
+      precondition(query.activate(authorized: true))
+      precondition(!query.activate(authorized: false))
+      precondition(query.fail(lateReason))
+      precondition(!query.fail(queryFailure))
+      precondition(answers == 1 && lateFailures.count == 1 && lateFailures[0] === lateReason)
+      precondition(retired == 1 && !query.isActivated)
+    }
+    var pendingAnswers = [Result<Bool, NSError>]()
+    var pendingRetirements = 0
+    let pending = AppleAccessoryStartupAuthorization(
+      completion: { pendingAnswers.append($0) },
+      sessionFailure: { _ in preconditionFailure("timed-out query produced a late session answer") },
+      activated: { preconditionFailure("late activation created a central") },
+      retire: { pendingRetirements += 1 }
+    )
+    precondition(pending.fail(queryFailure))
+    precondition(!pending.activate(authorized: true))
+    precondition(!pending.fail(queryFailure))
+    precondition(pendingAnswers.count == 1 && pendingRetirements == 1)
+
+    for answer: Result<Bool, NSError> in [.success(true), .success(false), .failure(queryFailure)] {
+      var answers = [Result<Bool, NSError>]()
+      var retirements = 0
+      var activations = 0
+      var lateFailures = 0
+      let shared = AppleAccessoryStartupAuthorization(
+        completion: { answers.append($0) },
+        sessionFailure: { _ in lateFailures += 1 },
+        activated: { activations += 1 }, retire: { retirements += 1 }
+      )
+      // Startup and two concurrent directory queries share one activation.
+      precondition(shared.join(completion: { answers.append($0) }, sessionFailure: { _ in lateFailures += 1 }))
+      precondition(shared.join(completion: { answers.append($0) }, sessionFailure: { _ in lateFailures += 1 }))
+      precondition(answers.isEmpty)
+      switch answer {
+      case .success(let authorized):
+        precondition(shared.activate(authorized: authorized))
+        precondition(activations == 1)
+      case .failure(let error):
+        precondition(shared.fail(error))
+        precondition(activations == 0)
+      }
+      precondition(answers.count == 3)
+      for received in answers {
+        switch (answer, received) {
+        case (.success(let expected), .success(let actual)): precondition(actual == expected)
+        case (.failure(let expected), .failure(let actual)): precondition(actual === expected)
+        default: preconditionFailure("activation changed a joined caller's answer")
+        }
+      }
+      precondition(!shared.join(completion: { _ in preconditionFailure("late join accepted") },
+        sessionFailure: { _ in preconditionFailure("late observer accepted") }))
+      precondition(!shared.activate(authorized: false))
+      _ = shared.fail(queryFailure)
+      precondition(!shared.fail(queryFailure))
+      precondition(answers.count == 3 && retirements == 1)
+      if case .success = answer { precondition(lateFailures == 3) }
+      else { precondition(lateFailures == 0) }
+    }
+    var boundedAnswers = 0
+    let bounded = AppleAccessoryStartupAuthorization(
+      completion: { _ in boundedAnswers += 1 }, sessionFailure: { _ in }, activated: {}, retire: {}
+    )
+    for _ in 1..<64 {
+      precondition(bounded.join(completion: { _ in boundedAnswers += 1 }, sessionFailure: { _ in }))
+    }
+    precondition(!bounded.join(completion: { _ in preconditionFailure("unbounded waiter accepted") }, sessionFailure: { _ in }))
+    precondition(bounded.fail(queryFailure))
+    precondition(boundedAnswers == 64)
+    var reentrant: AppleAccessoryStartupAuthorization?
+    var reentrantAnswers = 0
+    var reentrantRetirements = 0
+    reentrant = AppleAccessoryStartupAuthorization(
+      completion: { _ in reentrantAnswers += 1 }, sessionFailure: { _ in preconditionFailure("pending failure became a late failure") },
+      activated: {}, retire: {
+        reentrantRetirements += 1
+        // AS invalidation may synchronously deliver another event.
+        precondition(reentrant?.fail(queryFailure) == false)
+        precondition(reentrant?.activate(authorized: true) == false)
+      }
+    )
+    precondition(reentrant?.join(completion: { _ in reentrantAnswers += 1 }, sessionFailure: { _ in }) == true)
+    precondition(reentrant?.fail(queryFailure) == true)
+    precondition(reentrantAnswers == 2 && reentrantRetirements == 1)
   }
 
   /// The exact helper used by production connect. Script OS lookup only;
@@ -124,6 +253,7 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
   static func checkAuthorizationWaiters() {
     var word = "notDetermined"
     var ensured = 0
+    var accessorySetup = false
     var scheduled = [(delayMs: UInt64, work: () -> Void)]()
     func make() -> ApplePermissionPrompter {
       ApplePermissionPrompter(
@@ -135,7 +265,8 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
         },
         makeError: { code, message in
           NSError(domain: "test", code: code, userInfo: [NSLocalizedDescriptionKey: message])
-        }
+        },
+        accessorySetupConfigured: { accessorySetup }
       )
     }
 
@@ -176,6 +307,9 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
     precondition(answered.isEmpty, "an undecided prompt waits")
     precondition(ensured == 1, "waiting allocates the central that prompts")
     precondition(!start(prompter), "a concurrent prompt is refused like Android's")
+    prompter.authorizationChanged()
+    precondition(answered.isEmpty, "an undecided delegate update must keep permission pending")
+    precondition(!start(prompter), "an undecided update must preserve single-flight ownership")
     word = "denied"
     prompter.authorizationChanged()
     precondition(answered.count == 1, "the decision settles the waiter")
@@ -187,6 +321,8 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
     answered.removeAll()
     word = "notDetermined"
     precondition(start(prompter), "the prompter is reusable after a decision")
+    prompter.authorizationChanged()
+    precondition(answered.isEmpty, "an undecided update must not cancel the original deadline")
     scheduled.last!.work()
     precondition(answered.count == 1, "an unanswered prompt times out")
     precondition(answered[0].0 == nil && answered[0].1?.code == 1038, "the timeout reports what happened")
@@ -201,5 +337,78 @@ enum AppleCoreBluetoothBorrowerOwnerHarness {
     prompter.abandon()
     precondition(answered.count == 1, "teardown answers the waiter")
     precondition(answered[0].0 == nil && answered[0].1?.code == 1021, "teardown reports destruction")
+    accessorySetup = true
+    prompter = make()
+    answered.removeAll()
+    word = "notDetermined"
+    let allocated = ensured
+    let deadlines = scheduled.count
+    precondition(start(prompter))
+    precondition(answered.count == 1 && answered[0].1?.code == 1040, "ASK has no global permission prompt")
+    precondition(answered[0].0 == nil, "ASK scope must not fabricate global permission results")
+    precondition(ensured == allocated && scheduled.count == deadlines, "unsupported ASK prompt must not allocate or arm a five-minute waiter")
+    for decided in ["granted", "denied", "restricted", "unavailable"] {
+      answered.removeAll()
+      word = decided
+      precondition(start(prompter))
+      precondition(answered.count == 1, "decided authorization semantics remain available on ASK hosts")
+      precondition(answered[0].1?.code != 1040, "ASK refusal applies only to undecided global prompts")
+    }
+  }
+
+  static func checkRadioPreparation() {
+    let unauthorized = OwnedCoreBluetoothProtocolRadioSupport.operationReadinessFailure(state: .unauthorized)
+    precondition(unauthorized?.domain == "CoreBluetooth.CBManagerState")
+    precondition(unauthorized?.code == CBManagerState.unauthorized.rawValue)
+    precondition(OwnedCoreBluetoothProtocolRadioSupport.operationReadinessFailure(state: .unknown) == nil)
+    precondition(OwnedCoreBluetoothProtocolRadioSupport.operationReadinessFailure(state: .resetting) == nil)
+    let preparation = AppleRadioPreparation()
+    let pending: NSDictionary = ["availability": "available", "authorization": "notDetermined", "power": "unknown"]
+    let ready: NSDictionary = ["availability": "available", "authorization": "notDetermined", "power": "on"]
+    var answers = [String]()
+    preparation.start("connect", snapshot: pending, waitForInitialState: true) { snapshot, error in
+      precondition(error == nil)
+      precondition(snapshot?["authorization"] as? String == "notDetermined")
+      answers.append("connect")
+    }
+    precondition(answers.isEmpty, "fresh ASK central must not connect before its state callback")
+    preparation.update(pending)
+    precondition(answers.isEmpty)
+    preparation.update(ready)
+    precondition(answers == ["connect"])
+    preparation.update(ready)
+    precondition(answers.count == 1)
+    let cancellation = NSError(domain: "test", code: 1020)
+    preparation.start("cancelled", snapshot: pending, waitForInitialState: true) { _, error in
+      precondition(error === cancellation)
+      answers.append("cancelled")
+    }
+    preparation.cancel("cancelled", error: cancellation)
+    preparation.update(ready)
+    precondition(answers == ["connect", "cancelled"], "late poweredOn must not dispatch a cancelled operation")
+    preparation.start("destroyed", snapshot: pending, waitForInitialState: true) { _, error in
+      precondition(error === cancellation)
+      answers.append("destroyed")
+    }
+    preparation.failAll(cancellation)
+    preparation.update(ready)
+    precondition(answers.count == 3)
+    for authorization in ["denied", "restricted", "unavailable"] {
+      preparation.start(authorization, snapshot: ["authorization": authorization, "power": "unknown"], waitForInitialState: true) { snapshot, error in
+        precondition(error == nil && snapshot?["authorization"] as? String == authorization)
+        answers.append(authorization)
+      }
+    }
+    precondition(answers.count == 6, "negative authorization must not wait for power")
+    preparation.start("legacy", snapshot: pending, waitForInitialState: false) { _, _ in answers.append("legacy") }
+    precondition(answers.last == "legacy", "legacy permission admission must not be silently changed")
+    preparation.start("scoped-refused", snapshot: pending, waitForInitialState: true) { snapshot, error in
+      precondition(snapshot == nil && error === unauthorized)
+      answers.append("scoped-refused")
+    }
+    preparation.failAll(unauthorized!)
+    preparation.update(ready)
+    precondition(answers.last == "scoped-refused")
+    precondition(pending["authorization"] as? String == "notDetermined", "scoped refusal never rewrites global authorization")
   }
 }

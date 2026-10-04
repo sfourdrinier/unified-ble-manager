@@ -2,10 +2,11 @@
 # scripts/ci/check-tvos-library.sh
 # Library-level tvOS compile check for CI (#20).
 #
-# Proves the 4.0 Unified Protocol CoreBluetooth radio typechecks for appletvsimulator.
+# Proves the current Owned CoreBluetooth radio typechecks for appletvsimulator.
 #
 # Does NOT prove a full react-native-tvos app links the Unified Protocol TurboModule at runtime
-# (that needs a TV host app — out of scope for this script).
+# Full packed-app linking is a separate gate: see example-expo/README.md's
+# "Packed Apple TV consumer acceptance" and build-tv.sh build-simulator/build-target.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -31,7 +32,7 @@ if ! grep -qE 'ios[[:space:]]*=>[[:space:]]*"16\.4"' "$PODSPEC"; then
 fi
 
 if ! grep -q 'OWNED_COREBLUETOOTH_RADIO' "$PODSPEC"; then
-  echo "error: podspec must mark OWNED_COREBLUETOOTH_RADIO for 4.0 default path" >&2
+  echo "error: podspec must mark OWNED_COREBLUETOOTH_RADIO for the owned radio path" >&2
   exit 1
 fi
 
@@ -49,7 +50,7 @@ if [[ ! -d "$OWNED_DIR" ]]; then
   exit 1
 fi
 
-# Product sources for the default 4.0 path. Keep this list in lockstep with the
+# Product Owned radio sources. Keep this list in lockstep with the
 # explicit podspec entries so a retired Swift bridge cannot slip into tvOS CI.
 SWIFT_FILES=(
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadioSupport.swift"

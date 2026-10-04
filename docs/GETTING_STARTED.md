@@ -4,19 +4,19 @@
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 
-This source targets `5.0.0-rc.16`; verify the published version in the npm registry.
+This source targets `5.0.0-rc.17`; verify the published version in the npm registry.
 
 ## Pick a host
 
-| You are building | Import | Next page |
-| --- | --- | --- |
-| Bare React Native | `unified-ble-manager/react-native` | this page |
-| Expo / CNG v2 | `unified-ble-manager/expo` | [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md) |
-| React provider / hooks | `unified-ble-manager/react` | [`README.md`](../README.md#react-provider-and-hooks) |
-| Browser | `unified-ble-manager/web` | [`WEB.md`](WEB.md) |
-| Electron | `unified-ble-manager/electron/main` + `unified-ble-manager/electron/renderer` | [`ELECTRON.md`](ELECTRON.md) |
-| Node on macOS / Windows / Linux | `unified-ble-manager/node/corebluetooth`, `node/winrt`, or `node/bluez` | [`NODE.md`](NODE.md) |
-| Tauri v2 | `unified-ble-manager/tauri` | [`TAURI.md`](TAURI.md) |
+| You are building                | Import                                                                        | Next page                                            |
+| ------------------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Bare React Native               | `unified-ble-manager/react-native`                                            | this page                                            |
+| Expo / CNG v2                   | `unified-ble-manager/expo`                                                    | [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md)                   |
+| React provider / hooks          | `unified-ble-manager/react`                                                   | [`README.md`](../README.md#react-provider-and-hooks) |
+| Browser                         | `unified-ble-manager/web`                                                     | [`WEB.md`](WEB.md)                                   |
+| Electron                        | `unified-ble-manager/electron/main` + `unified-ble-manager/electron/renderer` | [`ELECTRON.md`](ELECTRON.md)                         |
+| Node on macOS / Windows / Linux | `unified-ble-manager/node/corebluetooth`, `node/winrt`, or `node/bluez`       | [`NODE.md`](NODE.md)                                 |
+| Tauri v2                        | `unified-ble-manager/tauri`                                                   | [`TAURI.md`](TAURI.md)                               |
 
 ## React Native and Expo in one hour
 
@@ -29,7 +29,7 @@ Install the exact candidate and commit the resolved lockfile for a known native
 rebuild:
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.16
+pnpm add unified-ble-manager@5.0.0-rc.17
 ```
 
 Declare Android Bluetooth permissions and the BLE hardware feature yourself,
@@ -39,11 +39,11 @@ request runtime permissions on Android 12+, add
 #### Expo / CNG v2
 
 The Expo v2 schema and `unified-ble-manager/expo` factory are in this source.
-After the npm registry lists `5.0.0-rc.16`, install that exact version and keep it in
+After the npm registry lists `5.0.0-rc.17`, install that exact version and keep it in
 your lockfile while validating the native build:
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.16
+pnpm add unified-ble-manager@5.0.0-rc.17
 ```
 
 The package does not run in Expo Go.
@@ -184,6 +184,41 @@ const manager = await createExpoBleManager()
 
 The host factory owns ephemeral identity generation. Restoration-bound identity comes from the trusted native host and native configuration; application code does not pass client, manager, or host-session IDs.
 
+#### Optional native system chooser
+
+Both factories also expose the same `manager.choose()` when the instantiated
+host reports `discovery:system-chooser`: Android uses CompanionDeviceManager
+on API 33+ devices with companion setup support; eligible iOS apps use
+AccessorySetupKit on iOS 18+ (name prefixes require 18.2+). It is an explicit
+alternative to scanning, not a fallback or a second manager:
+
+```ts
+const selected = await manager.choose({
+  filters: [{ serviceUuids: ['180d'], localNamePrefix: 'SIM Polar H10' }],
+  timeoutMs: 30000
+})
+const connection = await manager.connect(selected)
+const database = await connection.discover()
+// Use this database, then release the connection and eventually the manager.
+```
+
+Choose requires foreground system UI and the consuming app's declarations.
+iOS apps must declare actual ASK service/name/company allowlists in Info.plist;
+Expo consumers can use `ios.infoPlist`. See [the complete native setup guide](BACKGROUND.md#apple-accessory-setup-and-relaunch-eligibility)
+and [the prepared reference-app qualification procedure](ACCESSORY_CHOOSER_QUALIFICATION.md).
+An undeclared or unrepresentable filter is refused before OS picker allocation,
+never silently broadened. A selected peer's name may be null; an Android
+association label is not an advertisement name. Selection does not connect,
+scan, or prove a relaunch. Abort/deadline suppresses late selection without
+secretly revoking persistent OS authorization. Destroy cancels owned picker
+work; retain and retry a refused cleanup receipt.
+
+ASK is unavailable on tvOS, macOS and Mac Catalyst. On unavailable hosts the
+public chooser reports `capability.unsupported`; use the runtime capability
+report, not a static platform guess. Web uses its own user-activation and origin
+permission rules. `optionalServices` governs Web service permissions, not ASK's
+device-wide authorization.
+
 ### 4. Check the adapter, then run the loop
 
 ```ts
@@ -202,7 +237,7 @@ Never gate on a bare `authorization !== 'granted'`. Only an explicit refusal —
 `'unknown'` means the platform exposes no per-application Bluetooth
 authorization concept, as BlueZ on Linux does, or that the host did not query
 one; `'not-determined'` means the user has not been asked yet, and since the
-prompt is raised by *using* the radio rather than by reading the state, blocking
+prompt is raised by _using_ the radio rather than by reading the state, blocking
 on it would stop the prompt from ever appearing.
 
 Then run the finite public journey (`find` → `withDiscoveredConnection` → GATT read → `destroy`) from the root [`README.md`](../README.md):

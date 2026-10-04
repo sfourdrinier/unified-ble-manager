@@ -141,9 +141,6 @@ async function chooseWebPeer(backend: WebBluetoothBackend, options: ChooseOption
   const optionalServices = (options.optionalServices ?? []).map(normalizeChooserUuid)
   const browserFilters = filters.map(normalizeChooserFilter)
   const acceptAllDevices = options.acceptAllDevices ?? browserFilters.length === 0
-  if ((acceptAllDevices && browserFilters.length > 0) || (!acceptAllDevices && browserFilters.length === 0)) {
-    throw contractError('scan.filter-invalid', 'chooser', 'web.choose.selection-mode')
-  }
   const selection = await backend.choose(
     {
       filters: browserFilters,

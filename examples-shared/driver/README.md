@@ -478,7 +478,7 @@ verifies the copied RustCore before invoking Xcode.
 
 ```sh
 pnpm prepack
-pnpm --dir example-expo install --no-frozen-lockfile
+node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
 pnpm --dir example-expo android                                     # or: pnpm --dir example-expo ios
 adb reverse tcp:8795 tcp:8795                                       # Android over USB with Metro on localhost
 ```

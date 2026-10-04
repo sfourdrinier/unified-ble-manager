@@ -189,11 +189,23 @@ final class ScriptedDriver: UnifiedBleRustRadioDriver {
   var hangingConnects = [String: (NSError?) -> Void]()
   var holdSetupWrites = false
   var setupWrites = [(NSError?) -> Void]()
+  var holdPreparation = false
+  var preparations = [String: (NSDictionary?, NSError?) -> Void]()
+  let preparationAdmitted = DispatchSemaphore(value: 0)
 
   private func record(_ call: String) { calls.append(call) }
 
   func adapterSnapshot(completion: @escaping (NSDictionary) -> Void) {
     workQueue.async { completion(self.snapshot) }
+  }
+
+  func prepareForOperation(operationIdentifier: String, completion: @escaping (NSDictionary?, NSError?) -> Void) {
+    workQueue.async {
+      if self.holdPreparation {
+        self.preparations[operationIdentifier] = completion
+        self.preparationAdmitted.signal()
+      } else { completion(self.snapshot, nil) }
+    }
   }
 
   func restoredPeerSnapshots(completion: @escaping ([NSDictionary]) -> Void) {
@@ -431,6 +443,7 @@ final class Harness {
 
   func run() {
     translationChecks()
+    explicitRadioAdmissionChecks()
     restorationIdentityChecks()
     randomBytesChecks()
 
@@ -1245,7 +1258,11 @@ final class Harness {
       check(!dispatched, "a readiness refusal never reaches CoreBluetooth")
       return kind
     }
-    check(readinessKind("not-determined", "unknown") == "permission-not-determined", "not-determined")
+    check(readinessKind("not-determined", "on") == nil, "powered-on scoped authorization must not invent a global refusal")
+    check(readinessKind("unknown", "on") == nil, "unknown authorization is not a denial")
+    check(readinessKind("not-determined", "unknown") == "permission-not-determined", "legacy uninitialized permission preparation remains explicit")
+    check(readinessKind("not-determined", "off") == "adapter-off", "nonblocking global authorization does not hide actual powered-off")
+    check(readinessKind("not-determined", "unsupported") == "adapter-unavailable", "nonblocking global authorization does not hide actual unsupported")
     check(readinessKind("restricted", "on") == "permission-restricted", "restricted")
     check(readinessKind("denied", "on") == "permission-denied", "denied")
     check(readinessKind("granted", "resetting") == "adapter-resetting", "resetting")
@@ -1253,6 +1270,12 @@ final class Harness {
     check(readinessKind("granted", "unsupported", "unsupported") == "adapter-unavailable", "unsupported")
     check(readinessKind("granted", "off") == "adapter-off", "off")
     check(readinessKind("granted", "on") == nil, "ready")
+    let scopedRefusal = OwnedCoreBluetoothProtocolRadioSupport.operationReadinessFailure(state: .unauthorized)!
+    guard case let .failed(scopedKind, _, scopedDomain, scopedCode, _, scopedDispatched) = UnifiedBleRustRadioAdapter.failure(scopedRefusal, verb: .connect) else {
+      return check(false, "measured scoped unauthorized state must refuse")
+    }
+    check(scopedKind == "permission-denied" && scopedDomain == "CoreBluetooth.CBManagerState"
+          && scopedCode == 3 && !scopedDispatched, "scoped state identity and admission phase must survive")
     let attError = NSError(domain: CBATTErrorDomain, code: 5)
     guard case let .failed(kind, status, nativeDomain, nativeCode, _, dispatched) = UnifiedBleRustRadioAdapter.failure(attError, verb: .read),
           kind == "gatt-status", status == 5, dispatched else {
@@ -1269,6 +1292,35 @@ final class Harness {
     check(UnifiedBleRustRadioAdapter.ownedKind(1026, verb: .readDescriptor) == "busy", "1026 descriptor")
     check(UnifiedBleRustRadioAdapter.coreBluetoothKind(7) == "not-connected", "CBError.peripheralDisconnected")
     check(UnifiedBleRustRadioAdapter.rssi(127) == nil && UnifiedBleRustRadioAdapter.rssi(-40) == -40, "rssi 127")
+  }
+
+  func explicitRadioAdmissionChecks() {
+    final class Sink: UnifiedBleRustRadioSink {
+      let answered = DispatchSemaphore(value: 0)
+      func complete(requestId: UInt64, completion: MobileRadioCompletion) -> String {
+        answered.signal()
+        return "delivered"
+      }
+      func ingest(ingress: MobileRadioIngress) -> String { "accepted" }
+    }
+    let driver = ScriptedDriver()
+    driver.holdPreparation = true
+    driver.snapshot = ["availability": "available", "authorization": "notDetermined", "power": "on"]
+    let adapter = UnifiedBleRustRadioAdapter(driver: driver)
+    let sink = Sink()
+    adapter.bind(sink: sink)
+    adapter.submit(request: .connect(id: 990, peerId: "ASK", autoConnect: false, preferredPhy: []))
+    check(driver.preparationAdmitted.wait(timeout: .now() + timeout) == .success, "connect preparation missing")
+    check(driver.onQueue { driver.calls.isEmpty }, "connect must not run before observed initial state")
+    driver.onQueue { driver.preparations.removeValue(forKey: "ubm-rust-990")?(driver.snapshot, nil) }
+    check(sink.answered.wait(timeout: .now() + timeout) == .success, "scoped ready connect not answered")
+    check(driver.onQueue { driver.calls == ["connect ASK"] }, "actual poweredOn permits nonblocking global authorization")
+    adapter.submit(request: .connect(id: 991, peerId: "LATE", autoConnect: false, preferredPhy: []))
+    check(driver.preparationAdmitted.wait(timeout: .now() + timeout) == .success, "cancel preparation missing")
+    adapter.cancel(requestId: 991)
+    check(sink.answered.wait(timeout: .now() + timeout) == .success, "cancel did not answer original request")
+    driver.onQueue { driver.preparations.removeValue(forKey: "ubm-rust-991")?(driver.snapshot, nil) }
+    check(driver.onQueue { driver.calls == ["connect ASK"] }, "late state must not connect after Rust cancellation")
   }
 
   /// Finding 140 (I-1): every Android-only verb submitted straight to a
@@ -1296,7 +1348,7 @@ final class Harness {
       .acquireBackground(id: 901, kind: "connected-device", reason: "workout"),
       .releaseBackground(id: 902, leaseId: "lease"),
       .updateBackgroundNotification(id: 903, leaseId: "lease", title: "Recording", body: nil),
-      .associateCompanion(id: 904, name: "Polar", serviceUuid: nil),
+      .associateCompanion(id: 904, name: "Polar", serviceUuid: nil, filtersJson: nil),
     ]
     for request in requests { isolated.submit(request: request) }
     for _ in requests {

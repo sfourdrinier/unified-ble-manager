@@ -15,11 +15,6 @@
  * central on the SYNTHETIC radio: the Rust core executes under the Electron
  * ABI with no Bluetooth permission and no radio claim.
  *
- * LEGACY (Phase 4 deletes this leg with native/electron/*): on darwin/win32,
- * unless UBM_SMOKE_BACKEND=desktop-core, also creates the legacy node-gyp
- * contract boundary (loaded through its internal module, unreachable from
- * any public entrypoint) so its prebuild keeps loading until deletion.
- *
  *   ./node_modules/.bin/electron scripts/ci/electron-main-smoke.js
  *
  * No branch starts a scan or claims live radio.
@@ -45,14 +40,25 @@ function loadElectronMain() {
  */
 async function smokeDesktopCore() {
   const platform = { linux: 'bluez', darwin: 'corebluetooth', win32: 'winrt' }[process.platform]
-  const prebuild = path.join(root, 'native', 'desktop-core', 'prebuilds', `${process.platform}-${process.arch}`, 'ubm_desktop_core.node')
+  const prebuild = path.join(
+    root,
+    'native',
+    'desktop-core',
+    'prebuilds',
+    `${process.platform}-${process.arch}`,
+    'ubm_desktop_core.node'
+  )
+  if (process.env.UBM_SMOKE_USE_SOURCE === '1') {
+    process.env.UBM_NAPI_ADDON = path.join(
+      root,
+      'bindings',
+      'napi',
+      `ubm_echo.${process.platform}-${process.arch}.node`
+    )
+  }
   const sourceBuild = process.env.UBM_NAPI_ADDON
   if (platform === undefined || (!require('fs').existsSync(prebuild) && !sourceBuild)) {
-    if (process.env.UBM_SMOKE_BACKEND === 'desktop-core') {
-      throw new Error(`desktop-core smoke requested but no prebuild exists at ${prebuild}`)
-    }
-    console.log('Electron main-process desktop-core smoke skipped (no prebuild for this target)', { prebuild })
-    return
+    throw new Error(`desktop-core smoke requires a prebuild or explicit source addon: ${prebuild}`)
   }
   const { loadDesktopCoreBinding } = require(path.join(root, 'lib/commonjs/desktop-core-addon'))
   const binding = await loadDesktopCoreBinding({ platform, operationPrefix: `${platform}-manager` })
@@ -87,7 +93,11 @@ async function main() {
       throw new Error(`Electron-main ${factory} is not a function under Electron`)
     }
   }
-  for (const legacy of ['createNativeCoreBluetoothBoundary', 'createNativeWinRtBoundary', 'createCoreBluetoothBackendProvider']) {
+  for (const legacy of [
+    'createNativeCoreBluetoothBoundary',
+    'createNativeWinRtBoundary',
+    'createCoreBluetoothBackendProvider'
+  ]) {
     if (legacy in electronMain) {
       throw new Error(`Electron-main must not expose the legacy ${legacy}`)
     }
@@ -100,102 +110,8 @@ async function main() {
 
   await smokeDesktopCore()
 
-  // Electron's process.exit does not stop this function synchronously:
-  // return instead, and exit once at the end.
-  if (process.env.UBM_SMOKE_BACKEND !== 'desktop-core') {
-    await smokeLegacyBoundary()
-  }
-
   // Electron keeps the event loop alive until explicitly exited.
   process.exit(0)
-}
-
-/** LEGACY: the node-gyp boundary prebuilds, until Phase 4 deletes them. */
-async function smokeLegacyBoundary() {
-  const { createNativeCoreBluetoothBoundary } = require(path.join(
-    root,
-    'lib/commonjs/backends/corebluetooth/corebluetooth-native-boundary'
-  ))
-  const { createNativeWinRtBoundary } = require(path.join(root, 'lib/commonjs/backends/winrt/winrt-native-boundary'))
-
-  // R3-F012: the direct Node-API boundary must load under Electron.
-  if (process.platform === 'darwin') {
-    if (typeof createNativeCoreBluetoothBoundary !== 'function') {
-      throw new Error('createNativeCoreBluetoothBoundary missing from Electron-main entrypoint')
-    }
-    const boundary = createNativeCoreBluetoothBoundary()
-    for (const method of [
-      'adapterSnapshot',
-      'startScan',
-      'stopScan',
-      'connect',
-      'disconnect',
-      'connectionState',
-      'discover',
-      'read',
-      'write',
-      'startNotify',
-      'stopNotify',
-      'onDisconnect',
-      'onAdapterState',
-      'destroy'
-    ]) {
-      if (typeof boundary[method] !== 'function') {
-        throw new Error(`CoreBluetooth contract boundary is missing ${method}`)
-      }
-    }
-    await boundary.destroy()
-    console.log('Electron main-process L3 CoreBluetooth public boundary ok', {
-      runtime: 'electron',
-      electron: process.versions.electron
-    })
-  } else if (process.platform === 'win32') {
-    if (typeof createNativeWinRtBoundary !== 'function') {
-      throw new Error('createNativeWinRtBoundary missing from Electron-main entrypoint')
-    }
-    const boundary = createNativeWinRtBoundary()
-    for (const method of [
-      'listAdapters',
-      'selectAdapter',
-      'adapterSnapshot',
-      'startScan',
-      'stopScan',
-      'connect',
-      'disconnect',
-      'discover',
-      'read',
-      'write',
-      'readDescriptor',
-      'writeDescriptor',
-      'startNotify',
-      'stopNotify',
-      'onConnectionLost',
-      'onDatabaseChanged',
-      'onAdapterState',
-      'onSecurityState',
-      'onScanTerminal',
-      'securityState',
-      'pair',
-      'cancelPairing',
-      'unpair',
-      'ingressTelemetry',
-      'destroy'
-    ]) {
-      if (typeof boundary[method] !== 'function') {
-        throw new Error(`WinRT contract boundary is missing ${method}`)
-      }
-    }
-    const cleanup = boundary.destroy()
-    await cleanup.completion
-    console.log('Electron main-process L3 WinRT public boundary ok', {
-      runtime: 'electron',
-      electron: process.versions.electron
-    })
-  } else {
-    console.log('Electron main-process L3 native boundary skipped (unsupported host; no radio claim)', {
-      platform: process.platform
-    })
-  }
 }
 
 main().catch(err => {

@@ -184,7 +184,9 @@ iOS (iPhone 16 Pro Max):
    `xcrun devicectl device process terminate --device <device-id> --pid <verified-pid>`.
    The command accepts a PID, not a bundle identifier. Re-list processes and retain
    the lookup/termination results; successful termination alone is not restoration
-   evidence. Never swipe-kill the app: a user force-quit disables restoration.
+   evidence. For this ordinary CoreBluetooth baseline, never swipe-kill the app:
+   user force-quit is not a qualifying relaunch condition. The iOS 26
+   AccessorySetupKit-specific cases below require separate setup and evidence.
 2. Produce a BLE event (the strap sends heart rate or comes into range); the system relaunches the app and delivers `willRestoreState`.
 3. Run `restoration` `restored` and verify that the relaunch reports the
    native-restored peer. Directory reads are non-consuming: this establishes
@@ -220,6 +222,85 @@ applies: the native owner may reconnect, resubscribe and execute declared setup
 before any app call. Qualify that path separately using continuation wake/recovery
 outcomes and positive retained values; do not relabel this baseline's historical
 proof as native continuation evidence.
+
+## Apple accessory setup and relaunch eligibility
+
+Apple's [TN3115](https://developer.apple.com/documentation/technotes/tn3115-bluetooth-state-restoration-app-relaunch-rules)
+was updated for iOS 26 / iPadOS 26. Do not apply an unconditional
+"force-quit always disables restoration" rule to every accessory setup path:
+the table attaches AccessorySetupKit-specific qualification to user force-quit,
+Control Center Bluetooth toggling and Airplane Mode cases. Ordinary
+CoreBluetooth restoration and ASK-authorized accessories are separate paths.
+Settings Bluetooth power-off is not a restoration relaunch trigger. Following
+a device restart, the first passcode unlock is still required. Every relaunch
+also requires a pending CoreBluetooth request and its matching physical event;
+successful setup alone is not a relaunch receipt.
+
+On configured iOS 18+ hosts, the ordinary React Native manager exposes ASK
+through `choose()`. Name-prefix matching requires iOS 18.2+. It presents the
+system picker and returns the OS-authorized accessory with an attachment-bound
+peer id. It does not connect, read GATT, manufacture an advertisement, or emit
+`restoration-received`. The initial `reference` is null until the peer has
+actually entered the native known-peer directory (for example by connecting).
+Cancellation never secretly revokes the person's persistent OS authorization.
+If authorization races cancellation, the late choice is not returned; the
+accessory may remain authorized in Apple's settings.
+
+The consuming app must declare its actual accessory allowlists in Info.plist.
+Apple documents a process crash when the picker uses undeclared identifiers;
+UBM validates declarations before allocating an ASK session and reports a
+refusal instead. For a service-and-name selection:
+
+```xml
+<key>NSAccessorySetupKitSupports</key><array><string>Bluetooth</string></array>
+<key>NSAccessorySetupBluetoothServices</key><array><string>180D</string></array>
+<key>NSAccessorySetupBluetoothNames</key><array><string>Polar H10</string></array>
+```
+
+```ts
+const peer = await ble.choose({
+  filters: [{ serviceUuids: ['180d'], localNamePrefix: 'Polar H10' }],
+  timeoutMs: 60000
+})
+const connection = await ble.connect(peer)
+```
+
+For manufacturer filtering, declare the hexadecimal company identifier in
+`NSAccessorySetupBluetoothCompanyIdentifiers` and supply the matching
+`manufacturerData` prefix. Public company identifiers must be integers in
+`0..65535`; invalid values fail as `scan.filter-invalid` before host admission
+on every backend. Each ASK filter needs a service or company identifier
+and a name or manufacturer-data identifier. Filters are alternatives; fields
+within one filter remain conjunctive. A service-only or accept-all request,
+multiple required services/company identifiers in one filter, and undeclared
+selectors cannot be represented by this picker and are refused, never widened.
+`optionalServices` is a Web service-permission hint; ASK authorization covers
+the selected accessory, so it does not gate later service access.
+
+ASK is unavailable on tvOS, macOS, Mac Catalyst and Web. Android accessory
+association uses Companion Device Manager, not Apple's framework. The consumer
+can use the same public `choose()` API on a CDM-capable Android host. Android
+OR alternatives preserve service UUID, escaped literal name prefix and
+manufacturer-data prefix. Accept-all maps to an unconstrained CDM LE filter;
+multiple required service/company IDs in one alternative are refused because
+the native filter cannot express their conjunction. Selection returns a scoped
+peer, not a GATT connection; an association display label is not an observed
+advertisement name. Cancellation and deadlines use the existing tracked Rust
+association request and release the pending activity on the UI queue.
+Cancelling the operation does not itself confirm that this UI was released.
+The originating session retains the exact CDM request until a native terminal
+answer. `destroy()` retries its cancellation and observes a bounded one-second
+drain; a held UI queue or refused activity release reports `release-failed`
+with the obligation retained for another destroy attempt. Another manager's
+session neither releases nor inherits that picker.
+
+The consumer
+still owns background mode, restoration identity and applicable entitlements.
+The picker requires a foreground app; the native owner enforces its deadline,
+single-flight admission and cancellation independently of a JS timer. A setup
+receipt is not physical restoration/continuation qualification: retain an
+ASK-configured device receipt for the specific iOS 26 state transition before
+making a relaunch claim. Historical ordinary-restoration receipts do not count.
 
 ## 5.0 background continuation (the declared standing order)
 
@@ -278,7 +359,8 @@ fallback title, and validation failure leaves existing ownership unchanged.
 The declaration is persisted host configuration: the OS must be able to read
 it before JavaScript runs. A host may replace it only when doing so cannot
 change an already owned continuation; claim and release that owner first.
-Claims queue behind an in-flight automatic recovery attempt, then seal the
+Desktop status reads and claims queue behind an in-flight automatic recovery
+attempt rather than depending on a scheduler gap. Claims then seal the
 continuation before another retry can start. An explicit initial execution still
 excludes concurrent claims and reports a busy lifecycle state. Confirmed link
 loss retires that generation's physical subscription obligations; it does not
@@ -654,6 +736,12 @@ the existing MAC/UUID canonicalization, and status preserves the validated
 `counters`, `native`, `process`, and `continuationOutcome` fields. Desktop status
 keeps `queuedData`, `lastError`, and `continuationOutcome`; the structural
 `NativeContinuationStatus` union does not invent desktop facts for mobile.
+The separate mobile continuation posture (`continuationStatus`, exposed as
+Expo `continuation.status()`) preserves a structured `startupFailure` independently of the
+declared posture, `lastWake`, and `lastRecovery`. Accessory authorization startup
+failure is not a completed wake/recovery and does not itself prevent claiming an
+already-owned backlog. Its exact native domain/code remain observable until an
+authoritative successful retry; Android/older hosts omit it or report null.
 Native
 failure identities remain authoritative. Callers sequence execute and claim;
 failed disposal retains the cleanup obligation and decoded handoff for retry.

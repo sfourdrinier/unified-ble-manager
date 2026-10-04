@@ -12,6 +12,7 @@
 #import <CoreBluetooth/CoreBluetooth.h>
 #import <React/RCTBridgeModule.h>
 #import <React/RCTInvalidating.h>
+#import <React/RCTLog.h>
 #import <ReactCommon/RCTTurboModule.h>
 
 #if __has_include("BlePlx-Swift.h")
@@ -29,7 +30,10 @@ void rejectWithFailure(RCTPromiseRejectBlock reject, NSString *failureJson) {
 
 } // namespace
 
-@interface UnifiedBleRustCore : NativeUnifiedBleRustCoreSpecBase <NativeUnifiedBleRustCoreSpec, RCTInvalidating>
+@interface UnifiedBleRustCore : NativeUnifiedBleRustCoreSpecBase <NativeUnifiedBleRustCoreSpec, RCTInvalidating> {
+  NSMutableSet<NSString *> *_accessoryChoiceRequests;
+  BOOL _accessoryChoicesInvalidated;
+}
 @end
 
 @implementation UnifiedBleRustCore
@@ -47,6 +51,56 @@ RCT_EXPORT_MODULE(UnifiedBleRustCore)
 
 - (void)invalidate {
   [[UnifiedBleRustCoreSessions shared] closeSessionsOwnedBy:self];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    self->_accessoryChoicesInvalidated = YES;
+    for (NSString *requestId in [self->_accessoryChoiceRequests copy]) {
+      [[UnifiedBleAccessoryChooser shared] cancel:requestId completion:^(NSString *failure) {
+        if (failure != nil) RCTLogError(@"UBM accessory cleanup refused: %@", failure);
+      }];
+    }
+  });
+}
+
+- (void)chooseAccessory:(NSString *)requestId optionsJson:(NSString *)optionsJson timeoutMs:(double)timeoutMs
+                 resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (self->_accessoryChoicesInvalidated) {
+      rejectWithFailure(reject, @"{\"code\":\"chooser.closed\",\"domain\":\"chooser\",\"operation\":\"accessory.choose\",\"detail\":\"module invalidated\"}");
+      return;
+    }
+    if (self->_accessoryChoiceRequests == nil) self->_accessoryChoiceRequests = [NSMutableSet new];
+    [self->_accessoryChoiceRequests addObject:requestId];
+    [[UnifiedBleAccessoryChooser shared] choose:requestId optionsJson:optionsJson timeoutMs:timeoutMs
+      completion:^(NSString *result, NSString *failure) {
+        [self->_accessoryChoiceRequests removeObject:requestId];
+        if (failure != nil) rejectWithFailure(reject, failure); else resolve(result);
+      }];
+  });
+}
+
+- (void)cancelAccessoryChoice:(NSString *)requestId resolve:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  [[UnifiedBleAccessoryChooser shared] cancel:requestId completion:^(NSString *failure) {
+    if (failure != nil) rejectWithFailure(reject, failure); else resolve(nil);
+  }];
+}
+
+- (void)accessoryChooserAvailable:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  resolve(@([[UnifiedBleAccessoryChooser shared] available]));
+}
+
+- (void)authorizedAccessories:(RCTPromiseResolveBlock)resolve reject:(RCTPromiseRejectBlock)reject {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (self->_accessoryChoicesInvalidated) {
+      rejectWithFailure(reject, @"{\"code\":\"chooser.closed\",\"domain\":\"chooser\",\"operation\":\"accessory.authorized\",\"detail\":\"module invalidated\"}");
+      return;
+    }
+    [[UnifiedBleRustCoreSessions shared] authorizedAccessories:^(NSString *result, NSString *failure) {
+      if (self->_accessoryChoicesInvalidated) {
+        rejectWithFailure(reject, @"{\"code\":\"chooser.closed\",\"domain\":\"chooser\",\"operation\":\"accessory.authorized\",\"detail\":\"module invalidated\"}");
+      } else if (failure != nil) rejectWithFailure(reject, failure);
+      else resolve(result);
+    }];
+  });
 }
 
 - (void)openSession:(NSString *)owner

@@ -41,7 +41,7 @@ export type {
 } from './backends/desktop/bluez-pairing-generation'
 
 export interface BluezBleManagerAppOptions extends DesktopCoreManagerOptions {
-  /** Trusted LE-bearer implementation/daemon-owner attestation; omission permits scanning only. */
+  /** Optional strict authority pin; omission uses native daemon-owner binding and capability verification. */
   readonly connectionPolicy?: BluezConnectionPolicy
   /** The D-Bus bus BlueZ is reached on (`'system'` by default). */
   readonly busKind?: BluezBusKind

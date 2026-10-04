@@ -31,7 +31,7 @@
 //   addon corrupt (sidecar re-hashed)  -> load-failed
 //   debug build, different identity    -> protocol.incompatible *.native-boundary.version
 //   relative UBM_NAPI_ADDON            -> argument.invalid
-//   legacy native/electron/*/index.js replaced by a throwing module
+//   retired native/electron producer tree must be absent
 //                                      -> the default path is unaffected
 //
 // Emits a JSON receipt: { tarballSha256, pm, platform, arch, node,
@@ -386,15 +386,16 @@ function main(argv) {
         }
       ),
       (() => {
-        const { consumer: legacyConsumer, packageRoot: legacyRoot } = install(tarball, options.pm)
-        for (const backend of ['corebluetooth', 'winrt']) {
-          const legacy = path.join(legacyRoot, 'native', 'electron', backend, 'index.js')
-          if (fs.existsSync(legacy))
-            fs.writeFileSync(legacy, "throw new Error('legacy loader must never be reached')\n")
+        const { consumer: retiredConsumer, packageRoot: retiredPackageRoot } = install(tarball, options.pm)
+        const retiredPresent = fs.existsSync(path.join(retiredPackageRoot, 'native', 'electron'))
+        writeProbes(retiredConsumer, retiredPackageRoot, 'identity')
+        const outcome = runProbe(retiredConsumer, 'probe.cjs')
+        return {
+          leg: 'retired producers absent',
+          passed: !retiredPresent && outcome.outcome === 'identity-verified',
+          retiredPresent,
+          outcome
         }
-        writeProbes(legacyConsumer, legacyRoot, 'identity')
-        const outcome = runProbe(legacyConsumer, 'probe.cjs')
-        return { leg: 'legacy loaders poisoned', passed: outcome.outcome === 'identity-verified', outcome }
       })()
     )
   }

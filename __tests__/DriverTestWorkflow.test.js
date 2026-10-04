@@ -23,7 +23,7 @@ test('clean package preflight runs the pinned workspace formatting gate before p
 test('canonical driver gate installs a fresh frozen Expo consumer snapshot before its unchanged test suite', () => {
   const scripts = JSON.parse(read('package.json')).scripts
   expect(scripts['test:driver']).toBe(
-    'pnpm --dir example-expo install --force --frozen-lockfile && pnpm --dir example-expo test:driver'
+    'node examples-shared/dev/install-example-dependencies.js example-expo --force --frozen-lockfile && pnpm --dir example-expo test:driver'
   )
 })
 
@@ -54,13 +54,13 @@ test('Expo reference check stays mandatory after its separate dependency install
   expect(job).toBeDefined()
   const index = job.steps.findIndex(step => step.run === expoReferenceCommand)
   expect(index).toBeGreaterThan(
-    job.steps.findIndex(step => step.run === 'pnpm --dir example-expo install --no-frozen-lockfile')
+    job.steps.findIndex(step => step.run === 'node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile')
   )
-  expect(index).toBeGreaterThan(job.steps.findIndex(step => step.run === 'npx expo install --fix'))
+  expect(index).toBeGreaterThan(job.steps.findIndex(step => step.run === 'node examples-shared/dev/install-example-dependencies.js --expo-fix example-expo'))
   const preflight = read('scripts/ci/preflight.sh')
   const body = preflight.slice(preflight.indexOf('run_android()'))
   expect(body.split(expoReferenceCommand)).toHaveLength(2)
-  expect(body.indexOf(expoReferenceCommand)).toBeGreaterThan(body.indexOf('npx expo install --fix'))
+  expect(body.indexOf(expoReferenceCommand)).toBeGreaterThan(body.indexOf('node examples-shared/dev/install-example-dependencies.js --expo-fix example-expo'))
   expect(preflight).toContain('skipped (--fast; includes Expo reference typecheck)')
   expect(preflight).toContain('skipped (no Android SDK or JDK; includes Expo reference typecheck)')
   expect(read('examples-shared/driver/README.md')).toContain(referenceCommand)

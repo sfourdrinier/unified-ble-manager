@@ -4,6 +4,7 @@ import { BackendContractError, contractError } from '../backend-contract/errors'
 import {
   assertAttachedBackend,
   type BackendAttachment,
+  type BackendConnectionCleanupRecord,
   type BackendEvent,
   type BleCentralBackend,
   type ConnectionOptions,
@@ -980,9 +981,9 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         failures: [...cleanup.failures, ...record.failures]
       }
     }
-    let backendResult: CleanupRecord
+    let backendObservation: BackendConnectionCleanupRecord
     try {
-      backendResult =
+      backendObservation =
         disconnect && connection.isCurrent() ? await connection.resource.disconnect() : await connection.lease.release()
     } catch (error) {
       this.trace.record({
@@ -1001,10 +1002,11 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         )
       )
     }
+    const backendResult: CleanupRecord = { state: backendObservation.state, failures: backendObservation.failures }
     if (backendResult.state === 'release-failed') {
       return mergeAdmissionFailures(mergeChildFailures(backendResult))
     }
-    connection.finishLifecycle(cause, null)
+    connection.finishLifecycle(cause, null, backendObservation.platform)
     if (admissionFailures.length > 0) {
       return mergeAdmissionFailures(mergeChildFailures(backendResult))
     }
@@ -1173,7 +1175,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     if (event.kind === 'connection-lost') {
       const connection = this.connections.get(String(event.connection.connectionId))
       if (connection !== undefined && connection.matchesConnectionPath(event.connection)) {
-        connection.finishLifecycle('peer-link-loss', event.ingressOrdinal)
+        connection.finishLifecycle('peer-link-loss', event.ingressOrdinal, event.platform)
         this.lifecycleObserver.observeCleanup(
           this.releaseConnection(connection, 'peer-link-loss'),
           'backend-event-connection-cleanup'
@@ -1193,7 +1195,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
             )
           }
           const cause = lifecycleCauseFromBackendDisconnect(event.reason)
-          connection.finishBackendLifecycle(event.previous, event.current, cause, event.ingressOrdinal)
+          connection.finishBackendLifecycle(event.previous, event.current, cause, event.ingressOrdinal, event.platform)
           this.lifecycleObserver.observeCleanup(
             this.releaseConnection(connection, cause),
             'backend-event-connection-state-cleanup'
@@ -1208,7 +1210,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       const connection = this.connections.get(String(event.connection.connectionId))
       if (connection !== undefined && connection.matchesConnectionPath(event.connection)) {
         const cause = lifecycleCauseFromBackendDisconnect(event.reason)
-        connection.finishLifecycle(cause, event.ingressOrdinal)
+        connection.finishLifecycle(cause, event.ingressOrdinal, event.platform)
         this.lifecycleObserver.observeCleanup(
           this.releaseConnection(connection, cause),
           'backend-event-disconnected-cleanup'

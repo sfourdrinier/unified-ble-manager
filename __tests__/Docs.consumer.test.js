@@ -214,7 +214,8 @@ describe('consumer documentation matches the published package', () => {
     expect(background).toContain('exact app executable path')
     expect(background).toContain('record-only baseline')
     expect(background).toContain('opt-in native standing order')
-    expect(background).toContain('Never swipe-kill')
+    expect(background).toContain('For this ordinary CoreBluetooth baseline, never swipe-kill the app')
+    expect(background).toContain('AccessorySetupKit-specific cases below require separate setup and evidence')
     expect(background).toContain('am force-stop')
   })
   test('current public documentation follows the package release channel', () => {

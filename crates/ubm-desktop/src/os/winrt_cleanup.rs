@@ -358,6 +358,42 @@ mod tests {
         open.close();
     }
 
+    #[tokio::test]
+    async fn cancelling_a_queued_acquisition_preserves_the_current_peer_owner() {
+        let slots = std::sync::Arc::new(PeerAdmission::new());
+        let mut current = slots.acquire("peer").await.unwrap();
+        *current = true;
+        let queued_slots = slots.clone();
+        let queued = tokio::spawn(async move { queued_slots.acquire("peer").await });
+        tokio::task::yield_now().await;
+        assert!(!queued.is_finished());
+        queued.abort();
+        assert!(queued.await.unwrap_err().is_cancelled());
+        assert!(*current, "cancellation cannot retire another lease's owner");
+        drop(current);
+        let retained = slots.release("peer").unwrap();
+        assert!(*retained);
+        drop(retained);
+        assert!(slots.acquire("unrelated-peer").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn close_rejects_an_already_queued_acquisition_when_the_owner_settles() {
+        let slots = std::sync::Arc::new(PeerAdmission::new());
+        let current = slots.acquire("peer").await.unwrap();
+        let queued_slots = slots.clone();
+        let queued = tokio::spawn(async move { queued_slots.acquire("peer").await });
+        tokio::task::yield_now().await;
+        assert!(!queued.is_finished());
+        assert_eq!(slots.close(), vec!["peer"]);
+        drop(current);
+        assert!(queued.await.unwrap().is_err());
+        assert!(
+            slots.release("peer").is_ok(),
+            "cleanup remains admitted after close"
+        );
+    }
+
     #[test]
     fn close_fences_a_held_callback_before_returning() {
         let gate = std::sync::Arc::new(CallbackGate::new());

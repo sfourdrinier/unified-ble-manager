@@ -28,10 +28,7 @@ const isolatedConsumerToolVersions = Object.freeze({
 const G6A_CHILD_TIMEOUT_MS = 300000
 /** Maximum duration for one normal-mode npm pack/install subprocess. */
 const PACK_INSTALL_CHILD_TIMEOUT_MS = 600000
-const requiredPackedOptionalHostDependencies = Object.freeze({
-  'node-addon-api': '8.9.0',
-  'node-gyp': '12.4.0'
-})
+const requiredPackedOptionalHostDependencies = Object.freeze({})
 const requiredPackedOptionalPeerHostDependencies = Object.freeze({
   expo: '^57.0.0'
 })
@@ -601,57 +598,19 @@ function verifyInstalledPublishedHostDependencies(consumer) {
 }
 
 function verifyInstalledNativeTooling(consumer) {
-  const assertScript = [
+  const script = [
     "const assert = require('assert');",
     "const fs = require('fs');",
     "const path = require('path');",
     "const packageRoot = path.dirname(require.resolve('unified-ble-manager/package.json'));",
-    "const addonSourceRoot = path.join(packageRoot, 'native', 'electron', 'corebluetooth');",
-    "assert.ok(fs.existsSync(path.join(addonSourceRoot, 'binding.gyp')), 'packed consumer includes CoreBluetooth binding.gyp');",
-    "assert.ok(fs.existsSync(path.join(addonSourceRoot, 'src', 'addon.mm')), 'packed consumer includes CoreBluetooth addon source');",
-    "const loader = require(path.join(addonSourceRoot, 'index.js'));",
-    "assert.strictEqual(typeof loader.tryLoadNative, 'function', 'packed CoreBluetooth loader exposes direct addon lookup');",
-    "assert.strictEqual(typeof loader.createContractBoundary, 'function', 'packed CoreBluetooth loader exposes its boundary factory');",
+    "assert.ok(fs.existsSync(path.join(packageRoot, 'native', 'desktop-core', 'index.js')), 'packed consumer includes the production desktop loader');",
+    "assert.strictEqual(fs.existsSync(path.join(packageRoot, 'native', 'electron')), false, 'retired duplicate desktop addons are absent');",
     "const coreBluetooth = require('unified-ble-manager/node/corebluetooth');",
-    "assert.strictEqual(typeof coreBluetooth.createDesktopRustCoreBackendProvider, 'function', 'node/corebluetooth shared Rust core provider');",
-    "assert.strictEqual('createNativeCoreBluetoothBoundary' in coreBluetooth, false, 'node/corebluetooth exposes no legacy boundary (PR210-02)');",
-    "assert.ok(fs.existsSync(path.join(packageRoot, 'native', 'desktop-core', 'index.js')), 'packed consumer includes the desktop-core loader');",
-    "assert.strictEqual(typeof coreBluetooth.createNativeCoreBluetoothBackendProvider, 'function', 'node/corebluetooth provider factory');",
-    "console.log('pack+install native tooling assertions ok');"
+    "assert.strictEqual(typeof coreBluetooth.createNativeCoreBluetoothBackendProvider, 'function');",
+    "assert.strictEqual('createNativeCoreBluetoothBoundary' in coreBluetooth, false);",
+    "console.log('packed shared desktop-core loader assertions ok');"
   ].join('\n')
-  run(process.execPath, ['-e', assertScript], { cwd: consumer })
-}
-
-function buildAndLoadInstalledCoreBluetoothAddon(consumer) {
-  if (process.platform !== 'darwin') {
-    console.log('packed CoreBluetooth native build skipped (macOS-only; source/tooling assertions completed)')
-    return
-  }
-  const packageRoot = installedPackageRoot(consumer)
-  const nodeGypCli = resolveInstalledConsumerModule(consumer, 'node-gyp/bin/node-gyp.js')
-  const addonDirectory = path.join(packageRoot, 'native', 'electron', 'corebluetooth')
-  const nodeGypOutput = run(process.execPath, [nodeGypCli, 'rebuild', '--release'], { cwd: addonDirectory })
-  const addonPath = path.join(addonDirectory, 'build', 'Release', 'unified_ble_corebluetooth.node')
-  if (!fs.existsSync(addonPath)) {
-    throw new Error(`Installed CoreBluetooth node-gyp build did not produce ${addonPath}: ${nodeGypOutput}`)
-  }
-  const boundaryScript = [
-    "const assert = require('assert');",
-    "const path = require('path');",
-    "const packageRoot = path.dirname(require.resolve('unified-ble-manager/package.json'));",
-    "const loader = require(path.join(packageRoot, 'native', 'electron', 'corebluetooth'));",
-    'const native = loader.tryLoadNative();',
-    "assert.strictEqual(typeof native?.createNativeRadio, 'function', `installed CoreBluetooth loader loads the node-gyp output; exports: ${Object.keys(native ?? {}).join(',')}`);",
-    // LEGACY (Phase 4 deletion): the node-gyp boundary is unreachable from
-    // public entrypoints; its build/load leg loads the internal module.
-    "const { createNativeCoreBluetoothBoundary } = require(path.join(packageRoot, 'lib', 'commonjs', 'backends', 'corebluetooth', 'corebluetooth-native-boundary.js'));",
-    'const boundary = createNativeCoreBluetoothBoundary();',
-    "for (const method of ['adapterSnapshot', 'startScan', 'stopScan', 'connect', 'disconnect', 'connectionState', 'discover', 'read', 'write', 'startNotify', 'stopNotify', 'onDisconnect', 'onAdapterState', 'destroy']) {",
-    "  assert.strictEqual(typeof boundary[method], 'function', `installed CoreBluetooth boundary exposes ${method}`);",
-    '}',
-    "Promise.resolve(boundary.destroy()).then(() => console.log('packed CoreBluetooth Node-ABI boundary build/load ok'));"
-  ].join('\n')
-  run(process.execPath, ['-e', boundaryScript], { cwd: consumer })
+  run(process.execPath, ['-e', script], { cwd: consumer })
 }
 
 function runInstalledElectronL1Scenario(consumer) {
@@ -979,10 +938,6 @@ function main(options = {}) {
       // consumer actually installs. The generated spec is still packed above,
       // because React Native Codegen resolves it at build time.
       "assert.ok(!fs.readFileSync(reactNativeModuleEntry, 'utf8').includes('getNativeUnifiedBleProtocolControl'), 'public React Native host does not reintroduce the removed protocol-control accessor');",
-      "const electronNativeBuildDependency = require('node-addon-api/package.json');",
-      "assert.strictEqual(electronNativeBuildDependency.name, 'node-addon-api', 'packed Electron native build dependency resolves');",
-      "const electronNativeBuildTool = require('node-gyp/package.json');",
-      "assert.strictEqual(electronNativeBuildTool.name, 'node-gyp', 'packed Electron native build tool resolves');",
       "const expo = require('expo/package.json');",
       "assert.strictEqual(expo.name, 'expo', 'packed Expo config-plugin runtime resolves through the Expo host peer');",
       "const canonical = require('unified-ble-manager');",
@@ -1098,7 +1053,6 @@ function main(options = {}) {
     })
     verifyInstalledPublishedHostDependencies(consumer)
     verifyInstalledNativeTooling(consumer)
-    buildAndLoadInstalledCoreBluetoothAddon(consumer)
     runInstalledElectronL1Scenario(consumer)
     run(process.execPath, [path.join(root, 'scripts', 'ci', 'electron-packed-boundary-fixture.js'), consumer], {
       cwd: consumer

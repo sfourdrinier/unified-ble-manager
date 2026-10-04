@@ -11,7 +11,7 @@
 # building from those directories while the TV builds from ios-tv/.
 #
 # TV dependency versions (pinned here, sources in docs):
-# - react-native via npm:react-native-tvos@0.86-stable (== 0.86.3-0), the
+# - react-native via npm:react-native-tvos@0.86.3-0, the
 #   tvOS fork release matching Expo SDK 57 / React Native 0.86.3.
 #   Source: Expo guide "Build Expo apps for TV" (SDK-version match rule) and
 #   the 0.86-stable dist-tag on npm.
@@ -31,6 +31,8 @@
 # Env (defaults match this repo's LAN setup; the phone Metro stays on 8082,
 # the TV tree gets its own Metro because it resolves react-native-tvos):
 #   TV_METRO_PORT=8081 TV_LAN_HOST=192.168.68.116 DEVELOPMENT_TEAM=<team> (build only)
+#   TV_PACKAGE_TARBALL=/absolute/path/release.tgz stages an isolated packed
+#   consumer instead of file:checkout; keep that input outside TV_STAGE_DIR.
 #
 # Signing: DEVELOPMENT_TEAM is passed on the xcodebuild command line only and
 # is never written into any file.
@@ -43,7 +45,7 @@ STAGE="${TV_STAGE_DIR:-${APP_DIR}/ios-tv}"
 
 TV_METRO_PORT="${TV_METRO_PORT:-8081}"
 TV_LAN_HOST="${TV_LAN_HOST:-192.168.68.116}"
-TVOS_ALIAS="${TVOS_ALIAS:-npm:react-native-tvos@0.86-stable}"
+TVOS_ALIAS="${TVOS_ALIAS:-npm:react-native-tvos@0.86.3-0}"
 CONFIG_TV_VERSION="${CONFIG_TV_VERSION:-0.1.6}"
 # The Apple TV this repo builds for ("Office", Apple TV 4K 3rd gen).
 TV_DEVICE_ID="${TV_DEVICE_ID:-27C3EE87-9EB5-54C1-8CAB-52D33CB077C9}"
@@ -129,6 +131,11 @@ fi
 
 cmd_stage() {
   require_python stage
+  # Validate the explicit external install input before the stage sync removes
+  # anything. A packed consumer must never silently fall back to file:checkout.
+  if [[ -n "${TV_PACKAGE_TARBALL:-}" ]]; then
+    node "${SCRIPT_DIR}/stage-packed-tv.js" --validate "${STAGE}" "${TV_PACKAGE_TARBALL}"
+  fi
   mkdir -p "${STAGE}"
   # Sources only: the stage owns its node_modules (tvos alias) and its ios/
   # (tvOS prebuild). Excluded entries are protected from deletion, so a
@@ -152,15 +159,13 @@ cmd_stage() {
   # the stage instead; this is also portable to Git Bash on Windows.
   local stage_archive="${STAGE}/.ubm-stage-source.tar"
   rm -f "${stage_archive}"
-  if ! (cd "${APP_DIR}" && tar cf "${stage_archive}" \
-    --exclude='./node_modules' \
-    --exclude='./ios' \
-    --exclude='./ios-tv' \
-    --exclude='./android' \
-    --exclude='./.expo' \
-    --exclude='./dist' \
-    --exclude='./web-build' \
-    .); then
+  # Enumerate exclusions at the top level only. tar's exclusion matching also
+  # removed native/ios and native/android, breaking the app's own continuation
+  # plugin even though only generated platform roots were meant to be omitted.
+  if ! (cd "${APP_DIR}" && find . -mindepth 1 -maxdepth 1 \
+    ! -name 'node_modules' ! -name 'ios' ! -name 'ios-tv' ! -name 'android' \
+    ! -name '.expo' ! -name 'dist' ! -name 'web-build' -print0 \
+    | tar --null -T - -cf "${stage_archive}"); then
     rm -f "${stage_archive}"
     return 1
   fi
@@ -200,6 +205,12 @@ cmd_stage() {
     }
     fs.writeFileSync(appPath, JSON.stringify(app, null, 2) + "\n");
   ' "${STAGE}" "${ROOT}" "${TVOS_ALIAS}" "${CONFIG_TV_VERSION}"
+
+  if [[ -n "${TV_PACKAGE_TARBALL:-}" ]]; then
+    node "${SCRIPT_DIR}/stage-packed-tv.js" "${STAGE}" "${ROOT}" "${TV_PACKAGE_TARBALL}"
+    echo "staged packed TV reference app at ${STAGE}"
+    return
+  fi
 
   # The staged Metro still serves the shared driver, but from the repo path:
   # a relative ../examples-shared would resolve inside example-expo.
@@ -281,10 +292,11 @@ cmd_prebuild() {
   tarball_url="https://repo1.maven.org/maven2/io/github/react-native-tvos/react-native-artifacts/${tv_version}/react-native-artifacts-${tv_version}-reactnative-core-debug.tar.gz"
   tarball_path="/tmp/tv-prebuilt-cache/${tarball_name}"
   mkdir -p "$(dirname "${tarball_path}")"
-  if [[ ! -f "${tarball_path}" ]]; then
-    curl -sSL -o "${tarball_path}" "${tarball_url}"
-    curl -sSL "${tarball_url}.sha1" -o "${tarball_path}.sha1"
+  if [[ ! -f "${tarball_path}" || ! -f "${tarball_path}.sha1" ]]; then
+    curl --fail --silent --show-error --location -o "${tarball_path}" "${tarball_url}"
+    curl --fail --silent --show-error --location "${tarball_url}.sha1" -o "${tarball_path}.sha1"
   fi
+  node "${SCRIPT_DIR}/verify-tv-archive.js" "${tarball_path}" "${tarball_path}.sha1"
   # CocoaPods' home (~/.cocoapods) and download cache
   # (~/Library/Caches/CocoaPods) are not writable from here either.
   export CP_HOME_DIR="/tmp/tv-prebuilt-cache/cocoapods-home"
@@ -371,6 +383,21 @@ cmd_build() {
     build)
 }
 
+# Compile/link both maintained Apple TV slices through the complete RN app.
+# This is not physical-radio evidence and does not require signing credentials.
+cmd_build_target() {
+  local destination="$1" output="$2" scheme
+  cmd_verify_identity
+  if [[ -z "${TV_PACKAGE_TARBALL:-}" ]]; then
+    node "${ROOT}/scripts/native/ensure-native.js" apple
+  fi
+  scheme="$(xcode_scheme)"
+  (cd "${STAGE}/ios" && xcodebuild \
+    -workspace ./*.xcworkspace -scheme "${scheme}" -configuration Debug \
+    -destination "${destination}" -derivedDataPath "build/${output}" \
+    ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO build)
+}
+
 cmd_metro() {
   # Finding 241: the staged TV app is pointed at TV_LAN_HOST:TV_METRO_PORT, so a
   # port another project already serves hands it that project's bundle. React
@@ -407,9 +434,11 @@ case "${1:-all}" in
   prebuild) cmd_prebuild ;;
   bundle-url) cmd_bundle_url ;;
   build) cmd_build ;;
+  build-simulator) cmd_build_target 'generic/platform=tvOS Simulator' tv-simulator ;;
+  build-target) cmd_build_target 'generic/platform=tvOS' tv-target ;;
   metro) cmd_metro ;;
   install-tv) cmd_install_tv ;;
   launch-tv) cmd_launch_tv ;;
   all) cmd_stage; cmd_install; cmd_verify_identity; cmd_prebuild; cmd_bundle_url; cmd_build ;;
-  *) echo "usage: $0 [stage|install|verify-identity|prebuild|bundle-url|build|metro|install-tv|launch-tv|all]" >&2; exit 1 ;;
+  *) echo "usage: $0 [stage|install|verify-identity|prebuild|bundle-url|build|build-simulator|build-target|metro|install-tv|launch-tv|all]" >&2; exit 1 ;;
 esac

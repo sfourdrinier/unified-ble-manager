@@ -4,7 +4,10 @@
 
 ## Package support versus backend qualification
 
-`unified-ble-manager@4.0.0` establishes the stable 4.x package/API contract. Platform/backend support labels are a separate evidence-backed dimension rather than a static compatibility matrix.
+The 5.x line defines the current package/API contract. A stable 5.0.0 release
+stabilizes that contract; release candidates remain candidates. Platform/backend
+support labels are a separate evidence-backed dimension rather than a static
+compatibility matrix.
 
 Consult [`docs/PLATFORMS.md`](docs/PLATFORMS.md) and [`docs/generated/PLATFORM_SUPPORT.md`](docs/generated/PLATFORM_SUPPORT.md) before relying on a backend support label. `Experimental`, `Preview`, `Live Preview`, `Supported`, and `Reliability-qualified` describe the level of retained proof for that host/backend path.
 
@@ -38,6 +41,7 @@ Do not post real BLE payloads, patient/user data, credentials, or stable device 
 
 ## Supported versions
 
-Beginning with stable `4.0.0`, support targets the current 4.x release line. Security support follows [`SECURITY.md`](SECURITY.md).
+For this repository, support targets the current 5.x release line. Security
+support follows [`SECURITY.md`](SECURITY.md).
 
 Support is best-effort maintenance. It does not replace application-specific device validation, regulatory review, safety engineering, or an emergency/medical monitoring system.

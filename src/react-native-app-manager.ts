@@ -2,7 +2,7 @@
 
 import { contractError } from './backend-contract/errors'
 import type { BleManager } from './public/ble-manager'
-import { createPublicBleManager } from './public/ble-manager'
+import { composeReactNativePublicManager } from './react-native-public-manager'
 import { rehydratePublicPromise } from './public/error-bridge'
 import { createEphemeralHostIdentity, normalizeBleManagerCreateOptions } from './public/host-identity'
 import type { BleManagerCreateOptions } from './public/host-identity'
@@ -38,7 +38,7 @@ export async function createReactNativeBleManager(
 ): Promise<BleManager> {
   return rehydratePublicPromise(
     createReactNativeApplicationHost(options).then(host =>
-      createPublicBleManager(host.manager, () => performance.now())
+      composeReactNativePublicManager(host, () => performance.now())
     )
   )
 }

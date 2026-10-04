@@ -2,6 +2,118 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.17] - 2026-10-03
+
+### Before upgrading
+
+- Apple desktop and iOS/tvOS simulator artifacts are ARM64-only. Generic
+  simulator builds must select `ARCHS=arm64`; physical iPhone architectures are
+  unaffected.
+- Linux connection/GATT requires the maintained LE-bearer/GATT authority
+  integration described in [`docs/BLUEZ_LE_GATT.md`](docs/BLUEZ_LE_GATT.md). The
+  native prebuild alone does not install or configure the daemon. Privileged
+  deployment remains an explicit host choice, never an implicit package action.
+- Stable package/API SemVer and backend hardware-evidence labels are independent.
+  Compile, model, simulator and synthetic-radio checks do not establish new
+  physical-radio qualification.
+
+### Changes
+
+- Preserve initial unknown mobile adapter observations without fabricating a
+  resetting event that cancels the first connection. Unknown observations do
+  not end an existing loss episode; only measured recovery permits a new one.
+- Expose the real saved ASK Bluetooth-accessory directory and resolve persisted
+  origin references without another picker or scan. Preserve OS display names
+  as labels, unknown reachability and runtime-scoped capability limits.
+- Join in-progress ASK startup activation for concurrent directory queries,
+  preserving the existing session/deadline and exact-once results and failures.
+- Initialize the existing Apple central only for explicit ASK radio work and
+  await its actual state under the original operation cancellation/deadline.
+  Prevent late dispatch after cancellation and preserve measured scoped
+  unauthorized detail without rewriting global Bluetooth authorization.
+- Derive Expo readiness from the shared authorization-blocking predicate,
+  preserving actual unknown/not-determined observations on a powered-on adapter
+  rather than demanding or inventing a global Bluetooth grant.
+- Report global permission requests as unsupported in an undecided ASK host,
+  where Apple provides accessory-scoped setup instead of a global prompt; avoid
+  allocating another central or waiting for a permission result that cannot occur.
+- Extend the reference accessory scenario with saved-authorization selection,
+  same-owner adapter diagnostics and connected origin-reference retrieval.
+  Require an unambiguous OS-authorized identity and keep deadline, cancellation
+  and cleanup ownership; never guess native identities from display names.
+- Keep an explicit non-ASK Apple Bluetooth permission request pending across undecided
+  central-state callbacks instead of reporting an invented unavailable refusal.
+- Preserve the app-declared service UUID representation when constructing Apple
+  accessory descriptors, preventing ASK's fatal short/full UUID mismatch while
+  retaining semantic matching and pre-allocation undeclared-service refusal.
+- Allow the faithful Linux H10 simulator to select an explicit Bluetooth adapter
+  without changing the system default or falling back to another controller.
+- Normalize Android's internal Companion Device Manager address at the radio
+  adapter lookup so lowercase association MACs can open GATT, inspect bond
+  state and pair. Public peer IDs and scoped references remain opaque.
+- Keep first Apple accessory setup free of startup-created global Bluetooth
+  managers, while preserving genuine restoration launches and native collection
+  for authorized Bluetooth accessories. Retain structured startup failures
+  without hiding continuation posture or independently owned backlog.
+- Let retained continuation status join autonomous recovery admission, without
+  weakening explicit-operation busy refusals or forgetting cleanup failures.
+- Add a bounded positive HRS sample on the reference chooser's same owned
+  connection, with cancellation, deadline and retryable cleanup evidence.
+  Prepare manufacturer-prefix and OR-selector controls and an explicit inactive
+  public-chooser probe; keep consumer declarations separate from radio evidence.
+- Reject conflicting chooser selection modes before native allocation instead
+  of dropping constraints. Android's unfiltered default matches Web; Apple
+  preserves its genuine unfiltered setup limitation.
+- Reject invalid Bluetooth company identifiers consistently as `scan.filter-invalid`
+  before chooser admission; preserve both valid 16-bit boundaries unchanged.
+- Share CI/publication/local-release Electron smoke launching, including a Linux
+  virtual display, while preserving synthetic-addon admission and process failures.
+- Preserve buffered connection lifecycle platform details within an explicit
+  16 KiB UTF-8 JSON allowance; snapshot metadata and report oversized details
+  as accounted stream overflow after accepted FIFO values drain, rather than
+  silently losing the native cause or earlier accepted transitions.
+- Drain accepted public lifecycle transitions before terminal failure, account
+  their actual bytes, and preserve each subscriber's winning error. Keep early
+  IPC child-release terminals behind the app release's confirmation gate so
+  successful requested disconnects retain their terminal transition.
+- Share stable/prerelease version admission between packaging and publication.
+  Stable 5.x versions select `latest`; numbered RCs select `next`. Retain native
+  identity, hash, export and exact-content release guards.
+- Restore rendered installation/simulator code blocks through the pinned HTML
+  renderer and add semantic omission checks.
+- Keep independent example dependency installs outside the parent pnpm workspace
+  through one shared installer, preserving their own configuration and frozen
+  lockfiles. Verify clean-checkout packaging without requiring retired directories.
+- Remove unreachable C++ desktop producers, private loaders and their exclusive
+  build dependencies. The maintained distribution contains five shared Rust
+  desktop targets: macOS arm64 and Windows/Linux x64 and arm64. Transfer useful
+  advertisement, unsubscribe, admission and loader-error regressions to the
+  actual production boundaries.
+- Build the complete shared TV reference consumer from an exact outside-checkout
+  tarball in the existing Apple lane. Correct TV focusable-list layout without
+  a second BLE implementation. Simulator/link evidence remains distinct from
+  physical Apple TV qualification.
+- Route eligible React Native public chooser requests to Apple's
+  AccessorySetupKit and Android's existing CompanionDeviceManager mechanism,
+  with faithful selector validation and owner-controlled cancellation. Document
+  app declarations, genuine OS limitations and accessory-specific relaunch rules;
+  no unconditional background/relaunch claim is introduced.
+- Extend existing packed Tauri consumer acceptance with ordinary Vite 7 and 8
+  production builds, without aliases or installed-source rewrites.
+- Preserve authenticated BlueZ MGMT disconnect reasons under optional platform
+  detail through native, public, Electron IPC and Tauri lifecycle delivery.
+  Carry the actual observation in lease revision 2 release answers so reply-first
+  and event-first completion preserve the same reason without manufacturing one
+  from the request. Project the operation's own generation-bound observation
+  directly into the public terminal even while backend event delivery is held;
+  preserve the public cleanup receipt shape and keep refused release retryable.
+  Keep the existing public loss vocabulary and reject retired
+  physical generations. The maintained daemon distribution is `5.87-ubm.2`.
+- Bind Linux connection ownership to exact daemon lease generations, retain
+  accepted work across cancellation and lost replies, and retry acknowledged
+  cleanup maintenance without blocking another connection. Keep deployment an
+  explicit host operation and exercise recovery on isolated private buses.
+
 ## [5.0.0-rc.16] - 2026-10-02
 
 - Ship macOS desktop prebuilds only for Apple Silicon (`arm64`). Retire both

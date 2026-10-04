@@ -27,9 +27,10 @@ module Pod
   class SpecStub
     attr_reader :attrs
 
-    def initialize
+    def initialize(consumer_flags: true)
       @attrs = {}
-      if ENV['UBM_PODSPEC_STUB_USER_SWIFT_FLAGS']
+      @platforms = {}
+      if consumer_flags && ENV['UBM_PODSPEC_STUB_USER_SWIFT_FLAGS']
         @attrs['user_target_xcconfig'] = { 'OTHER_SWIFT_FLAGS' => ENV['UBM_PODSPEC_STUB_USER_SWIFT_FLAGS'] }
       end
     end
@@ -48,6 +49,10 @@ module Pod
         @attrs[key[0..-2]] = args.first
       elsif key == 'dependency'
         (@attrs['dependencies'] ||= []) << args
+      elsif %w[ios tvos osx watchos visionos].include?(key)
+        scope = (@platforms[key] ||= SpecStub.new(consumer_flags: false))
+        @attrs[key] = scope.attrs
+        scope
       else
         @attrs[key]
       end

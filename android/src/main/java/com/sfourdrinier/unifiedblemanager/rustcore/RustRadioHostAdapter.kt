@@ -60,6 +60,7 @@ class RustRadioHostAdapter(
   private val started = ConcurrentHashMap.newKeySet<Long>()
   private val driverOperations = ConcurrentHashMap<Long, Long>()
   private val pendingConnects = ConcurrentHashMap<String, Long>()
+  private val pendingAssociations = ConcurrentHashMap<Long, Pair<CompanionPort, (Result<CompanionAssociation>) -> Unit>>()
   private val connectedPeers = ConcurrentHashMap.newKeySet<String>()
   private val enablements = ConcurrentHashMap<InstanceKey, Enablement>()
   private val counts = ConcurrentHashMap<String, AtomicLong>()
@@ -439,13 +440,14 @@ class RustRadioHostAdapter(
       answer(requestId, "unit") { core.completeUnit(requestId) }
     }
 
-  override fun associateCompanion(requestId: Long, name: String?, serviceUuid: String?) = runService(requestId) {
+  override fun associateCompanion(requestId: Long, name: String?, serviceUuid: String?, filtersJson: String?) = runService(requestId) {
     val chooser = companion()
       ?: throw RadioPortFailure(
         RadioFailureKind.UNSUPPORTED,
         "no React Native activity host is attached to launch the Companion Device Manager chooser"
       )
-    chooser.associate(name, serviceUuid) { result ->
+    val callback: (Result<CompanionAssociation>) -> Unit = { result ->
+      pendingAssociations.remove(requestId)
       result.fold(
         onSuccess = { association ->
           answer(requestId, "companion") {
@@ -461,6 +463,9 @@ class RustRadioHostAdapter(
         onFailure = { error -> fail(requestId, error) }
       )
     }
+    pendingAssociations[requestId] = Pair(chooser, callback)
+    if (filtersJson == null) chooser.associate(name, serviceUuid, callback)
+    else chooser.associateWithFilters(filtersJson, callback)
   }
 
   override fun listCompanion(requestId: Long) = runService(requestId) {
@@ -566,6 +571,13 @@ class RustRadioHostAdapter(
     }
     cancelRequested.add(requestId)
     if (!started.contains(requestId)) return
+    val association = pendingAssociations[requestId]
+    if (association != null && association.first.cancelAssociation(association.second)) {
+      // UI cancellation is scheduled on the Activity queue. Keep the owner
+      // until its callback actually reports release/refusal; admission alone
+      // must not fabricate a completed native cleanup.
+      return
+    }
     val connectPeer = pendingConnects.entries.firstOrNull { it.value == requestId }?.key
     if (connectPeer != null && pendingConnects.remove(connectPeer, requestId)) {
       // Android cannot abort connectGatt in place: release the pending GATT
@@ -630,6 +642,7 @@ class RustRadioHostAdapter(
       return
     }
     driverOperations.remove(requestId)
+    pendingAssociations.remove(requestId)
     cancelRequested.remove(requestId)
     started.remove(requestId)
     recordStatus("complete:$shape", deliver())

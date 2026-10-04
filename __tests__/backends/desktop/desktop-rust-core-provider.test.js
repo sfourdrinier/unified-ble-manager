@@ -184,7 +184,15 @@ describe('real addon, synthetic radio: every verb executes Rust', () => {
       const firstLease = harness.calls.find(([name]) => name === 'connect')[1][0].lease
       await stage.connect({ peerId: 'peer-1', lease: 'native-second-owner' })
       await stage.discover({ peerId: 'peer-1', lease: 'native-second-owner' })
-      await expect(stage.disconnect({ peerId: 'peer-1', lease: firstLease })).resolves.toBe('released')
+      const releaseReport = await stage.disconnect({ peerId: 'peer-1', lease: firstLease })
+      expect(releaseReport).toMatchObject({
+        schema: 'ubm-desktop-release/1',
+        state: 'released',
+        peerId: 'peer-1',
+        lease: firstLease,
+        connectionGeneration: expect.any(String)
+      })
+      expect(releaseReport.platform).toBeUndefined()
       const read = await stage.read({
         peerId: 'peer-1',
         lease: 'native-second-owner',

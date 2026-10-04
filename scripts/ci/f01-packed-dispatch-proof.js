@@ -93,8 +93,8 @@ function legPack() {
     .filter(Boolean)
     .pop()
   const tarball = path.join(workRoot, tarballName)
-  if (!tarball.endsWith('unified-ble-manager-5.0.0-rc.16.tgz')) {
-    fail(`packed ${tarballName}, not the 5.0.0-rc.16 candidate`)
+  if (!tarball.endsWith('unified-ble-manager-5.0.0-rc.17.tgz')) {
+    fail(`packed ${tarballName}, not the 5.0.0-rc.17 candidate`)
   }
   const sha256 = crypto.createHash('sha256').update(fs.readFileSync(tarball)).digest('hex')
   log(`candidate: ${tarballName} sha256=${sha256}`)
@@ -119,12 +119,15 @@ function legInstall(tarball) {
       fail(`sibling UBM tree beside the consumer: ${entry.name}`)
     }
   }
-  if (fs.readdirSync(consumerDir).some(entry => entry !== 'node_modules' && entry !== 'package.json' && entry !== 'package-lock.json')) {
+  if (
+    fs
+      .readdirSync(consumerDir)
+      .some(entry => entry !== 'node_modules' && entry !== 'package.json' && entry !== 'package-lock.json')
+  ) {
     fail('consumer dir is not a clean install')
   }
   // No prebuilt dispatch rides along: the proof builds it (leg D) or fails.
-  // (Declared Electron prebuilds under native/electron prebuilts/ are the
-  // §C-sanctioned exception.)
+  // The maintained shared Rust prebuilds are the distribution exception.
   const stray = []
   const walk = dir => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -132,10 +135,7 @@ function legInstall(tarball) {
       const relative = path.relative(installed, full)
       if (entry.isDirectory()) {
         walk(full)
-      } else if (
-        entry.name.endsWith('.node') &&
-        !/^native[/\\]electron[/\\][^/\\]+[/\\]prebuilds[/\\]/u.test(relative)
-      ) {
+      } else if (entry.name.endsWith('.node') && !/^native[/\\]desktop-core[/\\]prebuilds[/\\]/u.test(relative)) {
         stray.push(relative)
       }
     }
@@ -164,11 +164,10 @@ function legBuildDispatch(installed, toolchain, rustc) {
   if (!active.includes(toolchain)) {
     fail(`active ${active} is not the pinned ${toolchain}`)
   }
-  run(
-    'rustup',
-    ['run', toolchain, 'cargo', 'build', '--locked', '-p', 'ubm5_napi_echo', '--manifest-path', manifest],
-    { cwd: installed, env: { ...process.env, RUSTC: rustc, CARGO_TARGET_DIR: targetDir } }
-  )
+  run('rustup', ['run', toolchain, 'cargo', 'build', '--locked', '-p', 'ubm5_napi_echo', '--manifest-path', manifest], {
+    cwd: installed,
+    env: { ...process.env, RUSTC: rustc, CARGO_TARGET_DIR: targetDir }
+  })
   const hostCdylib =
     process.platform === 'darwin'
       ? 'libubm5_napi_echo.dylib'
@@ -185,9 +184,7 @@ function legBuildDispatch(installed, toolchain, rustc) {
     encoding: 'utf8'
   })
   if (probe.status === 0 && (probe.stdout || '').trim().length > 0) {
-    fail(
-      `dispatch build references this checkout: ${probe.stdout.trim().split('\n').slice(0, 3).join(', ')}`
-    )
+    fail(`dispatch build references this checkout: ${probe.stdout.trim().split('\n').slice(0, 3).join(', ')}`)
   }
   if (probe.status !== 0 && probe.status !== 1) {
     fail(`fingerprint grep failed: ${(probe.stderr || '').trim()}`)
@@ -201,13 +198,16 @@ function legBuildDispatch(installed, toolchain, rustc) {
 // Leg E: package/core/fingerprint identity at runtime.
 function legIdentity(installed, addon) {
   const manifest = JSON.parse(fs.readFileSync(path.join(installed, 'package.json'), 'utf8'))
-  if (manifest.version !== '5.0.0-rc.16') fail(`installed version ${manifest.version} is not the candidate`)
+  if (manifest.version !== '5.0.0-rc.17') fail(`installed version ${manifest.version} is not the candidate`)
   const sealPath = path.join(installed, 'lib', 'ubm-build-fingerprint.json')
   if (!fs.existsSync(sealPath)) fail('installed candidate is missing the fingerprint seal')
   const seal = JSON.parse(fs.readFileSync(sealPath, 'utf8'))
-  if (seal.package.version !== '5.0.0-rc.16') fail('seal package version is not the candidate')
+  if (seal.package.version !== '5.0.0-rc.17') fail('seal package version is not the candidate')
   const runtime = JSON.parse(
-    run(process.execPath, ['-e', `console.log(JSON.stringify({revision: require(${JSON.stringify(addon)}).echoRevision()}))`])
+    run(process.execPath, [
+      '-e',
+      `console.log(JSON.stringify({revision: require(${JSON.stringify(addon)}).echoRevision()}))`
+    ])
   )
   if (runtime.revision !== seal.contractRevision) {
     fail(`addon core ${runtime.revision} does not match seal ${seal.contractRevision}`)
@@ -225,15 +225,12 @@ function legDispatch(addon) {
 
 // Leg G: the old TS manager cannot satisfy the proof.
 function legOldManager(installed) {
-  const probe = run(
-    process.execPath,
-    [
-      '-e',
-      `const m = require(${JSON.stringify(installed)});` +
-        `if ('UbmCentral' in m) { console.log('LEAK'); process.exit(3) }` +
-        `console.log('sealed')`
-    ]
-  )
+  const probe = run(process.execPath, [
+    '-e',
+    `const m = require(${JSON.stringify(installed)});` +
+      `if ('UbmCentral' in m) { console.log('LEAK'); process.exit(3) }` +
+      `console.log('sealed')`
+  ])
   if (probe !== 'sealed') fail('packed TS manager exposes the dispatch class')
   log('old TS manager exposes no dispatch surface (silent substitution impossible)')
 }
@@ -253,7 +250,7 @@ function legTauriPlugin(installed, toolchain, rustc) {
 
 // Leg I: Android prebuilts are real objects for the declared ABIs.
 function legAndroid(installed) {
-  const ELF_MACHINE = { 'arm64-v8a': 183, 'x86_64': 62 }
+  const ELF_MACHINE = { 'arm64-v8a': 183, x86_64: 62 }
   for (const [abi, machine] of Object.entries(ELF_MACHINE)) {
     const so = path.join(installed, 'android', 'src', 'main', 'jniLibs', abi, 'libubm5_jni_echo.so')
     if (!fs.existsSync(so)) fail(`packed candidate is missing the ${abi} prebuilt`)
@@ -277,11 +274,7 @@ function legAndroid(installed) {
 // Leg J: Apple matrix check + shipped podspec selection.
 function legApple(installed) {
   run('sh', [path.join(installed, 'ios', 'build-rust-core.sh'), '--check'], { cwd: installed })
-  run(process.execPath, [
-    path.join(repoRoot, 'scripts', 'ci', 'check-podspec-rust-selection.js'),
-    '--root',
-    installed
-  ])
+  run(process.execPath, [path.join(repoRoot, 'scripts', 'ci', 'check-podspec-rust-selection.js'), '--root', installed])
   log('Apple matrix compiles from packed sources; shipped podspec selects per lane (link+load on macOS CI)')
 }
 

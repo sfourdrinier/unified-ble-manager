@@ -97,8 +97,7 @@ function stateMatches(state, generation) {
 
 function eventMatches(state, generation) {
   if (generation === undefined) return value => value.kind === 'state' && value.state === state
-  return value =>
-    value.kind === 'state' && value.state === state && value.connectionGeneration === generation
+  return value => value.kind === 'state' && value.state === state && value.connectionGeneration === generation
 }
 
 function waitForSupervisorState(tap, supervisor, state, describe, generation = undefined) {
@@ -112,12 +111,9 @@ function waitForSupervisorState(tap, supervisor, state, describe, generation = u
 function waitForSupervisorConnectedGeneration(tap, supervisor, excludedGeneration, describe) {
   return tap.waitFor(
     {
-      snapshot: snapshot =>
-        snapshot.state === 'connected' && snapshot.connectionGeneration !== excludedGeneration,
+      snapshot: snapshot => snapshot.state === 'connected' && snapshot.connectionGeneration !== excludedGeneration,
       event: value =>
-        value.kind === 'state' &&
-        value.state === 'connected' &&
-        value.connectionGeneration !== excludedGeneration
+        value.kind === 'state' && value.state === 'connected' && value.connectionGeneration !== excludedGeneration
     },
     describe,
     'supervisor reconnection on a new generation'
@@ -162,8 +158,22 @@ function createRendererPort(binding) {
   }
 }
 
-async function open(platform) {
+async function open(platform, lifecyclePlatform) {
   const harness = h.realBinding(platform)
+  if (lifecyclePlatform !== undefined) {
+    const original = harness.binding.openSynthetic
+    harness.binding.openSynthetic = async (...arguments_) =>
+      new Proxy(await original(...arguments_), {
+        get(target, property) {
+          if (property === 'takeLifecycleEvent')
+            return async () => {
+              const event = await target.takeLifecycleEvent()
+              return event?.kind === 'link-lost' ? { ...event, platform: JSON.stringify(lifecyclePlatform) } : event
+            }
+          return Reflect.get(target, property)
+        }
+      })
+  }
   const provider = createTestDesktopRustCoreBackendProvider({
     platform,
     owner: `electron-link-loss-${platform}`,
@@ -209,6 +219,27 @@ async function open(platform) {
 }
 
 describe('Finding 211: Electron supervisor reconnects after a drop-link', () => {
+  test('native lifecycle detail survives provider, core, main IPC and public renderer with exact generation', async () => {
+    const detail = { domain: 'bluez-mgmt', code: '8', message: null, metadata: { disconnectReason: 8 } }
+    const { stage, publicManager, binding, peerId } = await open('bluez', detail)
+    try {
+      const connection = await publicManager.connect(peerId)
+      const iterator = connection.lifecycleEvents[Symbol.asyncIterator]()
+      await h.nextItem(iterator, 5000)
+      await stage.stageLinkLoss('peer-1')
+      const lost = await h.nextItem(iterator, 5000)
+      expect(lost).toMatchObject({
+        cause: 'peer-link-loss',
+        current: 'lost',
+        connectionGeneration: connection.connectionGeneration,
+        platform: { domain: detail.domain, code: '8', safeMessage: '', metadata: detail.metadata }
+      })
+      await iterator.return()
+    } finally {
+      await publicManager.destroy()
+      await binding.dispose?.()
+    }
+  })
   test('a subscribed supervisor survives link loss and reconnects on a new generation', async () => {
     const { stage, publicManager, binding, peerId } = await open('corebluetooth')
     const abort = new AbortController()

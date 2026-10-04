@@ -1,0 +1,16 @@
+const fs = require('node:fs')
+const path = require('node:path')
+const root = path.resolve(__dirname, '..')
+
+test('current TV guidance points to the shared public host and exact packed consumer gate', () => {
+  const guide = fs.readFileSync(path.join(root, 'docs/TV.md'), 'utf8')
+  expect(guide).toContain('unified-ble-manager/react-native')
+  expect(guide).toContain('TV_PACKAGE_TARBALL=')
+  expect(guide).toContain('pnpm test:tvos:packed')
+  expect(guide).toContain('compile/link evidence, not physical BLE qualification')
+  expect(guide).toContain('AccessorySetupKit')
+  expect(guide).toContain('Android TV')
+  const index = fs.readFileSync(path.join(root, 'docs/README.md'), 'utf8')
+  expect(index).toMatch(/\[`TV\.md`\].*\| Current \|/)
+  expect(require('../package.json').scripts['test:tvos:packed']).toBe('bash scripts/ci/check-tvos-packed-consumer.sh')
+})

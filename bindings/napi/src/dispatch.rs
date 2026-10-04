@@ -244,6 +244,14 @@ impl DispatchRadio {
 // `async fn` satisfies the trait's `-> impl Future` seams; each arm's
 // future is `Send`, so the combined future is too.
 impl RadioBoundary for DispatchRadio {
+    #[cfg(target_os = "linux")]
+    async fn accept_physical_loss(&self, peer: &str, generation: u64, reason: u8) -> bool {
+        match self {
+            Self::Radio(radio) => radio.accept_physical_loss(peer, generation, reason).await,
+            Self::Synthetic(radio) => radio.accept_physical_loss(peer, generation, reason).await,
+        }
+    }
+
     fn gatt_snapshot_identity(
         &self,
         peer_id: &str,
@@ -390,6 +398,26 @@ impl RadioBoundary for DispatchRadio {
         match self {
             Self::Radio(radio) => radio.disconnect(peer_id).await,
             Self::Synthetic(radio) => radio.disconnect(peer_id).await,
+        }
+    }
+
+    async fn disconnect_with_observation(
+        &self,
+        peer_id: &str,
+    ) -> std::result::Result<ubm_desktop::boundary::DisconnectObservation, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.disconnect_with_observation(peer_id).await,
+            Self::Synthetic(radio) => radio.disconnect_with_observation(peer_id).await,
+        }
+    }
+    fn consume_disconnect_observation(
+        &self,
+        peer_id: &str,
+        observation: &ubm_desktop::boundary::DisconnectObservation,
+    ) {
+        match self {
+            Self::Radio(radio) => radio.consume_disconnect_observation(peer_id, observation),
+            Self::Synthetic(radio) => radio.consume_disconnect_observation(peer_id, observation),
         }
     }
 
@@ -1725,6 +1753,40 @@ pub struct LifecycleEventInfo {
     pub connection_generation: Option<String>,
     pub requested: Option<bool>,
     pub missed: Option<i64>,
+    /// Existing typed platform-detail JSON; wide native integers retain exact decimal strings.
+    pub platform: Option<String>,
+}
+
+/// Private operation-owned release report, not a separately polled event.
+#[napi(object)]
+pub struct ConnectionReleaseInfo {
+    pub schema: String,
+    pub state: String,
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    pub lease: String,
+    #[napi(js_name = "connectionGeneration")]
+    pub connection_generation: Option<String>,
+    pub platform: Option<String>,
+}
+
+fn lifecycle_event_wire(
+    event: ubm_desktop::LifecycleEvent,
+) -> std::result::Result<LifecycleEventInfo, DispatchError> {
+    let (kind, requested) = lifecycle_kind_wire(event.kind);
+    Ok(LifecycleEventInfo {
+        kind: kind.to_owned(),
+        sequence: Some(number_wire(
+            event.sequence,
+            "dispatch.take-lifecycle-event",
+        )?),
+        peer_id: Some(event.peer_id),
+        peer_key: Some(event.peer_key),
+        connection_generation: event.connection_generation,
+        requested,
+        missed: None,
+        platform: event.platform.as_ref().map(platform_wire),
+    })
 }
 
 /// One adapter power-state change the OS reported, or a gap marker
@@ -1819,6 +1881,22 @@ pub struct StagePlatformDetail {
     pub code: String,
     pub message: Option<String>,
     pub metadata: Option<HashMap<String, Either3<String, i64, bool>>>,
+}
+
+fn staged_platform(platform: StagePlatformDetail) -> PlatformDetail {
+    let mut staged = PlatformDetail::new(platform.domain, platform.code);
+    if let Some(message) = platform.message {
+        staged = staged.with_message(message);
+    }
+    for (key, value) in platform.metadata.unwrap_or_default() {
+        let value = match value {
+            Either3::A(text) => PlatformValue::Text(text),
+            Either3::B(number) => PlatformValue::Int(number),
+            Either3::C(flag) => PlatformValue::Bool(flag),
+        };
+        staged = staged.with_metadata(key, value);
+    }
+    staged
 }
 
 /// Peer-scoped control arguments (security, address type).
@@ -3024,18 +3102,7 @@ impl UbmCentral {
         const OP: &str = "dispatch.take-lifecycle-event";
         let mut receiver = self.lifecycle.lock().await;
         match receiver.try_recv() {
-            Ok(event) => {
-                let (kind, requested) = lifecycle_kind_wire(event.kind);
-                Ok(Some(LifecycleEventInfo {
-                    kind: kind.to_owned(),
-                    sequence: Some(number_wire(event.sequence, OP).map_err(to_napi)?),
-                    peer_id: Some(event.peer_id),
-                    peer_key: Some(event.peer_key),
-                    connection_generation: event.connection_generation,
-                    requested,
-                    missed: None,
-                }))
-            }
+            Ok(event) => lifecycle_event_wire(event).map(Some).map_err(to_napi),
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Lagged(missed)) => Ok(Some(LifecycleEventInfo {
                 kind: "lagged".to_owned(),
@@ -3045,6 +3112,7 @@ impl UbmCentral {
                 connection_generation: None,
                 requested: None,
                 missed: Some(number_wire(missed, OP).map_err(to_napi)?),
+                platform: None,
             })),
             Err(TryRecvError::Closed) => Ok(Some(LifecycleEventInfo {
                 kind: "closed".to_owned(),
@@ -3054,6 +3122,7 @@ impl UbmCentral {
                 connection_generation: None,
                 requested: None,
                 missed: None,
+                platform: None,
             })),
         }
     }
@@ -3820,7 +3889,7 @@ impl UbmCentral {
     /// Release this caller's connection lease. `"released"` confirms that
     /// lease's release, not physical disconnection when another owner remains.
     #[napi(catch_unwind)]
-    pub async fn disconnect(&self, options: LeaseOptions) -> Result<String> {
+    pub async fn disconnect(&self, options: LeaseOptions) -> Result<ConnectionReleaseInfo> {
         let ctl = self
             .control(
                 options.timeout_ms,
@@ -3830,9 +3899,16 @@ impl UbmCentral {
             .map_err(to_napi)?;
         bump(&self.counters.disconnect);
         self.central
-            .release_connection_lease(&options.peer_id, &options.lease, ctl)
+            .release_connection_lease_report(&options.peer_id, &options.lease, ctl)
             .await
-            .map(|_| "released".to_owned())
+            .map(|report| ConnectionReleaseInfo {
+                schema: "ubm-desktop-release/1".to_owned(),
+                state: "released".to_owned(),
+                peer_id: options.peer_id,
+                lease: options.lease,
+                connection_generation: report.connection_generation,
+                platform: report.platform.as_ref().map(platform_wire),
+            })
             .map_err(fail)
     }
 
@@ -4369,19 +4445,22 @@ impl UbmCentral {
             .synthetic("dispatch.fail-next-radio-op-with-platform")
             .map_err(to_napi)?;
         let parsed = fault_op(&op).map_err(to_napi)?;
-        let mut staged = PlatformDetail::new(platform.domain, platform.code);
-        if let Some(message) = platform.message {
-            staged = staged.with_message(message);
-        }
-        for (key, value) in platform.metadata.unwrap_or_default() {
-            let value = match value {
-                Either3::A(text) => PlatformValue::Text(text),
-                Either3::B(number) => PlatformValue::Int(number),
-                Either3::C(flag) => PlatformValue::Bool(flag),
-            };
-            staged = staged.with_metadata(key, value);
-        }
-        radio.fail_next_with_platform(parsed, &detail, staged);
+        radio.fail_next_with_platform(parsed, &detail, staged_platform(platform));
+        Ok(())
+    }
+
+    /// Stage the synthetic OS answer to a successful release (never production).
+    #[napi(catch_unwind)]
+    pub async fn stage_disconnect_observation(
+        &self,
+        peer_id: String,
+        platform: StagePlatformDetail,
+    ) -> Result<()> {
+        self.central
+            .boundary()
+            .synthetic("dispatch.stage-disconnect-observation")
+            .map_err(to_napi)?
+            .set_disconnect_observation(&peer_id, staged_platform(platform));
         Ok(())
     }
 
@@ -4852,6 +4931,73 @@ impl UbmCentral {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn disconnect_dispatch_preserves_and_consumes_own_native_observation() {
+        let radio = FakeRadio::new();
+        let platform = PlatformDetail::new("bluez-mgmt", "2");
+        radio.set_disconnect_observation("peer", platform.clone());
+        let dispatch = DispatchRadio::Synthetic(Box::new(radio));
+        let observation = dispatch.disconnect_with_observation("peer").await.unwrap();
+        assert_eq!(observation.platform, Some(platform));
+        assert_eq!(
+            dispatch.disconnect_with_observation("peer").await.unwrap(),
+            observation
+        );
+        dispatch.consume_disconnect_observation("peer", &observation);
+        assert_eq!(
+            dispatch
+                .disconnect_with_observation("peer")
+                .await
+                .unwrap()
+                .platform,
+            None
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_physical_loss_admission_forwards_exact_generation() {
+        let radio = Box::new(FakeRadio::new());
+        radio.set_physical_generation("peer", 7);
+        let dispatch = DispatchRadio::Synthetic(radio);
+        assert!(!dispatch.accept_physical_loss("peer", 6, 1).await);
+        assert!(!dispatch.accept_physical_loss("other-peer", 7, 1).await);
+        assert!(dispatch.accept_physical_loss("peer", 7, 1).await);
+        assert!(!dispatch.accept_physical_loss("peer", 7, 1).await);
+        dispatch
+            .synthetic("dispatch.test")
+            .unwrap()
+            .set_physical_generation("peer", 8);
+        assert!(!dispatch.accept_physical_loss("peer", 7, 1).await);
+        assert!(dispatch.accept_physical_loss("peer", 8, 8).await);
+    }
+
+    #[test]
+    fn lifecycle_projection_preserves_platform_detail_without_changing_the_public_kind() {
+        let platform = PlatformDetail::new("bluez-mgmt", "1")
+            .with_metadata("disconnectReason", PlatformValue::Int(1))
+            .with_metadata("wideProof", PlatformValue::Int(i64::MAX));
+        let projected = lifecycle_event_wire(ubm_desktop::LifecycleEvent {
+            sequence: 7,
+            peer_id: "peer".into(),
+            peer_key: "key".into(),
+            connection_generation: Some("generation".into()),
+            database_generation: None,
+            kind: LifecycleKind::LinkLost,
+            platform: Some(platform),
+        })
+        .unwrap();
+        assert_eq!(projected.kind, "link-lost");
+        assert_eq!(
+            projected.connection_generation.as_deref(),
+            Some("generation")
+        );
+        let detail: serde_json::Value =
+            serde_json::from_str(projected.platform.as_deref().unwrap()).unwrap();
+        assert_eq!(detail["domain"], "bluez-mgmt");
+        assert_eq!(detail["code"], "1");
+        assert_eq!(detail["metadata"]["disconnectReason"], 1);
+        assert_eq!(detail["metadata"]["wideProof"], i64::MAX.to_string());
+    }
     use ubm_desktop::{CharacteristicSnapshot, DescriptorSnapshot};
 
     use super::*;
@@ -6037,7 +6183,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(central.disconnect(lease(None)).await.unwrap(), "released");
+        assert_eq!(
+            central.disconnect(lease(None)).await.unwrap().state,
+            "released"
+        );
         assert!(!central
             .read(request("lease-b"))
             .await
@@ -6103,7 +6252,10 @@ mod tests {
             timeout_ms: Some(5000),
             ticket: None,
         };
-        assert_eq!(central.disconnect(lease(None)).await.unwrap(), "released");
+        assert_eq!(
+            central.disconnect(lease(None)).await.unwrap().state,
+            "released"
+        );
         assert_eq!(
             central
                 .poll_notification(subscription("consumer-a"))

@@ -34,6 +34,9 @@ export interface ReactNativeRustCoreRuntimeFacts {
   readonly androidApiLevel: number | null
   /** Whether this Apple host has a configured native restoration authority. */
   readonly appleRestorationConfigured?: boolean
+  readonly systemChooserAvailable?: boolean
+  /** Verified native OS-authorized accessory query, not a static Apple promise. */
+  readonly authorizedAccessoryBindingAvailable?: boolean
 }
 
 /** The first Android API level with `BluetoothGatt.readPhy`/`setPreferredPhy`. */
@@ -199,7 +202,8 @@ export function createReactNativeRustCoreFeatureRegistry(
   )
   // The Rust owner runs `scan.start` on both platforms (legacy React Native
   // never registered this, so managers reported a system chooser they do
-  // not have; fixed in 5.0). The chooser stays unregistered: unsupported.
+  // not have; fixed in 5.0). OS setup is registered only after its native
+  // availability/configuration probe succeeds; no static platform promise.
   const continuousScan = operationRegistration(
     BUILT_IN_FEATURE_IDS.discoveryContinuousScan,
     implementationVersion,
@@ -228,6 +232,40 @@ export function createReactNativeRustCoreFeatureRegistry(
       Object.freeze([
         direct,
         continuousScan,
+        ...(facts.systemChooserAvailable === true
+          ? [
+              operationRegistration(
+                BUILT_IN_FEATURE_IDS.discoverySystemChooser,
+                implementationVersion,
+                `react-native-${platform}-system-chooser-v1`,
+                'capability.catalog-v2',
+                ['capability.truth-limits-evidence-and-binding'],
+                'discovery:system-chooser.invoke-without-choice'
+              )
+            ]
+          : []),
+        ...(platform === 'apple' &&
+        facts.systemChooserAvailable === true &&
+        facts.authorizedAccessoryBindingAvailable === true
+          ? [
+              operationRegistration(
+                BUILT_IN_FEATURE_IDS.peerOriginAuthorized,
+                implementationVersion,
+                'react-native-rust-core-apple-ask-authorized-v1',
+                'capability.catalog-v2',
+                catalogScenarioIds,
+                'peer:origin-authorized.invoke-without-peer-directory'
+              ),
+              operationRegistration(
+                BUILT_IN_FEATURE_IDS.peerResolveReference,
+                implementationVersion,
+                'react-native-rust-core-apple-ask-resolve-v1',
+                'capability.catalog-v2',
+                catalogScenarioIds,
+                'peer:resolve-reference.invoke-without-peer-directory'
+              )
+            ]
+          : []),
         maximumWriteLengthRegistration(platform, implementationVersion, maximumWriteLength)
       ])
     )

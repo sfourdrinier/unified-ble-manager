@@ -325,6 +325,7 @@ enum TerminalAdmission {
 }
 
 struct ConnectionEventResource {
+    platform: Option<PlatformDetail>,
     connection_handle: String,
     stream_handle: String,
     peer_id: String,
@@ -506,30 +507,7 @@ impl DispatchError {
     /// else `null`.
     fn platform_wire(&self) -> IpcValue {
         if let Some(native) = &self.native {
-            return object([
-                ("domain", string(native.domain.clone())),
-                ("code", string(native.code.clone())),
-                (
-                    "safeMessage",
-                    string(
-                        native
-                            .message
-                            .clone()
-                            .or_else(|| self.platform.clone())
-                            .unwrap_or_default(),
-                    ),
-                ),
-                (
-                    "metadata",
-                    IpcValue::Object(
-                        native
-                            .metadata
-                            .iter()
-                            .map(|(key, value)| (key.clone(), platform_value(value)))
-                            .collect(),
-                    ),
-                ),
-            ]);
+            return native_platform_wire(native, self.platform.as_deref());
         }
         self.platform.as_ref().map_or(IpcValue::Null, |message| {
             object([
@@ -576,6 +554,27 @@ impl DispatchError {
 
 /// One typed platform fact on the wire. An integer JavaScript cannot hold
 /// exactly crosses as its decimal text (as on the Node desktop path).
+fn native_platform_wire(native: &PlatformDetail, fallback: Option<&str>) -> IpcValue {
+    object([
+        ("domain", string(native.domain.clone())),
+        ("code", string(native.code.clone())),
+        (
+            "safeMessage",
+            string(native.message.as_deref().or(fallback).unwrap_or_default()),
+        ),
+        (
+            "metadata",
+            IpcValue::Object(
+                native
+                    .metadata
+                    .iter()
+                    .map(|(key, value)| (key.clone(), platform_value(value)))
+                    .collect(),
+            ),
+        ),
+    ])
+}
+
 fn platform_value(value: &PlatformValue) -> IpcValue {
     match value {
         PlatformValue::Int(integer) if integer.unsigned_abs() <= MAX_SAFE_INTEGER => {
@@ -2647,6 +2646,7 @@ impl BtleplugDispatcher {
         caller_state.connection_events.insert(
             stream_handle.clone(),
             ConnectionEventResource {
+                platform: None,
                 connection_handle: required_string(
                     &payload,
                     "connectionHandle",
@@ -3102,6 +3102,7 @@ impl BtleplugDispatcher {
                     {
                         continue;
                     }
+                    resource.platform = event.platform.clone();
                     if resource.active {
                         resource.end = StreamEnd::Claimed;
                         deliveries.push((
@@ -4409,6 +4410,13 @@ impl BtleplugDispatcher {
                 ("previous", string(transition.previous)),
                 ("current", string(transition.current)),
                 ("cause", string(transition.cause)),
+                (
+                    "platform",
+                    resource
+                        .platform
+                        .as_ref()
+                        .map_or(IpcValue::Null, |detail| native_platform_wire(detail, None)),
+                ),
             ])
         };
         let send_result = self

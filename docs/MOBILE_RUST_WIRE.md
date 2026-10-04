@@ -12,7 +12,57 @@ core. It is the frozen interface between four parts:
 
 The schema exists in two places only, Rust and TS. Golden vectors bind the two
 (see [Golden vectors](#golden-vectors)). Java and Swift never parse
-JavaScript arguments.
+JavaScript radio arguments. OS accessory setup is a separate, versioned
+host-control seam: `chooseAccessory` / `cancelAccessoryChoice` and
+`accessoryChooserAvailable` on the TurboModule. The Apple seam uses strict
+`ubm-accessory-chooser/1` JSON and AccessorySetupKit, not a second radio or Rust
+session. The native facade verifies app allowlists before picker allocation.
+Service UUID matching accepts equivalent short and full BLE UUIDs, but builds
+the ASK descriptor from the first matching `NSAccessorySetupBluetoothServices`
+declaration. This preserves the declared representation required by ASK;
+an undeclared service is refused before session or picker allocation.
+In an ASK-declared app, an ordinary launch and adapter-state observation do not
+create a global-permission CoreBluetooth central before first accessory setup.
+Configured native continuation binds its host first, then checks the OS's actual
+authorized-accessory list through a bounded, single-flight native ASK session.
+An existing authorized Bluetooth accessory permits native startup without JavaScript; an
+empty list leaves central creation to accessory setup or an explicit radio use.
+The successful native ASK session remains process-owned. A genuine OS Bluetooth
+restoration launch naming the exact configured central identifier retains eager
+restoration, as do apps without ASK declarations. Existing centrals and active
+radio work are never discarded to make a picker appear. An explicit Bluetooth
+permission request or radio operation before ASK may create a global central;
+ASK's resulting refusal retains the platform's actual domain, code and reason.
+Authorization-query failures are logged as structured native failures and remain
+observable as structured `continuationStatus.startupFailure` until an
+authoritative successful retry. It retains the native domain/code without
+replacing declaration, last-wake or recovery data, or blocking an independent
+backlog claim. Missing/null on Android and older hosts means no reported startup
+failure; malformed diagnostic records fail closed. Startup is not an OS wake or
+completed recovery.
+The read-only `authorizedAccessories` TurboModule method returns the versioned
+`ubm-accessory-authorized/1` envelope from that same process-owned ASK session:
+current OS-authorized Bluetooth UUIDs and ASK display labels only. It does not
+open a picker, scan, or create a central. On iOS, `peers.authorized()` maps
+those UUIDs to origin-scoped references with unknown connection/reachability;
+`peers.resolve()` consults the current list only after the Rust owner returns
+no record. This is not physical connection or wake evidence. Non-iOS hosts,
+undeclared apps, and older native bindings explicitly report unsupported for
+`authorized()`; their ordinary unresolved origin references retain the Rust
+directory's `null` result without an ASK fallback.
+An explicit scan or connection in an ASK-configured app may allocate the same
+process CoreBluetooth central and wait for actual `poweredOn` within the
+original Rust operation budget; adapter state, watch, chooser, and this
+directory query do not allocate it. Global authorization remains untouched.
+An explicit Apple permission request retains its bounded native waiter across
+CoreBluetooth delegate updates that still report `notDetermined`. Such an
+update is not a refusal or grant; only a decided authorization, the original
+deadline, or teardown settles the request.
+The ordinary Android public chooser reuses `companion.associate` with its
+additive `filtersJson` selector field; Rust validates and canonicalizes that
+field before the JNI/UniFFI platform request. Omitted `filtersJson` preserves
+the existing exact-name association API. Budgets and cancellation remain owned
+by the existing Rust operation tracker. See [`BACKGROUND.md`](BACKGROUND.md).
 
 ## Ownership (one owner per process)
 
@@ -334,6 +384,13 @@ COORDINATION #3.
 - `bond` comes from the last security fact.
 
 ## Drain records
+
+Adapter observations retain unknown power or availability as unmeasured facts;
+neither implies a resetting adapter or advances the attachment generation.
+Initial central creation may report unknown while an explicit native operation
+waits for readiness under its original deadline. Actual resetting, powered-off,
+unsupported/unavailable and blocking authorization still trigger owned loss
+cleanup; the platform snapshot remains observable in the adapter record.
 
 Every `adv.operationId` is the native scan membership that accepted that
 observation, not the caller's start-operation identifier. Its required

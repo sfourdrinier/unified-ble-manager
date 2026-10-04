@@ -312,9 +312,21 @@ module (`src/bluer_radio.rs`) is not compiled on macOS at all, so a Linux
   [--timing-profile fixtures/h10-fingerprints/<real>.json] [--timing-seed 7]
   [--control-bind 127.0.0.1] [--control-port 17935] [--control-token-file token.txt]
   [--driver ws://127.0.0.1:8795/host] [--linux-advertising bluez|mgmt-legacy]
+  [--adapter hci1] # Linux only: exact controller; no fallback
 ```
 
 Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
+
+On Linux, `--adapter hci1` binds GATT, advertising, alias ownership and scoped
+cleanup to that exact controller. Omission preserves BlueZ's default adapter.
+A malformed, missing or refused requested adapter fails visibly; it never
+switches controllers. This does not change BlueZ's global default or another
+adapter's settings. As with the existing simulator, the selected adapter is
+powered for use and its temporary simulator alias is restored on shutdown.
+After building on Linux, `node tests/adapter-cli.cjs "$PWD/target/debug/h10-sim"`
+checks actual CLI admission/default vectors and a missing controller's refusal.
+The refusal case opens the existing D-Bus session to list adapters, but does not
+power a controller, register GATT or advertise; all other cases are radio-free.
 
 - **macOS: launch from Terminal.app** (or whichever terminal owns the window),
   because Bluetooth permission follows the launching process. The sim waits up
@@ -365,19 +377,25 @@ Later flags win: `--profile` applies first, then `--name`/`--bpm`/`--battery`.
   pairing was refused. These host-profile probes are not H10 PMD requirements.
   An Android run also observed a protected reverse MCP/Content Control ID read
   triggering security negotiation on the shared ATT connection, delaying the
-  phone's discovery until its deadline. For a dedicated simulator host,
-  `ReverseServiceDiscovery = false` under `[General]` in
-  `/etc/bluetooth/main.conf` disables automatic discovery of an incoming
-  central's services; the simulator still serves its GATT database and explicit
+  phone's discovery until its deadline. A dedicated simulator-host deployment
+  requires one active `ReverseServiceDiscovery = false` under `[General]` in
+  `/etc/bluetooth/main.conf` for the entire qualification window. A commented
+  example is not sufficient: BlueZ defaults this setting to true. Check the
+  persisted configuration with
+  `node tests/bluez-host-policy.cjs /etc/bluetooth/main.conf` from this directory
+  before starting the simulator and again after a daemon restart. The setting
+  disables automatic discovery of an incoming central's services; the
+  simulator still serves its GATT database and explicit
   outgoing central discovery still works. A controlled Android retest completed
   discovery and Device Information reads without pairing at the original
   deadline after changing only that setting. This is source-checkout simulator
   evidence, not real-H10 or published-artifact qualification.
   The setting affects the whole daemon, not just the simulator. An operator
   must authorize it, back up the original configuration, restart Bluetooth and
-  restart the simulator (its registrations are lost), then restore the original
-  configuration and restart both after temporary testing. Other incoming
-  peers lose automatic reverse discovery during that window. The package
+  restart the simulator (its registrations are lost), and keep the setting
+  persisted while this daemon serves the simulator. Restore the original
+  configuration and restart both when retiring the dedicated deployment.
+  Other incoming peers lose automatic reverse discovery during that window. The package
   never makes this privileged host change automatically; it neither disables
   an attribute's security requirement nor enables blanket pairing/trust.
   In the same-daemon, two-adapter test, a pairing agent restricted to the two test peer paths

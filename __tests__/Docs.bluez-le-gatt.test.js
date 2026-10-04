@@ -2,6 +2,16 @@ const fs = require('node:fs')
 const path = require('node:path')
 const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
 
+test('all BlueZ deployment guides retain the exact production release reply signature', () => {
+  const source = read('vendor/bluez-async/src/le_lease.rs')
+  const signature = source.match(/ReleaseLease requires exact ([a-z]+) signature/)[1]
+  expect(signature).toBe('uttsby')
+  for (const file of ['docs/BLUEZ_DEPLOYMENT.md', 'docs/BLUEZ_LE_GATT.md', 'vendor/bluez/README.md']) {
+    expect(read(file)).toContain(`\`${signature}\``)
+    expect(read(file)).not.toContain('`(u,t,t,s)`')
+  }
+})
+
 test('BlueZ consumer guidance separates explicit daemon preparation, strict discovery and qualification', () => {
   const node = read('docs/NODE.md')
   expect(node).toContain('BLUEZ_LE_GATT.md')

@@ -1,0 +1,18 @@
+name: Setup Apple Rust targets
+description: Install the pinned toolchain's authoritative Apple binding targets.
+runs:
+  using: composite
+  steps:
+    - name: Install pinned Rust and Apple targets
+      shell: bash
+      run: |
+        node <<'NODE'
+        const fs = require('node:fs')
+        const { execFileSync } = require('node:child_process')
+        const { BINDINGS } = require('./scripts/release/native-build-identity')
+        const pin = /^channel\s*=\s*"([^"]+)"/m.exec(fs.readFileSync('rust-toolchain.toml', 'utf8'))
+        if (pin === null) throw new Error('Missing pinned Rust toolchain channel')
+        execFileSync('rustup', ['toolchain', 'install', pin[1], '--profile', 'minimal'], { stdio: 'inherit' })
+        execFileSync('rustup', ['target', 'add', '--toolchain', pin[1], ...BINDINGS.uniffi.targets], { stdio: 'inherit' })
+        execFileSync('cargo', ['--version'], { stdio: 'inherit' })
+        NODE

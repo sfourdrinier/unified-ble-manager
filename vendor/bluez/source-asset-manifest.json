@@ -9,7 +9,7 @@
   },
   "patch": {
     "file": "ubm-le-gatt-5.87.patch",
-    "sha256": "2767a2adc9c4ad5ba343f7c9d18065077b06096596e462dd43be72b9b3bc79f8"
+    "sha256": "5645229c0bbb26513716d84b0261b955be509bd40f7637e667858bdc7793f494"
   },
   "licenseExpression": "GPL-2.0-or-later AND LGPL-2.1-or-later",
   "licenseFiles": [
@@ -31,6 +31,8 @@
     "packageIncludesDaemonBinary": false,
     "linkedIntoPackageNativeLibraries": false,
     "deployment": "external-explicit-host-action",
-    "automaticInstallOrLaunch": false
+    "automaticInstallOrLaunch": false,
+    "linuxAuthorityContract": [1, 2, 1],
+    "release": "5.87-ubm.2"
   }
 }

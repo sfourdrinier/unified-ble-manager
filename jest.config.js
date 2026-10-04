@@ -11,6 +11,7 @@ module.exports = {
     '/__tests__/helpers/',
     '/__tests__/electron/helpers/',
     '/__tests__/docs-recipes/',
+    '/__tests__/fixtures/tauri-bundler/',
     '/__tests__/backend-contract/fixtures/',
     '/__tests__/package-surface/fixtures/'
   ],
