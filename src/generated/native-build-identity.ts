@@ -36,12 +36,12 @@ export const EXPECTED_NATIVE_BUILD_IDENTITY: ExpectedNativeBuildIdentity = Objec
       ])
     }),
     jni: Object.freeze({
-      sourceDigest: 'ae6d4e83f4222af40dc76e3095a2e7801cecec0df3d61d1dddc0f6809221c418',
+      sourceDigest: '3daabdc5d8249be99d2c04a160009ef22763fb4bbebd6baa7372ab8f8f0f4e17',
       bindingSchema: '7677b9c65b0e8779fa1ac63c55403c53e535ed5cb7ae10794379d2d0d1513487',
       targets: Object.freeze(['aarch64-linux-android', 'x86_64-linux-android'])
     }),
     uniffi: Object.freeze({
-      sourceDigest: 'c326b83d322acb62c108848a6534fe78b51eaa809cfd8b81c01681c9ab3beced',
+      sourceDigest: '7835e4e60cd11e9be8051b47caf9e6268fe1ede7386df3a4798d1fe8d92de008',
       bindingSchema: '4db708897638cf1717563c70de2612f60cd7763e218e843dcfb038cac825e7fc',
       targets: Object.freeze([
         'aarch64-apple-ios',

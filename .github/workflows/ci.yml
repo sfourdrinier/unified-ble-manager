@@ -456,6 +456,9 @@ jobs:
       - name: Cross-check encoders against TS parsers
         run: node tool/h10-sim/tests/xcheck/run-xcheck.cjs
 
+      - name: Check dedicated BlueZ simulator-host policy guard
+        run: node --test tool/h10-sim/tests/bluez-host-policy.test.cjs
+
       - name: Check driver-hello fixture is fresh
         # The platform and osVersion fields differ per OS (both carry
         # `std::env::consts::OS`), so both are excluded from the comparison;

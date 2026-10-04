@@ -655,24 +655,26 @@ impl ForeignRadio {
 /// Whether the legacy React Native backends counted this snapshot as a lost
 /// adapter (origin/main `corebluetooth-backend.ts` `handleAdapterState`):
 /// not available, a blocking authorization (`isAuthorizationBlocking`:
-/// denied, restricted, unavailable), or power other than on. Answered as the
+/// denied, restricted, unavailable), or a concrete power-loss state. Unknown
+/// power is not evidence of resetting, including initial central creation.
+/// Answered as the
 /// central's loss state, so the core's once-per-episode reset runs on
-/// exactly those snapshots; `None` is a usable adapter, which ends the
-/// episode. The state is the loss's cause only: the `adapter` records carry
+/// exactly those snapshots; `None` means no measured loss, not necessarily
+/// readiness. Only measured powered-on ends the loss episode; unknown power
+/// preserves it. The state is the loss's cause only: the `adapter` records carry
 /// the platform's own snapshot.
 #[must_use]
 pub fn legacy_loss(snapshot: &AdapterSnapshot) -> Option<AdapterPowerState> {
     match snapshot.power {
         AdapterPower::Off => return Some(AdapterPowerState::PoweredOff),
-        AdapterPower::Resetting | AdapterPower::Unknown => {
+        AdapterPower::Resetting => {
             return Some(AdapterPowerState::Resetting);
         }
         AdapterPower::Unsupported => return Some(AdapterPowerState::Unsupported),
-        AdapterPower::On => {}
+        AdapterPower::On | AdapterPower::Unknown => {}
     }
     match snapshot.availability {
-        AdapterAvailability::Available => {}
-        AdapterAvailability::Unknown => return Some(AdapterPowerState::Resetting),
+        AdapterAvailability::Available | AdapterAvailability::Unknown => {}
         AdapterAvailability::Unavailable | AdapterAvailability::Unsupported => {
             return Some(AdapterPowerState::Unsupported);
         }
@@ -688,10 +690,11 @@ pub fn legacy_loss(snapshot: &AdapterSnapshot) -> Option<AdapterPowerState> {
 }
 
 /// The adapter state the central is told for one platform snapshot: powered
-/// on for a usable adapter, the legacy loss otherwise ([`legacy_loss`]).
+/// on for a usable adapter, unknown for unmeasured power, or the concrete
+/// loss otherwise ([`legacy_loss`]).
 #[must_use]
 pub fn central_adapter_state(snapshot: &AdapterSnapshot) -> AdapterPowerState {
-    legacy_loss(snapshot).unwrap_or(AdapterPowerState::PoweredOn)
+    legacy_loss(snapshot).unwrap_or_else(|| power_state(snapshot))
 }
 
 /// Desktop power projection of the platform adapter facts.
@@ -1055,6 +1058,58 @@ impl RadioBoundary for ForeignRadio {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unknown_power_is_an_observation_not_a_reset() {
+        let mut snapshot = super::AdapterSnapshot {
+            availability: super::AdapterAvailability::Available,
+            authorization: super::AdapterAuthorization::NotDetermined,
+            power: super::AdapterPower::Unknown,
+            safe_reason: None,
+        };
+        assert_eq!(super::legacy_loss(&snapshot), None);
+        assert_eq!(
+            super::central_adapter_state(&snapshot),
+            super::AdapterPowerState::Unknown
+        );
+        snapshot.power = super::AdapterPower::Resetting;
+        assert_eq!(
+            super::legacy_loss(&snapshot),
+            Some(super::AdapterPowerState::Resetting)
+        );
+        snapshot.power = super::AdapterPower::Off;
+        assert_eq!(
+            super::legacy_loss(&snapshot),
+            Some(super::AdapterPowerState::PoweredOff)
+        );
+        snapshot.power = super::AdapterPower::On;
+        assert_eq!(
+            super::central_adapter_state(&snapshot),
+            super::AdapterPowerState::PoweredOn
+        );
+        snapshot.power = super::AdapterPower::Unknown;
+        snapshot.authorization = super::AdapterAuthorization::Denied;
+        assert_eq!(
+            super::central_adapter_state(&snapshot),
+            super::AdapterPowerState::Unauthorized
+        );
+        snapshot.authorization = super::AdapterAuthorization::NotDetermined;
+        snapshot.availability = super::AdapterAvailability::Unknown;
+        assert_eq!(super::legacy_loss(&snapshot), None);
+        assert_eq!(
+            super::central_adapter_state(&snapshot),
+            super::AdapterPowerState::Unknown
+        );
+        snapshot.power = super::AdapterPower::On;
+        assert_eq!(
+            super::central_adapter_state(&snapshot),
+            super::AdapterPowerState::PoweredOn
+        );
+        snapshot.availability = super::AdapterAvailability::Unavailable;
+        assert_eq!(
+            super::legacy_loss(&snapshot),
+            Some(super::AdapterPowerState::Unsupported)
+        );
+    }
     use super::*;
 
     struct Stub;

@@ -50,6 +50,13 @@ The bundle remains `built-not-radio-qualified` after passing these build gates.
 Failed builds retain their task-specific work/logs for diagnosis; no existing
 source or output is overwritten.
 
+The daemon bundle does not choose a simulator policy. On a dedicated H10
+simulator host, follow the persisted `ReverseServiceDiscovery = false` admission
+and rollback procedure in [the simulator guide](../tool/h10-sim/README.md#linux-requirements).
+This prevents BlueZ from probing protected services on an incoming test central;
+it does not disable attribute security, change the package's central behavior,
+or authorize applying the setting to a production host.
+
 ## Reviewed host cutover, separate from file installation
 
 Installing root-owned files is an explicit operator action. The file owner

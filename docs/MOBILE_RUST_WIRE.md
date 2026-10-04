@@ -385,6 +385,13 @@ COORDINATION #3.
 
 ## Drain records
 
+Adapter observations retain unknown power or availability as unmeasured facts;
+neither implies a resetting adapter or advances the attachment generation.
+Initial central creation may report unknown while an explicit native operation
+waits for readiness under its original deadline. Actual resetting, powered-off,
+unsupported/unavailable and blocking authorization still trigger owned loss
+cleanup; the platform snapshot remains observable in the adapter record.
+
 Every `adv.operationId` is the native scan membership that accepted that
 observation, not the caller's start-operation identifier. Its required
 `startOperationId` separately names the exact `scan.start` request. Consumers

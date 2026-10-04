@@ -19,6 +19,9 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Changes
 
+- Preserve initial unknown mobile adapter observations without fabricating a
+  resetting event that cancels the first connection. Unknown observations do
+  not end an existing loss episode; only measured recovery permits a new one.
 - Expose the real saved ASK Bluetooth-accessory directory and resolve persisted
   origin references without another picker or scan. Preserve OS display names
   as labels, unknown reachability and runtime-scoped capability limits.

@@ -4,7 +4,8 @@
 //! `advanceGeneration` :1282, `corebluetooth-adapter-loss-cleanup.ts`).
 //!
 //! - The adapter is lost when it is not available, its authorization blocks
-//!   (`denied`, `restricted`, `unavailable`), or its power is not `on`.
+//!   (`denied`, `restricted`, `unavailable`), or its power reports a concrete
+//!   loss. Unknown power is an observation, not a fabricated resetting state.
 //! - The first lost state of an episode ends the scan (`source-failed`), the
 //!   subscriptions and the links, then advances the backend and adapter
 //!   generations by one. Further lost states of the same episode advance
@@ -99,6 +100,56 @@ async fn settle(session: &MobileSession) -> Vec<Value> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn initial_unknown_power_does_not_reset_a_connect_waiting_for_native_readiness() {
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let radio = Scripted::new(Box::new(|request| match request {
+            ubm_mobile::RadioRequest::Connect { .. } => Reply::Hold,
+            _ => polar_responder(request),
+        }));
+        let (host, _) = open(&radio, platform).await;
+        let session = host.open_session("initial-state").expect("session");
+        host.ingest(advertisement());
+        let mut connect = Box::pin(call(
+            &session,
+            "connection.connect",
+            r#"{"peerId":"A0:9E:1A:00:00:01","lease":"initial","operationId":"initial-connect"}"#,
+        ));
+        tokio::select! {
+            result = &mut connect => panic!("connect did not reach held native preparation: {result}"),
+            () = async {
+                tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    while radio.held_of(ubm_mobile::RequestKind::Connect).is_empty() { tokio::task::yield_now().await; }
+                }).await.expect("native connect admission");
+            } => {}
+        }
+        host.ingest(snapshot(
+            AdapterAvailability::Available,
+            AdapterAuthorization::NotDetermined,
+            AdapterPower::Unknown,
+        ));
+        let records = settle(&session).await;
+        assert!(
+            adapter_records(&records)
+                .iter()
+                .all(|(_, backend, adapter)| backend == "1" && adapter == "1"),
+            "unknown observation advanced attachment: {records:?}"
+        );
+        host.ingest(on());
+        radio.answer(
+            radio.held_of(ubm_mobile::RequestKind::Connect)[0],
+            ubm_mobile::RadioCompletion::Unit,
+        );
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), connect)
+            .await
+            .expect("connect settled");
+        ok(&result);
+        ok(&call(&session, "connection.disconnect", r#"{"peerId":"A0:9E:1A:00:00:01","lease":"initial","operationId":"initial-disconnect"}"#).await);
+        ok(&call(&session, "session.dispose", "{}").await);
+        assert_eq!(parse(&host.shutdown().await)["state"], "released");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lost_adapter_ends_live_work_and_advances_the_generations_once_per_episode() {
     for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
         let radio = Scripted::polar();
@@ -155,6 +206,16 @@ async fn a_lost_adapter_ends_live_work_and_advances_the_generations_once_per_epi
         assert_eq!(generation(&session).await, (json!("2"), json!("2")));
 
         // The same episode: nothing advances.
+        host.ingest(snapshot(
+            AdapterAvailability::Available,
+            AdapterAuthorization::Granted,
+            AdapterPower::Unknown,
+        ));
+        let unknown_records = settle(&session).await;
+        assert_eq!(
+            adapter_records(&unknown_records),
+            [("unknown".to_owned(), "2".to_owned(), "2".to_owned())]
+        );
         host.ingest(off());
         host.ingest(snapshot(
             AdapterAvailability::Available,
@@ -174,7 +235,7 @@ async fn a_lost_adapter_ends_live_work_and_advances_the_generations_once_per_epi
             "{platform:?}: {records:#?}"
         );
 
-        // Every legacy loss condition opens a new episode.
+        // Every concrete loss condition opens a new episode.
         let mut expected = 2;
         for lost in [
             snapshot(
@@ -198,6 +259,20 @@ async fn a_lost_adapter_ends_live_work_and_advances_the_generations_once_per_epi
                 AdapterPower::On,
             ),
             snapshot(
+                AdapterAvailability::Available,
+                AdapterAuthorization::Granted,
+                AdapterPower::Resetting,
+            ),
+        ] {
+            expected += 1;
+            host.ingest(lost);
+            let wanted = expected.to_string();
+            drain_until(&session, |r| has_generation(r, &wanted)).await;
+            host.ingest(on());
+            settle(&session).await;
+        }
+        for unmeasured in [
+            snapshot(
                 AdapterAvailability::Unknown,
                 AdapterAuthorization::Granted,
                 AdapterPower::On,
@@ -205,18 +280,19 @@ async fn a_lost_adapter_ends_live_work_and_advances_the_generations_once_per_epi
             snapshot(
                 AdapterAvailability::Available,
                 AdapterAuthorization::Granted,
-                AdapterPower::Resetting,
-            ),
-            snapshot(
-                AdapterAvailability::Available,
-                AdapterAuthorization::Granted,
                 AdapterPower::Unknown,
             ),
         ] {
-            expected += 1;
-            host.ingest(lost);
-            let wanted = expected.to_string();
-            drain_until(&session, |r| has_generation(r, &wanted)).await;
+            host.ingest(unmeasured);
+            let records = settle(&session).await;
+            assert!(
+                !has_generation(&records, &(expected + 1).to_string()),
+                "unmeasured facts fabricated reset: {records:?}"
+            );
+            assert_eq!(
+                generation(&session).await,
+                (json!(expected.to_string()), json!(expected.to_string()))
+            );
             host.ingest(on());
             settle(&session).await;
         }
