@@ -81,7 +81,7 @@ function currentCoreBluetoothAuthorizationProvider(authorization) {
     const central = await original(...args)
     // Unknown is absence of a measurement, not a fabricated OS enum value.
     if (authorization !== 'unknown') {
-      await harness.opened.at(-1).stageAdapterAuthorization(authorization, true)
+      await stageCurrentAuthorization(harness.opened.at(-1), authorization)
     }
     return central
   }
@@ -97,9 +97,22 @@ function currentCoreBluetoothAuthorizationProvider(authorization) {
   return { harness, provider }
 }
 
+async function stageCurrentAuthorization(central, authorization, timeoutMs = 5000) {
+  await central.stageAdapterAuthorization(authorization, true)
+  // Staging mutates the synthetic radio and enqueues an OS event. Only the
+  // reconciled core snapshot is the fact awaitUsableAdapter actually reads.
+  const deadline = performance.now() + timeoutMs
+  while (central.adapterStatus().authorization !== authorization) {
+    if (performance.now() >= deadline) {
+      throw new Error(`staged adapter authorization ${authorization} was not reconciled`)
+    }
+    await new Promise(resolve => setImmediate(resolve))
+  }
+}
+
 async function settle(controller, promise) {
   let settled = false
-  void promise.then(
+  promise.then(
     () => {
       settled = true
     },
@@ -268,6 +281,31 @@ describe('unknown authorization never makes an adapter unready', () => {
       { state: { availability: 'available', authorization: 'unknown', power: 'on' } }
     ])
     expect(harness.calls.filter(([name]) => name === 'close')).toHaveLength(1)
+  })
+
+  test('authorization fixture waits for reconciled core facts rather than a staging acknowledgement', async () => {
+    let authorization = 'unknown'
+    const central = { stageAdapterAuthorization: jest.fn(async () => {}), adapterStatus: () => ({ authorization }) }
+    let settled = false
+    const staged = stageCurrentAuthorization(central, 'denied').then(() => {
+      settled = true
+    })
+    await flushMicrotasks()
+    expect(settled).toBe(false)
+    authorization = 'denied'
+    await staged
+    expect(settled).toBe(true)
+    expect(central.stageAdapterAuthorization).toHaveBeenCalledWith('denied', true)
+  })
+
+  test('authorization fixture explicitly fails when the staged fact is never reconciled', async () => {
+    const central = {
+      stageAdapterAuthorization: jest.fn(async () => {}),
+      adapterStatus: () => ({ authorization: 'unknown' })
+    }
+    await expect(stageCurrentAuthorization(central, 'denied', 0)).rejects.toThrow(
+      'staged adapter authorization denied was not reconciled'
+    )
   })
 
   test('the current Rust provider times out explicit refusal and releases the failed probe', async () => {
