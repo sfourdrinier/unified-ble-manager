@@ -9,6 +9,7 @@ test('Linux prerequisite diagnostics distinguish refused authority from package 
   expect(guide).toContain('compile-config-loadability')
   expect(guide).toContain('does not verify the running daemon')
   expect(guide).toContain('Never invoke installation from a renderer or reconnect handler')
+  expect(guide).toContain('ready-callback lifetime')
 })
 
 test('maintained Linux authority distinguishes direct LE connection from unresolved deferred availability', () => {

@@ -179,6 +179,17 @@ The separate maintained `.3` physical Linux run encountered a real SIGSEGV in
 `ubm_watch_current` during failed GATT discovery/disconnection. Crash evidence
 identifies a stale watch callback; the extension's ready-registration ID was
 truncated from a 64-bit pointer, preventing unregister from removing the queued
-callback before its user data was freed. The daemon lifetime correction and
-executable regressions are in progress. Services were restored after the failed
-test. No Linux qualification pass or release readiness is claimed for this run.
+callback before its user data was freed. The `.4` correction uses monotonic
+per-client IDs, independent watch references, owner retirement before unregister,
+and deferred destruction until a running callback returns. Actual native tests
+cover 64-bit unregister, zero/exhaustion, queued already-ready registration,
+reentrant cleanup and late callbacks. Fresh extraction of the generated patch
+passes the canonical isolated daemon producer gate; one independent bounded
+review found zero actionable issues and reran both focused native executables.
+Patch SHA-256 is
+`f227176d86a045cca4df371971972763e3747f4a06e047e9e3e4c0e4d533afb9`.
+The authority contract stays `(1,2,1)`. No running daemon was replaced.
+Services were restored after the failed test. The simulator exited in the same
+window, but its termination reason remains unverified. No Linux qualification
+pass or release readiness is claimed for the failed run; the bounded deployed
+radio rerun requires explicit `.4` cutover approval.

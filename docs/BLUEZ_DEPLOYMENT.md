@@ -7,6 +7,11 @@ Linux-radio qualification or permission to replace a system service. The
 authority contract and retained source are described in
 [strict BlueZ LE GATT](BLUEZ_LE_GATT.md).
 
+The current source revision corrects a reproduced ready-callback lifetime crash
+in the prior deployed bytes. Earlier receipts remain tied to those older bytes,
+including their failure; they do not qualify this revision. The fix retains the
+same authority contract and does not automatically upgrade or restart a host.
+
 ## One explicit deployment owner
 
 `vendor/bluez/deployment/bundle.mjs` uses the exact upstream archive digest,
@@ -21,7 +26,7 @@ fresh, disjoint directories outside the repository:
 ```sh
 node /absolute/ubm/vendor/bluez/deployment/bundle.mjs \
   /absolute/bluez-5.87.tar.xz /absolute/new-bluez-bundle \
-  /absolute/new-bluez-build-work 5.87-ubm.3
+  /absolute/new-bluez-build-work 5.87-ubm.4
 node --test /absolute/ubm/vendor/bluez/deployment/deployment.test.mjs
 ```
 
@@ -174,7 +179,7 @@ recovery is not a claim that previous physical resources were released.
 
 ### Deferred LE availability remains an explicit mechanism gap
 
-The maintained `5.87-ubm.3` contract supports direct scoped LE connection and
+The maintained `5.87-ubm.4` contract supports direct scoped LE connection and
 current LE-specific GATT discovery. It does **not** establish fresh LE-specific
 advertisement availability for deferred acquisition. The instantiated Linux
 `connection:when-available` capability remains unsupported; a request with
@@ -204,7 +209,7 @@ connection receipts and successful package gates do not close this mechanism gap
 
 ```sh
 node /absolute/ubm/vendor/bluez/deployment/activate.mjs rollback \
-  /opt/unified-ble-manager/bluez/5.87-ubm.3-PATCH_HASH_PREFIX/deployment-receipt.json \
+  /opt/unified-ble-manager/bluez/5.87-ubm.4-PATCH_HASH_PREFIX/deployment-receipt.json \
   --confirm-override-removal
 ```
 
