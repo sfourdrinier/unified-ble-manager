@@ -53,14 +53,28 @@ application's Tauri capability file.
 
 ### Read-only peer directory
 
-Authenticated `peers.resolve`, `peers.known`, and `peers.connected` routes use the
-same instantiated desktop central. CoreBluetooth connected retrieval requires
+Authenticated `peers.resolve`, `peers.known`, `peers.connected`, and `peers.bonded`
+routes use the same instantiated desktop central. CoreBluetooth connected retrieval requires
 nonempty canonical service UUIDs; otherwise it returns `capability.unsupported`
 with operation `peers.connected.services-required`. Known retrieval requires
 explicit application-scoped `unified-ble:corebluetooth` references and rejects
-service filters. Full UUID reference identifiers are case-normalized. Other
-categories and adapters without these native mechanisms report unsupported,
-including empty or source-filtered queries.
+service filters. Full UUID reference identifiers are case-normalized.
+
+Windows and Linux expose `peers.bonded` through their native bond inventories.
+Returned references have `scope: "application"`: Windows uses
+`unified-ble:winrt` with a canonical uppercase Bluetooth address; Linux uses
+`unified-ble:bluez-dbus` with its adapter-scoped `hciN/dev_AA_BB_CC_DD_EE_FF`
+identity. `peers.resolve` accepts those returned references through the same
+bonded inventory, preserving `system-bonded` as their source. Foreign backend
+or reference scopes are rejected rather than rebound to another adapter.
+CoreBluetooth does not expose unrestricted bond inventory and reports
+`capability.unsupported` for `peers.bonded`.
+
+Bonded retrieval accepts optional references but rejects nonempty service
+filters with `capability.unsupported`, operation `peers.bonded.services`.
+Source filters are applied after native lookup: an empty or excluding source list returns no records;
+it does not bypass native capability checks or turn a native refusal into success.
+Other categories and adapters without their native mechanisms report unsupported.
 
 Lookup does not scan, connect, create a caller connection lease, or fabricate an
 advertisement. The returned peer identity works with a subsequent explicit

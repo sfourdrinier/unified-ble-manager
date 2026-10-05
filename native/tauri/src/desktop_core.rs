@@ -134,6 +134,7 @@ pub trait CoreAuthority: Send + Sync {
         ctl: OpControl,
     ) -> CoreFuture<'a, Vec<ubm_desktop::DirectoryPeer>>;
     /// Resolve an app-held OS identifier without connecting.
+    fn bonded_peers(&self, ctl: OpControl) -> CoreFuture<'_, Vec<ubm_desktop::DirectoryPeer>>;
     fn resolve_peer<'a>(
         &'a self,
         peer: &'a str,
@@ -159,6 +160,12 @@ pub trait CoreAuthority: Send + Sync {
     fn take_advertisement(&self) -> CoreFuture<'_, Option<PeerSnapshot>>;
     /// Connect; the lease is the exact string later ops echo back.
     fn connect<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ConnectionHandle>;
+    fn connect_when_available<'a>(
         &'a self,
         peer_id: &'a str,
         lease: &'a str,
@@ -357,6 +364,9 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
     ) -> CoreFuture<'a, Vec<ubm_desktop::DirectoryPeer>> {
         Box::pin(DesktopCentral::connected_peers(self, services, ctl))
     }
+    fn bonded_peers(&self, ctl: OpControl) -> CoreFuture<'_, Vec<ubm_desktop::DirectoryPeer>> {
+        Box::pin(DesktopCentral::bonded_peers(self, ctl))
+    }
     fn resolve_peer<'a>(
         &'a self,
         peer: &'a str,
@@ -403,6 +413,17 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
         ctl: OpControl,
     ) -> CoreFuture<'a, ConnectionHandle> {
         Box::pin(DesktopCentral::connect(self, peer_id, lease, ctl))
+    }
+
+    fn connect_when_available<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ConnectionHandle> {
+        Box::pin(DesktopCentral::connect_when_available(
+            self, peer_id, lease, ctl,
+        ))
     }
 
     fn disconnect<'a>(

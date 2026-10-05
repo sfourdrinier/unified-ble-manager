@@ -198,6 +198,8 @@ export type TckScenarioId =
   | 'connection.lease-joins-borrowing-transfer-and-revocation'
   | 'connection.two-client-arbitration'
   | 'connection.rssi-and-att-mtu-capability-contract'
+  | 'connection.when-available-acquires-and-releases'
+  | 'peer.bonded-enumeration-preserves-native-facts'
   | 'gatt.descriptor-discovery-read-write'
   | 'gatt.discovery-complete-paths-and-services-changed'
   | 'gatt.duplicate-uuid-occurrences-route-exactly'
@@ -230,6 +232,8 @@ export const WEB_CHOOSER_TCK_SCENARIO_ID = 'web.chooser-connect-discover-read-no
 export const WEB_CHOOSER_TCK_SUITE_ID = 'web-chooser-discovery'
 
 export type TckFactId =
+  | 'connection-when-available-acquires-and-releases'
+  | 'peer-bonded-enumeration-preserves-native-facts'
   | 'provider-loadability-separate-from-adapter-availability'
   | 'adapter-selection-rejects-ambiguous-or-stale-target'
   | 'backend-instance-id-is-unique'

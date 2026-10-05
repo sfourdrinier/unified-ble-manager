@@ -14,7 +14,7 @@
 use super::{ble::watcher::BLEWatcher, peripheral::Peripheral, peripheral::PeripheralId};
 use crate::{
     Error, Result,
-    api::{BDAddr, Central, CentralEvent, CentralState, ScanFilter},
+    api::{AddressType, BDAddr, Central, CentralEvent, CentralState, ScanFilter},
     common::adapter_manager::AdapterManager,
 };
 use async_trait::async_trait;
@@ -93,6 +93,18 @@ fn bind_radio(radio: Radio, manager: &Arc<AdapterManager<Peripheral>>) -> Result
 }
 
 impl Adapter {
+    /// Register a natively resolved explicit target without losing its LE
+    /// address type when the connection is subsequently opened.
+    pub async fn add_peripheral_with_address_type(
+        &self,
+        address: &PeripheralId,
+        kind: AddressType,
+    ) -> Result<Peripheral> {
+        let peripheral = self.add_peripheral(address).await?;
+        peripheral.set_explicit_address_type(kind)?;
+        Ok(peripheral)
+    }
+
     pub(crate) fn new(radio: Radio) -> Result<Self> {
         Self::from_radio(radio)
     }
@@ -180,15 +192,16 @@ impl Central for Adapter {
             Box::new(move |args| {
                 let bluetooth_address = args.BluetoothAddress()?;
                 let address: BDAddr = bluetooth_address.try_into().unwrap();
-                if let Some(mut entry) = manager.peripheral_mut(&address.into()) {
-                    entry.value_mut().update_properties(args);
-                    manager.emit(CentralEvent::DeviceUpdated(address.into()));
+                let (peripheral, created) = manager
+                    .peripheral_or_insert_with(address.into(), || {
+                        Peripheral::new(Arc::downgrade(&manager), address)
+                    });
+                peripheral.update_properties(args);
+                manager.emit(if created {
+                    CentralEvent::DeviceDiscovered(address.into())
                 } else {
-                    let peripheral = Peripheral::new(Arc::downgrade(&manager), address);
-                    peripheral.update_properties(args);
-                    manager.add_peripheral(peripheral);
-                    manager.emit(CentralEvent::DeviceDiscovered(address.into()));
-                }
+                    CentralEvent::DeviceUpdated(address.into())
+                });
                 // UBM patch (UBM_PATCHES.md #17): every received
                 // advertisement, with its own data; an unreadable one is
                 // reported, never dropped.
@@ -227,11 +240,9 @@ impl Central for Adapter {
     /// `winrt-boundary.inc:868`), which `connect` does here too, so no scan
     /// is needed first.
     async fn add_peripheral(&self, address: &PeripheralId) -> Result<Peripheral> {
-        if let Some(peripheral) = self.manager.peripheral(address) {
-            return Ok(peripheral);
-        }
-        let peripheral = Peripheral::new(Arc::downgrade(&self.manager), address.address());
-        self.manager.replace_peripheral(peripheral.clone());
+        let (peripheral, _) = self.manager.peripheral_or_insert_with(address.clone(), || {
+            Peripheral::new(Arc::downgrade(&self.manager), address.address())
+        });
         Ok(peripheral)
     }
 

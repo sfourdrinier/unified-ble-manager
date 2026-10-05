@@ -104,6 +104,12 @@ function stageDir() {
 }
 
 describe('build-tv.sh finding 176', () => {
+  test('TV pre-31 permission recipe distinguishes declaration from conditional SDK ceiling', () => {
+    const guide = fs.readFileSync(path.join(ROOT, 'docs', 'TV.md'), 'utf8')
+    expect(guide).toContain('Only when `neverForLocation: true` is also selected')
+    expect(guide).toContain('`maxSdkVersion: 30`')
+    expect(guide).toContain("manager.permissions.request({ purpose: 'scan-and-connect' })")
+  })
   test('verify-identity passes for a staged copy equal to the repo and fails loudly otherwise', () => {
     const stage = stageDir()
     try {
@@ -142,6 +148,12 @@ describe('build-tv.sh finding 176', () => {
       expect(fs.existsSync(path.join(stage, 'node_modules'))).toBe(false)
       expect(fs.existsSync(path.join(stage, 'ios'))).toBe(false)
       expect(fs.existsSync(path.join(stage, 'android'))).toBe(false)
+      const app = JSON.parse(fs.readFileSync(path.join(stage, 'app.json'), 'utf8'))
+      const ubmOptions = app.expo.plugins.find(
+        plugin => Array.isArray(plugin) && plugin[0] === 'unified-ble-manager'
+      )[1]
+      expect(ubmOptions.permissions.android.legacyLocation).toBe('auto')
+      expect(ubmOptions.background.android).toEqual({ mode: 'none' })
       const staleLib = path.join(stage, 'node_modules', 'unified-ble-manager')
       fs.mkdirSync(staleLib, { recursive: true })
       fs.writeFileSync(path.join(staleLib, 'STALE-MARKER'), 'stale')

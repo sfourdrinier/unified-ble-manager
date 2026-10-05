@@ -2,7 +2,11 @@
 
 # Migrating from react-native-ble-plx
 
-This source targets `5.0.0-rc.18`. The `4.0.0` release is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
+> Historical, non-copyable migration record. Apps already using UBM 4.0.28
+> must use [`MIGRATION_4.0.28.md`](MIGRATION_4.0.28.md). Old snippets below are
+> API comparison material, not current setup or restoration instructions.
+
+This source targets `5.0.0-rc.19`. The `4.0.0` release is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
 
 This page is for a React Native app that already uses `react-native-ble-plx`. Web, Electron, Node, and Tauri are new hosts — use those pages after you understand the RN rewrite.
 
@@ -22,12 +26,14 @@ This page is for a React Native app that already uses `react-native-ble-plx`. We
 | Immortal `Device` with methods | Scan observation → `Connection` lease → `snapshot()` paths |
 | `manager.destroy()` fire-and-forget | `await manager.destroy()` and check `CleanupRecord` |
 
-`instanceId` is an optional app-owned name for a distinct manager instance. For native restoration, pass `restoration: { applicationId, restorationId, generation? }`; the factory derives the trusted client, manager, and host-session identities internally.
+`instanceId` is an optional app-owned name for a distinct manager instance.
+Current native restoration accepts `{ restorationId, generation? }`; the native
+host derives identity. Caller-supplied `applicationId` is rejected.
 
 ## Install
 
 ```sh
-pnpm add unified-ble-manager
+pnpm add unified-ble-manager@5.0.0-rc.19
 ```
 
 Both packages may be installed temporarily. Only one BLE stack may own the radio/session. Feature-flag the new stack, migrate one owning session, then `pnpm remove react-native-ble-plx`.
@@ -44,7 +50,6 @@ import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
 const manager = await createReactNativeBleManager({
   instanceId: 'main',
   restoration: {
-    applicationId: 'com.example.app',
     restorationId: 'ble'
   }
 })
@@ -362,8 +367,8 @@ if (gone.state === 'release-failed') {
 | `setLogLevel` | `manager.traces()` / `traceDocument()` if you need diagnostics. |
 | Android `scanMode` / `callbackType` | `duplicatePolicy`, `filter`, `delivery`. |
 | Expo `iosEnableRestoration` / `iosRestorationIdentifier` | v2 `background.ios.restoration` in the Expo plugin. |
-| Expo `androidEnableForegroundService` | The app owns any FGS. |
-| Static `supports()` matrix | `manager.supports(id)` after the backend exists. |
+| Expo `androidEnableForegroundService` | Current Android monitoring uses `manager.background.acquire`; the app supplies entitlements. |
+| Static `supports()` matrix | `manager.capabilities.supports(id)` after the backend exists. |
 
 Restoration identity from the trusted native host does **not** auto-reconnect
 peripherals. You still connect. Expo uses the v2 `background.ios.restoration`
@@ -399,7 +404,10 @@ public recipes above.
 | Historical RC1 low-level helpers such as `find` and `scanUntil` from root (non-copyable) | Advanced helpers remain under `unified-ble-manager/advanced`; application code uses façade `OperationOptions`/`StreamPreset` |
 | `ReactNativeBleManagerAppOptions` type alias | Removed — use `BleManagerCreateOptions` directly |
 
-Restoration identity is now deterministic via `deriveRestorationIdentity({ applicationId, restorationId, generation })` with domain `unified-ble-manager:restoration:v1` and golden fixtures at `__tests__/fixtures/restoration-identity.golden.json`. `instanceId` never affects restoration.
+The old JavaScript identity recipe is non-copyable history.
+`deriveRestorationIdentity` now refuses with `capability.unsupported`:
+the native host is the only derivation authority and uses `ubm-restoration-v1`.
+`instanceId` never affects restoration.
 
 ## Next
 

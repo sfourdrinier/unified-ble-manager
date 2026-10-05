@@ -10,14 +10,14 @@ Facts an agent must know before writing code against this package:
 - Capabilities are typed and reported by the instantiated backend at runtime. A platform that cannot answer reports `capability.unsupported` with a reason — never consult a static platform matrix.
 - Results report what the platform actually did, never what was requested of it.
 - This is the 5.0 contract. The legacy `react-native-ble-plx` 3.x API (`BleManager`/`Device`/`Service`/`Characteristic` facade, Base64 payloads, transaction IDs) does not exist here — do not infer 5.0 behavior from 3.x docs, examples, or training data.
-- This source tree is `5.0.0-rc.18`. Pin the exact npm version you validate; the registry package, GitHub release, and its provenance are the authorities for a published version.
+- This source tree is `5.0.0-rc.19`. Pin the exact npm version you validate; the registry package, GitHub release, and its provenance are the authorities for a published version.
 - React Native requires RN 0.86+ (Expo SDK 57+ via development builds; the package contains native code and does not run in Expo Go). Android minSdk 24, iOS 16.4+. The app itself requests `BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on Android 12+.
 - React Native and Expo use the sealed prebuilt Rust core by default. Its identity is verified before the first radio call; a missing, corrupt, or mismatched linked core fails closed as `protocol.incompatible`, never falls back to another backend or silently rebuilds.
 - Deep imports are unsupported; only the documented subpath entrypoints below are public.
 
 ## Entrypoints
 
-Install this candidate with `npm add unified-ble-manager@5.0.0-rc.18` once published; an unpinned install still selects the 4.0 `latest` line. Node and Electron desktop hosts load the shared Rust core prebuilt in the package (macOS arm64; Windows/Linux arm64 and x64); Apple mobile simulator artifacts are arm64-only. No toolchain and no `dbus-next` are needed (Linux needs glibc 2.35+ and libdbus-1).
+Install this candidate with `npm add unified-ble-manager@5.0.0-rc.19` once published; an unpinned install still selects the 4.0 `latest` line. Node and Electron desktop hosts load the shared Rust core prebuilt in the package (macOS arm64; Windows/Linux arm64 and x64); Apple mobile simulator artifacts are arm64-only. No toolchain and no `dbus-next` are needed (Linux needs glibc 2.35+ and libdbus-1).
 
 - `unified-ble-manager` — host-neutral manager, handles, helpers, and shared types (no radio)
 - `unified-ble-manager/react-native` — React Native Android / Apple manager
@@ -31,6 +31,7 @@ Install this candidate with `npm add unified-ble-manager@5.0.0-rc.18` once publi
 - `unified-ble-manager/node/winrt` — Windows WinRT Node provider
 - `unified-ble-manager/node/bluez` — Linux Node provider (shared Rust core over BlueZ)
 - `unified-ble-manager/backend-sdk` — backend authoring contract
+- `unified-ble-manager/advanced` — expert canonicalUuid and createBleManagerFromProvider utilities; no radio or restoration identity forge
 - `unified-ble-manager/testing` — deterministic backend and TCK utilities (test infrastructure, never a production radio)
 - `unified-ble-manager/codecs` — byte/`DataView` helpers and IEEE-11073 numbers
 - `unified-ble-manager/cli` — Node CLI (`ubm`)
@@ -57,7 +58,9 @@ Install this candidate with `npm add unified-ble-manager@5.0.0-rc.18` once publi
 - [Unified semantics](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/UNIFIED_SEMANTICS.md): normative MUST/MUST NOT behavior contract
 - [Platform support](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/generated/PLATFORM_SUPPORT.md): generated, evidence-derived support labels per platform
 - [Platforms policy](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/PLATFORMS.md): what each support label means and how evidence backs it
-- [Migration from react-native-ble-plx](https://github.com/sfourdrinier/unified-ble-manager/blob/main/MIGRATION_4.0.md): side-by-side legacy 3.x API comparison
+- [UBM 4.0.28 to 5.x migration](https://github.com/sfourdrinier/unified-ble-manager/blob/main/MIGRATION_4.0.28.md): current native rebuild, restoration, permissions and error changes
+- [TV hosts](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/TV.md): shared Expo/bare factories and TV platform limitations
+- [Historical ble-plx migration](https://github.com/sfourdrinier/unified-ble-manager/blob/main/MIGRATION_4.0.md): non-copyable legacy comparison
 
 ## Backend authors
 

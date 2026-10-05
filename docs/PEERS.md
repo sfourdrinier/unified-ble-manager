@@ -26,6 +26,27 @@ Restoration directories: `peers.restored()` lists the peers the OS handed back a
 
 `manager.peers` exposes separate `known`, `connected`, `bonded`, `authorized`, and `restored` queries. A backend may report an individual category as unsupported. Web Bluetooth reports origin-authorized devices only when the browser exposes `navigator.bluetooth.getDevices()`; those references are origin-scoped and may represent disconnected or out-of-range devices. Electron and Tauri forward directory queries to their trusted host; they do not infer peer knowledge in the renderer. Support depends on the host's actual radio boundary, and an older host without these routes fails explicitly.
 
+Desktop `bonded()` reads WinRT paired Bluetooth LE inventory or the selected
+adapter's BlueZ Device1 `Paired`/`Bonded` facts. Persisted references from these
+directories resolve by exact identity against that same current native bond
+inventory before `connect(reference)` acquires its scoped connection lease.
+A removed bond resolves to `null`; resolution does not scan, establish a link,
+or promote `known()` or `connected()` inventory support.
+These read-only queries neither
+scan nor acquire a connection lease. They return `bond: 'bonded'`, native
+connection status (or `unknown` when unavailable), unknown reachability, and no
+invented RSSI/last-seen observation. A service filter is unsupported because
+the bond inventory does not establish current GATT services. References and
+source filters narrow actual records. BlueZ snapshots are pinned to the bound
+daemon owner and rejected if that owner changes. macOS CoreBluetooth does not
+offer unrestricted bond-store enumeration and remains explicitly unsupported.
+
+Windows explicit address targeting validates both the address and its
+public/random type through WinRT's typed lookup and retains that type for
+subsequent native acquisition. BlueZ retains its owned LE discovery resolution
+path. Neither address lookup establishes a link or proves reachability, and
+CoreBluetooth does not expose Bluetooth addresses.
+
 ### Saved AccessorySetupKit accessories on iOS
 
 In an iOS app that declares AccessorySetupKit, `peers.authorized()` reads the OS's current authorized-accessory list through the process-owned ASK session. It returns the accessory's actual Bluetooth UUID as an origin-scoped reference and its ASK display name as `name`; that name is not an advertisement or an identity. RSSI and last-advertisement fields are absent, and connection and reachability remain `unknown`. The query neither opens a picker nor scans or creates a CoreBluetooth central. A saved reference can be passed to `peers.resolve()` on a fresh manager; when the Rust directory has no record, the same current ASK list must still contain the exact UUID. A removed authorization does not resolve through this fallback.

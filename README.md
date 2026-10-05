@@ -20,7 +20,7 @@ root import does not pick a radio. Package SemVer and backend support labels are
 independent: each radio backend keeps its evidence-derived label. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
-This source tree is versioned `5.0.0-rc.18`. Install the exact version shown in the npm
+This source tree is versioned `5.0.0-rc.19`. Install the exact version shown in the npm
 registry. During release preparation, the version in `package.json` can be ahead
 of npm until the matching tag-driven workflow publishes it; the registry and
 GitHub release remain authoritative.
@@ -41,7 +41,7 @@ GitHub release remain authoritative.
 | [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)                                                                                                                                     | Host chooser + first-hour React Native / Expo path                      |
 | [`docs/TUTORIALS.md`](docs/TUTORIALS.md)                                                                                                                                                 | Scan, connect, read, write, subscribe, tear down                        |
 | [`docs/HELPERS.md`](docs/HELPERS.md)                                                                                                                                                     | Public `find`, scoped connection, GATT, and notification recipes        |
-| [`MIGRATION_4.0.md`](MIGRATION_4.0.md)                                                                                                                                                   | Side-by-side map from `react-native-ble-plx`                            |
+| [`MIGRATION_4.0.28.md`](MIGRATION_4.0.28.md) | Current migration from UBM 4.0.28 to 5.x |
 | [`docs/WEB.md`](docs/WEB.md) · [`docs/ELECTRON.md`](docs/ELECTRON.md) · [`docs/NODE.md`](docs/NODE.md) · [`docs/TAURI.md`](docs/TAURI.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) | Host construction                                                       |
 | [`docs/PEERS.md`](docs/PEERS.md)                                                                                                                                                         | Scoped peer directories, persistence, and reconnect-by-reference        |
 | [`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md)                                                                                                                         | Heart Rate, Battery, DIS, and path helpers                              |
@@ -56,7 +56,7 @@ links in one fetch. Agents contributing to this repository start at
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.18
+pnpm add unified-ble-manager@5.0.0-rc.19
 ```
 
 Installable with npm, yarn, or Bun. This repository uses pnpm. Bun as a runtime is not a tested host.
@@ -110,6 +110,7 @@ The root import selects no radio. Import the host you actually run.
 | `unified-ble-manager/node/winrt`         | Windows Node provider (shared Rust core over WinRT)                            |
 | `unified-ble-manager/node/bluez`         | Linux Node provider (shared Rust core over BlueZ)                              |
 | `unified-ble-manager/backend-sdk`        | Backend authoring contract                                                     |
+| `unified-ble-manager/advanced`           | Expert UUID/provider utilities; no radio or restoration identity forge |
 | `unified-ble-manager/testing`            | Deterministic backend and TCK utilities                                        |
 | `unified-ble-manager/codecs`             | Byte/`DataView` helpers and IEEE-11073 numbers — not Base64                    |
 | `unified-ble-manager/cli`                | Node CLI                                                                       |
@@ -144,6 +145,12 @@ const manager = await createReactNativeBleManager({
 On Android 12+ the app must request `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` itself. The library does not call `PermissionsAndroid`.
 
 On Expo, follow `manager.readiness()` actions: `manager.permissions.request({ purpose: 'scan-and-connect' })` shows the system Bluetooth prompt on Android and on Apple (iOS/tvOS, on request — reading readiness never prompts) and reports `{ requested, granted, denied, recommendedSettingsTarget }`. See [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) for the prompt, restriction, timeout, and restoration semantics.
+
+AccessorySetupKit-configured iOS apps use separate accessory authorization:
+while global authorization is `notDetermined`, a global permission request is
+unsupported and must not replace the user-initiated `manager.choose` flow.
+An accessory grant is not a global Bluetooth grant; see the Expo guide before
+copying the ordinary global-permission recipe.
 
 On Android, `manager.peers.bonded()` lists paired system peers and
 `manager.peers.resolve(reference)` rechecks a saved reference before
@@ -392,7 +399,7 @@ after disconnect, service change, or rediscovery.
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship the Node-API desktop-core prebuild for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
-`5.0.0-rc.18` publishes to npm `next`; bare installs still select the 4.0
+`5.0.0-rc.19` publishes to npm `next`; bare installs still select the 4.0
 `latest` line. Stable 5.x versions will publish to `latest`. Publication uses
 npm trusted publishing/OIDC with provenance.
 
@@ -400,7 +407,9 @@ npm trusted publishing/OIDC with provenance.
 
 This is a rewrite, not a rename. There is no drop-in BleManager constructor, no Base64 characteristic values, no public transaction IDs, and no compatibility shim.
 
-Read [`MIGRATION_4.0.md`](MIGRATION_4.0.md) before changing a shipping app.
+Apps already using UBM should read [`MIGRATION_4.0.28.md`](MIGRATION_4.0.28.md).
+The [`ble-plx migration record`](MIGRATION_4.0.md) is historical, non-copyable
+comparison material, not current installation or restoration guidance.
 
 ## Examples
 

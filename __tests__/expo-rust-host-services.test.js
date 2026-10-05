@@ -16,6 +16,7 @@ const { BleError } = require('../src/public/errors')
 const { createExpoBleManagerWithEnvironment } = require('../src/expo')
 const { rustCoreHarness, environment } = require('../test-support/react-native/rust-core-harness')
 const { DEFAULT_PEER } = require('../test-support/react-native/deterministic-rust-core-native')
+const { RustCoreRestorationJournal } = require('../src/backends/reactnative/react-native-rust-core-restoration')
 
 const EXPO = Object.freeze({ executionEnvironment: 'development-build', nativeModuleAvailable: true })
 
@@ -403,6 +404,42 @@ describe('Expo host services on the Rust session', () => {
       operation: 'expo.restoration.claim'
     })
     await unconfigured.manager.destroy()
+  })
+
+  test('Android restoration without a presence source preserves the production owner refusal', async () => {
+    const { manager } = await expoManager('android')
+    await expect(manager.restoration.claim()).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'capability.unsupported',
+      domain: 'restoration',
+      operation: 'expo.restoration.claim',
+      platform: {
+        domain: 'react-native-rust-core',
+        code: 'androidRestorationNeedsPresenceWake',
+        safeMessage: expect.stringContaining('no restoration source is configured'),
+        metadata: {}
+      }
+    })
+    await manager.destroy()
+  })
+
+  test('the Android journal uses the same no-source refusal before native adoption', async () => {
+    const claimRestoredPeers = jest.fn()
+    const journal = new RustCoreRestorationJournal({
+      platform: 'android',
+      authority: () => null,
+      attachment: () => null,
+      claimRestoredPeers
+    })
+    await expect(journal.adoptRestoration({})).rejects.toMatchObject({
+      normalized: {
+        code: 'capability.unsupported',
+        domain: 'restoration',
+        operation: 'react-native-rust-core.restoration.adopt',
+        platform: { domain: 'react-native-rust-core', code: 'androidRestorationNeedsPresenceWake' }
+      }
+    })
+    expect(claimRestoredPeers).not.toHaveBeenCalled()
   })
 
   describe('background continuation (BGS4)', () => {

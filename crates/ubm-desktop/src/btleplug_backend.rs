@@ -59,6 +59,7 @@ pub const CLOSE_SCOPE_BOUND: Duration = Duration::from_secs(5);
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
 struct LinuxLeaseClient {
+    authority: Arc<crate::os::linux::Bluez>,
     peripheral: Peripheral,
     owner: String,
     peer: String,
@@ -67,6 +68,9 @@ struct LinuxLeaseClient {
 
 #[cfg(target_os = "linux")]
 impl crate::os::linux_lease::LeaseClient for LinuxLeaseClient {
+    async fn owner_retired(&self) -> Result<bool, DesktopError> {
+        self.authority.lease_owner_retired(&self.owner).await
+    }
     async fn replay_loss(&self, generation: u64, reason: u8) -> Result<(), DesktopError> {
         self.events
             .try_send(RadioEvent::LinuxPhysicalLost {
@@ -3425,6 +3429,26 @@ impl RadioBoundary for BtleplugRadio {
         }
     }
 
+    async fn bonded_peers(&self) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        #[cfg(target_os = "linux")]
+        {
+            self.bluez()?.bonded_peers().await
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.winrt.bonded_peers().await
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "peers.bonded",
+            )
+            .with_detail("CoreBluetooth does not expose an unrestricted bond inventory"))
+        }
+    }
+
     async fn resolve_peer(
         &self,
         peer_id: &str,
@@ -3555,6 +3579,23 @@ impl RadioBoundary for BtleplugRadio {
         Ok(out)
     }
 
+    async fn connect_when_available(&self, peer_id: &str) -> Result<(), DesktopError> {
+        self.validate_peer_identity(peer_id, "connection.connect.when-available")?;
+        #[cfg(target_os = "windows")]
+        self.winrt
+            .wait_available(peer_id, self._os_events_tx.clone())
+            .await?;
+        #[cfg(target_os = "linux")]
+        return Err(DesktopError::new(
+            BleErrorCode::CapabilityUnsupported,
+            BleErrorDomain::Capability,
+            "connection.connect.when-available",
+        )
+        .with_detail("fresh native LE advertisement availability is not implemented"));
+        #[cfg(not(target_os = "linux"))]
+        self.connect(peer_id).await
+    }
+
     async fn connect(&self, peer_id: &str) -> Result<(), DesktopError> {
         #[cfg(target_os = "linux")]
         let owner = self.bluez_owner("connection.connect")?;
@@ -3572,6 +3613,7 @@ impl RadioBoundary for BtleplugRadio {
             .connect(
                 peer_id.to_owned(),
                 LinuxLeaseClient {
+                    authority: self.bluez.as_ref().map(Arc::clone).map_err(Clone::clone)?,
                     peripheral: peripheral.clone(),
                     owner: owner.to_owned(),
                     peer: peer_id.to_owned(),
@@ -3607,6 +3649,11 @@ impl RadioBoundary for BtleplugRadio {
         &self,
         peer_id: &str,
     ) -> Result<crate::boundary::DisconnectObservation, DesktopError> {
+        // A deferred WinRT acquisition owns MaintainConnection before the
+        // btleplug device connects. Disable that request even if btleplug's
+        // subsequent disconnect refuses because it never acquired its device.
+        #[cfg(target_os = "windows")]
+        let maintained = self.winrt.release(peer_id);
         // T-R2: straight to the radio, as legacy went straight to
         // `peripheral.disconnect()` — no pre-disconnect `is_connected()`
         // query (an extra D-Bus read the legacy path never made).
@@ -3626,30 +3673,37 @@ impl RadioBoundary for BtleplugRadio {
         #[cfg(not(target_os = "linux"))]
         let observation = crate::boundary::DisconnectObservation::default();
         #[cfg(not(target_os = "linux"))]
-        let disconnected = self.peripheral_by_id(peer_id).await?.disconnect().await;
-        #[cfg(not(target_os = "linux"))]
-        if let Err(error) = disconnected {
-            // T-R1: a removed device object is not a failure of this
-            // release — it is the answer. BlueZ drops the D-Bus object, so
-            // the object never comes back and every retry would fail
-            // identically; the link reports released. Reported, not
-            // swallowed: the error is still the only account of why the
-            // radio call failed.
-            if disconnect_error_confirms_released(&error) {
-                eprintln!(
-                    "[ubm-desktop] the peer's device object is gone, so it is released \
+        let disconnected = async {
+            let disconnected = self.peripheral_by_id(peer_id).await?.disconnect().await;
+            #[cfg(not(target_os = "linux"))]
+            if let Err(error) = disconnected {
+                // T-R1: a removed device object is not a failure of this
+                // release — it is the answer. BlueZ drops the D-Bus object, so
+                // the object never comes back and every retry would fail
+                // identically; the link reports released. Reported, not
+                // swallowed: the error is still the only account of why the
+                // radio call failed.
+                if disconnect_error_confirms_released(&error) {
+                    eprintln!(
+                        "[ubm-desktop] the peer's device object is gone, so it is released \
                      despite the disconnect erroring: {error}"
-                );
-            } else {
-                return Err(DesktopError::new(
-                    ubm_core::contracts::BleErrorCode::ConnectionLost,
-                    ubm_core::contracts::BleErrorDomain::Connection,
-                    "connection.disconnect",
-                )
-                .with_detail(error.to_string())
-                .with_os(&error));
+                    );
+                } else {
+                    return Err(DesktopError::new(
+                        ubm_core::contracts::BleErrorCode::ConnectionLost,
+                        ubm_core::contracts::BleErrorDomain::Connection,
+                        "connection.disconnect",
+                    )
+                    .with_detail(error.to_string())
+                    .with_os(&error));
+                }
             }
-        }
+            Ok(())
+        };
+        #[cfg(target_os = "windows")]
+        crate::os::winrt_cleanup::release_independent(maintained, disconnected).await?;
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        disconnected.await?;
         #[cfg(target_os = "linux")]
         if let Some(result) =
             self.linux_leases
@@ -4484,7 +4538,11 @@ impl RadioBoundary for BtleplugRadio {
         {
             self.bluez()?.resolve_address(address, address_type).await
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "windows")]
+        {
+            self.winrt.resolve_address(address, address_type).await
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = (address, address_type);
             Err(DesktopError::new(

@@ -27,7 +27,10 @@ import { createReactNativeContinuationRecordings } from './react-native-continua
 import type { ContinuationRecordingController } from './core/continuation-recording'
 import { createReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core-binding'
 import { createReactNativeRustCoreManager } from './backends/reactnative/react-native-rust-core-manager'
-import type { ReactNativeRestorationAuthority } from './backends/reactnative/react-native-rust-core-restoration'
+import {
+  missingRestorationSourceError,
+  type ReactNativeRestorationAuthority
+} from './backends/reactnative/react-native-rust-core-restoration'
 import { hostAndroidApiLevel } from './backends/reactnative/react-native-providers'
 import { rehydratePublicPromise } from './public/error-bridge'
 import type { DiagnosticsOptions } from './public/host-identity'
@@ -212,7 +215,7 @@ export async function createReactNativeManagerHost(
     continuation,
     claimRestoration: () => {
       if (authority === null) {
-        throw contractError('capability.unavailable', 'restoration', 'react-native-manager.restoration.claim')
+        throw missingRestorationSourceError(options.platform, 'react-native-manager.restoration.claim')
       }
       const identity = manager.identity
       return manager.adoptRestoration(

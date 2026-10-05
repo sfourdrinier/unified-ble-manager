@@ -534,45 +534,53 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   // MARK: - Process-owned background continuation
 
   /// Called by the native launch observer independently of TurboModule/JS
-  /// creation. Merely installing UBM must not allocate a central or prompt:
-  /// only an explicitly declared native order opts into this bootstrap.
+  /// creation. A configured restoration identity opts into record-only startup;
+  /// a native standing order additionally opts into autonomous recovery.
+  /// Merely installing UBM without either configuration remains inert.
   public func bootstrapNativeContinuation() -> String? {
-    guard let declaration = Self.continuationDeclaration() else { return nil }
-    switch Self.validatedContinuation(declaration) {
-    case .failure(let error):
-      Self.countMalformedDeclaration(declaration)
-      return Self.failureJson(code: "argument.invalid", domain: "restoration",
-                              operation: "continuation.bootstrap", detail: error.detail)
-    case .success(let valid):
-      guard valid.strategy == "native" else { return nil }
-      #if os(tvOS)
-      return Self.failureJson(code: "capability.unsupported", domain: "restoration",
-                              operation: "continuation.bootstrap", detail: "tvOS does not provide Bluetooth state restoration")
-      #else
-      guard Self.productionRadioConfiguration(bundle: .main).restoreIdentifierKey != nil else {
-        return Self.failureJson(code: "capability.unsupported", domain: "restoration",
-                                operation: "continuation.bootstrap", detail: "native continuation requires a configured restoration identifier")
+    bootstrapNativeContinuation(bundle: .main)
+  }
+
+  @nonobjc
+  func bootstrapNativeContinuation(bundle: Bundle) -> String? {
+    var strategy = "record-only"
+    if let declaration = Self.continuationDeclaration(bundle: bundle) {
+      switch Self.validatedContinuation(declaration) {
+      case .failure(let error):
+        Self.countMalformedDeclaration(declaration)
+        return Self.failureJson(code: "argument.invalid", domain: "restoration",
+                                operation: "continuation.bootstrap", detail: error.detail)
+      case .success(let valid): strategy = valid.strategy
       }
-      if let failure = ensureHost() { return failure }
-      let configuration = Self.productionRadioConfiguration(bundle: .main)
-      let accessorySetup = OwnedCoreBluetoothProtocolRadioSupport.accessorySetupConfigured(info: Bundle.main.infoDictionary ?? [:])
-      if OwnedCoreBluetoothProtocolRadioSupport.shouldCreateStartupCentral(
-        restorationIdentifier: configuration.restoreIdentifierKey, accessorySetup: accessorySetup,
-        restorationLaunchIdentifiers: Self.nativeRestorationLaunchIdentifiers()
-      ) {
-        // A module can install/bind the host before the launch notification
-        // arrives. Recheck the now-known OS launch identity even for that host.
-        let radio = OwnedCoreBluetoothProtocolRadioOwner.acquire(
-          restoreIdentifierKey: configuration.restoreIdentifierKey,
-          showPowerAlert: configuration.showPowerAlert
-        )
-        radio.queue.async { _ = radio.ensureCentral() }
-      } else if accessorySetup {
-        resumeAuthorizedAccessoryStartup(configuration)
-      }
-      return nil
-      #endif
     }
+    let configuration = Self.productionRadioConfiguration(bundle: bundle)
+    guard configuration.restoreIdentifierKey != nil else {
+      if strategy != "native" { return nil }
+      return Self.failureJson(code: "capability.unsupported", domain: "restoration",
+                              operation: "continuation.bootstrap", detail: "native continuation requires a configured restoration identifier")
+    }
+    #if os(tvOS)
+    return Self.failureJson(code: "capability.unsupported", domain: "restoration",
+                            operation: "continuation.bootstrap", detail: "tvOS does not provide Bluetooth state restoration")
+    #else
+    if let failure = ensureHost() { return failure }
+    let accessorySetup = OwnedCoreBluetoothProtocolRadioSupport.accessorySetupConfigured(info: bundle.infoDictionary ?? [:])
+    if OwnedCoreBluetoothProtocolRadioSupport.shouldCreateStartupCentral(
+      restorationIdentifier: configuration.restoreIdentifierKey, accessorySetup: accessorySetup,
+      restorationLaunchIdentifiers: Self.nativeRestorationLaunchIdentifiers()
+    ) {
+      // A module can install/bind the host before the launch notification
+      // arrives. Recheck the now-known OS launch identity even for that host.
+      let radio = OwnedCoreBluetoothProtocolRadioOwner.acquire(
+        restoreIdentifierKey: configuration.restoreIdentifierKey,
+        showPowerAlert: configuration.showPowerAlert
+      )
+      radio.queue.async { _ = radio.ensureCentral() }
+    } else if accessorySetup {
+      resumeAuthorizedAccessoryStartup(configuration)
+    }
+    return nil
+    #endif
   }
 
   private func resumeAuthorizedAccessoryStartup(
@@ -764,9 +772,9 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     } catch { completion(nil, failureJson(error, operation: "continuation.outcome.persist")) }
   }
 
-  private static func continuationDeclaration() -> String? {
+  private static func continuationDeclaration(bundle: Bundle = .main) -> String? {
     UserDefaults.standard.string(forKey: continuationDefaultsKey)
-      ?? Bundle.main.object(forInfoDictionaryKey: "UnifiedBleBackgroundContinuation") as? String
+      ?? bundle.object(forInfoDictionaryKey: "UnifiedBleBackgroundContinuation") as? String
   }
 
   private static func unwrapContinuation(

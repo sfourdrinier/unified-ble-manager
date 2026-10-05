@@ -2,7 +2,65 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## Unreleased
+## [5.0.0-rc.19] - 2026-10-05
+
+### Before upgrading
+
+- Android now includes `armeabi-v7a` alongside `arm64-v8a` and `x86_64`;
+  32-bit application processes need the complete packed native dependency graph.
+  Apple desktop and simulator artifacts remain arm64-only.
+- Linux connection/GATT deployment requires the maintained `5.87-ubm.4`
+  daemon integration and explicit LE-bearer authority. The shipped addon alone
+  does not install, authorize or replace a system daemon.
+- Native bonded inventory is available on Windows/Linux; initial deferred
+  acquisition is available on macOS/Windows. These are not automatic reconnect
+  or a promotion of hardware-evidence labels. Remaining Apple picker, force-quit
+  and physical Apple TV qualification stays explicitly open.
+
+### Corrected
+
+- Bootstrap configured iOS record-only restoration at native launch, without
+  requiring a native reconnect standing order. Preserve AccessorySetupKit
+  authorization gating, serial central ownership and tvOS refusal.
+- Preserve restoration owner error codes and native platform details through
+  Expo. Android without a configured presence source reports
+  `capability.unsupported`; unconfigured Apple remains `capability.unavailable`.
+- Add the current UBM 4.0.28-to-5.x migration guide, expose the expert entrypoint
+  consistently, and remove the stale handwritten Tauri compatibility signature.
+- Align foreground-service notification permissions, Expo/TV permission flows,
+  Tauri delivery-mode guidance and historical document labels with current code.
+- Project Tauri capabilities from the instantiated native authority, preserving
+  limits, reasons and evidence identity while retaining explicit transport
+  restrictions. Correct connected RSSI, Service Changed and maintained-connection
+  reporting rather than duplicating an operating-system capability matrix.
+- Distinguish ordinary OS-managed long writes from caller-controlled prepared
+  transactions, and document actionable Linux authority prerequisite diagnostics
+  without implicit privileged installation or reconnect-time daemon replacement.
+- Add Android ARM32 producer and packaging support for 32-bit application
+  processes, with ELF32 identity/alignment validation and packed TV native-graph
+  checks in existing workflow lanes. TV staging preserves pre-31 scan permissions
+  and omits phone-only foreground-service configuration.
+- Add typed Windows public/random address targeting and Windows/Linux bonded-peer enumeration
+  through the native authority and public Node/Tauri routes, without acquiring a
+  connection during inventory or lookup.
+- Wire native initial deferred acquisition on macOS and Windows with the original
+  cancellation/deadline and scoped ownership. This is not automatic post-loss reconnect;
+  Linux LE-specific deferred availability remains unsupported because the current
+  daemon boundary cannot provide an unambiguous native LE availability observation.
+- Correct the maintained BlueZ ready-callback lifetime bug during failed discovery
+  and disconnection, advancing its explicit daemon producer to `5.87-ubm.4`.
+  Retain the same authority contract, deployment hardening and rollback boundary.
+- Retire daemon-owned Linux lease obligations only after confirmed loss of the pinned unique daemon owner.
+  Do not fabricate a physical-disconnect reason or discard local cleanup failures;
+  live-owner refusals and failed lifetime queries remain owned and retryable.
+  An already-confirmed release returns its retained observation before any new
+  owner-lifetime query; transient bus failures cannot reverse that confirmed fact.
+- Bind desktop bonded-inventory and deferred-acquisition capability receipts to
+  dedicated scenarios that execute those operations, rather than unrelated scan
+  or RSSI scenarios. Keep deterministic inventory proof distinct from radio proof.
+
+These corrections do not promote physical qualification labels or claim a new
+timed Apple picker, force-quit or physical Apple TV receipt.
 
 ## [5.0.0-rc.18] - 2026-10-04
 

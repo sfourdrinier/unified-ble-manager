@@ -12,6 +12,9 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 
 ## Current 5.0 authority
 
+Release work in progress: [rc.19 port-review tracker](review/RC19_PORT_REVIEW.md)
+(Current; corrections and evidence limits, not a platform-support claim).
+
 Use these authorities together, in their respective scopes:
 
 1. **Behavior and architecture:** current public declarations in `src/public/`,
@@ -62,7 +65,8 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 | [`CONNECTION_MANAGER.md`](CONNECTION_MANAGER.md) | Connection ownership, leases, generations, application-owned reconnect policy | Current |
 | [`BONDING.md`](BONDING.md) | Pairing, bonding, encryption, and authentication semantics via `manager.security` | Current |
 | [`BACKGROUND.md`](BACKGROUND.md) | Background execution and the known-peer restoration how-to: Android presence chain, iOS claim, per-platform refusals | Current |
-| [`../MIGRATION_4.0.md`](../MIGRATION_4.0.md) | Side-by-side migration map from `react-native-ble-plx` 3.x to 4.0 | Current |
+| [`../MIGRATION_4.0.28.md`](../MIGRATION_4.0.28.md) | UBM 4.0.28 to 5.x migration, native rebuild and contract changes | Current |
+| [`../MIGRATION_4.0.md`](../MIGRATION_4.0.md) | Non-copyable historical migration map from react-native-ble-plx | Historical |
 
 ## Host guides
 
@@ -110,7 +114,7 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 | [`PLATFORMS.md`](PLATFORMS.md) | Platform support as an evidence index — label definitions, not a static matrix | Current |
 | [`generated/PLATFORM_SUPPORT.md`](generated/PLATFORM_SUPPORT.md) | Platform support evidence projection for the current package version | Generated |
 | [`generated/BACKEND_SDK_REFERENCE.md`](generated/BACKEND_SDK_REFERENCE.md) | Capability states, evidence levels, and required TCK scenario IDs | Generated |
-| [`GAPS.4.0.md`](GAPS.4.0.md) | Platform/CI/evidence inventory — what proof exists per platform | Current |
+| [`GAPS.4.0.md`](GAPS.4.0.md) | Historical 4.0 platform/CI inventory; current support labels live in generated/PLATFORM_SUPPORT.md | Historical |
 | [`PERFORMANCE.md`](PERFORMANCE.md) | Performance and resource verification harness and its evidence limits | Current |
 | [`evidence/react-native-apple-physical-device-readiness.md`](evidence/react-native-apple-physical-device-readiness.md) | What is proven before Apple hardware exists; what a live-radio receipt adds | Current |
 | [`platforms/META_QUEST_4.1_SCOPE.md`](platforms/META_QUEST_4.1_SCOPE.md) | Maintainer decision deferring Meta Quest support to 4.1 | Current |

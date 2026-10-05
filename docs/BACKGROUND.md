@@ -125,11 +125,29 @@ app-owned. Skip one and there is nothing to wake the app:
 
 ### iOS counterpart
 
+`ble.restoration.claim()` preserves owner failures on the public operation
+`expo.restoration.claim`, including the original `platform` details. Android
+without a configured presence source reports `capability.unsupported`, with
+`platform.domain: 'react-native-rust-core'` and
+`platform.code: 'androidRestorationNeedsPresenceWake'`. It does not become
+`capability.unavailable` or the removed `unsupportedRestoration` string.
+Unconfigured Apple restoration remains `capability.unavailable`; callers must
+not collapse malformed input or genuine platform failures into an unsupported case.
+
 The process-owned restoration central is allocated on its serial radio queue,
 including at native launch startup. Permission work and initial CoreBluetooth
 callbacks therefore cannot race its nil/create/assignment sequence. This
 queue-confinement invariant is not physical OS-relaunch qualification; that
 requires the separately retained device procedure below.
+
+A restoration identity configured in the application bundle opts into this
+native launch bootstrap even without a continuation standing order. The default
+is record-only: retain restoration callbacks before JavaScript starts; do not
+invent a reconnect or subscription. ASK applications still wait for actual OS
+accessory authorization on an ordinary launch, while a matching CoreBluetooth
+restoration launch identity admits the original central directly. An application
+without a native restoration identity remains inert, and tvOS reports restoration
+as unsupported.
 
 Configure `background.ios.restoration` (`{ id, generation }` in the Expo
 plugin, or the `restoration` manager option) and rebuild: the system

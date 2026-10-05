@@ -133,6 +133,17 @@ available here (provenance per row).
 | `gatt:service-changed` | windows | os-adapter-provides | os-adapter-compile-verified | `BluetoothLEDevice.GattServicesChanged` on the maintained connection. |
 | `gatt:write-without-response-readiness` | macos | os-adapter-provides | deterministic-only | Vendored btleplug patch 4: `write_readiness` (`canSendWriteWithoutResponse`) and `write_readiness_events` (`peripheralIsReadyToSendWriteWithoutResponse`), the legacy readiness watch. Unsupported in a workspace linking crates.io btleplug: without the patch no readiness signal exists. |
 | `background:desktop-maintain-connection` | windows | os-adapter-provides | process-lifetime-only | `GattSession.MaintainConnection(true)` held per connection, released with it. |
+| `peer:address-targeting` | windows | os-adapter-provides | os-adapter-compile-verified | Typed WinRT lookup validates address and public/random type; the retained type cannot be overwritten by a conflicting identity. Lookup does not establish a link. |
+| `peer:bonded` | windows | os-adapter-provides | os-adapter-compile-verified | Read-only paired Bluetooth LE inventory with current pairing validation, native connection facts, and explicit transient-object close. |
+| `peer:bonded` | linux | os-adapter-provides | os-adapter-compile-verified | Selected-adapter Device1 Paired/Bonded facts from a pinned BlueZ daemon epoch; no scan or link lease. |
+| `connection:when-available` | macos | os-adapter-provides | os-adapter-compile-verified | Initial pending CoreBluetooth connection settled by native callback, bounded only by caller budget/cancellation; no automatic post-loss reconnect. |
+| `connection:when-available` | windows | os-adapter-provides | os-adapter-compile-verified | MaintainConnection before GATT discovery, waiting for native ConnectionStatusChanged with owned callback cleanup; no automatic post-loss reconnect. |
+
+Linux `connection:when-available` remains open: the deployed LE authority has
+no deferred acquisition route, and shared stock discovery signals cannot
+identify an LE advertisement reliably. Peer-presence observations are not an
+LE-availability substitute. Existing direct owner-scoped LE acquisition remains
+available.
 
 Not capability rows, also closed here: adapter power read as a fact on
 Linux (`Adapter1.Powered`; btleplug reports `PoweredOff` when its read

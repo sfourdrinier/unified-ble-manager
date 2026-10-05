@@ -95,11 +95,8 @@ CI owns the broader cross-platform compile/ABI matrix.
 ## Public architecture
 
 The neutral root exports shared public manager and types and **does not choose
-a radio**. Consumers use explicit host entrypoints:
-
-`unified-ble-manager/react-native` · `/web` · `/electron/main` ·
-`/electron/renderer` · `/node/corebluetooth` · `/node/winrt` · `/node/bluez` ·
-`/backend-sdk` · `/testing` · `/codecs` · `/cli`
+a radio**. Consumers use explicit host entrypoints; the complete public list
+lives in [`llms.txt`](llms.txt), including the expert `/advanced` utilities.
 
 Profile exports are documented in `README.md` and
 `docs/PROFILES_AND_COMMANDS.md`.

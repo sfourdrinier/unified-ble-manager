@@ -1176,6 +1176,7 @@ fn gated(policy: AdmissionPolicy, operation: &str) -> bool {
         "scan.start",
         "connection.connect",
         "peers.connected",
+        "peers.bonded",
         "peers.resolve",
         "discovery.complete",
         "gatt.read",
@@ -2051,6 +2052,15 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .lock()
             .await
             .registered_capability_descriptors()
+    }
+
+    /// Read-only system directory facts; never acquires connection ownership.
+    pub async fn bonded_peers(
+        &self,
+        ctl: OpControl,
+    ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        self.directory_query(ctl, "peers.bonded", self.inner.boundary.bonded_peers())
+            .await
     }
 
     /// Read-only system directory facts; never acquires connection ownership.
@@ -3275,6 +3285,26 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         lease: &str,
         ctl: OpControl,
     ) -> Result<ConnectionHandle, DesktopError> {
+        self.connect_intent(peer_id, lease, ctl, false).await
+    }
+
+    /// Native deferred acquisition, over the same lease/compensation authority.
+    pub async fn connect_when_available(
+        &self,
+        peer_id: &str,
+        lease: &str,
+        ctl: OpControl,
+    ) -> Result<ConnectionHandle, DesktopError> {
+        self.connect_intent(peer_id, lease, ctl, true).await
+    }
+
+    async fn connect_intent(
+        &self,
+        peer_id: &str,
+        lease: &str,
+        ctl: OpControl,
+        deferred: bool,
+    ) -> Result<ConnectionHandle, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "connection.connect")?;
         self.inner
@@ -3380,7 +3410,14 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 release_serial,
             },
         );
-        let result = match drive(&ctl.ticket, window, self.inner.boundary.connect(peer_id)).await {
+        let acquisition = async {
+            if deferred {
+                self.inner.boundary.connect_when_available(peer_id).await
+            } else {
+                self.inner.boundary.connect(peer_id).await
+            }
+        };
+        let result = match drive(&ctl.ticket, window, acquisition).await {
             Wait::Done(Ok(())) => {
                 // This fact must survive a caller drop while waiting for
                 // core settlement, including success after shutdown release.
@@ -7593,6 +7630,42 @@ mod adapter_tests {
         assert!(central.shutdown().await.is_released());
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn bonded_directory_reads_native_facts_without_link_ownership_and_honors_budget() {
+        let central = open().await;
+        let peer = crate::boundary::DirectoryPeer {
+            peer_id: "bonded-peer".into(),
+            name: Some("saved sensor".into()),
+            connection: "disconnected",
+        };
+        central
+            .boundary()
+            .set_bonded_directory_peers(vec![peer.clone()]);
+        assert_eq!(
+            central.bonded_peers(OpControl::unbounded()).await.unwrap(),
+            vec![peer]
+        );
+        assert!(central.peer_records().await.is_empty());
+        assert!(
+            !central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "connect" || call == "disconnect")
+        );
+        central.boundary().block_op(FaultOp::PeerDirectory);
+        assert_eq!(
+            central
+                .bonded_peers(OpControl::budget_ms(10))
+                .await
+                .unwrap_err()
+                .code(),
+            ubm_core::contracts::BleErrorCode::OperationTimedOut
+        );
+        central.boundary().unblock_all(FaultOp::PeerDirectory);
+        assert!(central.shutdown().await.is_released());
+    }
+
     #[tokio::test]
     async fn peer_directory_held_lookup_is_retired_by_adapter_reset() {
         let central = open().await;
@@ -7932,6 +8005,35 @@ mod adapter_tests {
         );
         // Late stop stays a safe no-op cleanup, not a second settlement.
         stop_owned_scan(&central).await.expect("late stop");
+    }
+
+    #[tokio::test]
+    async fn deferred_connect_routes_native_and_preserves_timeout_compensation() {
+        let central = open().await;
+        central
+            .boundary()
+            .push_event(advertisement("deferred-peer"));
+        central.boundary().block_op(FaultOp::Connect);
+        let error = central
+            .connect_when_available("deferred-peer", "lease", OpControl::budget_ms(10))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code_str(), "connection.failed");
+        assert_eq!(
+            error.platform().expect("deadline cause").code,
+            "deadline-expired"
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "connect_when_available")
+                .count(),
+            1
+        );
+        central.boundary().unblock_op(FaultOp::Connect);
+        central.shutdown().await;
     }
 
     #[tokio::test]
@@ -11798,15 +11900,15 @@ mod adapter_tests {
                 BleErrorCode::CapabilityUnsupported
             );
         }
-        // ...and a row a narrow OS adapter fills opens only on that OS
-        // (BlueZ address targeting, `os::linux`).
+        // ...and address targeting opens only where a narrow native adapter
+        // supplies it (BlueZ resolution or WinRT typed address lookup).
         let targeting = central
             .with_core(|core| core.check_capability("peer:address-targeting", "desktop.probe"))
             .await;
-        if cfg!(target_os = "linux") {
+        if cfg!(any(target_os = "linux", target_os = "windows")) {
             assert!(
-                targeting.is_ok(),
-                "BlueZ provides address targeting: {targeting:?}"
+                matches!(targeting, Ok(CapabilityAdmission::ProceedWithLimitation)),
+                "the native OS adapter provides limited address targeting: {targeting:?}"
             );
         } else {
             assert_eq!(

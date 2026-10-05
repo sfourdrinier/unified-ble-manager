@@ -96,6 +96,21 @@ pub fn peer_id_for_path(path: &str) -> Option<&str> {
     (parts.next().is_none() && !adapter.is_empty() && device.starts_with("dev_")).then_some(rest)
 }
 
+/// A bonded inventory contains only Device1 objects on the selected adapter
+/// whose current native facts prove a bond. Nested GATT objects are not peers.
+#[must_use]
+pub fn bonded_peer_id<'a>(
+    path: &'a str,
+    adapter_path: &str,
+    paired: Option<bool>,
+    bonded: Option<bool>,
+) -> Option<&'a str> {
+    let id = peer_id_for_path(path)?;
+    (adapter_path_of_peer(id).as_deref() == Some(adapter_path)
+        && bond_state(paired, bonded) == crate::boundary::BondState::Bonded)
+        .then_some(id)
+}
+
 /// The adapter object path a peer id lives under.
 #[must_use]
 pub fn adapter_path_of_peer(peer_id: &str) -> Option<String> {
@@ -316,6 +331,26 @@ pub fn link_mtu(characteristics: &[BluezCharacteristic]) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bonded_inventory_uses_native_bond_and_selected_adapter_identity() {
+        let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
+        assert_eq!(
+            super::bonded_peer_id(path, "/org/bluez/hci0", Some(false), Some(true)),
+            Some("hci0/dev_AA_BB_CC_DD_EE_FF")
+        );
+        assert!(super::bonded_peer_id(path, "/org/bluez/hci1", Some(true), Some(true)).is_none());
+        assert!(super::bonded_peer_id(path, "/org/bluez/hci0", Some(false), Some(false)).is_none());
+        assert!(super::bonded_peer_id(path, "/org/bluez/hci0", None, None).is_none());
+        assert!(
+            super::bonded_peer_id(
+                &format!("{path}/service0001"),
+                "/org/bluez/hci0",
+                Some(true),
+                Some(true)
+            )
+            .is_none()
+        );
+    }
     use std::collections::HashMap;
 
     use super::{

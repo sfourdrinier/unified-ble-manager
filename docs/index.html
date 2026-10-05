@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 5.0.0-rc.18 | Documentation</title>
+    <title>unified-ble-manager 5.0.0-rc.19 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>5.0.0-rc.18</code></div>
+          <div class="mb1"><code>5.0.0-rc.19</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -64,7 +64,7 @@
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
-            <p>This source targets <code>5.0.0-rc.18</code>; verify the published version in the npm registry.</p>
+            <p>This source targets <code>5.0.0-rc.19</code>; verify the published version in the npm registry.</p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -136,7 +136,7 @@
               The 5.0 candidate is on npm <code>next</code>; npm <code>latest</code> remains the stable 4.0 line.
               Install the exact candidate and commit the resolved lockfile for a known native rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.18
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.19
 </code></pre>
             <p>
               Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
@@ -145,10 +145,10 @@
             <h4>Expo / CNG v2</h4>
             <p>
               The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. After the npm
-              registry lists <code>5.0.0-rc.18</code>, install that exact version and keep it in your lockfile while
+              registry lists <code>5.0.0-rc.19</code>, install that exact version and keep it in your lockfile while
               validating the native build:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.18
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.19
 </code></pre>
             <p>The package does not run in Expo Go.</p>
             <p>Expo also needs a native build and development client:</p>
@@ -226,10 +226,14 @@ npx expo run:ios
               <code>-destination 'generic/platform=tvOS Simulator'</code> with the same <code>ARCHS=arm64</code>. This
               restriction belongs to simulator builds, not physical-device signing or Bluetooth permissions.
             </p>
-            <h3>2. Ask Android for runtime permission</h3>
+            <h3>2. Request permission explicitly</h3>
+            <h4>Bare React Native</h4>
             <p>
-              The plugin writes the manifest. Android 12+ still needs a runtime request. The library will not do this
-              for you.
+              The consuming application owns its native permission flow. On Android, manifest declarations do not grant
+              runtime permission; call this helper before scanning or connecting. Android below API 31 also needs the
+              location declaration in the application manifest. The helper is Android-only; it is not an Apple
+              permission request. On Apple, arrange the explicit native Bluetooth authorization flow in your host.
+              Reading <code>adapter.state()</code> does not ask the user for authorization.
             </p>
             <pre><code>import { PermissionsAndroid, Platform } from 'react-native'
 
@@ -255,6 +259,37 @@ async function ensureAndroidBluetoothPermission(): Promise&#x3C;void> {
   }
 }
 </code></pre>
+            <h4>Expo (phone and TV)</h4>
+            <p>
+              The Expo plugin writes native declarations, and the Expo manager exposes an explicit permission request on
+              both Android and Apple hosts. After creating the Expo manager in step 3, inspect readiness, request
+              permission, and wait for the adapter before scan/connect. Reading <code>readiness()</code> or
+              <code>adapter.state()</code> never prompts. Denial must remain visible; follow readiness actions such as
+              opening settings or enabling Bluetooth rather than repeatedly requesting a refused permission.
+            </p>
+            <p>
+              The recipe below is the ordinary global-authorization path, not an AccessorySetupKit (ASK) iOS recipe. In
+              an ASK-configured app with global authorization still <code>notDetermined</code>, the global permission
+              request refuses with <code>capability.unsupported</code> without allocating a central. Keep the
+              user-initiated <code>manager.choose</code> accessory flow available instead; its accessory grant is
+              separate from global Bluetooth permission. Do not retry a global request to obtain an accessory grant. See
+              <a href="EXPO_PLUGIN.md#permissions">ASK authorization</a>.
+            </p>
+            <pre><code>const beforePermission = await manager.readiness()
+// Present beforePermission.actions in your UI; inspecting them does not prompt.
+// Ordinary global authorization only; ASK uses the separate chooser path above.
+const permission = await manager.permissions.request({ purpose: 'scan-and-connect' })
+if (!permission.granted.includes('bluetooth')) {
+  throw new Error('Bluetooth permission was not granted.')
+}
+await manager.adapter.waitUntilReady({ timeoutMs: 15000 })
+</code></pre>
+            <p>
+              TV consumers use the same flow, with the platform-specific declarations and limitations in
+              <a href="TV.md"><code>TV.md</code></a
+              >. An Expo app using the bare React Native factory instead owns the permission flow described above; no
+              Expo surfaces are added to that factory.
+            </p>
             <h3>3. Create one manager and keep it</h3>
             <h4>Bare React Native</h4>
             <pre><code>import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
@@ -317,13 +352,11 @@ if (
 }
 </code></pre>
             <p>
-              Never gate on a bare <code>authorization !== 'granted'</code>. Only an explicit refusal —
-              <code>'denied'</code>, <code>'restricted'</code>, <code>'unavailable'</code> — blocks. The other values
-              are not refusals: <code>'unknown'</code> means the platform exposes no per-application Bluetooth
-              authorization concept, as BlueZ on Linux does, or that the host did not query one;
-              <code>'not-determined'</code> means the user has not been asked yet, and since the prompt is raised by
-              <em>using</em> the radio rather than by reading the state, blocking on it would stop the prompt from ever
-              appearing.
+              Do not treat every value other than <code>granted</code> as a denial. <code>unknown</code> means the
+              platform exposes no per-application Bluetooth authorization concept (as on BlueZ), or the host did not
+              query one. <code>not-determined</code> means the user has not been asked: complete the explicit permission
+              flow in step 2 before radio work. State reads never trigger that prompt; a radio operation may refuse
+              undecided authorization with <code>permission.not-determined</code> instead of asking implicitly.
             </p>
             <p>
               Then run the finite public journey (<code>find</code> → <code>withDiscoveredConnection</code> → GATT read
@@ -396,9 +429,10 @@ try {
             </p>
             <h2>Coming from react-native-ble-plx</h2>
             <p>
-              This is a rewrite. There is no <code>new BleManager()</code> and no Base64 characteristic values. Start
-              with <a href="../MIGRATION_4.0.md"><code>MIGRATION_4.0.md</code></a
-              >.
+              This is a rewrite. There is no <code>new BleManager()</code> and no Base64 characteristic values.
+              <a href="../MIGRATION_4.0.md"><code>MIGRATION_4.0.md</code></a> is historical comparison, not a copyable
+              setup guide. Apps already using UBM should start with
+              <a href="../MIGRATION_4.0.28.md"><code>MIGRATION_4.0.28.md</code></a> and the current host recipes here.
             </p>
             <h2>Maintainers</h2>
             <p>
@@ -968,7 +1002,7 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in this <code>5.0.0-rc.18</code> source. Those options match the schema
+              Use the v2 plugin options in this <code>5.0.0-rc.19</code> source. Those options match the schema
               introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
@@ -976,7 +1010,7 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.18
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.19
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
@@ -1297,7 +1331,7 @@ await manager.background.updateNotification({
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              This source targets <code>5.0.0-rc.18</code>. Main executes the shared Rust core
+              This source targets <code>5.0.0-rc.19</code>. Main executes the shared Rust core
               (<code>DesktopCentral</code>) through one N-API addon. Tagged releases ship it prebuilt for macOS Apple
               Silicon (<code>arm64</code>) and Windows/Linux <code>arm64</code>/<code>x64</code>. The addon is Node-API,
               so one binary serves Node and modern Electron alike.
@@ -1728,8 +1762,8 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
               applies across Android, Apple/CoreBluetooth, BlueZ, Web Bluetooth, and Electron host boundaries.
             </p>
             <p>
-              Meta Quest and the controllable nRF52840 fault-injection controller remain deferred to 4.1. Neither is a
-              4.0 entrypoint or a requirement for the 4.0.0 package/API release.
+              Meta Quest and the controllable nRF52840 fault-injection controller are historical roadmap proposals, not
+              current 5.x entrypoints or release prerequisites.
             </p>
             <h2>Runtime capability truth</h2>
             <p>
@@ -1763,10 +1797,13 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
               redundantly starting a second headless runtime.
             </p>
             <p>
-              On Android 13 and newer, UBM intentionally requires <code>POST_NOTIFICATIONS</code> before acquiring this
-              lease. Android can technically run a foreground service without drawer notification permission, but UBM
-              chooses a stricter user-visible-monitoring policy and fails the acquisition explicitly when the permission
-              is denied.
+              On Android 13 and newer, <code>POST_NOTIFICATIONS</code> is not a prerequisite for acquiring this lease.
+              Android still requires the ongoing service notification; denial changes where the OS displays it, not
+              whether UBM may start the service. The application requests <code>POST_NOTIFICATIONS</code> itself when it
+              needs the monitoring notification visible in the notification drawer. UBM's
+              <code>permissions.request({ purpose: 'scan-and-connect' })</code> does not request it. Acquisition
+              requires <code>BLUETOOTH_CONNECT</code> on API 31+ and the configured connected-device foreground-service
+              declarations; other platform startup refusals remain visible.
             </p>
             <p>
               Apple, Web, BlueZ, WinRT, Electron, Tauri, and deterministic backends do not claim this Android service
@@ -1775,19 +1812,32 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
             </p>
             <h2>Peer directory availability</h2>
             <p>
-              React Native Android is currently the only first-party backend that exposes the system-bonded directory:
-              <code>manager.peers.bonded()</code> enumerates the Android bond table and
-              <code>manager.peers.resolve(reference)</code> rechecks that table before a reconnect. The reference is
-              backend-owned and opaque; the native address never becomes a public durable MAC identity.
-              <code>bonded</code> means paired metadata, not reachable or connected. Apps need Android
+              React Native Android exposes the system-bonded directory: <code>manager.peers.bonded()</code> enumerates
+              the Android bond table and <code>manager.peers.resolve(reference)</code> rechecks that table before a
+              reconnect. The reference is backend-owned and opaque; the native address never becomes a public durable
+              MAC identity. <code>bonded</code> means paired metadata, not reachable or connected. Apps need Android
               <code>BLUETOOTH_CONNECT</code> permission, and a permission failure is surfaced as
               <code>permission.denied</code> rather than an empty result.
             </p>
             <p>
-              The other backends retain their truthful boundaries: Web Bluetooth exposes origin-authorized devices (not
-              bonded devices), while React Native Apple, CoreBluetooth, BlueZ, WinRT, Electron, and Tauri do not
-              advertise Android bonded or queued <code>when-available</code> support without a native primitive that can
-              honour it. Their unsupported peer methods fail with <code>capability.unsupported</code>.
+              Windows and Linux desktop backends also expose system-bonded inventory, using WinRT paired LE devices and
+              the selected BlueZ adapter's current bond table. Electron and Tauri forward the instantiated radio
+              authority's directory answer; they do not infer bonds in the renderer. See
+              <a href="PEERS.md"><code>PEERS.md</code></a> for reference resolution and the distinction between paired
+              metadata and reachability.
+            </p>
+            <p>
+              For desktop connection intent, macOS and Windows support initial <code>when-available</code> acquisition
+              through native pending connection mechanisms, with the original deadline, cancellation and scoped cleanup.
+              This is not automatic post-loss reconnect. Linux LE-specific deferred acquisition remains unsupported by
+              the maintained daemon contract; merged stock discovery signals do not replace that mechanism. See
+              <a href="NODE.md"><code>NODE.md</code></a> for the exact host boundaries.
+            </p>
+            <p>
+              CoreBluetooth does not expose unrestricted system bond inventory. Web Bluetooth exposes origin-authorized
+              devices, not system bonds. React Native Apple retains its own native directory boundary. Unsupported peer
+              categories fail with <code>capability.unsupported</code>; inspect the instantiated backend's typed
+              capabilities rather than inferring support from an operating-system or host name.
             </p>
             <h2>React Native notification bursts</h2>
             <p>
@@ -1876,14 +1926,14 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
             </p>
             <h2>Evidence records</h2>
             <p>
-              <a href="GAPS.4.0.md"><code>GAPS.4.0.md</code></a> inventories current evidence work. The generated
-              support page consumes versioned evidence manifests containing backend identity, protocol versions, package
-              digest where applicable, OS/runtime/hardware, commands, result artifacts, limitations, revalidation rules,
-              and responsible maintainer.
+              <a href="GAPS.4.0.md"><code>GAPS.4.0.md</code></a> is a historical 4.0 inventory, not current
+              implementation or support guidance. The generated support page consumes versioned evidence manifests
+              containing backend identity, protocol versions, package digest where applicable, OS/runtime/hardware,
+              commands, result artifacts, limitations, revalidation rules, and responsible maintainer.
             </p>
             <p>
-              The host guides describe the packed 4.0 contract and its proof boundaries; they do not replace runtime
-              capability or generated evidence inspection:
+              The Current host guides describe the packed 5.x contract and its proof boundaries; they do not replace
+              runtime capability or generated evidence inspection:
             </p>
             <ul>
               <li>
@@ -1902,7 +1952,7 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
                 <a href="NODE.md"><code>NODE.md</code></a>
               </li>
               <li>
-                <a href="TVOS.md"><code>TVOS.md</code></a>
+                <a href="TV.md"><code>TV.md</code></a>
               </li>
             </ul>
             <h2>Related records</h2>

@@ -335,7 +335,15 @@
  		if (err)
 --- a/src/device.c
 +++ b/src/device.c
-@@ -41,6 +41,7 @@
+@@ -15,6 +15,7 @@
+ 
+ #define _GNU_SOURCE
+ #include <stdio.h>
++#include <assert.h>
+ #include <stdlib.h>
+ #include <unistd.h>
+ #include <fcntl.h>
+@@ -41,6 +42,7 @@
  #include "src/shared/queue.h"
  #include "src/shared/gatt-db.h"
  #include "src/shared/gatt-client.h"
@@ -343,7 +351,7 @@
  #include "src/shared/gatt-server.h"
  #include "src/shared/ad.h"
  #include "src/shared/timeout.h"
-@@ -52,6 +53,7 @@
+@@ -52,6 +54,7 @@
  #include "gatt-database.h"
  #include "attrib/gattrib.h"
  #include "device.h"
@@ -351,7 +359,7 @@
  #include "gatt-client.h"
  #include "profile.h"
  #include "service.h"
-@@ -273,6 +275,10 @@
+@@ -273,6 +276,10 @@
  	struct bt_gatt_client *client;		/* GATT client instance */
  	struct bt_gatt_server *server;		/* GATT server instance */
  	unsigned int gatt_ready_id;
@@ -362,7 +370,7 @@
  
  	struct btd_gatt_client *client_dbus;
  
-@@ -306,8 +312,173 @@
+@@ -306,8 +313,200 @@
  
  	uint32_t	auth_failures;
  	guint		auth_retry_id;
@@ -400,6 +408,7 @@
 +	ubm_le_physical_lost(device, generation);
 +}
 +struct ubm_client_watch {
++	unsigned int refs;
 +	struct btd_device *device;
 +	struct bt_gatt_client *client;
 +	uint64_t attachment;
@@ -504,9 +513,35 @@
 +	{ }
 +};
  
++static struct ubm_client_watch *ubm_watch_ref(struct ubm_client_watch *watch)
++{
++	assert(watch && watch->refs > 0 && watch->refs < UINT_MAX);
++	watch->refs++;
++	return watch;
++}
++
++static void ubm_watch_unref(void *data)
++{
++	struct ubm_client_watch *watch = data;
++	assert(watch && watch->refs > 0);
++	if (!--watch->refs)
++		g_free(watch);
++}
++
++static void ubm_watch_retire(struct btd_device *device)
++{
++	struct ubm_client_watch *watch = device->ubm_watch;
++	if (!watch)
++		return;
++	device->ubm_watch = NULL;
++	watch->device = NULL;
++	watch->client = NULL;
++	ubm_watch_unref(watch);
++}
++
 +static bool ubm_watch_current(struct ubm_client_watch *watch)
 +{
-+	return watch && watch->device->ubm_watch == watch &&
++	return watch && watch->device && watch->device->ubm_watch == watch &&
 +		watch->device->client == watch->client &&
 +		!watch->device->ubm_gatt.retired &&
 +		watch->device->ubm_gatt.attachment == watch->attachment;
@@ -536,28 +571,20 @@
  static const uint16_t uuid_list[] = {
  	L2CAP_UUID,
  	PNP_INFO_SVCLASS_ID,
-@@ -815,6 +986,11 @@
+@@ -815,6 +1014,12 @@
  
  static void gatt_client_cleanup(struct btd_device *device)
  {
 +	if (device->ubm_watch) {
 +		bt_gatt_client_set_ubm_discovery_observer(device->client, NULL, NULL);
 +	}
++	ubm_watch_retire(device);
 +	ubm_gatt_begin(&device->ubm_gatt);
 +	ubm_emit(device);
  	if (!device->client)
  		return;
  
-@@ -826,6 +1002,8 @@
- 						device->gatt_ready_id);
- 		device->gatt_ready_id = 0;
- 	}
-+	g_free(device->ubm_watch);
-+	device->ubm_watch = NULL;
- 
- 	bt_gatt_client_unref(device->client);
- 	device->client = NULL;
-@@ -845,6 +1023,8 @@
+@@ -845,6 +1050,8 @@
  
  static void attio_cleanup(struct btd_device *device)
  {
@@ -566,7 +593,7 @@
  	if (device->att_disconn_id)
  		bt_att_unregister_disconnect(device->att,
  							device->att_disconn_id);
-@@ -901,6 +1081,11 @@
+@@ -901,6 +1108,11 @@
  static void device_free(gpointer user_data)
  {
  	struct btd_device *device = user_data;
@@ -578,7 +605,7 @@
  
  	btd_gatt_client_destroy(device->client_dbus);
  	device->client_dbus = NULL;
-@@ -2297,6 +2482,8 @@
+@@ -2297,6 +2509,8 @@
  		return;
  
  	/* Enabling auto connect */
@@ -587,7 +614,7 @@
  	adapter_auto_connect_add(device->adapter, device);
  
  	if (device->attrib) {
-@@ -2850,6 +3037,8 @@
+@@ -2850,6 +3064,8 @@
  
  	if (bdaddr_type != BDADDR_BREDR) {
  		int err;
@@ -596,7 +623,7 @@
  
  		if (dev->connect)
  			return btd_error_in_progress(msg);
-@@ -2864,7 +3053,7 @@
+@@ -2864,7 +3080,7 @@
  			device_set_auto_connect(dev, TRUE);
  		}
  
@@ -605,7 +632,7 @@
  		if (err < 0)
  			return btd_error_failed(msg, strerror(-err));
  
-@@ -3352,6 +3541,8 @@
+@@ -3352,6 +3568,8 @@
  	struct bonding_req *bonding;
  	enum mgmt_io_capability io_cap;
  	int err;
@@ -614,7 +641,7 @@
  
  	btd_device_set_temporary(device, false);
  
-@@ -3831,6 +4022,9 @@
+@@ -3831,6 +4049,9 @@
  		btd_bearer_connected(dev->bredr, 0);
  	} else {
  		device_set_le_support(dev, bdaddr_type);
@@ -624,7 +651,7 @@
  		btd_bearer_connected(dev->le, 0);
  	}
  
-@@ -3943,6 +4137,11 @@
+@@ -3943,6 +4164,11 @@
  {
  	struct bearer_state *state = get_state(device, bdaddr_type);
  	DBusMessage *reply;
@@ -636,7 +663,7 @@
  	bool remove_device = false;
  	bool paired_status_updated = false;
  
-@@ -3950,6 +4149,10 @@
+@@ -3950,6 +4176,10 @@
  		return;
  
  	state->connected = false;
@@ -647,7 +674,7 @@
  	state->initiator = false;
  	device->general_connect = FALSE;
  
-@@ -5009,6 +5212,11 @@
+@@ -5009,6 +5239,11 @@
  	}
  
  	device->adapter = adapter;
@@ -659,7 +686,7 @@
  	device->sirks = queue_new();
  	device->temporary = true;
  
-@@ -6202,6 +6410,8 @@
+@@ -6202,6 +6437,8 @@
  static void att_disconnected_cb(int err, void *user_data)
  {
  	struct btd_device *device = user_data;
@@ -668,7 +695,7 @@
  
  	DBG("");
  
-@@ -6263,11 +6473,17 @@
+@@ -6263,11 +6500,17 @@
  static void gatt_client_ready_cb(bool success, uint8_t att_ecode,
  								void *user_data)
  {
@@ -687,7 +714,7 @@
  		device_svc_resolved(device, BROWSE_GATT, device->bdaddr_type,
  									-EIO);
  		return;
-@@ -6276,6 +6492,10 @@
+@@ -6276,6 +6519,10 @@
  	register_gatt_services(device);
  
  	btd_gatt_client_ready(device->client_dbus);
@@ -698,7 +725,7 @@
  
  	device_svc_resolved(device, BROWSE_GATT, device->bdaddr_type, 0);
  
-@@ -6298,22 +6518,47 @@
+@@ -6298,22 +6545,47 @@
  	DBG_IDX(0xffff, "%s", str);
  }
  
@@ -753,7 +780,7 @@
  	features =  BT_GATT_CHRC_CLI_FEAT_ROBUST_CACHING
  				| BT_GATT_CHRC_CLI_FEAT_NFY_MULTI;
  	if (btd_opts.gatt_channels > 1)
-@@ -6324,15 +6569,28 @@
+@@ -6324,15 +6596,29 @@
  		bt_att_set_security(device->att, BT_ATT_SECURITY_MEDIUM);
  	}
  
@@ -775,6 +802,7 @@
  	bt_gatt_client_set_debug(device->client, gatt_debug, NULL, NULL);
  	g_attrib_attach_client(device->attrib, device->client);
 +	device->ubm_watch = g_new0(struct ubm_client_watch, 1);
++	device->ubm_watch->refs = 1;
 +	device->ubm_watch->device = device;
 +	device->ubm_watch->client = device->client;
 +	device->ubm_watch->attachment = device->ubm_gatt.attachment;
@@ -783,20 +811,22 @@
  
  	/*
  	 * If we have cache, notify existing service about the new connection
-@@ -6343,10 +6601,11 @@
+@@ -6343,10 +6629,13 @@
  
  	device->gatt_ready_id = bt_gatt_client_ready_register(device->client,
  							gatt_client_ready_cb,
 -							device, NULL);
-+							device->ubm_watch, NULL);
++							ubm_watch_ref(device->ubm_watch),
++							ubm_watch_unref);
  	if (!device->gatt_ready_id) {
++		ubm_watch_unref(device->ubm_watch);
  		DBG("Failed to register GATT ready callback");
  		gatt_client_cleanup(device);
 +		ubm_gatt_registration_failed(device);
  		return;
  	}
  
-@@ -6355,6 +6614,7 @@
+@@ -6355,6 +6644,7 @@
  						device, NULL)) {
  		DBG("Failed to set service changed handler");
  		gatt_client_cleanup(device);
@@ -804,7 +834,7 @@
  		return;
  	}
  
-@@ -6433,6 +6693,7 @@
+@@ -6433,6 +6723,7 @@
  	BtIOSecLevel sec_level;
  	uint16_t mtu;
  	uint16_t cid;
@@ -812,7 +842,7 @@
  	struct btd_gatt_database *database;
  	const bdaddr_t *dst;
  	char dstaddr[18];
-@@ -6440,6 +6701,7 @@
+@@ -6440,6 +6731,7 @@
  	bt_io_get(io, &gerr, BT_IO_OPT_SEC_LEVEL, &sec_level,
  						BT_IO_OPT_IMTU, &mtu,
  						BT_IO_OPT_CID, &cid,
@@ -820,7 +850,7 @@
  						BT_IO_OPT_INVALID);
  
  	if (gerr) {
-@@ -6455,6 +6717,8 @@
+@@ -6455,6 +6747,8 @@
  		}
  
  		if (!bt_att_attach_fd(dev->att, g_io_channel_unix_get_fd(io))) {
@@ -829,7 +859,7 @@
  			DBG("EATT channel connected");
  			g_io_channel_set_close_on_unref(io, FALSE);
  			return true;
-@@ -6488,6 +6752,7 @@
+@@ -6488,6 +6782,7 @@
  
  	dev->attrib = attrib;
  	dev->att = g_attrib_get_att(attrib);
@@ -837,7 +867,7 @@
  
  	bt_att_ref(dev->att);
  
-@@ -6612,6 +6877,8 @@
+@@ -6612,6 +6907,8 @@
  	GIOChannel *io;
  	GError *gerr = NULL;
  	char addr[18];
@@ -1607,7 +1637,21 @@
  
  #include <assert.h>
  #include <limits.h>
-@@ -59,6 +60,9 @@
+@@ -34,6 +35,7 @@
+ 		__func__, ## arg)
+ 
+ struct ready_cb {
++	unsigned int id;
+ 	bt_gatt_client_callback_t callback;
+ 	bt_gatt_client_destroy_func_t destroy;
+ 	void *data;
+@@ -54,11 +56,15 @@
+ 	struct queue *clones;
+ 
+ 	struct queue *ready_cbs;
++	unsigned int last_ready_id;
+ 	struct queue *idle_cbs;
+ 
  	bt_gatt_client_service_changed_callback_t svc_chngd_callback;
  	bt_gatt_client_destroy_func_t svc_chngd_destroy;
  	void *svc_chngd_data;
@@ -1617,7 +1661,7 @@
  
  	bt_gatt_client_debug_func_t debug_callback;
  	bt_gatt_client_destroy_func_t debug_destroy;
-@@ -112,6 +116,42 @@
+@@ -112,6 +118,42 @@
  	uint16_t pending_error_handle;
  };
  
@@ -1660,7 +1704,34 @@
  struct request {
  	struct bt_gatt_client *client;
  	bool long_write;
-@@ -1645,7 +1685,8 @@
+@@ -1371,6 +1413,7 @@
+ 							uint8_t att_ecode)
+ {
+ 	const struct queue_entry *entry;
++	struct ready_cb *ready;
+ 
+ 	client = bt_gatt_client_ref_safe(client);
+ 	if (!client)
+@@ -1384,14 +1427,12 @@
+ 	if (client->parent)
+ 		client->features = client->parent->features;
+ 
+-	for (entry = queue_get_entries(client->ready_cbs); entry;
+-							entry = entry->next) {
+-		struct ready_cb *ready = entry->data;
+-
++	/* Retire the queue entry before calling application/device code. A
++	 * reentrant cleanup cannot destroy its currently executing user data. */
++	while ((ready = queue_pop_head(client->ready_cbs))) {
+ 		ready->callback(success, att_ecode, ready->data);
++		ready_destroy(ready);
+ 	}
+-
+-	queue_remove_all(client->ready_cbs, NULL, NULL, ready_destroy);
+ 
+ 	/* Notify clones */
+ 	for (entry = queue_get_entries(client->clones); entry;
+@@ -1645,7 +1686,8 @@
  
  static void process_service_changed(struct bt_gatt_client *client,
  							uint16_t start_handle,
@@ -1670,7 +1741,7 @@
  static void service_changed_cb(uint16_t value_handle, const uint8_t *value,
  					uint16_t length, void *user_data);
  
-@@ -1913,10 +1954,11 @@
+@@ -1913,10 +1955,11 @@
  	}
  
  	/* Process any queued events */
@@ -1683,7 +1754,7 @@
  		free(next_sc_op);
  		return;
  	}
-@@ -1937,9 +1979,12 @@
+@@ -1937,9 +1980,12 @@
  
  static void process_service_changed(struct bt_gatt_client *client,
  							uint16_t start_handle,
@@ -1697,7 +1768,7 @@
  
  	op = discovery_op_create(client, start_handle, end_handle,
  						service_changed_complete,
-@@ -1960,6 +2005,13 @@
+@@ -1960,6 +2006,13 @@
  	discovery_op_free(op);
  
  fail:
@@ -1711,7 +1782,7 @@
  	DBG(client,
  		"Failed to initiate service discovery after Service Changed");
  }
-@@ -1987,9 +2039,11 @@
+@@ -1987,9 +2040,11 @@
  			start, end);
  
  	if (!client->in_svc_chngd) {
@@ -1724,7 +1795,7 @@
  
  	op = new0(struct service_changed_op, 1);
  
-@@ -2386,11 +2440,13 @@
+@@ -2386,11 +2441,13 @@
  			DBG(client, "Error handle is in range of svc chngd");
  			bt_att_cancel(client->att, att_id);
  		}
@@ -1738,7 +1809,7 @@
  		return;
  	}
  
-@@ -2428,7 +2484,8 @@
+@@ -2428,7 +2485,8 @@
  		/* Hashes match - safe to retry */
  		DBG(client, "DB Hash matches, approving retry");
  		bt_att_resend(client->att, att_id, 0, NULL, 0,
@@ -1748,7 +1819,7 @@
  		return;
  	}
  
-@@ -2439,7 +2496,9 @@
+@@ -2439,7 +2497,9 @@
  	bt_att_cancel(client->att, att_id);
  
  	if (!client->in_svc_chngd)
@@ -1759,7 +1830,7 @@
  }
  
  static void gatt_client_db_sync_cb(const struct bt_att_pdu_error_rsp *error,
-@@ -2475,6 +2534,7 @@
+@@ -2475,6 +2535,7 @@
  
  	/* Store the att_id for later use */
  	client->pending_retry_att_id = att_id;
@@ -1767,7 +1838,7 @@
  
  	/* Read remote DB Hash to compare */
  	bt_uuid16_create(&uuid, GATT_CHARAC_DB_HASH);
-@@ -2485,6 +2545,7 @@
+@@ -2485,6 +2546,7 @@
  		client->pending_retry_att_id = 0;
  		client->pending_error_handle = 0;
  		bt_att_cancel(client->att, att_id);
@@ -1775,7 +1846,7 @@
  	}
  }
  
-@@ -2559,6 +2620,16 @@
+@@ -2559,6 +2621,16 @@
  	}
  
  	return bt_gatt_client_ref(client);
@@ -1792,6 +1863,53 @@
  }
  
  struct bt_gatt_client *bt_gatt_client_clone(struct bt_gatt_client *client)
+@@ -2617,25 +2689,41 @@
+ {
+ 	struct ready_cb *ready;
+ 
+-	if (!client)
++	if (!client || !callback || client->last_ready_id == UINT_MAX)
+ 		return 0;
+ 
+ 	ready = new0(struct ready_cb, 1);
++	if (!ready)
++		return 0;
++	ready->id = ++client->last_ready_id;
+ 	ready->callback = callback;
+ 	ready->destroy = destroy;
+ 	ready->data = user_data;
+ 
+-	queue_push_tail(client->ready_cbs, ready);
++	if (!queue_push_tail(client->ready_cbs, ready)) {
++		free(ready);
++		return 0;
++	}
+ 
+-	return PTR_TO_UINT(ready);
++	return ready->id;
++}
++
++static bool ready_matches_id(const void *data, const void *match_data)
++{
++	const struct ready_cb *ready = data;
++	return ready->id == PTR_TO_UINT(match_data);
+ }
+ 
+ bool bt_gatt_client_ready_unregister(struct bt_gatt_client *client,
+ 						unsigned int id)
+ {
+-	struct ready_cb *ready = UINT_TO_PTR(id);
++	struct ready_cb *ready;
++	if (!client || !id)
++		return false;
++	ready = queue_remove_if(client->ready_cbs, ready_matches_id,
++						UINT_TO_PTR(id));
+ 
+-	if (queue_remove(client->ready_cbs, ready)) {
++	if (ready) {
+ 		ready_destroy(ready);
+ 		return true;
+ 	}
 --- a/src/shared/gatt-client.h
 +++ b/src/shared/gatt-client.h
 @@ -46,6 +46,19 @@
@@ -3577,7 +3695,7 @@
 +}
 --- a/unit/test-ubm-device.c
 +++ b/unit/test-ubm-device.c
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,185 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/* Actual private method table/handler on a private D-Bus session only. */
 +#include "src/device.c"
@@ -3644,6 +3762,19 @@
 +	DBusError error = DBUS_ERROR_INIT;
 +	struct btd_device device = { 0 };
 +	struct btd_device replacement = { 0 };
++	/* A ready-registration owns the retired watch until its callback is
++	 * destroyed, even if unregister cannot remove the registration. */
++	struct ubm_client_watch *held = g_new0(struct ubm_client_watch, 1);
++	held->refs = 1;
++	held->device = &replacement;
++	replacement.ubm_watch = held;
++	ubm_watch_ref(held);
++	ubm_watch_retire(&replacement);
++	assert(!replacement.ubm_watch && held->refs == 1);
++	assert(!ubm_watch_current(held));
++	ubm_discovery_observed(false, false, EIO, 0, held);
++	assert(!held->device);
++	ubm_watch_unref(held);
 +	struct ubm_client_watch old_watch = { .device = &device };
 +	struct ubm_client_watch watch = { .device = &device, .attachment = 1,
 +							.initial_ready = true };
@@ -4387,7 +4518,7 @@
 +}
 --- a/unit/test-ubm-refresh.c
 +++ b/unit/test-ubm-refresh.c
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,336 @@
 +// SPDX-License-Identifier: LGPL-2.1-or-later
 +/* Production invalidation/completion paths with no ATT socket or radio. */
 +#include "src/shared/gatt-client.c"
@@ -4564,8 +4695,91 @@
 +	observed->error = error;
 +}
 +
++static void ready_count(bool success, uint8_t error, void *data)
++{
++	unsigned int *count = data;
++	(void) success;
++	(void) error;
++	(*count)++;
++}
++static void ready_removed(void *data)
++{
++	unsigned int *count = data;
++	(*count) += 10;
++}
++static void ready_registration_lifetime(void)
++{
++	struct bt_gatt_client client = { .ref_count = 1 };
++	unsigned int removed = 0, retained = 0;
++	client.ready_cbs = queue_new();
++	client.clones = queue_new();
++	unsigned int a = bt_gatt_client_ready_register(&client, ready_count,
++						&removed, ready_removed);
++	unsigned int b = bt_gatt_client_ready_register(&client, ready_count,
++						&retained, ready_removed);
++	assert(a && b && a != b);
++	assert(!bt_gatt_client_ready_unregister(&client, 0));
++	/* On 64-bit hosts these actual heap entries live above UINT_MAX. */
++	assert(bt_gatt_client_ready_unregister(&client, a));
++	assert(removed == 10);
++	assert(!bt_gatt_client_ready_unregister(&client, a));
++	notify_client_ready(&client, false, 0);
++	assert(removed == 10 && retained == 11);
++	client.ready = true;
++	unsigned int cached = 0;
++	unsigned int cached_id = bt_gatt_client_ready_register(&client,
++					ready_count, &cached, ready_removed);
++	/* Registration is queued, not a synchronous callback even when ready. */
++	assert(cached_id && cached == 0);
++	assert(bt_gatt_client_ready_unregister(&client, cached_id));
++	assert(cached == 10);
++	client.last_ready_id = UINT_MAX;
++	assert(!bt_gatt_client_ready_register(&client, ready_count,
++						&retained, ready_removed));
++	assert(retained == 11);
++	queue_destroy(client.ready_cbs, ready_destroy);
++	queue_destroy(client.clones, NULL);
++}
++struct reentrant_ready {
++	struct bt_gatt_client *client;
++	unsigned int id;
++	bool in_callback, destroyed;
++};
++static void ready_reentrant_destroy(void *data)
++{
++	struct reentrant_ready *ready = data;
++	assert(!ready->in_callback);
++	ready->destroyed = true;
++}
++static void ready_reentrant(bool success, uint8_t error, void *data)
++{
++	struct reentrant_ready *ready = data;
++	(void) success;
++	(void) error;
++	ready->in_callback = true;
++	/* Cleanup can unregister the current ready callback synchronously. */
++	bt_gatt_client_ready_unregister(ready->client, ready->id);
++	assert(!ready->destroyed);
++	ready->in_callback = false;
++}
++static void ready_reentrant_retirement(void)
++{
++	struct bt_gatt_client client = { .ref_count = 1 };
++	struct reentrant_ready ready = { .client = &client };
++	client.ready_cbs = queue_new();
++	client.clones = queue_new();
++	ready.id = bt_gatt_client_ready_register(&client, ready_reentrant,
++					&ready, ready_reentrant_destroy);
++	assert(ready.id);
++	notify_client_ready(&client, false, 0);
++	assert(ready.destroyed);
++	queue_destroy(client.ready_cbs, ready_destroy);
++	queue_destroy(client.clones, NULL);
++}
 +int main(void)
 +{
++	ready_registration_lifetime();
++	ready_reentrant_retirement();
 +	struct bt_gatt_client client = { 0 };
 +	struct observed observed = { 0 };
 +	struct discovery_op operation = { .client = &client, .start = 1, .end = 9 };

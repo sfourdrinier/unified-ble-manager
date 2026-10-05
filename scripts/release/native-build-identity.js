@@ -76,6 +76,7 @@ const APPLE_TARGETS = Object.freeze([
 ])
 
 const ANDROID_DECLARED_ABIS = Object.freeze([
+  Object.freeze({ abi: 'armeabi-v7a', target: 'armv7-linux-androideabi' }),
   Object.freeze({ abi: 'arm64-v8a', target: 'aarch64-linux-android' }),
   Object.freeze({ abi: 'x86_64', target: 'x86_64-linux-android' })
 ])

@@ -203,6 +203,11 @@ cmd_stage() {
     if (!app.expo.plugins.includes("@react-native-tvos/config-tv")) {
       app.expo.plugins.push("@react-native-tvos/config-tv");
     }
+    const ubm = app.expo.plugins.find(plugin => Array.isArray(plugin) && plugin[0] === "unified-ble-manager");
+    if (!ubm) throw new Error("TV reference app requires the UBM plugin configuration");
+    // Keep pre-31 scan permission declarations; TV does not borrow phone
+    // connected-device foreground service merely to scan in the foreground.
+    ubm[1].background.android = { mode: "none" };
     fs.writeFileSync(appPath, JSON.stringify(app, null, 2) + "\n");
   ' "${STAGE}" "${ROOT}" "${TVOS_ALIAS}" "${CONFIG_TV_VERSION}"
 
@@ -303,6 +308,17 @@ cmd_prebuild() {
   export CP_CACHE_DIR="${CP_HOME_DIR}/cache"
   mkdir -p "${CP_HOME_DIR}"
   (cd "${STAGE}/ios" && RCT_TESTONLY_RNCORE_TARBALL_PATH="${tarball_path}" pod install)
+}
+
+# Android TV uses the same staged Expo/RN-TV graph, but no Apple tooling.
+cmd_prebuild_android() {
+  (cd "${STAGE}" && EXPO_TV=1 npx expo prebuild --platform android --clean --no-install)
+}
+
+cmd_build_android() {
+  cmd_verify_identity
+  (cd "${STAGE}/android" && ./gradlew :app:assembleDebug --no-daemon --console=plain \
+    -PreactNativeArchitectures=armeabi-v7a)
 }
 
 cmd_bundle_url() {
@@ -432,6 +448,8 @@ case "${1:-all}" in
   install) cmd_install ;;
   verify-identity) cmd_verify_identity ;;
   prebuild) cmd_prebuild ;;
+  prebuild-android) cmd_prebuild_android ;;
+  build-android) cmd_build_android ;;
   bundle-url) cmd_bundle_url ;;
   build) cmd_build ;;
   build-simulator) cmd_build_target 'generic/platform=tvOS Simulator' tv-simulator ;;
@@ -440,5 +458,5 @@ case "${1:-all}" in
   install-tv) cmd_install_tv ;;
   launch-tv) cmd_launch_tv ;;
   all) cmd_stage; cmd_install; cmd_verify_identity; cmd_prebuild; cmd_bundle_url; cmd_build ;;
-  *) echo "usage: $0 [stage|install|verify-identity|prebuild|bundle-url|build|build-simulator|build-target|metro|install-tv|launch-tv|all]" >&2; exit 1 ;;
+  *) echo "usage: $0 [stage|install|verify-identity|prebuild|prebuild-android|build-android|bundle-url|build|build-simulator|build-target|metro|install-tv|launch-tv|all]" >&2; exit 1 ;;
 esac

@@ -1182,6 +1182,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
             ),
           resolve: (peerId, options) =>
             this.runPeerQuery('peers.resolve', options, control => this.central.resolvePeer({ peerId, ...control })),
+          bonded: options => this.runPeerQuery('peers.bonded', options, control => this.central.bondedPeers(control)),
+          resolveFromBonded: !this.wiring.peerKnown && this.wiring.peerBonded,
           peerId: nativeId => this.peerIdForNativeId(nativeId),
           assertUsable: (operation, options) => this.assertPeerQueryUsable(operation, options)
         })
@@ -3436,7 +3438,11 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     // The core connects directly over LE: intents, transports and PHY
     // selections it cannot express fail closed before any dispatch.
     // F5: the when-available intent keeps its legacy operation id.
-    if (options.intent !== undefined && options.intent !== 'direct') {
+    if (
+      options.intent !== undefined &&
+      options.intent !== 'direct' &&
+      !(options.intent === 'when-available' && this.wiring.whenAvailable)
+    ) {
       throw contractError(
         'capability.unsupported',
         'connection',
@@ -3463,7 +3469,10 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const lease = `${this.profile.platform}-core-lease-${ordinal}`
     const correlation = String(this.mintedCorrelation())
     const connected = await this.withTicket(correlation, options.signal, operation, ticket => {
-      const acquisition = this.central.connect({ peerId: nativePeerId, lease, ticket, ...this.budget(options) })
+      const acquisition =
+        options.intent === 'when-available'
+          ? this.central.connectWhenAvailable({ peerId: nativePeerId, lease, ticket, ...this.budget(options) })
+          : this.central.connect({ peerId: nativePeerId, lease, ticket, ...this.budget(options) })
       this.pendingAcquisitions.set(nativePeerId, {
         ticket,
         settled: acquisition.then(
@@ -4893,8 +4902,12 @@ const CORE_BACKED_FEATURES = Object.freeze({
 /** Which core-backed capabilities this backend wires: the core must implement them on the OS. */
 export interface DesktopRustCoreWiring {
   readonly connectionDirect: boolean
+  readonly whenAvailable: boolean
   readonly connectionRefusals: readonly DesktopRustCoreCapabilityState[]
   readonly peerDirectory: boolean
+  readonly peerKnown: boolean
+  readonly peerSystemConnected: boolean
+  readonly peerBonded: boolean
   readonly rssi: boolean
   readonly effectiveMtu: boolean
   readonly maximumWriteLength: boolean
@@ -4914,6 +4927,7 @@ export function desktopRustCoreWiring(states: readonly DesktopRustCoreCapability
   const usable = new Set(states.filter(row => row.state === 'supported' || row.state === 'limited').map(row => row.id))
   return Object.freeze({
     connectionDirect: usable.has(BUILT_IN_FEATURE_IDS.connectionDirect),
+    whenAvailable: usable.has(BUILT_IN_FEATURE_IDS.connectionWhenAvailable),
     connectionRefusals: Object.freeze(
       states.filter(
         row =>
@@ -4922,7 +4936,12 @@ export function desktopRustCoreWiring(states: readonly DesktopRustCoreCapability
             row.id === BUILT_IN_FEATURE_IDS.backgroundDesktopMaintainConnection)
       )
     ),
-    peerDirectory: usable.has(BUILT_IN_FEATURE_IDS.peerKnown) && usable.has(BUILT_IN_FEATURE_IDS.peerSystemConnected),
+    peerDirectory:
+      usable.has(BUILT_IN_FEATURE_IDS.peerBonded) ||
+      (usable.has(BUILT_IN_FEATURE_IDS.peerKnown) && usable.has(BUILT_IN_FEATURE_IDS.peerSystemConnected)),
+    peerKnown: usable.has(BUILT_IN_FEATURE_IDS.peerKnown),
+    peerSystemConnected: usable.has(BUILT_IN_FEATURE_IDS.peerSystemConnected),
+    peerBonded: usable.has(BUILT_IN_FEATURE_IDS.peerBonded),
     rssi: usable.has(CORE_BACKED_FEATURES.rssi),
     effectiveMtu: usable.has(CORE_BACKED_FEATURES.effectiveMtu),
     maximumWriteLength: usable.has(CORE_BACKED_FEATURES.maximumWriteLength),
@@ -5002,7 +5021,7 @@ export function createDesktopRustCoreFeatureRegistry(
   if (wiring.connectionRefusals.some(row => row.id === BUILT_IN_FEATURE_IDS.backgroundDesktopMaintainConnection)) {
     registrations.push(refused(BUILT_IN_FEATURE_IDS.backgroundDesktopMaintainConnection))
   }
-  if (wiring.peerDirectory) {
+  if (wiring.peerKnown) {
     registrations.push(
       createBackendOperationCapabilityRegistration({
         id: BUILT_IN_FEATURE_IDS.peerKnown,
@@ -5018,7 +5037,11 @@ export function createDesktopRustCoreFeatureRegistry(
             affectedGuarantee: 'unfiltered OS-known enumeration'
           }
         ]
-      }),
+      })
+    )
+  }
+  if (wiring.peerSystemConnected) {
+    registrations.push(
       createBackendOperationCapabilityRegistration({
         id: BUILT_IN_FEATURE_IDS.peerSystemConnected,
         implementationVersion: DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION,
@@ -5036,6 +5059,11 @@ export function createDesktopRustCoreFeatureRegistry(
       })
     )
   }
+  if (wiring.peerBonded) registrations.push(registration(BUILT_IN_FEATURE_IDS.peerBonded, 'tck.feature.peer.bonded'))
+  if (wiring.whenAvailable)
+    registrations.push(
+      registration(BUILT_IN_FEATURE_IDS.connectionWhenAvailable, 'tck.feature.connection.when-available')
+    )
   // F7: RSSI reports integer dBm precision, as the legacy registry did.
   if (wiring.rssi) {
     registrations.push(
@@ -5113,6 +5141,8 @@ export function createDesktopRustCoreFeatureRegistry(
 
 /** The scenario a desktop capability row's TCK suite runs to prove it. */
 function desktopRustCoreSuiteScenarios(suiteId: string): readonly string[] {
+  if (suiteId === 'tck.feature.peer.bonded') return ['peer.bonded-enumeration-preserves-native-facts']
+  if (suiteId === 'tck.feature.connection.when-available') return ['connection.when-available-acquires-and-releases']
   if (suiteId === 'connection-controls') return ['connection.rssi-and-att-mtu-capability-contract']
   if (suiteId === 'tck.feature.gatt.maximum-write-length') return ['gatt.maximum-write-length-boundaries']
   if (suiteId.startsWith('tck.feature.security.')) return ['security.state-pair-cancel-unpair']

@@ -2,7 +2,7 @@
 
 # tvOS platform record
 
-**Status:** current-source characterization; not a 4.0 support claim
+**Status:** Historical tvOS characterization; use [`TV.md`](TV.md) for Current 5.x consumer guidance.
 
 **Architecture and sequencing authority:** [Current 5.0 authority](README.md#current-50-authority)
 

@@ -93,8 +93,8 @@ function legPack() {
     .filter(Boolean)
     .pop()
   const tarball = path.join(workRoot, tarballName)
-  if (!tarball.endsWith('unified-ble-manager-5.0.0-rc.18.tgz')) {
-    fail(`packed ${tarballName}, not the 5.0.0-rc.18 candidate`)
+  if (!tarball.endsWith('unified-ble-manager-5.0.0-rc.19.tgz')) {
+    fail(`packed ${tarballName}, not the 5.0.0-rc.19 candidate`)
   }
   const sha256 = crypto.createHash('sha256').update(fs.readFileSync(tarball)).digest('hex')
   log(`candidate: ${tarballName} sha256=${sha256}`)
@@ -198,11 +198,11 @@ function legBuildDispatch(installed, toolchain, rustc) {
 // Leg E: package/core/fingerprint identity at runtime.
 function legIdentity(installed, addon) {
   const manifest = JSON.parse(fs.readFileSync(path.join(installed, 'package.json'), 'utf8'))
-  if (manifest.version !== '5.0.0-rc.18') fail(`installed version ${manifest.version} is not the candidate`)
+  if (manifest.version !== '5.0.0-rc.19') fail(`installed version ${manifest.version} is not the candidate`)
   const sealPath = path.join(installed, 'lib', 'ubm-build-fingerprint.json')
   if (!fs.existsSync(sealPath)) fail('installed candidate is missing the fingerprint seal')
   const seal = JSON.parse(fs.readFileSync(sealPath, 'utf8'))
-  if (seal.package.version !== '5.0.0-rc.18') fail('seal package version is not the candidate')
+  if (seal.package.version !== '5.0.0-rc.19') fail('seal package version is not the candidate')
   const runtime = JSON.parse(
     run(process.execPath, [
       '-e',
@@ -250,7 +250,7 @@ function legTauriPlugin(installed, toolchain, rustc) {
 
 // Leg I: Android prebuilts are real objects for the declared ABIs.
 function legAndroid(installed) {
-  const ELF_MACHINE = { 'arm64-v8a': 183, x86_64: 62 }
+  const ELF_MACHINE = { 'armeabi-v7a': 40, 'arm64-v8a': 183, x86_64: 62 }
   for (const [abi, machine] of Object.entries(ELF_MACHINE)) {
     const so = path.join(installed, 'android', 'src', 'main', 'jniLibs', abi, 'libubm5_jni_echo.so')
     if (!fs.existsSync(so)) fail(`packed candidate is missing the ${abi} prebuilt`)
@@ -258,7 +258,9 @@ function legAndroid(installed) {
     if (!(header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46)) {
       fail(`${abi} prebuilt is not ELF`)
     }
-    if (header.readUInt16LE(18) !== machine) fail(`${abi} prebuilt has the wrong ELF machine`)
+    if (header[4] !== (abi === 'armeabi-v7a' ? 1 : 2) || header[5] !== 1 || header.readUInt16LE(18) !== machine) {
+      fail(`${abi} prebuilt has the wrong ELF class/machine`)
+    }
   }
   // PR210-18: the committed identity is JSON (build-identity.json).
   const identity = JSON.parse(
@@ -268,7 +270,7 @@ function legAndroid(installed) {
   for (const abi of Object.keys(ELF_MACHINE)) {
     if (!recordedAbis.includes(abi)) fail(`build-identity.json does not cover ${abi}`)
   }
-  log('Android arm64-v8a + x86_64 prebuilts are real ELF objects (device load runs on device CI)')
+  log('Android armeabi-v7a + arm64-v8a + x86_64 prebuilts are real ELF objects (device load is separate qualification)')
 }
 
 // Leg J: Apple matrix check + shipped podspec selection.

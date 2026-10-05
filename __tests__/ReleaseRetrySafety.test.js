@@ -111,7 +111,7 @@ describe('release retry safety', () => {
     }
   })
 
-  test('source-built release Android examples install both pinned Rust ABI targets first', () => {
+  test('source-built release Android examples install every maintained pinned Rust ABI target first', () => {
     const workflow = read('.github/workflows/publish.yml')
     const installRust = workflow.indexOf('- name: Install pinned Rust + Android targets')
     const classicBuild = workflow.indexOf('- name: Assemble classic RN Android debug APK')
@@ -121,7 +121,10 @@ describe('release retry safety', () => {
     expect(installRust).toBeGreaterThan(-1)
     expect(classicBuild).toBeGreaterThan(installRust)
     expect(targetStep).toContain('rust-toolchain.toml')
-    expect(targetStep).toContain('rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-linux-android x86_64-linux-android')
+    const targets = require('../scripts/release/native-build-identity')
+      .ANDROID_DECLARED_ABIS.map(({ target }) => target)
+      .join(' ')
+    expect(targetStep).toContain(`rustup target add --toolchain "$PINNED_TOOLCHAIN" ${targets}`)
   })
 
   test('the installed changelog points to preserved history that remains reachable outside the tarball', () => {

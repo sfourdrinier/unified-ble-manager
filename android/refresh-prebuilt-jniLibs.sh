@@ -19,7 +19,7 @@
 # Usage: sh android/refresh-prebuilt-jniLibs.sh   (from the repo root)
 set -eu
 
-ABIS="arm64-v8a x86_64"
+ABIS="armeabi-v7a arm64-v8a x86_64"
 PROFILE="release"
 LIB="libubm5_jni_echo.so"
 
@@ -61,6 +61,7 @@ for abi in $ABIS; do
     || fail "builder failed for $abi (see output above)"
   BUILT="$STAGE/$abi/$LIB"
   case "$abi" in
+    armeabi-v7a) want_machine="ARM" ;;
     arm64-v8a) want_machine="AArch64" ;;
     x86_64) want_machine="Advanced Micro Devices X86-64" ;;
   esac

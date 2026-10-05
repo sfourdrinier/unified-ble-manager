@@ -81,8 +81,11 @@ bindings/*/target/
 # exact shipped paths are tracked, everything else under jniLibs stays out.
 android/src/main/jniLibs/*
 !android/src/main/jniLibs/build-identity.json
+!android/src/main/jniLibs/armeabi-v7a/
 !android/src/main/jniLibs/arm64-v8a/
 !android/src/main/jniLibs/x86_64/
+android/src/main/jniLibs/armeabi-v7a/*
+!android/src/main/jniLibs/armeabi-v7a/libubm5_jni_echo.so
 android/src/main/jniLibs/arm64-v8a/*
 !android/src/main/jniLibs/arm64-v8a/libubm5_jni_echo.so
 android/src/main/jniLibs/x86_64/*

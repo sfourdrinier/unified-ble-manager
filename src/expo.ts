@@ -221,6 +221,12 @@ export interface ExpoBleManager extends BleManager {
     readonly disassociate: (request: ExpoCompanionDisassociationRequest) => Promise<ExpoCompanionDisassociationResult>
   }
   readonly restoration: {
+    /**
+     * Claims the configured restoration source. Failures preserve the owner's
+     * normalized code and platform details on `expo.restoration.claim`.
+     * Android without a presence source reports `capability.unsupported`;
+     * Apple without configured restoration reports `capability.unavailable`.
+     */
     readonly claim: () => Promise<ExpoRestorationClaimResult>
   }
   readonly presence: {
@@ -956,8 +962,12 @@ async function claimExpoRestoration(host: ReactNativeManagerHost): Promise<ExpoR
   try {
     result = await host.claimRestoration()
   } catch (error) {
-    // Legacy Expo wrapped every restoration claim failure as capability.unavailable.
-    throwUnavailableOwnerError(error, 'expo.restoration.claim')
+    // Restoration reports the owner's actual refusal, independently of Expo
+    // availability. Preserve native details rather than applying legacy collapse.
+    if (error instanceof BackendContractError) {
+      throw rehydratePublicError(new BackendContractError({ ...error.normalized, operation: 'expo.restoration.claim' }))
+    }
+    throwOwnerError(error, 'expo.restoration.claim')
   }
   return Object.freeze({
     outcome: result.outcome,

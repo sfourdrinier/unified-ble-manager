@@ -288,6 +288,21 @@ impl RadioBoundary for DispatchRadio {
             Self::Synthetic(radio) => radio.connected_peers(services).await,
         }
     }
+
+    async fn bonded_peers(
+        &self,
+    ) -> std::result::Result<Vec<ubm_desktop::DirectoryPeer>, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.bonded_peers().await,
+            Self::Synthetic(radio) => radio.bonded_peers().await,
+        }
+    }
+    async fn connect_when_available(&self, peer_id: &str) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.connect_when_available(peer_id).await,
+            Self::Synthetic(radio) => radio.connect_when_available(peer_id).await,
+        }
+    }
     async fn resolve_peer(
         &self,
         peer_id: &str,
@@ -3610,6 +3625,22 @@ impl UbmCentral {
     }
 
     #[napi(catch_unwind)]
+    pub async fn bonded_peers(&self, options: ControlOptions) -> Result<Vec<DirectoryPeerInfo>> {
+        let ctl = self
+            .control(
+                options.timeout_ms,
+                options.ticket.as_deref(),
+                "peers.bonded",
+            )
+            .map_err(to_napi)?;
+        self.central
+            .bonded_peers(ctl)
+            .await
+            .map(|peers| peers.into_iter().map(DirectoryPeerInfo::from).collect())
+            .map_err(fail)
+    }
+
+    #[napi(catch_unwind)]
     pub async fn resolve_peer(
         &self,
         options: PeerControlOptions,
@@ -3867,6 +3898,19 @@ impl UbmCentral {
     /// Connect to a known peer.
     #[napi(catch_unwind)]
     pub async fn connect(&self, options: ConnectOptions) -> Result<ConnectionInfo> {
+        self.connect_intent(options, false).await
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn connect_when_available(&self, options: ConnectOptions) -> Result<ConnectionInfo> {
+        self.connect_intent(options, true).await
+    }
+
+    async fn connect_intent(
+        &self,
+        options: ConnectOptions,
+        deferred: bool,
+    ) -> Result<ConnectionInfo> {
         let ctl = self
             .control(
                 options.timeout_ms,
@@ -3875,11 +3919,16 @@ impl UbmCentral {
             )
             .map_err(to_napi)?;
         bump(&self.counters.connect);
-        let handle = self
-            .central
-            .connect(&options.peer_id, &options.lease, ctl)
-            .await
-            .map_err(fail)?;
+        let handle = if deferred {
+            self.central
+                .connect_when_available(&options.peer_id, &options.lease, ctl)
+                .await
+        } else {
+            self.central
+                .connect(&options.peer_id, &options.lease, ctl)
+                .await
+        }
+        .map_err(fail)?;
         Ok(ConnectionInfo {
             peer_key: handle.peer_key,
             connection_generation: handle.connection_generation,
@@ -5679,6 +5728,62 @@ mod tests {
         assert!(error
             .wire_message()
             .starts_with("protocol.violation|core|dispatch.staged-gatt-accesses|"));
+    }
+
+    #[tokio::test]
+    async fn deferred_connect_dispatch_uses_shared_native_lease_authority() {
+        let central = UbmCentral::open_synthetic("deferred-dispatch".into(), None)
+            .await
+            .unwrap();
+        let connection = central
+            .connect_when_available(ConnectOptions {
+                peer_id: "peer".into(),
+                lease: "lease".into(),
+                timeout_ms: Some(1000),
+                ticket: None,
+            })
+            .await
+            .unwrap();
+        assert!(connection.connection_generation.is_some());
+        assert!(central
+            .central
+            .boundary()
+            .synthetic("test")
+            .unwrap()
+            .calls()
+            .iter()
+            .any(|call| call == "connect_when_available"));
+        assert_eq!(central.close().await.unwrap().state, "released");
+    }
+
+    #[tokio::test]
+    async fn bonded_directory_dispatch_preserves_no_link_native_facts() {
+        let central = UbmCentral::open_synthetic("bonded-directory-test".to_owned(), None)
+            .await
+            .unwrap();
+        central
+            .central
+            .boundary()
+            .synthetic("test")
+            .unwrap()
+            .set_bonded_directory_peers(vec![ubm_desktop::DirectoryPeer {
+                peer_id: "AA:BB:CC:DD:EE:FF".into(),
+                name: Some("saved peer".into()),
+                connection: "disconnected",
+            }]);
+        let peers = central
+            .bonded_peers(ControlOptions {
+                timeout_ms: Some(1000),
+                ticket: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].peer_id, "AA:BB:CC:DD:EE:FF");
+        assert_eq!(peers[0].connection, "disconnected");
+        assert!(central.peer_records().await.unwrap().is_empty());
+        assert_eq!(central.dispatch_counters().unwrap().connect, 0);
+        assert_eq!(central.close().await.unwrap().state, "released");
     }
 
     #[tokio::test]

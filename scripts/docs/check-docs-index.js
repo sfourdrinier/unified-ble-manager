@@ -14,9 +14,9 @@ const repositoryBlobPrefix = 'https://github.com/sfourdrinier/unified-ble-manage
 const statuses = ['Current', 'Historical', 'Generated']
 
 // Subpaths that are intentionally absent from consumer-facing entrypoint
-// listings: metadata passthroughs, the Expo plugin loader, and the advanced
-// surface that README routes through docs/HELPERS.md caveats instead.
-const unlistedExportSubpaths = ['.', './package.json', './app.plugin.js', './advanced']
+// listings: metadata passthroughs and the Expo plugin loader. Expert exports
+// must also be discoverable without deep imports.
+const unlistedExportSubpaths = ['.', './package.json', './app.plugin.js']
 
 function walkMarkdown(directory) {
   const found = []

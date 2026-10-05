@@ -58,6 +58,7 @@ import {
 } from './runner-public-scenario-support'
 import { executePublicIpcTransportScenario } from './runner-public-ipc-transport-scenario'
 import { executePublicVerticalSlice } from './runner-public-vertical-scenario'
+import { createPublicPeerDirectory } from '../public/peer-directory'
 import { executeSubscriptionOverflowScenario } from './runner-public-subscription-overflow-scenario'
 import { executeDiagnosticsScenario, executeLifecycleScenario } from './runner-public-lifecycle-diagnostics-scenario'
 import { executeDescriptorOperationsScenario } from './runner-public-descriptor-scenario'
@@ -221,6 +222,39 @@ async function executeManagerScenario<
   }
   if (definition.id === 'connection.rssi-and-att-mtu-capability-contract') {
     return executeConnectionControlsScenario(manager, fixture, definition)
+  }
+  if (definition.id === 'connection.when-available-acquires-and-releases') {
+    const connection = await connectToDeterministicPeer(manager, fixture, definition, 'when-available')
+    const generationBound = connection.connectionGeneration.length > 0
+    const cleanup = await fixture.controller.settle(connection.disconnect())
+    return [
+      fact(
+        'connection-when-available-acquires-and-releases',
+        generationBound && cleanup.state === 'released' && cleanup.failures.length === 0,
+        { intent: 'when-available', generationBound, cleanupState: cleanup.state }
+      )
+    ]
+  }
+  if (definition.id === 'peer.bonded-enumeration-preserves-native-facts') {
+    const directory = createPublicPeerDirectory(fixture.backend.peers, () => fixture.controller.now())
+    const peers = await fixture.controller.settle(directory.bonded())
+    const nativeFactsPreserved =
+      peers.length === 1 &&
+      peers.every(
+        peer =>
+          peer.name === 'TCK bonded peer' &&
+          peer.sources.includes('system-bonded') &&
+          peer.state?.bond === 'bonded' &&
+          peer.state.connection === 'disconnected' &&
+          peer.rssi === null
+      )
+    return [
+      fact('peer-bonded-enumeration-preserves-native-facts', nativeFactsPreserved, {
+        peerCount: peers.length,
+        nativeFactsPreserved,
+        inventoryBoundary: 'deterministic-os-inventory-double'
+      })
+    ]
   }
   if (definition.id === 'gatt.descriptor-discovery-read-write') {
     return executeDescriptorOperationsScenario(manager, fixture, definition)

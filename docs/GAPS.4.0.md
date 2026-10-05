@@ -2,7 +2,7 @@
 
 # Unified BLE 4.0 platform, CI, and evidence inventory
 
-**Status:** Current implementation and evidence inventory; not architecture authority
+**Status:** Historical 4.0 implementation and evidence inventory; not current 5.x guidance. Current support labels live in [`generated/PLATFORM_SUPPORT.md`](generated/PLATFORM_SUPPORT.md); current host guidance starts at [`README.md`](README.md#current-50-authority).
 
 **Architecture authority:** [Current 5.0 authority](README.md#current-50-authority)
 
@@ -14,7 +14,7 @@ This file tracks platform code, CI, package, lab, and live-radio evidence. It do
 
 The clean-baseline contract, unified core, public manager, deterministic backend, TCK, native protocol, first-party backend implementations, host-isolated package exports, SDK/CLI, and legacy-absence gates exist in the 4.0 source. Passing deterministic, compile, ABI, or package tests are implementation proof; they do not become physical-radio support evidence unless a retained record proves the corresponding live scenario.
 
-This source targets `unified-ble-manager@5.0.0-rc.18`; the npm registry and release
+The retained snapshot targets `unified-ble-manager@5.0.0-rc.18`; the npm registry and release
 provenance, not a source version string, determine whether it is published.
 Earlier stable releases remain immutable published history. Backend support labels remain
 evidence-derived. This package does not rewrite the evidence inventory: a backend remains at the support level

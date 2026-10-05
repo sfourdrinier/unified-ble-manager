@@ -404,6 +404,7 @@ function isRootArchiveEntryAllowed(
     'package/NOTICE',
     'package/UBM-CONTRIBUTION-TERMS-1.0.md',
     'package/MIGRATION_4.0.md',
+    'package/MIGRATION_4.0.28.md',
     'package/ROADMAP.md',
     'package/ROADMAP.4.0.md',
     'package/RELEASE.md',
@@ -630,6 +631,9 @@ function verifyRootTarball(tarballPath) {
   }
   if (!files.has('package/llms.txt')) {
     throw new Error('Packed canonical package is missing llms.txt referenced by README.md')
+  }
+  if (!files.has('package/MIGRATION_4.0.28.md')) {
+    throw new Error('Packed canonical package is missing the current UBM migration guide MIGRATION_4.0.28.md')
   }
   for (const required of ['package/Cargo.toml', 'package/Cargo.lock', 'package/rust-toolchain.toml']) {
     if (!files.has(required)) {
