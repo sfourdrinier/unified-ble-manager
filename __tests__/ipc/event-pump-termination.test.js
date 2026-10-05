@@ -4,7 +4,7 @@ const { ElectronRendererBleClient } = require('../../src/electron/renderer')
 const { IpcPublicManagerAdapter } = require('../../src/ipc/public-manager')
 const { awaitSignal } = require('../helpers/async')
 
-function negotiated(axis, value = axis === 'ipc-protocol' ? 4 : 1) {
+function negotiated(axis, value = axis === 'ipc-protocol' ? 5 : 1) {
   const selected = { axis, value }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }

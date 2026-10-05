@@ -1,6 +1,6 @@
 [package]
 name = "tauri-plugin-unified-ble-manager"
-version = "5.0.0-rc.17"
+version = "5.0.0-rc.18"
 description = "Cross-platform Tauri v2 Bluetooth Low Energy plugin for Unified BLE Manager"
 authors = ["Unified BLE Manager contributors"]
 license-file = "../../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
@@ -29,6 +29,7 @@ ubm-desktop = { path = "../../crates/ubm-desktop" }
 uuid = "1"
 
 [dev-dependencies]
+tauri-utils = { version = "2", features = ["build"] }
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
 
 [build-dependencies]

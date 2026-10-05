@@ -43,15 +43,14 @@ function singletonVersionRange<Axis extends ProtocolAxis>(axis: Axis, value: num
  * Tauri webview/plugin pair. Version 3 carries the caller deadline as a
  * relative `budgetMs`, an optional `commit` on normalized errors, `delivery` on
  * subscriptions and connection-lifecycle events. Version 4 adds the host's
- * attachment rebind after an adapter loss (`IPC_ATTACHMENT_STREAM_ID`). Both
- * ends offer exactly this version, so a peer speaking 3 is refused at
- * bootstrap as `protocol.incompatible` before any operation.
- * Peer-directory reads are additive named routes within version 4; they do not
- * change existing envelopes. A host without a route rejects it explicitly.
- * Bootstrap capability descriptors, not this protocol version, describe which
- * native directory mechanisms the instantiated host implements.
+ * attachment rebind after an adapter loss (`IPC_ATTACHMENT_STREAM_ID`). Version
+ * 5 carries address targets, connection policy and platform scan options, and
+ * adds scoped security routes. Both ends offer exactly version 5: older hosts
+ * must not silently ignore these new fields on existing connect/scan routes.
+ * Bootstrap capability descriptors describe which native mechanisms the
+ * instantiated host actually implements; protocol parity does not invent them.
  */
-export const IPC_PROTOCOL_VERSION = 4
+export const IPC_PROTOCOL_VERSION = 5
 
 /**
  * The reserved stream on which the host announces that it rebound a renderer

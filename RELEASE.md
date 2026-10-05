@@ -113,7 +113,7 @@ once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
 history. `4.0.28` is immutable tagged history. The unpublished
 `v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
-The prepared candidate is `5.0.0-rc.17`; rc.16 and rc.14 are immutable published history.
+The prepared candidate is `5.0.0-rc.18`; rc.17, rc.16 and rc.14 are immutable published history.
 The immutable `v5.0.0-rc.15` tag remains unpublished: its publisher was cancelled
 before npm publication when the Apple architecture policy changed.
 
@@ -143,7 +143,26 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
-## Releasing 5.0.0-rc.17
+## Releasing 5.0.0-rc.18
+
+Release the corrective PR #246 only from exact current `main` after canonical
+CI and the existing release gates pass. Verify package, implementation, Tauri
+compatibility, changelog and generated artifacts identify `5.0.0-rc.18`, and
+that this version and tag are absent before creating annotated `v5.0.0-rc.18`.
+The trusted tag workflow publishes to `next`; `latest` stays on 4.0.28.
+Never retag rc.17, publish manually or replace an immutable artifact.
+
+The corrective scope is public desktop IPC security/targeting parity, bounded
+scan-cleanup retry, ordered watches, Tauri address metadata, valid Apple chooser
+admission and the maintained BlueZ UUID-filter fix. Preserve the actual packed
+desktop and Apple receipts with their original source and artifact identities.
+Picker completion and remaining physical-platform qualification stay open;
+this RC does not claim all-platform GA. Metadata-only release preparation
+requires generated/packed consistency, not another phone-duration campaign.
+
+## Releasing 5.0.0-rc.17 (historical)
+
+`v5.0.0-rc.17` is immutable published history. Do not repeat its tag instructions.
 
 Release only from the exact current `main` commit after the integrated
 completion PR and canonical CI succeed. Verify package, implementation, Tauri
@@ -858,7 +877,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.0-rc.17
+version=5.0.0-rc.18
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -869,7 +888,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `next` resolves to `5.0.0-rc.17`, while `latest` remains on the 4.0 stable
+- npm `next` resolves to `5.0.0-rc.18`, while `latest` remains on the 4.0 stable
   line; a stable release moves `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
@@ -877,7 +896,7 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.0-rc.17` explicitly and import the documented host
+  `unified-ble-manager@5.0.0-rc.18` explicitly and import the documented host
   entrypoints. A bare install still selects `latest` (the 4.0 line). This
   catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a

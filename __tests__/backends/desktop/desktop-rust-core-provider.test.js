@@ -1070,6 +1070,26 @@ describe('error and cleanup mapping', () => {
 })
 
 describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)', () => {
+  function holdSecuritySnapshot(stage) {
+    const original = stage.securityState.bind(stage)
+    let release
+    let entered
+    const held = new Promise(resolve => {
+      release = resolve
+    })
+    const reading = new Promise(resolve => {
+      entered = resolve
+    })
+    const spy = jest.spyOn(stage, 'securityState').mockImplementationOnce(async options => {
+      const snapshot = await original(options)
+      entered()
+      const failure = await held
+      if (failure !== undefined) throw failure
+      return snapshot
+    })
+    return { reading, release, restore: () => spy.mockRestore() }
+  }
+
   async function openWithStaging(platform, stageBeforeOpen) {
     const harness = realBinding(platform)
     const original = harness.binding.openSynthetic
@@ -1286,6 +1306,137 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
           await iterator.return?.()
           await lease.stop()
         }
+      })
+    }
+  )
+
+  test.each(['winrt', 'bluez'])(
+    '%s held initial security snapshot cannot regress a matching native observation',
+    async platform => {
+      await withBackend(platform, async ({ backend, stage }) => {
+        const peerId = String(await observePeer(backend, stage))
+        await stage.stageSecurity('peer-1', 'not-bonded', true)
+        const held = holdSecuritySnapshot(stage)
+        const watch = backend.security.watch(peerId)[Symbol.asyncIterator]()
+        try {
+          await held.reading
+          const pair = async () => {
+            await stage.stagePairOutcome('peer-1', 'paired')
+            await backend.security.pair(peerId, {
+              signal: null,
+              deadline: null,
+              transport: 'le',
+              protection: 'system-default',
+              ceremony: 'system'
+            })
+          }
+          await pair()
+          const changed = await nextValue(watch, 5000)
+          expect(changed.state.bond).toBe('bonded')
+          held.release()
+          // Native round-trip also lets the held read's continuation settle.
+          await pair()
+          const next = await nextValue(watch, 5000)
+          expect(next.state.bond).toBe('bonded')
+          expect(next.sequence).toBeGreaterThan(changed.sequence)
+        } finally {
+          held.release()
+          held.restore()
+          await watch.return()
+        }
+      })
+    }
+  )
+
+  test.each(['winrt', 'bluez'])(
+    '%s another peer security event does not discard a held initial snapshot',
+    async platform => {
+      await withBackend(platform, async ({ backend, stage }) => {
+        const peerId = String(await observePeer(backend, stage))
+        const otherPeer = String(await observePeer(backend, stage, { peerId: 'peer-2' }))
+        await stage.stageSecurity('peer-1', 'not-bonded', true)
+        await stage.stageSecurity('peer-2', 'not-bonded', true)
+        const otherWatch = backend.security.watch(otherPeer)[Symbol.asyncIterator]()
+        await nextValue(otherWatch, 5000)
+        const held = holdSecuritySnapshot(stage)
+        const watch = backend.security.watch(peerId)[Symbol.asyncIterator]()
+        try {
+          await held.reading
+          await stage.stagePairOutcome('peer-2', 'paired')
+          await backend.security.pair(otherPeer, {
+            signal: null,
+            deadline: null,
+            transport: 'le',
+            protection: 'system-default',
+            ceremony: 'system'
+          })
+          expect((await nextValue(otherWatch, 5000)).state.bond).toBe('bonded')
+          held.release()
+          expect(await nextValue(watch, 5000)).toMatchObject({ peerId, state: { bond: 'not-bonded' } })
+        } finally {
+          held.release()
+          held.restore()
+          await watch.return()
+          await otherWatch.return()
+        }
+      })
+    }
+  )
+
+  test.each(['winrt', 'bluez'])(
+    '%s held security admission failure stays visible after a matching observation',
+    async platform => {
+      await withBackend(platform, async ({ backend, stage }) => {
+        const peerId = String(await observePeer(backend, stage))
+        await stage.stageSecurity('peer-1', 'not-bonded', true)
+        const held = holdSecuritySnapshot(stage)
+        const watch = backend.security.watch(peerId)[Symbol.asyncIterator]()
+        try {
+          await held.reading
+          await stage.stagePairOutcome('peer-1', 'paired')
+          await backend.security.pair(peerId, {
+            signal: null,
+            deadline: null,
+            transport: 'le',
+            protection: 'system-default',
+            ceremony: 'system'
+          })
+          expect((await nextValue(watch, 5000)).state.bond).toBe('bonded')
+          held.release(new Error('held admission read failed'))
+          expect(await nextItem(watch, 5000)).toMatchObject({ kind: 'terminal', reason: 'source-failed' })
+        } finally {
+          held.release()
+          held.restore()
+          await watch.return()
+        }
+      })
+    }
+  )
+
+  test.each(['winrt', 'bluez'])(
+    '%s security watch starts before any native event with public identity and positive ordering',
+    async platform => {
+      await withBackend(platform, async ({ backend, stage }) => {
+        const peerId = String(await observePeer(backend, stage))
+        expect(peerId).not.toBe('peer-1')
+        await stage.stageSecurity('peer-1', 'not-bonded', true)
+        const watch = backend.security.watch(peerId)[Symbol.asyncIterator]()
+        const initial = await nextValue(watch, 5000)
+        expect(initial.peerId).toBe(peerId)
+        expect(Number.isSafeInteger(initial.sequence)).toBe(true)
+        expect(initial.sequence).toBeGreaterThanOrEqual(1)
+        await stage.stagePairOutcome('peer-1', 'paired')
+        await backend.security.pair(peerId, {
+          signal: null,
+          deadline: null,
+          transport: 'le',
+          protection: 'system-default',
+          ceremony: 'system'
+        })
+        const changed = await nextValue(watch, 5000)
+        expect(changed).toMatchObject({ peerId, state: { bond: 'bonded' } })
+        expect(changed.sequence).toBeGreaterThan(initial.sequence)
+        await watch.return()
       })
     }
   )

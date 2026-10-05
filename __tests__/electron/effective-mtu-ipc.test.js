@@ -12,7 +12,7 @@ const { monotonicTimestamp, opaqueId, version, versionRange } = require('../../s
 const { BUILT_IN_FEATURE_CATALOG } = require('../../src/backend-contract/capabilities')
 
 function negotiated(axis) {
-  const selected = version(axis, axis === 'ipc-protocol' ? 4 : 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 5 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -57,7 +57,18 @@ function capabilityDescriptors() {
     explanation: 'mtu fixture capability is not implemented',
     affectedGuarantee: 'support'
   }
-  const limited = new Set(['connection:direct', 'connection:rssi', 'connection:effective-mtu'])
+  const limited = new Set([
+    'connection:direct',
+    'connection:rssi',
+    'connection:effective-mtu',
+    'security:state',
+    'security:pair',
+    'security:cancel-pairing',
+    'security:unpair',
+    'security:custom-ceremony',
+    'peer:address-targeting',
+    'scan:platform-options'
+  ])
   return BUILT_IN_FEATURE_CATALOG.map(entry => ({
     id: entry.id,
     state: limited.has(entry.id) ? 'limited' : 'unsupported',
@@ -204,6 +215,547 @@ test('peer directories cross authenticated Electron IPC without acquiring a conn
   expect(connect).not.toHaveBeenCalled()
   await manager.destroy()
 })
+
+test('ordinary renderer security routes reach the scoped native authority', async () => {
+  const state = {
+    bond: 'bonded',
+    encryption: 'unknown',
+    authentication: 'unknown',
+    secureConnections: 'unknown',
+    pairingPossible: true,
+    measuredAtMonotonicMs: 1,
+    limitations: []
+  }
+  const security = {
+    state: jest.fn(async () => state),
+    pair: jest.fn(async () => ({ outcome: 'paired', state })),
+    cancelPairing: jest.fn(async () => ({ outcome: 'paired' })),
+    unpair: jest.fn(async () => ({ outcome: 'unpaired' }))
+  }
+  const current = createMainFixture({ monotonicNow: () => performance.now(), securityBackend: () => security })
+  const sender = createSender('security', 'security-window', 'security-session')
+  sender.trusted.securityPermissions = ['security:state', 'security:pair', 'security:cancel-pairing', 'security:unpair']
+  const manager = await createElectronRendererBleManager({
+    transport: {
+      invoke: request => current.port.handler({ sender }, request),
+      subscribe: () => () => undefined,
+      acknowledge: async () => ({ kind: 'event.ack' })
+    }
+  })
+  const peer = { id: 'security-peer', name: null, rssi: null }
+  await expect(manager.security.state(peer)).resolves.toEqual(state)
+  await expect(manager.security.pair(peer, { transport: 'le', secureConnections: 'require' })).resolves.toEqual({
+    outcome: 'paired',
+    state
+  })
+  expect(security.pair.mock.calls[0]).toEqual([
+    'security-peer',
+    expect.objectContaining({
+      transport: 'le',
+      secureConnections: 'require',
+      ceremony: 'system',
+      signal: expect.any(AbortSignal)
+    })
+  ])
+  await expect(manager.security.cancelPairing(peer)).resolves.toEqual({ outcome: 'paired' })
+  await expect(manager.security.unpair(peer)).resolves.toEqual({ outcome: 'unpaired' })
+  await manager.destroy()
+})
+
+test('renderer security is denied without each explicit trusted permission', async () => {
+  const security = { pair: jest.fn(), state: jest.fn() }
+  const current = createMainFixture({ monotonicNow: () => performance.now(), securityBackend: () => security })
+  const sender = createSender('denied-security', 'denied-window', 'denied-session')
+  const manager = await createElectronRendererBleManager({
+    transport: {
+      invoke: request => current.port.handler({ sender }, request),
+      subscribe: () => () => undefined,
+      acknowledge: async () => ({ kind: 'event.ack' })
+    }
+  })
+  await expect(manager.security.pair({ id: 'peer', name: null, rssi: null })).rejects.toMatchObject({
+    code: 'permission.denied'
+  })
+  await expect(manager.security.state({ id: 'peer', name: null, rssi: null })).rejects.toMatchObject({
+    code: 'permission.denied'
+  })
+  expect(security.pair).not.toHaveBeenCalled()
+  expect(security.state).not.toHaveBeenCalled()
+  await manager.destroy()
+})
+
+test('custom ceremony requires its own permission in addition to pairing', async () => {
+  const pair = jest.fn()
+  const current = createMainFixture({ monotonicNow: () => performance.now(), securityBackend: () => ({ pair }) })
+  const sender = createSender('pair-only', 'pair-only-window', 'pair-only-session')
+  sender.trusted.securityPermissions = ['security:pair']
+  const manager = await createElectronRendererBleManager({
+    transport: {
+      invoke: request => current.port.handler({ sender }, request),
+      subscribe: () => () => undefined,
+      acknowledge: async () => ({ kind: 'event.ack' })
+    }
+  })
+  await expect(
+    manager.security.pair({ id: 'peer', name: null, rssi: null }, { ceremony: { onChallenge: jest.fn() } })
+  ).rejects.toMatchObject({ code: 'permission.denied' })
+  expect(pair).not.toHaveBeenCalled()
+  await manager.destroy()
+})
+
+test('watch permission is denied before native registration', async () => {
+  const watch = jest.fn()
+  const current = createMainFixture({ monotonicNow: () => performance.now(), securityBackend: () => ({ watch }) })
+  const sender = createSender('watch-denied', 'watch-denied-window', 'watch-denied-session')
+  const manager = await createElectronRendererBleManager({
+    transport: {
+      invoke: request => current.port.handler({ sender }, request),
+      subscribe: () => () => undefined,
+      acknowledge: async () => ({ kind: 'event.ack' })
+    }
+  })
+  await expect(
+    manager.security.watch({ id: 'peer', name: null, rssi: null })[Symbol.asyncIterator]().next()
+  ).rejects.toMatchObject({ code: 'permission.denied' })
+  expect(watch).not.toHaveBeenCalled()
+  await manager.destroy()
+})
+
+test('public renderer transports out-of-band address and connection policy unchanged', async () => {
+  const current = createMainFixture({ monotonicNow: () => performance.now(), supports: () => true })
+  const peerFromAddress = jest.fn(() => 'native-address-peer')
+  current.manager.attachedBackend.backend = { connections: { peerFromAddress } }
+  current.manager.connect = jest.fn(async () => ({
+    peerId: 'native-address-peer',
+    connectionId: 'address-connection',
+    connectionGeneration: 'address-generation',
+    disconnect: async () => ({ state: 'released', failures: [] })
+  }))
+  const sender = createSender('address', 'address-window', 'address-session')
+  const manager = await createElectronRendererBleManager({
+    transport: {
+      invoke: request => current.port.handler({ sender }, request),
+      subscribe: () => () => undefined,
+      acknowledge: async () => ({ kind: 'event.ack' })
+    }
+  })
+  const connection = await manager.connect(
+    { address: 'DC:56:7B:D9:E8:A4', addressType: 'public' },
+    { intent: 'when-available', transport: 'le', preferredPhy: ['le-1m'] }
+  )
+  expect(peerFromAddress).toHaveBeenCalledWith({ address: 'DC:56:7B:D9:E8:A4', addressType: 'public' })
+  expect(current.manager.connect.mock.calls[0]).toEqual([
+    'native-address-peer',
+    expect.objectContaining({ intent: 'when-available', transport: 'le', preferredPhy: ['le-1m'] })
+  ])
+  await connection.disconnect()
+  await manager.destroy()
+})
+
+test('custom security ceremony crosses the ordinary renderer factory and keeps clocks relative', async () => {
+  const state = {
+    bond: 'bonded',
+    encryption: 'unknown',
+    authentication: 'unknown',
+    secureConnections: 'unknown',
+    pairingPossible: true,
+    measuredAtMonotonicMs: 1,
+    limitations: []
+  }
+  const pair = jest.fn(async (peerId, options) => {
+    const response = await options.ceremony.agent.onChallenge({
+      kind: 'confirm-passkey',
+      peerId,
+      challengeId: 'challenge-1',
+      passkey: 123456,
+      deadlineMonotonicMs: 501000
+    })
+    expect(response).toEqual({ kind: 'confirm-passkey', confirmed: true })
+    return { outcome: 'paired', state }
+  })
+  const current = createMainFixture({ monotonicNow: () => 500000, securityBackend: () => ({ pair }) })
+  const sender = createSender('agent-security', 'agent-window', 'agent-session')
+  sender.trusted.securityPermissions = ['security:pair', 'security:custom-ceremony']
+  let listener
+  current.router.setEventPublisher(async (_, event) => {
+    listener(event)
+    return 'delivered'
+  })
+  const manager = await createElectronRendererBleManager({
+    transport: {
+      invoke: request => current.port.handler({ sender }, request),
+      subscribe: callback => {
+        listener = callback
+        return () => {}
+      },
+      acknowledge: async () => ({ kind: 'event.ack' })
+    }
+  })
+  const onChallenge = jest.fn(async challenge => {
+    expect(challenge.peer.id).toBe('peer')
+    expect(challenge.deadlineMonotonicMs).toBeLessThan(performance.now() + 1100)
+    expect(challenge.deadlineMonotonicMs).toBeGreaterThan(performance.now())
+    return { kind: challenge.kind, confirmed: true }
+  })
+  await expect(
+    manager.security.pair({ id: 'peer', name: null, rssi: null }, { ceremony: { onChallenge } })
+  ).resolves.toEqual({ outcome: 'paired', state })
+  expect(onChallenge).toHaveBeenCalledTimes(1)
+  await manager.destroy()
+})
+
+test('delivered custom challenge response remains confirmed when its route deadline expires afterward', async () => {
+  const state = {
+    bond: 'bonded',
+    encryption: 'unknown',
+    authentication: 'unknown',
+    secureConnections: 'unknown',
+    pairingPossible: true,
+    measuredAtMonotonicMs: 1,
+    limitations: []
+  }
+  let customDispatch = false
+  let customClockReads = 0
+  const nativeResponses = []
+  const customReceipts = []
+  const current = createMainFixture({
+    monotonicNow: () => (customDispatch ? (++customClockReads === 1 ? 100 : 102) : performance.now()),
+    securityBackend: () => ({
+      pair: async (peerId, options) => {
+        const response = await options.ceremony.agent.onChallenge({
+          kind: 'confirm',
+          peerId,
+          challengeId: 'late-deadline',
+          deadlineMonotonicMs: performance.now() + 1000
+        })
+        nativeResponses.push(response)
+        return { outcome: 'paired', state }
+      }
+    })
+  })
+  const sender = createSender('late-deadline', 'late-deadline-window', 'late-deadline-session')
+  sender.trusted.securityPermissions = ['security:pair', 'security:custom-ceremony']
+  let listener
+  current.router.setEventPublisher(async (_, event) => {
+    listener(event)
+    return 'delivered'
+  })
+  const manager = await createElectronRendererBleManager({
+    transport: {
+      invoke: request => {
+        if (request.envelope?.command === 'security.custom-ceremony') {
+          customDispatch = true
+          return current.port
+            .handler(
+              { sender },
+              { ...request, envelope: { ...request.envelope, payload: { ...request.envelope.payload, budgetMs: 1 } } }
+            )
+            .then(receipt => {
+              customReceipts.push(receipt)
+              return receipt
+            })
+        }
+        return current.port.handler({ sender }, request)
+      },
+      subscribe: callback => {
+        listener = callback
+        return () => {}
+      },
+      acknowledge: async () => ({ kind: 'event.ack' })
+    }
+  })
+  await expect(
+    manager.security.pair(
+      { id: 'peer', name: null, rssi: null },
+      { ceremony: { onChallenge: async () => ({ kind: 'confirm', confirmed: true }) } }
+    )
+  ).resolves.toEqual({ outcome: 'paired', state })
+  expect(nativeResponses).toEqual([{ kind: 'confirm', confirmed: true }])
+  expect(customReceipts).toEqual([expect.objectContaining({ kind: 'route', payload: { accepted: true } })])
+  await manager.destroy()
+})
+
+test('held application challenge does not hold a confirmed native pairing result', async () => {
+  const state = {
+    bond: 'bonded',
+    encryption: 'unknown',
+    authentication: 'unknown',
+    secureConnections: 'unknown',
+    pairingPossible: true,
+    measuredAtMonotonicMs: 1,
+    limitations: []
+  }
+  const current = createMainFixture({
+    monotonicNow: () => performance.now(),
+    securityBackend: () => ({
+      pair: async (peerId, options) => {
+        const challenge = options.ceremony.agent.onChallenge({
+          kind: 'confirm',
+          peerId,
+          challengeId: 'held',
+          deadlineMonotonicMs: performance.now() + 1000
+        })
+        challenge.catch(() => undefined)
+        return { outcome: 'paired', state }
+      }
+    })
+  })
+  const sender = createSender('held', 'held-window', 'held-session')
+  sender.trusted.securityPermissions = ['security:pair', 'security:custom-ceremony']
+  let listener
+  current.router.setEventPublisher(async (_, event) => {
+    listener(event)
+    return 'delivered'
+  })
+  const manager = await createElectronRendererBleManager({
+    transport: {
+      invoke: request => current.port.handler({ sender }, request),
+      subscribe: callback => {
+        listener = callback
+        return () => {}
+      },
+      acknowledge: async () => ({ kind: 'event.ack' })
+    }
+  })
+  await expect(
+    manager.security.pair(
+      { id: 'peer', name: null, rssi: null },
+      { ceremony: { onChallenge: () => new Promise(() => {}) } }
+    )
+  ).resolves.toEqual({ outcome: 'paired', state })
+  await manager.destroy()
+})
+
+test('throwing application agent cancels native challenge and reports its failure', async () => {
+  const nativeSettled = jest.fn()
+  const current = createMainFixture({
+    monotonicNow: () => performance.now(),
+    securityBackend: () => ({
+      pair: async (peerId, options) => {
+        try {
+          await options.ceremony.agent.onChallenge({
+            kind: 'confirm',
+            peerId,
+            challengeId: 'throws',
+            deadlineMonotonicMs: performance.now() + 1000
+          })
+        } finally {
+          nativeSettled()
+        }
+        return { outcome: 'cancelled' }
+      }
+    })
+  })
+  const sender = createSender('throws', 'throws-window', 'throws-session')
+  sender.trusted.securityPermissions = ['security:pair', 'security:custom-ceremony']
+  let listener
+  current.router.setEventPublisher(async (_, event) => {
+    listener(event)
+    return 'delivered'
+  })
+  const manager = await createElectronRendererBleManager({
+    transport: {
+      invoke: request => current.port.handler({ sender }, request),
+      subscribe: callback => {
+        listener = callback
+        return () => {}
+      },
+      acknowledge: async () => ({ kind: 'event.ack' })
+    }
+  })
+  await expect(
+    manager.security.pair(
+      { id: 'peer', name: null, rssi: null },
+      {
+        ceremony: {
+          onChallenge: async () => {
+            throw new Error('application agent failure')
+          }
+        }
+      }
+    )
+  ).rejects.toThrow('application agent failure')
+  await new Promise(resolve => setImmediate(resolve))
+  expect(nativeSettled).toHaveBeenCalledTimes(1)
+  await manager.destroy()
+})
+
+test.each(['refused', 'rejected', 'held'])(
+  'watch native close %s retains retry ownership without blocking sibling release',
+  async kind => {
+    let settleClose
+    const iterator = {
+      next: () => new Promise(() => {}),
+      [Symbol.asyncIterator]() {
+        return this
+      },
+      return: jest.fn(async () => ({ done: true, value: undefined }))
+    }
+    const failure = {
+      resourceKind: 'native-security-watch',
+      error: contractError('platform.transport', 'cleanup', 'native.watch.close').normalized
+    }
+    const close = jest
+      .fn()
+      .mockImplementationOnce(() =>
+        kind === 'held'
+          ? new Promise(resolve => {
+              settleClose = resolve
+            })
+          : kind === 'rejected'
+            ? Promise.reject(new Error('native close refused'))
+            : Promise.resolve({ state: 'release-failed', failures: [failure] })
+      )
+      .mockResolvedValue({ state: 'released', failures: [] })
+    const current = createMainFixture({
+      monotonicNow: () => performance.now(),
+      securityBackend: () => ({ watch: () => ({ [Symbol.asyncIterator]: () => iterator, close }) })
+    })
+    const sender = createSender(`watch-native-${kind}`, `watch-native-${kind}-window`, `watch-native-${kind}-session`)
+    sender.trusted.securityPermissions = ['security:state']
+    const admitted = await bootstrap(current, sender)
+    const watch = await current.port.handler(
+      { sender },
+      routeEnvelope(current, admitted, 1, 'security.watch.subscribe', { peerId: 'peer' })
+    )
+    jest.useFakeTimers()
+    try {
+      const release = current.port.handler(
+        { sender },
+        routeEnvelope(current, admitted, 2, 'security.watch.unsubscribe', { handle: watch.payload.handle })
+      )
+      // Advance the actual bounded drain; a loaded runner cannot change which
+      // cleanup outcome wins by running a competing real-time test timer.
+      await jest.advanceTimersByTimeAsync(50)
+      const first = await release
+      if (kind === 'held') {
+        settleClose({ state: 'released', failures: [] })
+        await jest.advanceTimersByTimeAsync(0)
+      }
+      expect(first).toMatchObject({ kind: 'route', payload: { state: 'release-failed' } })
+      await expect(
+        current.port.handler(
+          { sender },
+          routeEnvelope(current, admitted, 3, 'security.watch.unsubscribe', { handle: watch.payload.handle })
+        )
+      ).resolves.toMatchObject({ kind: 'route', payload: { state: 'released' } })
+      expect(iterator.return).toHaveBeenCalledTimes(1)
+      expect(close).toHaveBeenCalledTimes(kind === 'held' ? 1 : 2)
+      await current.binding.destroy()
+    } finally {
+      jest.useRealTimers()
+    }
+  }
+)
+
+test('renderer native security watch has scoped events and single-flight removal', async () => {
+  const { CoreBoundedStream } = require('../../src/core/bounded-stream')
+  const { capacity } = require('../../src/backend-contract/primitives')
+  const stream = new CoreBoundedStream(
+    { itemCapacity: capacity(8), byteCapacity: capacity(8192), reservedControlCapacity: capacity(1) },
+    'error'
+  )
+  const close = jest.spyOn(stream, 'close')
+  const current = createMainFixture({
+    monotonicNow: () => performance.now(),
+    securityBackend: () => ({ watch: () => stream })
+  })
+  const sender = createSender('watch', 'watch-window', 'watch-session')
+  sender.trusted.securityPermissions = ['security:state']
+  let listener
+  current.router.setEventPublisher(async (_, event) => {
+    listener(event)
+    return 'delivered'
+  })
+  const manager = await createElectronRendererBleManager({
+    transport: {
+      invoke: request => current.port.handler({ sender }, request),
+      subscribe: callback => {
+        listener = callback
+        return () => {}
+      },
+      acknowledge: async () => ({ kind: 'event.ack' })
+    }
+  })
+  const watch = manager.security.watch({ id: 'peer', name: null, rssi: null })
+  const iterator = watch[Symbol.asyncIterator]()
+  const pending = iterator.next()
+  await new Promise(resolve => setImmediate(resolve))
+  const state = {
+    bond: 'bonding',
+    encryption: 'unknown',
+    authentication: 'unknown',
+    secureConnections: 'unknown',
+    pairingPossible: true,
+    measuredAtMonotonicMs: 1,
+    limitations: []
+  }
+  stream.emit({ kind: 'state', peerId: 'peer', sequence: 1, state }, 1)
+  await expect(pending).resolves.toMatchObject({ done: false, value: { peerId: 'peer', state } })
+  await Promise.all([iterator.return(), iterator.return()])
+  expect(close).toHaveBeenCalledTimes(1)
+  await manager.destroy()
+})
+
+test.each(['rejected', 'held'])(
+  'watch %s local return cannot prevent authoritative close; late cleanup remains owned',
+  async kind => {
+    let settleReturn
+    const iterator = {
+      next: () => new Promise(() => {}),
+      [Symbol.asyncIterator]() {
+        return this
+      },
+      return: jest
+        .fn()
+        .mockImplementationOnce(() =>
+          kind === 'held'
+            ? new Promise(resolve => {
+                settleReturn = resolve
+              })
+            : Promise.reject(new Error('local return refused'))
+        )
+        .mockResolvedValue({ done: true, value: undefined })
+    }
+    const close = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const current = createMainFixture({
+      monotonicNow: () => performance.now(),
+      securityBackend: () => ({ watch: () => ({ [Symbol.asyncIterator]: () => iterator, close }) })
+    })
+    const sender = createSender(`watch-${kind}`, `watch-${kind}-window`, `watch-${kind}-session`)
+    sender.trusted.securityPermissions = ['security:state']
+    const admitted = await bootstrap(current, sender)
+    const watch = await current.port.handler(
+      { sender },
+      routeEnvelope(current, admitted, 1, 'security.watch.subscribe', { peerId: 'peer' })
+    )
+    const release = current.port.handler(
+      { sender },
+      routeEnvelope(current, admitted, 2, 'security.watch.unsubscribe', { handle: watch.payload.handle })
+    )
+    await new Promise(resolve => setImmediate(resolve))
+    expect(close).toHaveBeenCalledTimes(1)
+    await expect(release).resolves.toMatchObject({
+      kind: 'route',
+      payload: {
+        state: 'release-failed',
+        failures: [expect.objectContaining({ resourceKind: 'security-watch-iterator' })]
+      }
+    })
+    if (kind === 'held') {
+      settleReturn({ done: true, value: undefined })
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    await expect(
+      current.port.handler(
+        { sender },
+        routeEnvelope(current, admitted, 3, 'security.watch.unsubscribe', { handle: watch.payload.handle })
+      )
+    ).resolves.toMatchObject({ kind: 'route', payload: { state: 'released' } })
+    expect(close).toHaveBeenCalledTimes(1)
+    await current.binding.destroy()
+  }
+)
 
 test('directory IPC refuses a stolen renderer lease before OS lookup and preserves unsupported', async () => {
   const connected = jest.fn(async () => {

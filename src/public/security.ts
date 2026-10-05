@@ -32,6 +32,7 @@ export interface PeerSecurityState {
   readonly authentication: SecurityAuthenticationState
   readonly secureConnections: SecureConnectionsState
   readonly pairingPossible: boolean | null
+  /** Backend-origin monotonic observation time; do not compare it to a renderer's local clock across IPC. */
   readonly measuredAtMonotonicMs: number
   readonly limitations: readonly Limitation[]
 }

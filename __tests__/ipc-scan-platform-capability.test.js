@@ -1,9 +1,5 @@
 // __tests__/ipc-scan-platform-capability.test.js
-// The renderer inherits the main process's capability snapshot, so a backend
-// advertising scan:platform-options would otherwise make the IPC surface claim
-// a feature its versioned scan request cannot carry — every scan carrying
-// options.platform then failing. Fail-closed means the capability must read as
-// unsupported there, and the scan itself must be rejected before IPC.
+// IPC preserves supported platform scan options and native limitations.
 const { IpcPublicManagerAdapter } = require('../src/ipc/public-manager')
 
 function descriptor(id, state) {
@@ -34,13 +30,16 @@ function capabilitiesAdvertisingScanPlatformOptions() {
   }
 }
 
-function ipcManagerWith(capabilities) {
+function ipcManagerWith(
+  capabilities,
+  scan = async () => {
+    throw new Error('native refusal')
+  }
+) {
   const ipc = {
     capabilities,
     bootstrap: { discovery: { kind: 'scan' } },
-    scan: async () => {
-      throw new Error('the transport should never be reached for platform scan options')
-    }
+    scan
   }
   return new IpcPublicManagerAdapter(ipc, {
     capabilities,
@@ -50,17 +49,17 @@ function ipcManagerWith(capabilities) {
 }
 
 describe('IPC scan:platform-options capability honesty', () => {
-  test('reports the capability as unsupported even when the host advertises it', () => {
+  test('retains capability support advertised by the native authority', () => {
     const manager = ipcManagerWith(capabilitiesAdvertisingScanPlatformOptions())
-    expect(manager.capabilities.get('scan:platform-options').state).toBe('unsupported')
-    expect(manager.capabilities.supports('scan:platform-options')).toBe(false)
-    expect(manager.capabilities.require('scan:platform-options').state).toBe('unsupported')
+    expect(manager.capabilities.get('scan:platform-options').state).toBe('supported')
+    expect(manager.capabilities.supports('scan:platform-options')).toBe(true)
+    expect(manager.capabilities.require('scan:platform-options').state).toBe('supported')
   })
 
   test('list() agrees with get(), so enumeration cannot disagree with a lookup', () => {
     const manager = ipcManagerWith(capabilitiesAdvertisingScanPlatformOptions())
     const listed = manager.capabilities.list().find(entry => entry.id === 'scan:platform-options')
-    expect(listed.state).toBe('unsupported')
+    expect(listed.state).toBe('supported')
   })
 
   test('leaves every other capability untouched', () => {
@@ -69,10 +68,24 @@ describe('IPC scan:platform-options capability honesty', () => {
     expect(manager.capabilities.supports('connection:direct')).toBe(true)
   })
 
-  test('scanning with platform options fails closed rather than reaching the transport', async () => {
-    const manager = ipcManagerWith(capabilitiesAdvertisingScanPlatformOptions())
-    await expect(manager.scan({ platform: { kind: 'android', mode: 'low-power' } })).rejects.toThrow(
-      /capability\.unsupported: ipc-public-manager\.scan\.platform-options/
-    )
+  test('supported scan options reach IPC unchanged', async () => {
+    const scan = jest.fn(async () => {
+      throw new Error('native refusal')
+    })
+    const manager = ipcManagerWith(capabilitiesAdvertisingScanPlatformOptions(), scan)
+    const platform = { kind: 'android', mode: 'low-power', reportDelayMs: 20, legacy: false, phy: 'coded' }
+    await expect(manager.scan({ platform })).rejects.toThrow('native refusal')
+    expect(scan.mock.calls[0][0].platform).toEqual(platform)
+  })
+
+  test('native unsupported platform options fail before IPC admission', async () => {
+    const capabilities = capabilitiesAdvertisingScanPlatformOptions()
+    capabilities.get('scan:platform-options').state = 'unsupported'
+    const scan = jest.fn()
+    const manager = ipcManagerWith(capabilities, scan)
+    await expect(manager.scan({ platform: { kind: 'android' } })).rejects.toMatchObject({
+      code: 'capability.unsupported'
+    })
+    expect(scan).not.toHaveBeenCalled()
   })
 })

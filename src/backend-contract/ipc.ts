@@ -626,7 +626,7 @@ function assertSecurityCommandPermission(
   permissions: readonly IpcSecurityPermission[]
 ): void {
   const permission =
-    command === 'security.state'
+    command === 'security.state' || command === 'security.watch.subscribe' || command === 'security.watch.unsubscribe'
       ? 'security:state'
       : command === 'security.pair'
         ? 'security:pair'

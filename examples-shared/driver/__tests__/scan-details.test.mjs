@@ -1,10 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { normalizeScanObservation, normalizeScanQuery, observationMatchesScanQuery } from 'unified-ble-manager/advanced'
 import { ScanDetailsScenario } from '../scenarios/scan-details.ts'
 import { adapterHostManager } from '../host.ts'
 import { createFakeHost, createFakeManager, stream } from './fake-host.mjs'
 
-async function startScan(durationMs) {
+async function startScan(durationMs, extra = {}) {
   const { manager, calls } = createFakeManager()
   const observations = stream()
   const state = stream()
@@ -25,16 +26,16 @@ async function startScan(durationMs) {
   }
   const host = createFakeHost({ manager, adapterHostManager })
   const scenario = new ScanDetailsScenario(host)
-  const running = scenario.dispatch('scan', { durationMs })
+  const running = scenario.dispatch('scan', { durationMs, ...extra })
   const options = await started
   await new Promise(resolve => setImmediate(resolve))
   return {
     calls, host, scenario, options, running,
-    observe() {
+    observe(fields = {}) {
       observations.push({ kind: 'value', value: {
         peer: { id: 'peer-h10', name: 'Polar H10 1234', reference: null, sources: ['test'] },
         localName: 'Polar H10 1234', rssi: -60, connectable: true,
-        serviceUuids: [], manufacturerData: [], serviceData: null
+        serviceUuids: [], manufacturerData: [], serviceData: null, ...fields
       } })
     },
     end() {
@@ -44,6 +45,38 @@ async function startScan(durationMs) {
     }
   }
 }
+
+test('explicit radio addresses combine conjunctively with the chosen service filter and retain cleanup', async () => {
+  const scan = await startScan(500, { filter: 'heart-rate-service', addresses: ['dc:56:7b:d9:e8:a4'] })
+  assert.deepEqual(scan.options.query, { anyOf: [{ services: { any: ['0000180d-0000-1000-8000-00805f9b34fb'] }, addresses: ['DC:56:7B:D9:E8:A4'] }] })
+  const observed = { peerId: 'peer-h10', address: 'DC:56:7B:D9:E8:A4', localName: 'SIM Polar H10', rssi: -60,
+    txPowerLevel: null, serviceUuids: ['0000180d-0000-1000-8000-00805f9b34fb'], manufacturerData: [], serviceData: [] }
+  const query = normalizeScanQuery(scan.options.query)
+  assert.equal(observationMatchesScanQuery(query, normalizeScanObservation(observed)), true)
+  assert.equal(observationMatchesScanQuery(query, normalizeScanObservation({ ...observed, address: 'DC:56:7B:D9:E8:A5' })), false)
+  assert.equal(observationMatchesScanQuery(query, normalizeScanObservation({ ...observed, serviceUuids: [] })), false)
+  scan.observe({ address: observed.address, serviceUuids: observed.serviceUuids })
+  scan.end()
+  assert.equal((await scan.running).observations, 1)
+  assert.ok(scan.calls.includes('scan.stop'))
+  assert.ok(scan.calls.includes('manager.destroy'))
+})
+
+test('explicit address-only scan leaves no hidden service/name selector', async () => {
+  const scan = await startScan(500, { addresses: ['DC:56:7B:D9:E8:A4'] })
+  assert.deepEqual(scan.options.query, { anyOf: [{ addresses: ['DC:56:7B:D9:E8:A4'] }] })
+  scan.end()
+  await scan.running
+})
+
+test('malformed address selectors reject before host manager allocation', async () => {
+  for (const addresses of [[], null, {}, 'DC:56:7B:D9:E8:A4', [7], ['not-an-address']]) {
+    const { manager, calls } = createFakeManager()
+    const scenario = new ScanDetailsScenario(createFakeHost({ manager, adapterHostManager }))
+    await assert.rejects(scenario.dispatch('scan', { addresses }))
+    assert.deepEqual(calls, [])
+  }
+})
 
 for (const [durationMs, count] of [[3000, 1], [10000, 1], [500.75, 1], [3000, 0]]) {
   test(`scan-details forwards its finite ${durationMs}ms lifetime and reports ${count} observations on native end without JS timers`, async () => {

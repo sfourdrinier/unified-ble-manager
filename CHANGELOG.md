@@ -2,6 +2,71 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## Unreleased
+
+## [5.0.0-rc.18] - 2026-10-04
+
+### Before upgrading
+
+- Desktop IPC now requires protocol 5 on both host and client; upgrade them
+  together. Older hosts fail closed rather than ignoring requested options.
+- Apple desktop and simulators remain ARM64-only. Linux connection/GATT still
+  requires explicit deployment of the maintained BlueZ integration; the UUID
+  filter correction advances its producer to `5.87-ubm.3`.
+- This candidate does not promote backend hardware-evidence labels. Apple
+  picker end-to-end completion, physical Apple TV and actual user-force-quit
+  qualification remain incomplete; observed authorization and subsequent GATT
+  success are not a successful timed chooser receipt.
+
+### Changes
+
+- Preserve available native public/random address types in Tauri scan
+  observations. Unknown stays opaque; malformed IPC metadata is rejected and
+  actual native metadata-read failures remain visible.
+- Give desktop and Tauri security watches positive, ordered observation
+  sequences, and prevent a late unsequenced desktop snapshot from replacing
+  a newer matching event. Snapshot failures remain observable.
+- Retry centrally retained cleanup from unpublished failed scan acquisitions
+  before admitting another scan, within the new caller's original budget and
+  cancellation. Published scan ownership is never bypassed; refused cleanup
+  remains owned and retryable.
+- Correct an upstream BlueZ 5.87 UUID-filter callback/data argument reversal
+  that crashes the daemon during service-filtered discovery. The maintained
+  daemon producer advances to `5.87-ubm.3`; the authority contract remains
+  `(1,2,1)`. Installation is still a separate explicit host operation.
+- Make the Electron reference host use the exported renderer protocol channel,
+  and avoid accessing Tauri continuation ownership before startup initialization.
+  Validate shipped Tauri security permission objects through the actual ACL
+  loader and scope deserializer, not fabricated permission mocks.
+- Route public Electron/Tauri security operations to the same native authority
+  through individually scoped IPC permissions. Preserve state and pairing
+  outcomes, cancellation, retryable watch cleanup and backend limitations;
+  supported custom ceremonies retain one-shot challenge ownership and local
+  callback deadlines without crossing host clock origins.
+- Fail closed on custom-ceremony stream failures and overflow, independently
+  attempt native security-watch release and iterator retirement with bounded
+  drains, and retain unresolved cleanup for retry. Sequenced Tauri security
+  events cannot be overwritten by a racing unsequenced initial snapshot.
+- Add a shared reference-app security scenario for actual public state, system
+  pairing, bounded watch and cancellation. Unpair requires explicit confirmation;
+  stopping a scenario never removes a bond. Reference-host grants remain explicit.
+- Forward supported address targeting, address scan selectors, connection intent
+  and platform scan options across desktop IPC. Preserve resolved peer identity,
+  advertised addresses and connectability; do not silently substitute direct
+  connection or invent support for unimplemented native options.
+- Require desktop IPC protocol 5 on both sides before operation admission, so an
+  older host cannot silently ignore forwarded targeting, intent or scan options.
+  Keep native capability limitations independent of transport support.
+- Admit Apple AccessorySetupKit service-only and company-ID-only chooser filters.
+  Names and manufacturer-data prefixes are optional refinements; malformed IDs,
+  undeclared selectors, name-only and unfiltered requests remain refused before
+  picker allocation.
+- Correct Tauri, Electron and CLI Linux setup guidance: native authority resolves
+  and pins the BlueZ daemon owner by default. An explicit owner policy is an
+  optional stricter restriction, not an implementation attestation or a required
+  application lookup. The maintained daemon integration and explicit deployment
+  requirement are unchanged.
+
 ## [5.0.0-rc.17] - 2026-10-03
 
 ### Before upgrading

@@ -16,6 +16,8 @@
 
 const fs = require('fs')
 const path = require('path')
+const vm = require('node:vm')
+const assert = require('node:assert/strict')
 
 const { ElectronRendererBleClient } = require('../../src/electron/renderer')
 const { IPC_PROTOCOL_VERSION } = require('../../src/ipc/protocol')
@@ -63,6 +65,15 @@ function fixtureBootstrap(ipcVersion) {
 
 test('packed fixture fake host offers the current IPC protocol version', () => {
   expect(fixtureIpcProtocolLiteral()).toBe(IPC_PROTOCOL_VERSION)
+})
+
+test('packed fixture proof assertions use its negotiated version, not a stale second literal', () => {
+  const source = fs.readFileSync(FIXTURE_PATH, 'utf8')
+  const helpers = source.slice(source.indexOf('function negotiated('), source.indexOf('async function main()'))
+  vm.runInNewContext(`${helpers}\nassertDataOnlyPreloadSurfaceMembrane()`, { assert, vm })
+  expect(source).not.toMatch(
+    /assert\.equal\(\s*(?:proof\.ipcProtocolVersion|bootstrap\.versions\.ipcProtocol\.selected\.value),\s*\d+/
+  )
 })
 
 test('real renderer client accepts the fixture fake-host bootstrap', async () => {

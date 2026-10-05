@@ -2,6 +2,61 @@ const fs = require('node:fs')
 const path = require('node:path')
 const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
 
+test('current BlueZ deployment commands use the sealed producer release identity', () => {
+  const manifest = JSON.parse(read('vendor/bluez/source-asset-manifest.json'))
+  const releases = read('docs/BLUEZ_DEPLOYMENT.md').match(/\b5\.87-ubm\.\d+/g)
+  expect(releases).not.toBeNull()
+  expect(new Set(releases)).toEqual(new Set([manifest.distribution.release]))
+})
+
+test('Tauri Linux setup describes native owner binding and optional stricter policy', () => {
+  const guide = read('docs/TAURI.md')
+  expect(guide).toContain('resolves and pins')
+  expect(guide).toContain('optional stricter')
+  expect(guide).toContain('LinuxAuthority1.GetContract')
+  expect(guide).not.toContain('Without attestation scanning remains')
+  expect(guide).not.toContain('must also supply')
+  const options = read('native/tauri/src/btleplug_dispatcher.rs')
+  expect(options).not.toContain('Omission permits scanning, not connections')
+  expect(read('src/electron-main.ts')).not.toContain('omission permits scanning only')
+  for (const file of ['example-node/README.md', 'example-electron/README.md', 'example-tauri/README.md']) {
+    const example = read(file)
+    expect(example).toContain('native authority resolves and pins')
+    expect(example).toContain('optional stricter')
+    expect(example).not.toContain('omission leaves Linux')
+    expect(example).not.toContain('omission does not permit Linux')
+    expect(example).not.toContain('Omission does not grant connection authority')
+  }
+})
+
+test('Tauri security guidance distinguishes scoped IPC routing from native capability', () => {
+  const guide = read('docs/TAURI.md')
+  expect(guide).toContain('default transport permission grants none of these security scopes')
+  expect(guide).toContain('instantiated native authority')
+  expect(guide).toContain('CoreBluetooth')
+  expect(guide).not.toContain('still reports all generic security capabilities as unsupported')
+})
+
+test('desktop IPC guides require the option-aware protocol on both sides', () => {
+  expect(read('docs/TAURI.md')).toContain('IPC protocol 5')
+  expect(read('docs/ELECTRON.md')).toContain('exactly version 5')
+  for (const file of ['docs/TAURI.md', 'docs/ELECTRON.md']) {
+    const guide = read(file)
+    expect(guide).toContain('targeting')
+    expect(guide).toContain('protocol 4')
+    expect(guide).toContain('protocol.incompatible')
+  }
+})
+
+test('Electron security grants are trusted host facts, never renderer-controlled defaults', () => {
+  const guide = read('docs/ELECTRON.md')
+  expect(guide).toContain('`securityPermissions`')
+  expect(guide).toContain('defaults to no security permissions')
+  for (const permission of ['state', 'pair', 'cancel-pairing', 'unpair', 'custom-ceremony']) {
+    expect(guide).toContain(`\`security:${permission}\``)
+  }
+})
+
 test('all BlueZ deployment guides retain the exact production release reply signature', () => {
   const source = read('vendor/bluez-async/src/le_lease.rs')
   const signature = source.match(/ReleaseLease requires exact ([a-z]+) signature/)[1]

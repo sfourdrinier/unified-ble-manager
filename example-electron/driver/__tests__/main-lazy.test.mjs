@@ -5,6 +5,8 @@ import vm from 'node:vm'
 import { EventEmitter } from 'node:events'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
+const rendererProtocol = require('unified-ble-manager/electron/renderer')
+const { ELECTRON_BLE_IPC_CHANNEL } = rendererProtocol
 
 for (const failLoad of [false, true])
   for (const backend of ['corebluetooth', 'bluez'])
@@ -108,10 +110,10 @@ for (const failLoad of [false, true])
             this.port = port
           }
           install() {
-            this.port.handle('ble', async () => ({ kind: 'ok' }))
+            this.port.handle(ELECTRON_BLE_IPC_CHANNEL, async () => ({ kind: 'ok' }))
           }
           async destroy() {
-            this.port.removeHandler('ble')
+            this.port.removeHandler(ELECTRON_BLE_IPC_CHANNEL)
             return receipt()
           }
         }
@@ -137,8 +139,7 @@ for (const failLoad of [false, true])
             return host
           },
           ElectronMainBleRouter: class {},
-          ElectronMainBleBinding: Binding,
-          ELECTRON_BLE_IPC_CHANNEL: 'ble'
+          ElectronMainBleBinding: Binding
         }
         api.DESKTOP_RUST_CORE_PROFILES = { [backend]: { operationPrefix: 'direct-gatt' } }
         api.loadDesktopCoreBinding = async () => ({
@@ -166,6 +167,7 @@ for (const failLoad of [false, true])
                 }
               }
             if (name === 'unified-ble-manager/electron/main') return api
+            if (name === 'unified-ble-manager/electron/renderer') return rendererProtocol
             if (name === '../../example-node/trusted-options.cjs')
               return require('../../../example-node/trusted-options.cjs')
             if (name === './recording-directory.cjs')
@@ -205,13 +207,18 @@ for (const failLoad of [false, true])
         assert.equal(opens, 0)
         await processInvoke(event, { operation: 'recording-status', args: { id: 'retained' } })
         assert.equal(opens, 0, 'offline directory preparation must not acquire a central')
+        // The first ordinary renderer bootstrap must work before continuation
+        // controls ever acquire a process host or manager.
+        await handlers.get(ELECTRON_BLE_IPC_CHANNEL)(event, { kind: 'bootstrap' })
+        assert.equal(opens, 1)
+        assert.equal(borrowed, 1)
         await processInvoke(event, {
           operation: 'execute',
           args: { peerId: 'peer', declarationJson: JSON.stringify({ recording: { id: 'live' } }) }
         })
         assert.equal(directoryPreparations, 2, 'both paths use the same trusted preparation boundary')
-        await handlers.get('ble')(event, { kind: 'bootstrap' })
-        await handlers.get('ble')(event, { kind: 'bootstrap' })
+        await handlers.get(ELECTRON_BLE_IPC_CHANNEL)(event, { kind: 'bootstrap' })
+        await handlers.get(ELECTRON_BLE_IPC_CHANNEL)(event, { kind: 'bootstrap' })
         assert.equal(opens, 1)
         assert.equal(borrowed, 1)
         continuationStatus = { queuedData: 0, lastError: null, continuationOutcome: null }

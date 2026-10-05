@@ -1462,6 +1462,10 @@ struct ActiveScan {
     /// still in flight. Once that stop settles, even a failed stop leaves
     /// no scan to retain.
     start_refused: bool,
+    /// The start returned no session, so only this central owns its retained
+    /// compensating stop. A later start may retry this debt, never a published
+    /// scan owner's failed stop.
+    unpublished_cleanup: bool,
 }
 
 /// A resolved characteristic-level path: core path index, radio instance
@@ -2654,8 +2658,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// the core and publish the op id, then start the OS scan under the
     /// budget ([`LIVENESS_SCAN_START`] without one). A radio failure settles
     /// the core session as failed and releases the scan owner — a failed
-    /// start never wedges later scans. An expired or cancelled start stops
-    /// the possibly-started OS scan before it returns.
+    /// start never wedges later scans. An expired or cancelled start attempts
+    /// to stop the possibly-started OS scan before it returns. Refused cleanup
+    /// stays centrally owned and a later start retries that unpublished debt;
+    /// published scan ownership is never bypassed by this recovery.
     pub async fn start_scan(
         &self,
         owner: &str,
@@ -2720,6 +2726,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             duplicates,
             name_prefix: name_prefix.map(str::to_owned),
         };
+        self.retry_unpublished_scan_cleanup(window, &ctl.ticket)
+            .await?;
+        // Cleanup may have spent the caller's budget or raced shutdown. A
+        // successful old stop is not admission for a replacement operation.
+        self.precheck(&ctl, "scan.start")?;
         let id = {
             let mut core = self.inner.core.lock().await;
             if let Some(occupant) = self.inner.scan_slot().as_ref() {
@@ -2766,6 +2777,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 id: id.clone(),
                 phase: ScanPhase::Starting,
                 start_refused: false,
+                unpublished_cleanup: false,
             });
             id
         };
@@ -2892,6 +2904,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         loop {
             let pending = {
                 let mut slot = self.inner.scan_slot();
+                if let Some(active) = slot.as_mut()
+                    && active.id == *id
+                {
+                    active.unpublished_cleanup = true;
+                }
                 match slot
                     .as_ref()
                     .map(|active| (active.id == *id, &active.phase))
@@ -2904,6 +2921,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                             id: id.clone(),
                             phase: ScanPhase::StopFailed,
                             start_refused: false,
+                            unpublished_cleanup: true,
                         });
                         None
                     }
@@ -2947,6 +2965,34 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
             return;
         }
+    }
+
+    /// Retry only a session nobody acquired. The ordinary generation-bound
+    /// stop owner supplies single-flight and retention; the new caller's
+    /// original budget/cancellation bounds this drain before radio admission.
+    async fn retry_unpublished_scan_cleanup(
+        &self,
+        window: Window,
+        ticket: &OpTicket,
+    ) -> Result<(), DesktopError> {
+        let retained = self
+            .inner
+            .scan_slot()
+            .as_ref()
+            .filter(|active| active.unpublished_cleanup)
+            .map(|active| active.id.clone());
+        if let Some(id) = retained {
+            self.stop_scan_with(&id, window, ticket).await?;
+            let mut slot = self.inner.scan_slot();
+            if slot.as_ref().is_some_and(|active| {
+                active.id == id
+                    && active.unpublished_cleanup
+                    && matches!(active.phase, ScanPhase::StartCancelled)
+            }) {
+                *slot = None;
+            }
+        }
+        Ok(())
     }
 
     /// Stop the scan `scan` names (PR210-09). Only that scan: another id

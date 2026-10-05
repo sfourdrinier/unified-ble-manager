@@ -136,7 +136,9 @@ import UIKit
 
 #if os(iOS) && !targetEnvironment(macCatalyst)
   @available(iOS 18.0, *)
-  private static func items(_ text: String, info: [String: Any]) throws -> [ASPickerDisplayItem] {
+  // Internal pure construction seam: SDK-backed tests exercise the same
+  // descriptors the production picker receives, without allocating a session.
+  static func items(_ text: String, info: [String: Any]) throws -> [ASPickerDisplayItem] {
     guard let data = text.data(using: .utf8),
           let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
           Set(value.keys) == ["revision", "filters"], value["revision"] as? String == "ubm-accessory-chooser/1",
@@ -153,7 +155,6 @@ import UIKit
         throw CocoaError(.coderInvalidValue)
       }
       let descriptor = ASDiscoveryDescriptor()
-      var hasIdentity = false
       if let service = filter["serviceUuid"] as? String {
         guard let uuid = AccessoryChoiceAdmission.serviceUuidForDescriptor(service, allowed: declaredServices) else { throw CocoaError(.coderInvalidValue) }
         descriptor.bluetoothServiceUUID = uuid
@@ -162,7 +163,6 @@ import UIKit
         guard #available(iOS 18.2, *) else { throw CocoaError(.coderInvalidValue) }
         descriptor.bluetoothNameSubstring = name
         descriptor.bluetoothNameSubstringCompareOptions = .anchored
-        hasIdentity = true
       } else if filter["namePrefix"] != nil { throw CocoaError(.coderInvalidValue) }
       if let inputCompany = filter["companyIdentifier"], let company = AccessoryChoiceAdmission.integer(inputCompany) {
         guard companies.contains(where: { UInt16($0.replacingOccurrences(of: "0x", with: ""), radix: 16) == UInt16(company) }) else {
@@ -173,11 +173,9 @@ import UIKit
            prefix.allSatisfy({ $0 >= 0 && $0 <= 255 }) {
           descriptor.bluetoothManufacturerDataBlob = Data(prefix.map { UInt8($0) })
           descriptor.bluetoothManufacturerDataMask = Data(repeating: 255, count: prefix.count)
-          hasIdentity = true
-        } else if !hasIdentity { throw CocoaError(.coderInvalidValue) }
+        }
       } else if filter["companyIdentifier"] != nil { throw CocoaError(.coderInvalidValue) }
-      guard hasIdentity, descriptor.bluetoothServiceUUID != nil || filter["companyIdentifier"] != nil,
-            let image = UIImage(systemName: "sensor.tag.radiowaves.forward") else { throw CocoaError(.coderInvalidValue) }
+      guard let image = UIImage(systemName: "sensor.tag.radiowaves.forward") else { throw CocoaError(.coderInvalidValue) }
       return ASPickerDisplayItem(name: Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Bluetooth accessory",
                                  productImage: image, descriptor: descriptor)
     }

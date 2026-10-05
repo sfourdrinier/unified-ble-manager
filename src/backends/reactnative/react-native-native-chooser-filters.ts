@@ -16,11 +16,9 @@ export function nativeChooserFilters(options: ChooseOptions, platform: 'apple' |
     if ((filter.serviceUuids?.length ?? 0) > 1 || (filter.manufacturerData?.length ?? 0) > 1) return unsupported()
     const manufacturer = filter.manufacturerData?.[0]
     const namePrefix = filter.localNamePrefix
-    if (
-      platform === 'apple' &&
-      (((filter.serviceUuids?.length ?? 0) === 0 && manufacturer === undefined) ||
-        (namePrefix === undefined && (manufacturer?.dataPrefix?.length ?? 0) === 0))
-    )
+    // ASK requires a service UUID or company identifier. Name and data are
+    // optional additional constraints, not a second mandatory identity.
+    if (platform === 'apple' && (filter.serviceUuids?.length ?? 0) === 0 && manufacturer === undefined)
       return unsupported()
     return {
       ...(filter.serviceUuids?.[0] === undefined ? {} : { serviceUuid: canonicalUuidInput(filter.serviceUuids[0]) }),

@@ -56,10 +56,10 @@ test('BlueZ derivative source assets retain exact upstream provenance and licens
     deployment: 'external-explicit-host-action',
     automaticInstallOrLaunch: false,
     linuxAuthorityContract: [1, 2, 1],
-    release: '5.87-ubm.2'
+    release: '5.87-ubm.3'
   })
   const patch = readFileSync(new URL(manifest.patch.file, directory), 'utf8')
-  for (const path of ['src/ubm-le-lease.c', 'src/ubm-le-lease.h', 'unit/test-ubm-le-lease.c']) {
+  for (const path of ['src/ubm-le-lease.c', 'src/ubm-le-lease.h', 'unit/test-ubm-le-lease.c', 'unit/test-ubm-scan-filter.c']) {
     assert.ok(patch.includes(`+++ b/${path}`), `missing production authority source: ${path}`)
   }
   assert.match(patch, /protocol = 1, lease = 2, gatt = 1/)

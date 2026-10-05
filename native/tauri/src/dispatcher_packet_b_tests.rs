@@ -46,6 +46,429 @@ const LEASE_ID: &str = "lease-1";
 const LEASE_GENERATION: &str = "generation-1";
 const WAIT: Duration = Duration::from_secs(5);
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn security_watch_retains_racing_event_order_without_regressing_to_an_unsequenced_snapshot() {
+    for snapshot_bond in [
+        ubm_desktop::BondState::Bonded,
+        ubm_desktop::BondState::NotBonded,
+    ] {
+        let harness = Arc::new(Harness::new().await);
+        harness.advertise("watch-race").await;
+        harness.radio().set_security(
+            "watch-race",
+            ubm_desktop::SecurityState {
+                bond: snapshot_bond,
+                pairing_possible: Some(true),
+            },
+        );
+        harness.radio().block_op(FaultOp::SecurityState);
+        let mut observed = harness.central.security_events();
+        let watching = Arc::clone(&harness);
+        let subscribe = tokio::spawn(async move {
+            watching
+                .execute(
+                    "security.watch.subscribe",
+                    vec![("peerId", string("watch-race"))],
+                    None,
+                    OpControl::budget_ms(5000),
+                )
+                .await
+        });
+        tokio::time::timeout(WAIT, async {
+            while count(&harness.radio().calls(), "security_state") == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("state read held");
+        for bond in [
+            ubm_desktop::BondState::NotBonded,
+            ubm_desktop::BondState::Bonded,
+        ] {
+            harness.radio().push_event(RadioEvent::SecurityChanged {
+                peer_id: "watch-race".to_owned(),
+                state: ubm_desktop::SecurityState {
+                    bond,
+                    pairing_possible: Some(true),
+                },
+            });
+            tokio::time::timeout(WAIT, observed.recv())
+                .await
+                .expect("core event observed")
+                .expect("security event");
+        }
+        harness.radio().unblock_op(FaultOp::SecurityState);
+        let watch = subscribe
+            .await
+            .expect("watch task")
+            .expect("watch published");
+        let handle = text(&watch, "handle");
+        for bond in [
+            ubm_desktop::BondState::Bonded,
+            ubm_desktop::BondState::NotBonded,
+        ] {
+            harness.radio().push_event(RadioEvent::SecurityChanged {
+                peer_id: "watch-race".to_owned(),
+                state: ubm_desktop::SecurityState {
+                    bond,
+                    pairing_possible: Some(true),
+                },
+            });
+            tokio::time::timeout(WAIT, observed.recv())
+                .await
+                .expect("live event observed")
+                .expect("live event");
+        }
+        tokio::time::timeout(WAIT, async {
+            while harness
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event["streamId"] == handle)
+                .count()
+                < 4
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("events replayed");
+        let events = harness
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event["streamId"] == handle)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["item"]["value"]["state"]["bond"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["not-bonded", "bonded", "bonded", "not-bonded"],
+            "an unsequenced snapshot cannot be placed ahead of or after a racing native event"
+        );
+        assert_eq!(
+            events.iter().map(|event| event["item"]["value"]["sequence"].as_u64().unwrap()).collect::<Vec<_>>(),
+            [1, 2, 3, 4],
+            "retained racing observations use the watch sequence, not a snapshot/source-counter mixture"
+        );
+        assert!(events
+            .windows(2)
+            .all(
+                |pair| pair[0]["item"]["value"]["state"]["measuredAtMonotonicMs"].as_u64()
+                    <= pair[1]["item"]["value"]["state"]["measuredAtMonotonicMs"].as_u64()
+            ));
+        harness.dispatcher.release(&harness.key()).await;
+        harness.central.shutdown().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typed_address_connect_resolves_before_acquiring_the_core_lease() {
+    let harness = Harness::new().await;
+    harness.radio().set_address(
+        "AA:BB:CC:DD:EE:FF",
+        ubm_desktop::AddressType::Random,
+        "address-peer",
+    );
+    let reply = harness
+        .execute(
+            "connection.connect",
+            vec![(
+                "address",
+                object([
+                    ("address", string("AA:BB:CC:DD:EE:FF")),
+                    ("addressType", string("random")),
+                ]),
+            )],
+            None,
+            OpControl::budget_ms(5000),
+        )
+        .await
+        .expect("typed address connects without app scan");
+    assert!(!text(&reply, "handle").is_empty());
+    assert_eq!(count(&harness.radio().calls(), "resolve_address"), 1);
+    assert_eq!(count(&harness.radio().calls(), "connect"), 1);
+    harness.dispatcher.release(&harness.key()).await;
+    harness.central.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn address_resolution_uses_original_deadline_and_parent_cancellation() {
+    let harness = Arc::new(Harness::new().await);
+    harness.radio().set_address(
+        "AA:BB:CC:DD:EE:FF",
+        ubm_desktop::AddressType::Random,
+        "address-peer",
+    );
+    harness.radio().block_op(FaultOp::ResolveAddress);
+    let target = || {
+        object([
+            ("address", string("AA:BB:CC:DD:EE:FF")),
+            ("addressType", string("random")),
+        ])
+    };
+    let error = harness
+        .execute(
+            "connection.connect",
+            vec![("address", target())],
+            None,
+            OpControl::budget_ms(25),
+        )
+        .await
+        .expect_err("resolution shares original deadline");
+    assert_eq!(error.code, BleErrorCode::OperationTimedOut);
+    assert_eq!(count(&harness.radio().calls(), "connect"), 0);
+    let ctl = OpControl::budget_ms(5000);
+    let cancellation = ctl.ticket.clone();
+    let pairing_harness = Arc::clone(&harness);
+    let acquisition = tokio::spawn(async move {
+        pairing_harness
+            .execute(
+                "connection.connect",
+                vec![(
+                    "address",
+                    object([
+                        ("address", string("AA:BB:CC:DD:EE:FF")),
+                        ("addressType", string("random")),
+                    ]),
+                )],
+                None,
+                ctl,
+            )
+            .await
+    });
+    tokio::time::timeout(WAIT, async {
+        while count(&harness.radio().calls(), "resolve_address") < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("second resolve held");
+    cancellation.request_cancel();
+    let error = acquisition
+        .await
+        .expect("acquisition task")
+        .expect_err("parent cancellation reaches resolution");
+    assert_eq!(error.code, BleErrorCode::OperationAborted);
+    assert_eq!(count(&harness.radio().calls(), "connect"), 0);
+    harness.central.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn security_cancel_reports_the_native_ceremony_and_invalid_options_do_not_pair() {
+    let harness = Arc::new(Harness::new().await);
+    harness.advertise("pair-peer").await;
+    harness.radio().set_security(
+        "pair-peer",
+        ubm_desktop::SecurityState {
+            bond: ubm_desktop::BondState::NotBonded,
+            pairing_possible: Some(true),
+        },
+    );
+    let error = harness
+        .execute(
+            "security.pair",
+            vec![
+                ("peerId", string("pair-peer")),
+                ("protection", string("authenticated")),
+            ],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect_err("unsupported protection never downgraded");
+    assert_eq!(error.code, BleErrorCode::CapabilityUnsupported);
+    assert_eq!(count(&harness.radio().calls(), "pair"), 0);
+    harness.radio().block_op(FaultOp::Pair);
+    let pairing_harness = Arc::clone(&harness);
+    let pair = tokio::spawn(async move {
+        pairing_harness
+            .execute(
+                "security.pair",
+                vec![("peerId", string("pair-peer"))],
+                None,
+                OpControl::budget_ms(5000),
+            )
+            .await
+    });
+    tokio::time::timeout(WAIT, async {
+        while count(&harness.radio().calls(), "pair") == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("native pairing in flight");
+    let cancelled = harness
+        .execute(
+            "security.cancel-pairing",
+            vec![("peerId", string("pair-peer"))],
+            None,
+            OpControl::budget_ms(5000),
+        )
+        .await
+        .expect("cancel native pairing");
+    assert_eq!(text(field(&cancelled, "result"), "outcome"), "cancelled");
+    assert_eq!(
+        text(
+            field(
+                &pair.await.expect("pair task").expect("pair native answer"),
+                "result"
+            ),
+            "outcome"
+        ),
+        "cancelled"
+    );
+    harness.central.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn security_routes_reach_core_and_watch_is_lease_owned() {
+    let harness = Harness::new().await;
+    harness.advertise("security-peer").await;
+    harness.radio().set_security(
+        "security-peer",
+        ubm_desktop::SecurityState {
+            bond: ubm_desktop::BondState::NotBonded,
+            pairing_possible: Some(true),
+        },
+    );
+    let watch = harness
+        .execute(
+            "security.watch.subscribe",
+            vec![("peerId", string("security-peer"))],
+            None,
+            OpControl::budget_ms(5000),
+        )
+        .await
+        .expect("security watch");
+    let handle = text(&watch, "handle");
+    tokio::time::timeout(WAIT, async {
+        while !harness
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event["streamId"] == handle)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("initial snapshot delivered before native changes");
+    assert_eq!(
+        harness
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|event| event["streamId"] == handle)
+            .unwrap()["item"]["value"]["sequence"],
+        1,
+        "the public security event guard requires a positive initial observation sequence"
+    );
+    let state = harness
+        .execute(
+            "security.state",
+            vec![("peerId", string("security-peer"))],
+            None,
+            OpControl::budget_ms(5000),
+        )
+        .await
+        .expect("security state");
+    assert_eq!(field(field(&state, "state"), "bond"), &string("not-bonded"));
+    let paired = harness
+        .execute(
+            "security.pair",
+            vec![
+                ("peerId", string("security-peer")),
+                ("ceremony", string("system")),
+            ],
+            None,
+            OpControl::budget_ms(5000),
+        )
+        .await
+        .expect("pair through core");
+    assert_eq!(
+        field(field(&paired, "result"), "outcome"),
+        &string("paired")
+    );
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if harness.events.lock().unwrap().iter().any(|event| {
+                event["streamId"] == handle && event["item"]["value"]["state"]["bond"] == "bonded"
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("native security change forwarded");
+    let sequences = harness
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| event["streamId"] == handle)
+        .map(|event| event["item"]["value"]["sequence"].as_u64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sequences,
+        [1, 2],
+        "snapshot and native event share one watch-local observation order"
+    );
+    let removed = harness
+        .execute(
+            "security.unpair",
+            vec![("peerId", string("security-peer"))],
+            None,
+            OpControl::budget_ms(5000),
+        )
+        .await
+        .expect("unpair");
+    assert_eq!(
+        field(field(&removed, "result"), "outcome"),
+        &string("unpaired")
+    );
+    let released = harness
+        .route(
+            "security.watch.unsubscribe",
+            "release-security-watch-1",
+            vec![("handle", string(handle.clone()))],
+            None,
+        )
+        .await
+        .expect("watch cleanup");
+    assert_eq!(released, super::released());
+    let repeated = harness
+        .route(
+            "security.watch.unsubscribe",
+            "release-security-watch-2",
+            vec![("handle", string(handle.clone()))],
+            None,
+        )
+        .await
+        .expect("owned released handle is idempotent");
+    assert_eq!(repeated, super::released());
+    let other = harness.other_caller().await;
+    let foreign = other
+        .execute(
+            "security.watch.unsubscribe",
+            vec![("handle", string(handle))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect_err("foreign handle cannot fabricate release");
+    assert_eq!(foreign.code, BleErrorCode::OwnershipDenied);
+    assert_eq!(count(&harness.radio().calls(), "pair"), 1);
+    harness.central.shutdown().await;
+}
+
 #[test]
 fn scan_projection_preserves_exact_native_origin_and_service_union() {
     for source in [
@@ -56,10 +479,14 @@ fn scan_projection_preserves_exact_native_origin_and_service_union() {
             unreachable!()
         };
         snapshot.extras.source = source;
+        snapshot.address = Some("AA:BB:CC:DD:EE:FF".to_owned());
+        snapshot.extras.connectable = Some(true);
         snapshot
             .service_uuids
             .push("0000110b-0000-1000-8000-00805f9b34fb".into());
-        let value = super::core_scan_observation(&snapshot);
+        let value = super::core_scan_observation(&snapshot, None);
+        assert_eq!(field(&value, "address"), &string("AA:BB:CC:DD:EE:FF"));
+        assert_eq!(field(&value, "connectable"), &IpcValue::Bool(true));
         assert_eq!(field(&value, "origin"), &string(source.as_str()));
         assert_eq!(
             field(&value, "serviceUuids"),
@@ -72,6 +499,104 @@ fn scan_projection_preserves_exact_native_origin_and_service_union() {
             )
         );
     }
+}
+
+#[tokio::test]
+async fn scan_projection_preserves_authoritative_address_types_and_unknown() {
+    let harness = Harness::new().await;
+    let mut cache = std::collections::HashMap::new();
+    for (peer, kind) in [
+        ("public-peer", Some(ubm_desktop::AddressType::Public)),
+        ("random-peer", Some(ubm_desktop::AddressType::Random)),
+        ("unknown-peer", None),
+    ] {
+        harness.advertise(peer).await;
+        if let Some(kind) = kind {
+            harness.radio().set_address_type(peer, kind);
+        }
+        let RadioEvent::Advertisement(mut snapshot) = advertisement(peer) else {
+            unreachable!()
+        };
+        snapshot.address = Some("AA:BB:CC:DD:EE:FF".into());
+        let value = super::typed_core_scan_observation(&harness.central, &snapshot, &mut cache)
+            .await
+            .unwrap();
+        assert_eq!(
+            field(&value, "addressType"),
+            &kind.map_or(IpcValue::Null, |kind| string(kind.as_str()))
+        );
+        super::typed_core_scan_observation(&harness.central, &snapshot, &mut cache)
+            .await
+            .unwrap();
+    }
+    assert_eq!(count(&harness.radio().calls(), "address_type"), 3);
+    let RadioEvent::Advertisement(mut missing) = advertisement("missing-peer") else {
+        unreachable!()
+    };
+    missing.address = Some("AA:BB:CC:DD:EE:FF".into());
+    let error = super::typed_core_scan_observation(&harness.central, &missing, &mut cache)
+        .await
+        .expect_err("native failures are not unknown address types");
+    assert_eq!(error.code, BleErrorCode::PeerNotFound);
+    assert!(!cache.contains_key("missing-peer"));
+    missing.address = None;
+    let value = super::typed_core_scan_observation(&harness.central, &missing, &mut cache)
+        .await
+        .unwrap();
+    assert_eq!(field(&value, "addressType"), &IpcValue::Null);
+    harness.central.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scan_stream_serializes_native_public_random_and_unknown_address_types() {
+    let harness = Harness::new().await;
+    let scan = harness
+        .execute(
+            "scan.start",
+            vec![("query", empty_scan_query())],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let stream = text(&scan, "handle");
+    for (index, (peer, kind)) in [
+        ("public-scan", Some(ubm_desktop::AddressType::Public)),
+        ("random-scan", Some(ubm_desktop::AddressType::Random)),
+        ("unknown-scan", None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if let Some(kind) = kind {
+            harness.radio().set_address_type(peer, kind);
+        }
+        let RadioEvent::Advertisement(mut snapshot) = advertisement(peer) else {
+            unreachable!()
+        };
+        snapshot.address = Some("AA:BB:CC:DD:EE:FF".into());
+        harness
+            .radio()
+            .push_event(RadioEvent::Advertisement(snapshot));
+        let items = harness.wait_items(&stream, index + 1).await;
+        assert_eq!(items[index]["value"]["address"], "AA:BB:CC:DD:EE:FF");
+        assert_eq!(
+            items[index]["value"]["addressType"],
+            kind.map_or(serde_json::Value::Null, |kind| serde_json::Value::String(
+                kind.as_str().into()
+            ))
+        );
+    }
+    harness
+        .execute(
+            "scan.stop",
+            vec![("scanHandle", string(stream))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness.central.shutdown().await;
 }
 
 #[tokio::test]
@@ -1513,6 +2038,8 @@ impl Harness {
                     databases: HashMap::new(),
                     subscriptions: HashMap::new(),
                     connection_events: HashMap::new(),
+                    security_watches: HashMap::new(),
+                    security_watch_releases: std::collections::HashSet::new(),
                     operations: HashMap::new(),
                     completed_correlations: HashMap::new(),
                     pending_events: std::collections::HashSet::new(),
@@ -3809,7 +4336,10 @@ fn version_offer() -> BTreeMap<String, IpcValue> {
         ("capabilitySchema", range("capability-schema", 1)),
         ("eventSchema", range("event-schema", 1)),
         ("traceFormat", range("trace-format", 1)),
-        ("ipcProtocol", range("ipc-protocol", 4)),
+        (
+            "ipcProtocol",
+            range("ipc-protocol", super::IPC_PROTOCOL_VERSION),
+        ),
     ]) else {
         panic!("the version offer is an object");
     };

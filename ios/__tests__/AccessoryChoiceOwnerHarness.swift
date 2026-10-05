@@ -3,7 +3,13 @@ import Foundation
 @main struct AccessoryChoiceOwnerHarness {
   static func main() {
     precondition(AccessoryChoiceAdmission.validFilter(["serviceUuid": "180D", "namePrefix": "SIM", "companyIdentifier": 107, "manufacturerPrefix": [0, 255]]))
-    for filter: [String: Any] in [["serviceUuid": false], ["companyIdentifier": true], ["companyIdentifier": 1.5], ["namePrefix": "SIM", "companyIdentifier": 107, "manufacturerPrefix": [true]], ["manufacturerPrefix": [1]], ["unknown": 1]] {
+    // ASK's required selector is a service UUID OR company ID. Name and data
+    // constrain that selector, but neither is mandatory nor sufficient alone.
+    precondition(AccessoryChoiceAdmission.validFilter(["serviceUuid": "180D"]))
+    precondition(AccessoryChoiceAdmission.validFilter(["companyIdentifier": 107]))
+    precondition(AccessoryChoiceAdmission.validFilter(["companyIdentifier": 0, "manufacturerPrefix": []]))
+    precondition(AccessoryChoiceAdmission.validFilter(["companyIdentifier": 65535]))
+    for filter: [String: Any] in [[:], ["namePrefix": "SIM"], ["serviceUuid": false], ["companyIdentifier": true], ["companyIdentifier": -1], ["companyIdentifier": 65536], ["companyIdentifier": 1.5], ["namePrefix": "SIM", "companyIdentifier": 107, "manufacturerPrefix": [true]], ["manufacturerPrefix": [1]], ["unknown": 1]] {
       precondition(!AccessoryChoiceAdmission.validFilter(filter))
     }
     precondition(AccessoryChoiceAdmission.serviceDeclared("0000180d-0000-1000-8000-00805f9b34fb", allowed: ["180D"]))

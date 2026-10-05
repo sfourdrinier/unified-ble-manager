@@ -17,7 +17,7 @@ class FakeChannel {
 }
 
 function negotiated(axis) {
-  const selected = { axis, value: axis === 'ipc-protocol' ? 4 : 1 }
+  const selected = { axis, value: axis === 'ipc-protocol' ? 5 : 1 }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -302,12 +302,18 @@ describe('Tauri v2 public manager', () => {
     await manager.destroy()
   })
 
-  test('rejects connection options that the Tauri IPC contract cannot route', async () => {
+  test('routes connection options unchanged and preserves native unsupported refusal', async () => {
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
       if (request.kind === 'event.ack') return { kind: 'event.ack' }
       if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.envelope.command === 'connection.connect')
+        throw require('../src/backend-contract/errors').contractError(
+          'capability.unsupported',
+          'connection',
+          'native.connection.options'
+        )
       throw new Error(`unexpected route ${request.envelope.command}`)
     })
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
@@ -325,7 +331,12 @@ describe('Tauri v2 public manager', () => {
     await expect(manager.connect('peer-1', { transport: 'le' })).rejects.toMatchObject({
       code: 'capability.unsupported'
     })
-    expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'connection.connect')).toBe(false)
+    const routed = invoke.mock.calls.filter(([, args]) => args.request.envelope?.command === 'connection.connect')
+    expect(routed.map(([, args]) => args.request.envelope.payload)).toEqual([
+      expect.objectContaining({ intent: 'when-available' }),
+      expect.objectContaining({ preferredPhy: ['le-2m'] }),
+      expect.objectContaining({ transport: 'le' })
+    ])
     await manager.destroy()
   })
 
@@ -1325,7 +1336,7 @@ describe('Tauri v2 public manager', () => {
     ).rejects.toMatchObject({ code: 'protocol.malformed' })
 
     const outOfRangeVersionBootstrap = bootstrap()
-    outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 5 }
+    outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 6 }
     const outOfRangeVersionInvoke = jest.fn(async () => ({ kind: 'bootstrap', bootstrap: outOfRangeVersionBootstrap }))
     await expect(
       createTauriBleManagerWithEnvironment({ invoke: outOfRangeVersionInvoke, Channel: FakeChannel })
@@ -1657,7 +1668,7 @@ describe('Tauri deadline and native retryability through the IPC manager', () =>
 // errors, subscribe `delivery`, lifecycle events), so the IPC protocol is 3.
 // A mixed pair fails at bootstrap as protocol.incompatible, never later as
 // protocol.malformed on its first operation.
-describe('Tauri IPC protocol version 3', () => {
+describe('Tauri IPC protocol version 5', () => {
   function versionAxes(ipcProtocol) {
     const bootstrapValue = bootstrap()
     const selected = { axis: 'ipc-protocol', value: ipcProtocol }
@@ -1666,11 +1677,11 @@ describe('Tauri IPC protocol version 3', () => {
     return bootstrapValue
   }
 
-  test('the webview offers exactly IPC protocol 4', async () => {
+  test('the webview offers exactly IPC protocol 5', async () => {
     const { TAURI_PLUGIN_COMPATIBILITY } = require('../src/tauri/compatibility')
     const { IPC_PROTOCOL_VERSION } = require('../src/ipc/protocol')
-    expect(IPC_PROTOCOL_VERSION).toBe(4)
-    expect(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol).toBe(4)
+    expect(IPC_PROTOCOL_VERSION).toBe(5)
+    expect(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol).toBe(5)
 
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
@@ -1683,8 +1694,8 @@ describe('Tauri IPC protocol version 3', () => {
     const offer = invoke.mock.calls[0][1].request.offer
     expect(offer.ipcProtocol).toEqual({
       axis: 'ipc-protocol',
-      minimum: { axis: 'ipc-protocol', value: 4 },
-      maximum: { axis: 'ipc-protocol', value: 4 }
+      minimum: { axis: 'ipc-protocol', value: 5 },
+      maximum: { axis: 'ipc-protocol', value: 5 }
     })
     await manager.destroy()
   })
@@ -1717,10 +1728,10 @@ describe('Tauri IPC protocol version 3', () => {
     expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap'])
   })
 
-  test('a plugin that selects protocol 3 is refused as protocol.incompatible and released', async () => {
+  test.each([3, 4])('plugin selecting protocol %s is refused as incompatible and released', async oldVersion => {
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
-      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: versionAxes(3) }
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: versionAxes(oldVersion) }
       if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
       throw new Error(`unexpected ${request.kind}`)
     })

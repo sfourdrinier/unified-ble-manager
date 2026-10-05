@@ -4,7 +4,7 @@
 
 Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.
 
-This source targets `5.0.0-rc.17`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
+This source targets `5.0.0-rc.18`. Main executes the shared Rust core (`DesktopCentral`) through one N-API addon. Tagged releases ship it prebuilt for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. The addon is Node-API, so one binary serves Node and modern Electron alike.
 
 macOS desktop support is Apple Silicon (`arm64`) only. Windows and Linux desktop support includes `arm64` and `x64`.
 Intel macOS desktop is outside the UBM support policy, including source-built
@@ -247,21 +247,36 @@ it destroys the manager. The binding handles operation correlation, event
 acknowledgement, bounded backpressure, cancellation routing, and retryable
 cleanup; applications must not duplicate those policies.
 
+Security authorization also comes from trusted main-process facts. The sender
+returned by `authenticate(event)` may include `securityPermissions`:
+`security:state` authorizes state and watch, `security:pair` authorizes pairing,
+`security:cancel-pairing` authorizes cancellation, `security:unpair` authorizes
+bond removal, and `security:custom-ceremony` authorizes custom responses. An
+omitted list defaults to no security permissions. Grant only the operations
+your policy allows for that authenticated window/session; never copy grants
+from a renderer request. The grant remains fixed for the attachment. The
+reference driver grants the first four explicitly and leaves custom ceremony
+denied. Permissions authorize a route; the attached native backend still
+determines capability and reports the operation's actual result.
+
 The renderer and main negotiate the IPC protocol at bootstrap; both offer
-exactly version 4. The caller's deadline crosses as a relative `budgetMs` that
+exactly version 5. Version 5 adds security routes, address targeting, connection
+intent and platform scan-option forwarding. A capability still describes the
+instantiated backend's implementation; transport support does not invent native
+support. The caller's deadline crosses as a relative `budgetMs` that
 main admits against its own monotonic clock at receipt (the renderer's
 `performance.now()` instant has a different time origin), and main rejects an
 absolute renderer `deadline` as `protocol.malformed`. Normalized errors may
 carry `commit` (`not-dispatched`, `uncertain`, or `null`). Version 4 adds the
 attachment rebind described below. A renderer and main built from different
-package versions where one side speaks protocol 3 or older fail at bootstrap
+package versions where one side speaks protocol 4 or older fail at bootstrap
 with `protocol.incompatible`, in either direction, before a lease is
 registered or any operation runs, so preload, renderer bundle and main must
 ship from the same package version. The IPC channel name
 (`unified-ble-manager:v2`) is unchanged so the refusal arrives as a typed error
 rather than a missing handler.
 
-**Adapter loss and the attachment rebind (protocol 4).** An adapter loss
+**Adapter loss and the attachment rebind (introduced in protocol 4).** An adapter loss
 moves the main-process manager to the backend's new attachment (new backend
 and adapter generations); the manager itself stays alive. Main, never a
 renderer, then rebinds every active renderer lease to that attachment and

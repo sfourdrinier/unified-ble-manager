@@ -88,6 +88,41 @@ pub type CoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, DesktopError>
 /// method is a direct delegation to the shared [`DesktopCentral`]; none of
 /// them takes a lock across the radio call.
 pub trait CoreAuthority: Send + Sync {
+    /// Security facts and ceremonies share this exact core/cancellation authority.
+    fn security_state<'a>(
+        &'a self,
+        peer: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::SecurityState>;
+    fn pair<'a>(
+        &'a self,
+        peer: &'a str,
+        request: ubm_desktop::PairRequest,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::PairOutcome>;
+    fn cancel_pairing<'a>(
+        &'a self,
+        peer: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::CancelPairingOutcome>;
+    fn unpair<'a>(
+        &'a self,
+        peer: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::UnpairOutcome>;
+    fn security_events(&self) -> broadcast::Receiver<ubm_desktop::SecurityEvent>;
+    /// The actual OS address type, never inferred from the address bytes.
+    fn address_type<'a>(
+        &'a self,
+        peer: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, Option<ubm_desktop::AddressType>>;
+    fn resolve_address<'a>(
+        &'a self,
+        address: &'a str,
+        address_type: ubm_desktop::AddressType,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, String>;
     /// Capability descriptors from this instantiated central, including refusal reasons.
     fn capability_descriptors(
         &self,
@@ -258,6 +293,58 @@ pub trait CoreAuthority: Send + Sync {
 }
 
 impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
+    fn security_state<'a>(
+        &'a self,
+        peer: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::SecurityState> {
+        Box::pin(DesktopCentral::security_state(self, peer, ctl))
+    }
+    fn pair<'a>(
+        &'a self,
+        peer: &'a str,
+        request: ubm_desktop::PairRequest,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::PairOutcome> {
+        Box::pin(DesktopCentral::pair(self, peer, request, ctl))
+    }
+    fn cancel_pairing<'a>(
+        &'a self,
+        peer: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::CancelPairingOutcome> {
+        Box::pin(DesktopCentral::cancel_pairing(self, peer, ctl))
+    }
+    fn unpair<'a>(
+        &'a self,
+        peer: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::UnpairOutcome> {
+        Box::pin(DesktopCentral::unpair(self, peer, ctl))
+    }
+    fn security_events(&self) -> broadcast::Receiver<ubm_desktop::SecurityEvent> {
+        DesktopCentral::security_events(self)
+    }
+    fn address_type<'a>(
+        &'a self,
+        peer: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, Option<ubm_desktop::AddressType>> {
+        Box::pin(DesktopCentral::address_type(self, peer, ctl))
+    }
+    fn resolve_address<'a>(
+        &'a self,
+        address: &'a str,
+        address_type: ubm_desktop::AddressType,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, String> {
+        Box::pin(DesktopCentral::resolve_address(
+            self,
+            address,
+            address_type,
+            ctl,
+        ))
+    }
     fn capability_descriptors(
         &self,
     ) -> CoreFuture<'_, Vec<ubm_core::central::CapabilityDescriptor>> {

@@ -67,6 +67,11 @@ import {
 } from './connection-event-stream-registry'
 import { isElectronConnectionEventsStreamHandle, type ElectronConnectionEventsSubscribeResponseV2 } from './protocol'
 import { electronRequestByteLength } from './ipc-message-sizing'
+import { pairingResponse, isSecurityEvent } from '../ipc/security'
+import type { SecurityPairingResponse, SecurityPairingChallenge } from '../backend-contract/security'
+import type { BoundedAsyncStream, BoundedAsyncStreamIterator } from '../backend-contract/streams'
+import { decodeIpcScanPlatform } from '../ipc/scan-platform'
+import { waitForChildCleanup } from '../ipc/cleanup-drain'
 
 export type { ElectronEventDelivery } from './renderer-stream-registry'
 
@@ -107,6 +112,27 @@ export interface ElectronMainBleRouterOptions {
 }
 
 interface RendererResources {
+  readonly securityWatches: Map<
+    string,
+    {
+      readonly stream: BoundedAsyncStream<import('../backend-contract/security').PeerSecurityEvent>
+      readonly iterator: BoundedAsyncStreamIterator<import('../backend-contract/security').PeerSecurityEvent>
+      cleanup: Promise<SerializableRecord> | null
+      localReturn: Promise<void> | null
+      localReturned: boolean
+      nativeReleased: boolean
+      nativeClose: Promise<CleanupRecord> | null
+    }
+  >
+  readonly pairingChallenges: Map<
+    string,
+    {
+      readonly ceremonyHandle: string
+      readonly kind: SecurityPairingChallenge['kind']
+      readonly resolve: (value: SecurityPairingResponse) => void
+      readonly reject: (error: unknown) => void
+    }
+  >
   readonly rendererLease: RendererLeaseIdentity
   readonly scans: Map<string, ManagedScan>
   readonly connections: Map<string, MainConnection>
@@ -141,6 +167,7 @@ interface ManagedOperation {
 }
 
 interface RendererResourceSnapshot {
+  readonly securityWatches: ReadonlySet<string>
   readonly scans: ReadonlySet<string>
   readonly connections: ReadonlySet<string>
   readonly connectionEventSubscriptions: ReadonlySet<string>
@@ -418,6 +445,25 @@ export class ElectronMainBleRouter {
         response = await this.connect(resources, envelope.payload, controller)
       } else if (envelope.command === 'adapter.state') {
         response = await this.adapterState(controller)
+      } else if (envelope.command === 'security.watch.subscribe') {
+        response = this.watchSecurity(resources, envelope.payload)
+      } else if (envelope.command === 'security.watch.unsubscribe') {
+        response = await this.unwatchSecurity(resources, requiredString(envelope.payload, 'handle'))
+      } else if (envelope.command === 'security.custom-ceremony') {
+        const challengeId = requiredString(envelope.payload, 'challengeId')
+        const challenge = resources.pairingChallenges.get(challengeId)
+        if (challenge === undefined || challenge.ceremonyHandle !== envelope.payload.ceremonyHandle)
+          throw contractError('ownership.denied', 'ipc', 'electron.security.challenge-owner')
+        const result = pairingResponse(envelope.payload.response)
+        if (result.kind !== challenge.kind)
+          throw contractError('protocol.violation', 'ipc', 'electron.security.challenge-kind')
+        resources.pairingChallenges.delete(challengeId)
+        challenge.resolve(result)
+        response = { accepted: true }
+      } else if (
+        ['security.state', 'security.pair', 'security.cancel-pairing', 'security.unpair'].includes(envelope.command)
+      ) {
+        response = await this.security(resources, envelope.command, envelope.payload, controller)
       } else if (
         [
           'peers.resolve',
@@ -520,6 +566,9 @@ export class ElectronMainBleRouter {
       throw contractError('protocol.violation', 'scan', 'electron-main-router.scan-plan-digest')
     }
     const scan = await this.manager.scan({
+      ...(envelope.payload.platform === undefined
+        ? {}
+        : { platform: decodeIpcScanPlatform(envelope.payload.platform) }),
       query,
       plan,
       filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
@@ -544,8 +593,39 @@ export class ElectronMainBleRouter {
     payload: SerializableRecord,
     controller: AbortController
   ): Promise<SerializableRecord> {
-    const peerId = opaqueId(requiredString(payload, 'peerId'), 'peer', 'electron-router')
-    const connection = await this.manager.connect(peerId, operationOptions(payload, controller))
+    const address = payload.address
+    let peerId
+    if (address !== undefined) {
+      if (
+        typeof address !== 'object' ||
+        address === null ||
+        Array.isArray(address) ||
+        !('address' in address) ||
+        !('addressType' in address) ||
+        typeof address.address !== 'string' ||
+        !/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(address.address) ||
+        (address.addressType !== 'public' && address.addressType !== 'random') ||
+        payload.peerId !== undefined
+      )
+        throw contractError('argument.invalid', 'connection', 'electron.connect.address')
+      const connections = this.manager.attachedBackend.backend.connections
+      if (!this.manager.supports('peer:address-targeting') || connections.peerFromAddress === undefined)
+        throw contractError('capability.unsupported', 'connection', 'electron.connect.address')
+      peerId = connections.peerFromAddress({ address: address.address, addressType: address.addressType })
+    } else peerId = opaqueId(requiredString(payload, 'peerId'), 'peer', 'electron-router')
+    const intent = payload.intent
+    if (intent !== undefined && intent !== 'direct' && intent !== 'when-available')
+      throw contractError('argument.invalid', 'connection', 'electron.connect.intent')
+    const transport = payload.transport
+    if (transport !== undefined && transport !== 'le' && transport !== 'auto')
+      throw contractError('argument.invalid', 'connection', 'electron.connect.transport')
+    const preferredPhy = decodePreferredPhy(payload.preferredPhy)
+    const connection = await this.manager.connect(peerId, {
+      ...operationOptions(payload, controller),
+      ...(intent === undefined ? {} : { intent }),
+      ...(transport === undefined ? {} : { transport }),
+      ...(preferredPhy === undefined ? {} : { preferredPhy })
+    })
     const handle = this.allocateHandle('connection')
     resources.connections.set(handle, connection)
     return Object.freeze({
@@ -555,6 +635,277 @@ export class ElectronMainBleRouter {
       ownerLeaseId: String(resources.rendererLease.leaseId),
       connectionGeneration: String(connection.connectionGeneration)
     })
+  }
+
+  private async security(
+    resources: RendererResources,
+    command: string,
+    payload: SerializableRecord,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    const backend = this.manager.securityBackend()
+    if (backend === undefined) throw contractError('capability.unsupported', 'platform', `electron.${command}`)
+    const peerId = requiredString(payload, 'peerId')
+    const options = operationOptions(payload, controller)
+    if (command === 'security.state') {
+      const state = await backend.state(peerId, options)
+      return { state: { ...state, limitations: state.limitations.map(value => ({ ...value })) } }
+    }
+    if (command === 'security.cancel-pairing') return { result: { ...(await backend.cancelPairing(peerId, options)) } }
+    if (command === 'security.unpair') return { result: { ...(await backend.unpair(peerId, options)) } }
+    const transport = payload.transport
+    const protection = payload.protection
+    const secureConnections = payload.secureConnections
+    if (
+      (transport !== 'auto' && transport !== 'le') ||
+      (protection !== 'system-default' && protection !== 'encrypted' && protection !== 'authenticated') ||
+      (secureConnections !== 'prefer' && secureConnections !== 'require' && secureConnections !== 'disallow') ||
+      (payload.ceremony !== 'system' && payload.ceremony !== 'agent')
+    )
+      throw contractError('argument.invalid', 'platform', 'electron.security.pair-options')
+    const ceremonyHandle = payload.ceremony === 'system' ? null : requiredString(payload, 'ceremonyHandle')
+    if (ceremonyHandle !== null && !/^security-ceremony-[1-9][0-9]*$/.test(ceremonyHandle))
+      throw contractError('argument.invalid', 'ipc', 'electron.security.ceremony-handle')
+    let result
+    try {
+      result = await backend.pair(peerId, {
+        ...options,
+        transport,
+        protection,
+        secureConnections,
+        ceremony:
+          ceremonyHandle === null
+            ? 'system'
+            : {
+                kind: 'agent',
+                agent: {
+                  onChallenge: challenge => {
+                    if (challenge.peerId !== peerId)
+                      throw contractError('protocol.violation', 'ipc', 'electron.security.challenge-peer')
+                    return this.challenge(resources, ceremonyHandle, challenge, controller)
+                  }
+                }
+              }
+      })
+    } finally {
+      if (ceremonyHandle !== null)
+        for (const challenge of resources.pairingChallenges.values()) {
+          if (challenge.ceremonyHandle === ceremonyHandle)
+            challenge.reject(contractError('operation.aborted', 'platform', 'electron.security.ceremony-retired'))
+        }
+    }
+    if ('state' in result)
+      return {
+        result: {
+          outcome: result.outcome,
+          state: { ...result.state, limitations: result.state.limitations.map(value => ({ ...value })) }
+        }
+      }
+    return { result: { ...result } }
+  }
+
+  private challenge(
+    resources: RendererResources,
+    ceremonyHandle: string,
+    challenge: SecurityPairingChallenge,
+    controller: AbortController
+  ): Promise<SecurityPairingResponse> {
+    if (resources.pairingChallenges.has(challenge.challengeId))
+      throw contractError('protocol.violation', 'ipc', 'electron.security.challenge-identity')
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => finish(contractError('operation.timed-out', 'platform', 'electron.security.challenge')),
+        Math.max(0, challenge.deadlineMonotonicMs - this.manager.monotonicNow())
+      )
+      const abort = (): void => finish(contractError('operation.aborted', 'platform', 'electron.security.challenge'))
+      const finish = (error?: unknown, value?: SecurityPairingResponse): void => {
+        clearTimeout(timer)
+        controller.signal.removeEventListener('abort', abort)
+        resources.pairingChallenges.delete(challenge.challengeId)
+        if (error !== undefined) reject(error)
+        else if (value !== undefined) resolve(value)
+      }
+      resources.pairingChallenges.set(challenge.challengeId, {
+        ceremonyHandle,
+        kind: challenge.kind,
+        resolve: value => finish(undefined, value),
+        reject: error => finish(error)
+      })
+      controller.signal.addEventListener('abort', abort, { once: true })
+      if (controller.signal.aborted) {
+        abort()
+        return
+      }
+      const { deadlineMonotonicMs, ...fields } = challenge
+      this.publish(
+        String(resources.rendererLease.leaseId),
+        this.event(resources.rendererLease, ceremonyHandle, {
+          kind: 'value',
+          value: { ...fields, budgetMs: Math.max(0, deadlineMonotonicMs - this.manager.monotonicNow()) }
+        })
+      ).then(
+        delivery => {
+          if (delivery === 'terminalized')
+            finish(contractError('platform.transport', 'ipc', 'electron.security.challenge'))
+        },
+        error => finish(error)
+      )
+    })
+  }
+
+  private watchSecurity(resources: RendererResources, payload: SerializableRecord): SerializableRecord {
+    const backend = this.manager.securityBackend()
+    if (backend === undefined) throw contractError('capability.unsupported', 'platform', 'electron.security.watch')
+    const peerId = requiredString(payload, 'peerId')
+    const stream = backend.watch(peerId)
+    const iterator = stream[Symbol.asyncIterator]()
+    const handle = this.allocateHandle('subscription')
+    resources.securityWatches.set(handle, {
+      stream,
+      iterator,
+      cleanup: null,
+      localReturn: null,
+      localReturned: false,
+      nativeReleased: false,
+      nativeClose: null
+    })
+    const pump = async (): Promise<void> => {
+      while (resources.securityWatches.has(handle)) {
+        const item = await iterator.next()
+        if (item.done) break
+        if (item.value.kind === 'value' && (!isSecurityEvent(item.value.value) || item.value.value.peerId !== peerId))
+          throw contractError('protocol.violation', 'ipc', 'electron.security.watch-event')
+        const value =
+          item.value.kind === 'value'
+            ? {
+                ...item.value,
+                value: {
+                  ...item.value.value,
+                  state: {
+                    ...item.value.value.state,
+                    limitations: item.value.value.state.limitations.map(entry => ({ ...entry }))
+                  }
+                }
+              }
+            : item.value.kind === 'terminal'
+              ? { ...item.value, error: item.value.error == null ? null : serializeNormalizedError(item.value.error) }
+              : { ...item.value }
+        const delivery = await this.publish(
+          String(resources.rendererLease.leaseId),
+          this.event(resources.rendererLease, handle, value)
+        )
+        if (delivery === 'terminalized' || item.value.kind === 'terminal') break
+      }
+      await this.unwatchSecurity(resources, handle)
+    }
+    pump().catch(async error => {
+      console.error('[ElectronMainBleRouter] Security watch failed:', error)
+      try {
+        await this.publish(
+          String(resources.rendererLease.leaseId),
+          this.event(resources.rendererLease, handle, {
+            kind: 'terminal',
+            reason: 'source-failed',
+            droppedItems: 0,
+            droppedBytes: 0,
+            replacedItems: 0,
+            error: serializeNormalizedError(normalizedCleanupError(error))
+          })
+        )
+      } catch (deliveryError) {
+        console.error('[ElectronMainBleRouter] Security watch failure delivery failed:', deliveryError)
+      }
+      try {
+        await this.unwatchSecurity(resources, handle)
+      } catch (cleanupError) {
+        console.error('[ElectronMainBleRouter] Security watch cleanup failed:', cleanupError)
+      }
+    })
+    return { handle }
+  }
+
+  private async unwatchSecurity(resources: RendererResources, handle: string): Promise<SerializableRecord> {
+    const watch = resources.securityWatches.get(handle)
+    if (watch === undefined) {
+      if (resources.releasedHandles.has(handle)) return { state: 'released', failures: [] }
+      throw contractError('ownership.denied', 'ipc', 'electron.security.watch-owner')
+    }
+    if (watch.cleanup !== null) return watch.cleanup
+    const tracked = (async () => {
+      const retire = (): void => {
+        if (watch.nativeReleased && watch.localReturned && resources.securityWatches.get(handle) === watch) {
+          resources.securityWatches.delete(handle)
+          resources.releasedHandles.add(handle)
+        }
+      }
+      if (!watch.localReturned && watch.localReturn === null) {
+        watch.localReturn = Promise.resolve()
+          .then(() => watch.iterator.return())
+          .then(
+            () => {
+              watch.localReturned = true
+              retire()
+            },
+            error => {
+              watch.localReturn = null
+              throw error
+            }
+          )
+      }
+      const drain = waitForChildCleanup(watch.localReturn ?? Promise.resolve())
+      const failures: CleanupFailure[] = []
+      if (!watch.nativeReleased && watch.nativeClose === null) {
+        watch.nativeClose = Promise.resolve()
+          .then(() => watch.stream.close())
+          .then(
+            native => {
+              watch.nativeReleased = native.state === 'released'
+              if (!watch.nativeReleased) watch.nativeClose = null
+              retire()
+              return native
+            },
+            error => {
+              watch.nativeClose = null
+              throw error
+            }
+          )
+      }
+      const nativeOutcome: { value: CleanupRecord | null } = { value: null }
+      const nativeDrain = waitForChildCleanup(
+        (watch.nativeClose ?? Promise.resolve({ state: 'released' as const, failures: [] })).then(value => {
+          nativeOutcome.value = value
+        })
+      )
+      const [local, native] = await Promise.all([drain, nativeDrain])
+      if (nativeOutcome.value !== null) failures.push(...nativeOutcome.value.failures)
+      if (native.error !== undefined)
+        failures.push({ resourceKind: 'security-watch', error: normalizedCleanupError(native.error) })
+      if (native.pending)
+        failures.push({
+          resourceKind: 'security-watch',
+          error: contractError('lifecycle.invalid-state', 'cleanup', 'electron.security.watch-native-cleanup-pending')
+            .normalized
+        })
+      if (local.error !== undefined)
+        failures.push({ resourceKind: 'security-watch-iterator', error: normalizedCleanupError(local.error) })
+      if (local.pending)
+        failures.push({
+          resourceKind: 'security-watch-iterator',
+          error: contractError('lifecycle.invalid-state', 'cleanup', 'electron.security.watch-local-cleanup-pending')
+            .normalized
+        })
+      retire()
+      if (!watch.nativeReleased || !watch.localReturned || failures.length > 0) {
+        watch.cleanup = null
+        return cleanupRecord({ state: 'release-failed', failures })
+      }
+      return cleanupRecord({ state: 'released', failures: [] })
+    })().catch(error => {
+      if (watch.cleanup === tracked) watch.cleanup = null
+      throw error
+    })
+    watch.cleanup = tracked
+    return tracked
   }
 
   private async adapterState(controller: AbortController): Promise<SerializableRecord> {
@@ -1013,6 +1364,18 @@ export class ElectronMainBleRouter {
       await operation.settled
     }
     const failures: CleanupFailure[] = []
+    for (const handle of resources.securityWatches.keys()) {
+      try {
+        const cleanup = await this.unwatchSecurity(resources, handle)
+        if (cleanup.state !== 'released')
+          failures.push({
+            resourceKind: 'security-watch',
+            error: contractError('lifecycle.invalid-state', 'cleanup', 'electron.security.watch-release').normalized
+          })
+      } catch (error) {
+        failures.push({ resourceKind: 'security-watch', error: normalizedCleanupError(error) })
+      }
+    }
     for (const [handle, connectionEvents] of resources.connectionEventSubscriptions) {
       const cleanup = await this.connectionEvents.remove(resources, handle, connectionEvents, true)
       if (cleanup.state === 'release-failed') {
@@ -1044,6 +1407,8 @@ export class ElectronMainBleRouter {
     }
     if (
       failures.length === 0 &&
+      resources.securityWatches.size === 0 &&
+      resources.pairingChallenges.size === 0 &&
       resources.scans.size === 0 &&
       resources.connectionEventSubscriptions.size === 0 &&
       resources.subscriptions.size === 0 &&
@@ -1067,6 +1432,19 @@ export class ElectronMainBleRouter {
     snapshot: RendererResourceSnapshot
   ): Promise<CleanupRecord> {
     const failures: CleanupFailure[] = []
+    for (const handle of resources.securityWatches.keys()) {
+      if (snapshot.securityWatches.has(handle)) continue
+      try {
+        const cleanup = await this.unwatchSecurity(resources, handle)
+        if (cleanup.state !== 'released')
+          failures.push({
+            resourceKind: 'security-watch',
+            error: contractError('lifecycle.invalid-state', 'cleanup', 'electron.security.watch-rollback').normalized
+          })
+      } catch (error) {
+        failures.push({ resourceKind: 'security-watch', error: normalizedCleanupError(error) })
+      }
+    }
     for (const [handle, connectionEvents] of resources.connectionEventSubscriptions) {
       if (snapshot.connectionEventSubscriptions.has(handle)) {
         continue
@@ -1276,6 +1654,8 @@ export class ElectronMainBleRouter {
       return existing
     }
     const resources: RendererResources = {
+      securityWatches: new Map(),
+      pairingChallenges: new Map(),
       rendererLease,
       scans: new Map(),
       connections: new Map(),
@@ -1401,6 +1781,7 @@ function rendererIdentity<Renderer extends string>(
 
 function snapshotResourceHandles(resources: RendererResources): RendererResourceSnapshot {
   return {
+    securityWatches: new Set(resources.securityWatches.keys()),
     scans: new Set(resources.scans.keys()),
     connections: new Set(resources.connections.keys()),
     connectionEventSubscriptions: new Set(resources.connectionEventSubscriptions.keys()),
@@ -1419,6 +1800,17 @@ function createManagedOperation(controller: AbortController): ManagedOperation {
     settled,
     complete
   }
+}
+
+function decodePreferredPhy(value: unknown): readonly ('le-1m' | 'le-2m' | 'le-coded')[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length === 0)
+    throw contractError('argument.invalid', 'connection', 'electron.connect.preferred-phy')
+  return Array.from(value, entry => {
+    if (entry !== 'le-1m' && entry !== 'le-2m' && entry !== 'le-coded')
+      throw contractError('argument.invalid', 'connection', 'electron.connect.preferred-phy')
+    return entry
+  })
 }
 
 function requiredString(payload: SerializableRecord, key: string): string {
@@ -1529,6 +1921,7 @@ function operationAdmissionFailure(
 
 function isDestructiveCleanupCommand(command: string): boolean {
   return (
+    command === 'security.watch.unsubscribe' ||
     command === 'scan.stop' ||
     command === 'connection.disconnect' ||
     command === 'connection.events.unsubscribe' ||
@@ -1545,7 +1938,15 @@ function isDestructiveCleanupCommand(command: string): boolean {
  * repeat an effect that already happened.
  */
 function reportsCompletedEffect(command: string): boolean {
-  return isDestructiveCleanupCommand(command) || command === 'gatt.write' || command === 'gatt.descriptor.write'
+  return (
+    isDestructiveCleanupCommand(command) ||
+    command === 'gatt.write' ||
+    command === 'gatt.descriptor.write' ||
+    command === 'security.pair' ||
+    command === 'security.cancel-pairing' ||
+    command === 'security.custom-ceremony' ||
+    command === 'security.unpair'
+  )
 }
 
 function operationOptions(payload: SerializableRecord, controller: AbortController) {

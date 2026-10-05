@@ -7,7 +7,28 @@ mod trusted_policy;
 /// start the app as a test-driver host with no click.
 const START_PAGE_ENV: &str = "UBM_TAURI_START_PAGE";
 
+fn may_ignore_event(event: &tauri::RunEvent, may_exit: impl FnOnce() -> bool) -> bool {
+    // Startup/window notifications can precede setup's manage(). Only actual
+    // controlled teardown needs its owner; a missing owner there is still an error.
+    match event {
+        tauri::RunEvent::ExitRequested { .. } => may_exit(),
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { .. },
+            ..
+        } if label == "main" => may_exit(),
+        _ => true,
+    }
+}
+
 fn main() {
+    let adapter = match std::env::var("UBM_TAURI_ADAPTER") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => panic!("invalid trusted adapter environment: {error}"),
+    };
+    let adapter_id =
+        trusted_policy::adapter_id(adapter).expect("invalid trusted adapter launch configuration");
     let owner = match std::env::var("UBM_BLUEZ_DAEMON_OWNER") {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,
@@ -18,7 +39,7 @@ fn main() {
     let dispatcher = tauri_plugin_unified_ble_manager::BtleplugDispatcher::new(
         tauri_plugin_unified_ble_manager::BtleplugDispatcherOptions {
             connection_policy,
-            ..Default::default()
+            adapter_id,
         },
     );
     let process_dispatcher = dispatcher.clone();
@@ -59,8 +80,10 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building Unified BLE Tauri example")
         .run(|app, event| {
-            let state = app.state::<process_continuation::ProcessContinuation>();
-            if state.may_exit() {
+            if may_ignore_event(&event, || {
+                app.state::<process_continuation::ProcessContinuation>()
+                    .may_exit()
+            }) {
                 return;
             }
             match event {
@@ -79,4 +102,23 @@ fn main() {
                 _ => {}
             }
         });
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn startup_and_ordinary_events_do_not_require_managed_continuation_state() {
+        for event in [
+            tauri::RunEvent::Ready,
+            tauri::RunEvent::Resumed,
+            tauri::RunEvent::MainEventsCleared,
+            tauri::RunEvent::Exit,
+        ] {
+            assert!(may_ignore_event(&event, || {
+                panic!("continuation state is not managed during startup")
+            }));
+        }
+    }
 }

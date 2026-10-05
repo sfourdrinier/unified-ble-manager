@@ -20,6 +20,7 @@ import { LinkLossScenario } from './scenarios/link-loss.ts'
 import { MtuScenario } from './scenarios/mtu.ts'
 import { RestorationScenario } from './scenarios/restoration.ts'
 import { ScanDetailsScenario } from './scenarios/scan-details.ts'
+import { SecurityScenario } from './scenarios/security.ts'
 import { W6SharedScanScenario } from './scenarios/w6-shared-scan.ts'
 import { W6GenerationFenceScenario } from './scenarios/w6-generation-fence.ts'
 import { W6SlowDrainScenario } from './scenarios/w6-slow-drain.ts'
@@ -41,7 +42,8 @@ export const SCENARIO_IDS = [
   'w6-shared-scan',
   'w6-generation-fence',
   'w6-slow-drain',
-  'accessory-chooser'
+  'accessory-chooser',
+  'security'
 ] as const
 
 export function createScenarioRegistry(host: DriverHost): ScenarioRegistry {
@@ -61,7 +63,8 @@ export function createScenarioRegistry(host: DriverHost): ScenarioRegistry {
     new W6SharedScanScenario(host),
     new W6GenerationFenceScenario(host),
     new W6SlowDrainScenario(host),
-    new AccessoryChooserScenario(host)
+    new AccessoryChooserScenario(host),
+    new SecurityScenario(host)
   ])
 }
 

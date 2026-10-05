@@ -20,6 +20,9 @@ const { trustedDesktopOptions } = require('../../example-node/trusted-options.cj
 const { pathToFileURL } = require('node:url')
 const { app, BrowserWindow, ipcMain, Menu, MenuItem } = require('electron')
 const electronMain = require('unified-ble-manager/electron/main')
+// The transport channel is part of the renderer's public protocol boundary,
+// not a main-entrypoint export. Main still owns every native resource.
+const { ELECTRON_BLE_IPC_CHANNEL } = require('unified-ble-manager/electron/renderer')
 const { shutdownProcessSession } = require('./shutdown.cjs')
 const { createProcessSession } = require('./process-session.cjs')
 const { createProcessControls } = require('./process-controls.cjs')
@@ -42,7 +45,7 @@ function argument(name) {
     index !== -1 &&
     (process.argv[index + 1] === undefined || process.argv[index + 1].startsWith('--'))
   )
-    throw new Error('--bluez-daemon-owner requires the explicitly attested daemon unique owner')
+    throw new Error('--bluez-daemon-owner requires an explicit stricter daemon unique-owner restriction')
   return index === -1 ? undefined : process.argv[index + 1]
 }
 
@@ -60,7 +63,10 @@ function authenticate(event) {
   return {
     authenticatedClientId: `electron-renderer-${event.sender.id}`,
     authenticatedWindowScope: `window-${window === null ? 'none' : window.id}`,
-    authenticatedSessionScope: 'default-session'
+    authenticatedSessionScope: 'default-session',
+    // Trusted reference-app authorization, never a renderer-supplied grant.
+    // Custom ceremony is intentionally not granted by this system-only harness.
+    securityPermissions: ['security:state', 'security:pair', 'security:cancel-pairing', 'security:unpair']
   }
 }
 
@@ -108,7 +114,7 @@ async function start() {
       let handler = null
       const port = {
         handle(channel, invoke) {
-          if (channel !== electronMain.ELECTRON_BLE_IPC_CHANNEL) throw new Error('unexpected BLE channel')
+          if (channel !== ELECTRON_BLE_IPC_CHANNEL) throw new Error('unexpected BLE channel')
           handler = invoke
         },
         removeHandler() {
@@ -158,7 +164,7 @@ async function start() {
     ipcMain,
     window,
     documentUrl,
-    channel: electronMain.ELECTRON_BLE_IPC_CHANNEL,
+    channel: ELECTRON_BLE_IPC_CHANNEL,
     validateRequest(request) {
       if (request === null || typeof request !== 'object' || Array.isArray(request))
         throw new Error('invalid BLE request')

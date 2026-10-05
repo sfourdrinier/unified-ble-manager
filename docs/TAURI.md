@@ -9,7 +9,7 @@ The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The w
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.17 @tauri-apps/api
+pnpm add unified-ble-manager@5.0.0-rc.18 @tauri-apps/api
 ```
 
 Use the Rust plugin source shipped in the same npm package. In the normal
@@ -126,7 +126,16 @@ invalidation is immediate, cleanup ownership survives failure, and bounded
 child cleanup cannot prevent the scoped parent-release request. Local iterator
 cleanup remains distinct from confirmed native release.
 
-**IPC protocol version.** The webview and the plugin speak IPC protocol 4 and each offers exactly that version. Version 4 is the wire described on this page: relative `budgetMs` deadlines, `commit` on every error, `delivery` on subscriptions, forwarded connection-lifecycle events, and the attachment rebind after an adapter loss (see [Adapter](#adapter)). A pair where one side is older (protocol 3, the rebind-less 5.0 prerelease wire, or protocol 2, the earlier 5.0 release-candidate wire) is refused at bootstrap with `protocol.incompatible` before any operation runs, whichever side is older; the npm package and the crate must be upgraded together. `TAURI_PLUGIN_COMPATIBILITY.ipcProtocol` reports the version this package requires.
+**IPC protocol version.** The webview and the plugin speak IPC protocol 5 and
+each offers exactly that version. Version 5 adds security routes, address
+targeting, connection intent and platform scan-option forwarding while retaining
+relative `budgetMs` deadlines, error `commit`, subscription `delivery`, connection
+lifecycle events and attachment rebind. The instantiated native authority still
+determines which mechanisms are available. An older protocol 4 host might ignore
+new option fields, so protocol 4 and earlier peers are refused at bootstrap with
+`protocol.incompatible` before any operation runs, whichever side is older.
+Upgrade the npm package and crate together.
+`TAURI_PLUGIN_COMPATIBILITY.ipcProtocol` reports the required version.
 
 The plugin owns one shared Rust central (`ubm-desktop`) and never serializes BLE work behind a lock of its own: a slow connect or discovery on one peer does not delay another peer's notifications, a cancel, or shutdown. The central and its radio open once, on the shared desktop executor, the first time a BLE operation needs them.
 
@@ -158,18 +167,25 @@ Connected RSSI (`connection.rssi`) is the OS measurement of the live link, read 
 
 ## Adapter
 
-On Linux, trusted Rust setup must also supply
-`BtleplugDispatcherOptions::connection_policy` as
-`Some(tauri_plugin_unified_ble_manager::BluezConnectionPolicy::LeBearer { daemon_unique_owner })`.
-This attests that the current unique D-Bus owner of `org.bluez` implements the
-LE-only bearer lifecycle API. Introspection alone is insufficient (including
-BlueZ 5.85's placeholder interface). Without attestation scanning remains
-available but connections are unsupported. No renderer option, privileged
-shell command or device-wide fallback supplies this authority. A daemon restart
-invalidates the owner pin. See [BlueZ setup and migration](NODE.md#bluez-connection-policy-bus-and-pairing-generation).
+On Linux, the shared native authority resolves and pins the current unique
+D-Bus owner of `org.bluez`; applications do not have to obtain or supply that
+owner. The maintained daemon integration must still be installed explicitly:
+the selected adapter must answer `LinuxAuthority1.GetContract` with the supported
+lease/GATT revisions. Introspection alone does not prove implementation. See
+[BlueZ deployment](BLUEZ_DEPLOYMENT.md) for the explicit privileged deployment
+boundary; neither the plugin nor a renderer installs a daemon or falls back to
+device-wide connection control.
+
+`BtleplugDispatcherOptions::connection_policy` is an optional stricter owner
+restriction. Set it to
+`Some(tauri_plugin_unified_ble_manager::BluezConnectionPolicy::LeBearer { daemon_unique_owner })`
+only when trusted Rust setup deliberately requires that exact D-Bus owner.
+It is not an implementation attestation. A mismatched or replaced owner is
+refused; omitting the option delegates owner binding to native authority.
+See [BlueZ setup and migration](NODE.md#bluez-connection-policy-bus-and-pairing-generation).
 
 The bootstrap capability snapshot preserves the instantiated central's
-connection refusal and reason, including an omitted LE attestation; the webview
+connection refusal and reason, including missing daemon authority; the webview
 does not receive a generic platform-level connection claim in its place.
 
 The attachment and `adapter.state` come from the one shared central; the plugin opens no second btleplug manager (on macOS, no second `CBCentralManager`). `BtleplugDispatcherOptions::adapter_id` names the adapter by the identity `ubm_desktop::btleplug_backend::list_adapters` reports (BlueZ `hci0`, the Windows adapter device id, `CoreBluetooth` on macOS). Without a name the sole adapter is used; with several adapters the first BLE operation fails `adapter.ambiguous`, and a name that matches none fails `adapter.selection-required`.
@@ -200,10 +216,21 @@ Security permissions are separate from the default transport permission. The
 plugin defines `unified-ble-manager:allow-security-state`,
 `allow-security-pair`, `allow-security-cancel-pairing`,
 `allow-security-unpair`, and `allow-security-custom-ceremony`; each is enforced
-by a Rust command scope, never by renderer request fields. The default set does
-not grant unpair or custom-ceremony authority. The current btleplug dispatcher
-still reports all generic security capabilities as unsupported until a native
-pairing implementation and matching TCK/evidence are added.
+by a Rust command scope, never by renderer request fields. The
+default transport permission grants none of these security scopes. Grant only
+the operations an intended window needs. Public `manager.security` operations
+use the authenticated IPC routes and delegate to the instantiated native authority;
+renderer payloads cannot grant these permissions. State/watch, pair, pairing
+cancellation and unpair preserve that authority's result and error rather than
+returning a transport-invented answer.
+
+Availability is backend-specific. In particular, CoreBluetooth does not expose
+explicit bond-store control; Linux and Windows expose only the security facts
+and ceremonies their implemented native adapters can observe or perform.
+Custom-ceremony permission does not by itself implement a ceremony on a native
+adapter lacking it. Inspect `manager.capabilities` and preserve a native
+`capability.unsupported` refusal. Routing tests and compile checks do not promote
+hardware-evidence labels.
 
 See [`example-tauri/`](../example-tauri/) for a small public-API proof.
 

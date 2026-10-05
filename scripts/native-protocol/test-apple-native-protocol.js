@@ -78,7 +78,11 @@ function testAccessoryChooser() {
     ['appletvsimulator', 'arm64-apple-tvos16.4-simulator']
   ]) {
     const sdkPath = childProcess.execFileSync('xcrun', ['--sdk', sdk, '--show-sdk-path'], { encoding: 'utf8' }).trim()
-    run('xcrun', ['--sdk', sdk, 'swiftc', '-typecheck', '-target', target, '-sdk', sdkPath, ...accessorySources])
+    const sources =
+      sdk === 'appletvsimulator'
+        ? accessorySources
+        : [...accessorySources, 'ios/__tests__/AccessoryChoiceDescriptorHarness.swift']
+    run('xcrun', ['--sdk', sdk, 'swiftc', '-typecheck', '-target', target, '-sdk', sdkPath, ...sources])
   }
 }
 const uniffiSwiftDirectory = path.join(root, 'bindings/uniffi/generated/swift')

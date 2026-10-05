@@ -171,7 +171,29 @@
  #include "profile.h"
  #include "dbus-common.h"
  #include "error.h"
-@@ -8615,6 +8616,7 @@
+@@ -7182,6 +7183,11 @@
+ 								msd->data_len);
+ 		}
+ 	}
++}
++
++static bool match_discovery_uuid(const void *service, const void *uuid)
++{
++	return !strcmp(service, uuid);
+ }
+ 
+ static bool is_filter_match(GSList *discovery_filter, struct eir_data *eir_data,
+@@ -7216,8 +7222,7 @@
+ 				 * uuid.
+ 				 */
+ 				if (queue_find(eir_data->services,
+-							m->data,
+-							g_strcmp) != NULL)
++						match_discovery_uuid, m->data) != NULL)
+ 					got_match = true;
+ 			}
+ 		}
+@@ -8615,6 +8620,7 @@
  	ba2str(&addr->bdaddr, dst);
  
  	DBG("Device %s disconnected, reason %u", dst, reason);
@@ -179,7 +201,7 @@
  
  	device = btd_adapter_find_device(adapter, &addr->bdaddr, addr->type);
  	if (device) {
-@@ -8636,19 +8638,37 @@
+@@ -8636,19 +8642,37 @@
  void btd_remove_disconnect_cb(btd_disconnect_cb func)
  {
  	disconnect_list = g_slist_remove(disconnect_list, func);
@@ -218,7 +240,7 @@
  		btd_error(adapter->dev_id,
  				"Failed to disconnect device: %s (0x%02x)",
  						mgmt_errstr(status), status);
-@@ -8656,6 +8676,9 @@
+@@ -8656,6 +8680,9 @@
  	}
  
  	if (length < sizeof(*rp)) {
@@ -228,7 +250,7 @@
  		btd_error(adapter->dev_id,
  				"Too small device disconnect response");
  		return;
-@@ -8670,16 +8693,22 @@
+@@ -8670,16 +8697,22 @@
  
  {
  	struct mgmt_cp_disconnect cp;
@@ -252,7 +274,7 @@
  	return -EIO;
  }
  
-@@ -9395,6 +9424,12 @@
+@@ -9395,6 +9428,12 @@
  		adapter->is_default = true;
  
  	adapters = g_slist_append(adapters, adapter);
@@ -265,7 +287,7 @@
  
  	agent = agent_get(NULL);
  	if (agent) {
-@@ -9485,6 +9520,8 @@
+@@ -9485,6 +9524,8 @@
  static int adapter_unregister(struct btd_adapter *adapter)
  {
  	DBG("Unregister path: %s", adapter->path);
@@ -4617,5 +4639,41 @@
 +	queue_destroy(client.clones, NULL);
 +	gatt_db_unref(client.db);
 +	puts("Production refresh ingress/failure settlement: OK");
++	return 0;
++}
+--- a/unit/test-ubm-scan-filter.c
++++ b/unit/test-ubm-scan-filter.c
+@@ -0,0 +1,33 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/* Exercise the actual daemon advertisement filter without radio or D-Bus. */
++#include "src/adapter.c"
++#include <assert.h>
++#include <stdio.h>
++
++int main(void)
++{
++	const char *heart_rate = "0000180d-0000-1000-8000-00805f9b34fb";
++	const char *battery = "0000180f-0000-1000-8000-00805f9b34fb";
++	struct discovery_filter filter = {
++		.rssi = DISTANCE_VAL_INVALID,
++		.pathloss = DISTANCE_VAL_INVALID,
++	};
++	struct discovery_client client = { .discovery_filter = &filter };
++	struct eir_data eir = { .services = queue_new(), .tx_power = 127 };
++	GSList *clients = g_slist_append(NULL, &client);
++
++	filter.uuids = g_slist_append(NULL, (void *) heart_rate);
++	assert(queue_push_tail(eir.services, (void *) battery));
++	assert(!is_filter_match(clients, &eir, -73));
++	assert(queue_push_tail(eir.services, (void *) heart_rate));
++	assert(is_filter_match(clients, &eir, -73));
++	queue_remove_all(eir.services, NULL, NULL, NULL);
++	assert(!is_filter_match(clients, &eir, -73));
++	g_slist_free(filter.uuids);
++	filter.uuids = NULL;
++	assert(is_filter_match(clients, &eir, -73));
++	queue_destroy(eir.services, NULL);
++	g_slist_free(clients);
++	puts("actual daemon UUID filter matching/nonmatching/empty passed");
 +	return 0;
 +}

@@ -50,6 +50,55 @@ async function settleDeterministic(fixture, promise) {
 }
 
 describe('canonical public ScanQuery v1', () => {
+  test.each([
+    ['public', 'public'],
+    ['random', 'random'],
+    [null, 'opaque'],
+    [undefined, 'opaque']
+  ])('compact native address type %s preserves its actual meaning', (addressType, expected) => {
+    const compact = {
+      peerId: 'peer',
+      address: 'AA:BB:CC:DD:EE:FF',
+      addressType,
+      localName: null,
+      rssi: null,
+      txPowerLevel: null,
+      serviceUuids: [],
+      manufacturerData: [],
+      serviceData: []
+    }
+    expect(normalizeScanObservation(compact).address).toEqual({ value: compact.address, type: expected })
+  })
+  test.each(['opaque', 'PUBLIC', 1, {}, true])('rejects malformed compact address type %p', addressType => {
+    expect(() =>
+      normalizeScanObservation({
+        peerId: 'peer',
+        address: 'AA:BB:CC:DD:EE:FF',
+        addressType,
+        localName: null,
+        rssi: null,
+        txPowerLevel: null,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: []
+      })
+    ).toThrow()
+  })
+  test('rejects an address type without an address', () => {
+    expect(() =>
+      normalizeScanObservation({
+        peerId: 'peer',
+        addressType: 'public',
+        address: null,
+        localName: null,
+        rssi: null,
+        txPowerLevel: null,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: []
+      })
+    ).toThrow()
+  })
   test('normalizes omitted match-all, rejects ambiguous empty/unknown shapes, and freezes bytes', () => {
     const query = normalizeScanQuery()
     expect(query.anyOf).toBeNull()
@@ -1653,7 +1702,10 @@ describe('canonical public ScanQuery v1', () => {
 
   test('automatic overflow stop rejection does not poison a successful native retry', async () => {
     const firstFailure = new Error('automatic-native-stop-failed')
-    const nativeStop = jest.fn().mockRejectedValueOnce(firstFailure).mockResolvedValue({ state: 'released', failures: [] })
+    const nativeStop = jest
+      .fn()
+      .mockRejectedValueOnce(firstFailure)
+      .mockResolvedValue({ state: 'released', failures: [] })
     const fixture = createStopOverflowFixture({ nativeStop })
     fixture.internal.traceDocument = () => ({ format: 'unified-ble-trace-v1', truncated: false, records: [] })
     const manager = await createPublicBleManager(fixture.internal, () => 0)

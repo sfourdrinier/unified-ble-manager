@@ -84,6 +84,23 @@ not live ownership after stopping. Inspect the `background.lease.release` cleanu
 receipt for release success or retained failure. Starting another run resets the
 answer to `null`; earlier acquisition events remain in the bounded event history.
 
+### Public security acceptance
+
+The shared `security` scenario exercises the ordinary host-created public
+manager on every host. Run `select` with `{ "device": "SIM Polar H10*" }`
+first; it discovers an actual peer but does not connect or pair. Then use
+`state`, `pair` (system ceremony only), `watch` with bounded `timeoutMs` and
+`maxEvents` (default one event), or `cancel-pairing`. Native outcomes, limitations
+and event clock values are preserved in the result. `stop` aborts current work
+and releases the watch/manager; it never deletes a bond. `unpair` is a separate
+destructive command requiring `{ "confirm": true }`, with no automatic preset.
+
+The trusted reference Electron main and Tauri main-window capability explicitly
+grant state, pair, cancel-pairing and unpair permissions. These are application
+grants, not changes to the package's default-deny IPC policy. Custom ceremony
+is not granted. A platform that lacks an operation still reports its genuine
+unsupported result; a successful mock scenario is not radio qualification.
+
 ### Choosing the strap: the `device` argument
 
 Every peer-acquiring command (`h10-stream start`, `link-loss start`,
@@ -367,7 +384,19 @@ features and settings in the foreground first. For example, send this command
 to the `continuation` scenario using the exact peer identity discovered there:
 
 ```json
-{"command":"declare","args":{"onAppearance":"native","peerId":"<exact-peer-id>","measurements":"hr-ecg-acc","sampleRateHz":200,"rangeG":8,"recordingId":"h10_background_run_1","maxBytes":16777216,"maxRecords":100000}}
+{
+  "command": "declare",
+  "args": {
+    "onAppearance": "native",
+    "peerId": "<exact-peer-id>",
+    "measurements": "hr-ecg-acc",
+    "sampleRateHz": 200,
+    "rangeG": 8,
+    "recordingId": "h10_background_run_1",
+    "maxBytes": 16777216,
+    "maxRecords": 100000
+  }
+}
 ```
 
 The recipe supports HR, HR+ECG, HR+ACC and HR+ECG+ACC, all H10 ACC rates
@@ -591,6 +620,15 @@ and set `UBM_NAPI_ADDON` (see [`docs/NODE.md`](../../docs/NODE.md)). On macOS
 the terminal needs Bluetooth permission.
 
 ## What each host can run
+
+`scan-details/scan` accepts optional `addresses`, a nonempty string array
+validated and canonicalized by the public query normalizer. For example,
+`{ "filter": "heart-rate-service", "addresses": ["DC:56:7B:D9:E8:A4"],
+"durationMs": 2000 }` requires both the HRS advertisement and that radio address;
+`filter: "none"` selects only the supplied addresses. Existing presets/defaults
+are unchanged. Use the simulator's actual advertised public/static address,
+not a manager-local peer ID or an assumed persistent private address.
+Unsupported backend address targeting remains an explicit library refusal.
 
 `scan-details` and the `h10-capture` advertisement stage pass their requested
 duration to `scan({ timeoutMs })` as well as scheduling the reference timer.
