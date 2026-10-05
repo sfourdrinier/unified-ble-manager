@@ -57,11 +57,25 @@ pub struct BLEDevice {
 impl BLEDevice {
     pub async fn new(
         address: BDAddr,
+        address_type: Option<crate::api::AddressType>,
         connection_status_changed: ConnectedEventHandler,
         max_pdu_size_changed: MaxPduSizeChangedEventHandler,
     ) -> Result<Self> {
-        let async_op = BluetoothLEDevice::FromBluetoothAddressAsync(address.into())
-            .map_err(|_| Error::DeviceNotFound)?;
+        let async_op = match address_type {
+            Some(kind) => BluetoothLEDevice::FromBluetoothAddressWithBluetoothAddressTypeAsync(
+                address.into(),
+                match kind {
+                    crate::api::AddressType::Public => {
+                        windows::Devices::Bluetooth::BluetoothAddressType::Public
+                    }
+                    crate::api::AddressType::Random => {
+                        windows::Devices::Bluetooth::BluetoothAddressType::Random
+                    }
+                },
+            ),
+            None => BluetoothLEDevice::FromBluetoothAddressAsync(address.into()),
+        }
+        .map_err(Error::from)?;
         let device = async_op.await.map_err(|_| Error::DeviceNotFound)?;
 
         let async_op = GattSession::FromDeviceIdAsync(&device.BluetoothDeviceId()?)

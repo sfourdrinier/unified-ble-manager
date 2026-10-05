@@ -216,10 +216,32 @@ describe('first-party backend standard TCK registrations', () => {
 
   // The desktop legs run the Rust route (LEGACY-AUDIT-2 N3): the production
   // desktop provider over the REAL N-API addon on its synthetic radio.
+  test.each(['corebluetooth', 'winrt'])(
+    '%s deferred feature reaches native acquisition, not only a catalog binding',
+    async platform => {
+      const { openBackend, observePeer, callNames } = require('../helpers/desktop-rust-core-harness')
+      const { backend, stage, harness } = await openBackend(platform)
+      try {
+        const peerId = await observePeer(backend, stage)
+        const lease = await backend.connections.connect(peerId, 'tck-deferred', {
+          intent: 'when-available',
+          signal: null,
+          deadline: performance.now() + 1000
+        })
+        expect(callNames(harness.calls)).toContain('connectWhenAvailable')
+        expect(callNames(harness.calls)).not.toContain('connect')
+        expect(await lease.release()).toEqual({ state: 'released', failures: [] })
+      } finally {
+        await backend.destroy()
+      }
+    }
+  )
+
   test('runs every applicable CoreBluetooth scenario on the Rust route without unsupported promotion', async () => {
+    const harness = require('../helpers/desktop-rust-core-harness').realBinding('corebluetooth')
     const registration = createCoreBluetoothFirstPartyTckRegistration({
       now: () => performance.now(),
-      binding: desktopCoreBinding('corebluetooth')
+      binding: harness.binding
     })
     const report = await createFirstPartyBackendTckRegistry([registration]).run('unified-ble:corebluetooth')
 
@@ -239,12 +261,17 @@ describe('first-party backend standard TCK registrations', () => {
       'diagnostics.trace-redaction-and-resource-counters',
       'scenario.scan-connect-discover-read-notify-destroy'
     ])
-    expect(report.standard.featureSuiteIds).toEqual(['connection-controls', 'tck.feature.gatt.maximum-write-length'])
+    expect(report.standard.featureSuiteIds).toEqual([
+      'tck.feature.connection.when-available',
+      'connection-controls',
+      'tck.feature.gatt.maximum-write-length'
+    ])
     expect(report.standard.featureBindings.map(binding => binding.featureId)).toEqual([
       'connection:direct',
       'gatt:descriptors',
       BUILT_IN_FEATURE_IDS.peerKnown,
       BUILT_IN_FEATURE_IDS.peerSystemConnected,
+      BUILT_IN_FEATURE_IDS.connectionWhenAvailable,
       BUILT_IN_FEATURE_IDS.connectionRssi,
       // finding 217 follow-up: desktop routes measure the effective ATT MTU
       // (macOS maximumWriteValueLength + 3, WinRT MaxPduSize, BlueZ characteristic MTU).
@@ -253,6 +280,22 @@ describe('first-party backend standard TCK registrations', () => {
       BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness
     ])
     expectEveryReceiptHolds(report)
+    const deferredBinding = report.standard.featureBindings.find(
+      binding => binding.featureId === BUILT_IN_FEATURE_IDS.connectionWhenAvailable
+    )
+    expect(deferredBinding).toMatchObject({
+      suiteId: 'tck.feature.connection.when-available',
+      requiredScenarioIds: ['connection.when-available-acquires-and-releases'],
+      evidenceScenarioIds: ['connection.when-available-acquires-and-releases']
+    })
+    for (const scenarioId of deferredBinding.evidenceScenarioIds) {
+      const receipt = report.standard.receipts.find(candidate => candidate.scenarioId === scenarioId)
+      expect(receipt).toBeDefined()
+      expect(receipt.error).toBeNull()
+      expect(receipt.facts.length).toBeGreaterThan(0)
+      expect(receipt.facts.every(fact => fact.holds)).toBe(true)
+    }
+    expect(harness.calls.filter(([name]) => name === 'connectWhenAvailable')).toHaveLength(1)
     expect(report.standard.receipts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -286,7 +329,20 @@ describe('first-party backend standard TCK registrations', () => {
     'runs the %s provider, public vertical and security profile on the Rust route',
     async (platform, backendId, suiteId, securitySuite) => {
       const create = platform === 'bluez' ? createBluezFirstPartyTckRegistration : createWinRtFirstPartyTckRegistration
-      const registration = create({ now: () => performance.now(), binding: desktopCoreBinding(platform) })
+      const inventory = [
+        {
+          peerId: platform === 'bluez' ? 'hci0/dev_AA_BB_CC_DD_EE_FF' : 'AA:BB:CC:DD:EE:FF',
+          name: 'TCK bonded peer',
+          connection: 'disconnected'
+        }
+      ]
+      const inventoryRead = jest.spyOn(inventory, 'map')
+      const harness = require('../helpers/desktop-rust-core-harness').realBinding(platform)
+      const registration = create({
+        now: () => performance.now(),
+        binding: harness.binding,
+        bondedInventory: inventory
+      })
       expect(registration.suites.map(suite => suite.suiteId)).toEqual([suiteId])
       const report = await createFirstPartyBackendTckRegistry([registration]).run(backendId)
 
@@ -302,8 +358,25 @@ describe('first-party backend standard TCK registrations', () => {
       ])
       // finding 217 follow-up: BlueZ and WinRT now measure the effective ATT MTU,
       // so the connection-controls suite applies to them as it does on macOS.
-      expect(report.standard.featureSuiteIds).toEqual(['connection-controls', securitySuite, 'tck.feature.gatt.maximum-write-length'])
+      expect(report.standard.featureSuiteIds).toEqual([
+        'tck.feature.peer.bonded',
+        ...(platform === 'winrt' ? ['tck.feature.connection.when-available'] : []),
+        'connection-controls',
+        securitySuite,
+        'tck.feature.gatt.maximum-write-length'
+      ])
       expectEveryReceiptHolds(report)
+      expect(inventoryRead).toHaveBeenCalledTimes(1)
+      expect(harness.calls.filter(([name]) => name === 'connectWhenAvailable')).toHaveLength(
+        platform === 'winrt' ? 1 : 0
+      )
+      expect(
+        report.standard.featureBindings.find(binding => binding.featureId === BUILT_IN_FEATURE_IDS.peerBonded)
+      ).toMatchObject({
+        suiteId: 'tck.feature.peer.bonded',
+        requiredScenarioIds: ['peer.bonded-enumeration-preserves-native-facts'],
+        evidenceScenarioIds: ['peer.bonded-enumeration-preserves-native-facts']
+      })
       const security = report.standard.receipts.filter(
         receipt => receipt.scenarioId === 'security.state-pair-cancel-unpair'
       )
@@ -342,6 +415,47 @@ describe('first-party backend standard TCK registrations', () => {
       expect(report.capabilityExclusions.every(exclusion => exclusion.reason.length > 0)).toBe(true)
     }
   )
+
+  test.each(['bluez', 'winrt'])('%s bonded receipt refuses an empty native inventory', async platform => {
+    const create = platform === 'bluez' ? createBluezFirstPartyTckRegistration : createWinRtFirstPartyTckRegistration
+    const registration = create({
+      now: () => performance.now(),
+      binding: desktopCoreBinding(platform),
+      bondedInventory: []
+    })
+    await expect(createFirstPartyBackendTckRegistry([registration]).run(registration.backendId)).rejects.toThrow(
+      'required fact peer-bonded-enumeration-preserves-native-facts did not hold'
+    )
+  })
+
+  test.each(['corebluetooth', 'winrt'])('%s deferred receipt refuses a missing native acquisition', async platform => {
+    const create =
+      platform === 'corebluetooth' ? createCoreBluetoothFirstPartyTckRegistration : createWinRtFirstPartyTckRegistration
+    const binding = desktopCoreBinding(platform)
+    const calls = []
+    const registration = create({
+      now: () => performance.now(),
+      binding: {
+        ...binding,
+        openSynthetic: async (...args) => {
+          const central = await binding.openSynthetic(...args)
+          return new Proxy(central, {
+            get(target, property) {
+              if (property === 'connectWhenAvailable')
+                return () => {
+                  calls.push(property)
+                  throw new Error('native deferred acquisition refused')
+                }
+              const value = Reflect.get(target, property)
+              return typeof value === 'function' ? value.bind(target) : value
+            }
+          })
+        }
+      }
+    })
+    await expect(createFirstPartyBackendTckRegistry([registration]).run(registration.backendId)).rejects.toThrow()
+    expect(calls).toEqual(['connectWhenAvailable'])
+  })
 
   test('a desktop leg never opens a production radio', async () => {
     const binding = desktopCoreBinding('bluez')

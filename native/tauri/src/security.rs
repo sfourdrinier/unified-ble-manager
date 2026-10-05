@@ -23,13 +23,33 @@ fn state_record(state: SecurityState, measured_at: u64) -> IpcValue {
         ("encryption", string("unsupported")),
         ("authentication", string("unsupported")),
         ("secureConnections", string("unsupported")),
-        ("pairingPossible", state.pairing_possible.map(IpcValue::Bool).unwrap_or(IpcValue::Null)),
-        ("measuredAtMonotonicMs", IpcValue::Number(Number::from(measured_at))),
-        ("limitations", IpcValue::Array(vec![object([
-            ("code", string("desktop-security-measurement")),
-            ("explanation", string("The native authority reports bond state and pairing availability; encryption, authentication and Secure Connections are not measured.")),
-            ("affectedGuarantee", string("security measurement completeness")),
-        ])])),
+        (
+            "pairingPossible",
+            state
+                .pairing_possible
+                .map(IpcValue::Bool)
+                .unwrap_or(IpcValue::Null),
+        ),
+        (
+            "measuredAtMonotonicMs",
+            IpcValue::Number(Number::from(measured_at)),
+        ),
+        (
+            "limitations",
+            IpcValue::Array(vec![object([
+                ("code", string("desktop-security-measurement")),
+                (
+                    "explanation",
+                    string(
+                        "The native authority reports bond state and pairing availability; encryption, authentication and Secure Connections are not measured.",
+                    ),
+                ),
+                (
+                    "affectedGuarantee",
+                    string("security measurement completeness"),
+                ),
+            ])]),
+        ),
     ])
 }
 
@@ -126,7 +146,7 @@ impl BtleplugDispatcher {
                             "stream",
                             "security.watch.initial-events",
                         )
-                        .platform(error.to_string()))
+                        .platform(error.to_string()));
                     }
                 }
             }
@@ -179,7 +199,9 @@ impl BtleplugDispatcher {
                             )
                             .await
                         {
-                            eprintln!("UBM initial security watch delivery failed: {error:?}; terminal: {terminal_error:?}");
+                            eprintln!(
+                                "UBM initial security watch delivery failed: {error:?}; terminal: {terminal_error:?}"
+                            );
                         }
                         return;
                     }
@@ -242,7 +264,9 @@ impl BtleplugDispatcher {
                                     )
                                     .await
                                 {
-                                    eprintln!("UBM security watch delivery failed: {error:?}; terminal: {terminal_error:?}");
+                                    eprintln!(
+                                        "UBM security watch delivery failed: {error:?}; terminal: {terminal_error:?}"
+                                    );
                                 }
                                 break;
                             }
@@ -336,7 +360,7 @@ impl BtleplugDispatcher {
                             )
                             .platform(format!(
                                 "The instantiated desktop authority cannot apply {field}"
-                            )))
+                            )));
                         }
                         _ => return Err(malformed(command)),
                     }

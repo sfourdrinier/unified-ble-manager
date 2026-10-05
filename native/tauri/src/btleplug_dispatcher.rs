@@ -2171,7 +2171,9 @@ impl BtleplugDispatcher {
                                     )
                                     .await
                                 {
-                                    eprintln!("Tauri scan address-type failure terminal delivery failed: {delivery_error:?}; original failure: {error:?}");
+                                    eprintln!(
+                                        "Tauri scan address-type failure terminal delivery failed: {delivery_error:?}; original failure: {error:?}"
+                                    );
                                 }
                                 return;
                             }
@@ -2336,22 +2338,13 @@ impl BtleplugDispatcher {
         match payload.get("intent") {
             None => {}
             Some(IpcValue::String(intent)) if intent == "direct" => {}
-            Some(IpcValue::String(intent)) if intent == "when-available" => {
-                return Err(DispatchError::new(
-                    BleErrorCode::CapabilityUnsupported,
-                    "capability",
-                    "connection.connect.when-available",
-                )
-                .platform(
-                    "The instantiated desktop authority has no deferred-connect implementation",
-                ))
-            }
+            Some(IpcValue::String(intent)) if intent == "when-available" => {}
             _ => {
                 return Err(DispatchError::new(
                     BleErrorCode::ArgumentInvalid,
                     "connection",
                     "tauri.connect-intent",
-                ))
+                ));
             }
         }
         if let Some(value) = payload.get("transport") {
@@ -2375,6 +2368,17 @@ impl BtleplugDispatcher {
             .platform("The instantiated desktop authority has no connect PHY implementation"));
         }
         let authority = self.ensure_authority().await?;
+        if payload.get("intent") == Some(&string("when-available")) {
+            let states = authority
+                .capability_descriptors()
+                .await
+                .map_err(|error| DispatchError::from_core(&error))?;
+            match states.iter().find(|row| row.id() == "connection:when-available").map(|row| row.state()) {
+                Some(ubm_core::central::CapabilityState::Supported | ubm_core::central::CapabilityState::Limited) => {},
+                Some(ubm_core::central::CapabilityState::Unavailable) => return Err(DispatchError::new(BleErrorCode::CapabilityUnavailable, "connection", "connection.connect.when-available")),
+                _ => return Err(DispatchError::new(BleErrorCode::CapabilityUnsupported, "connection", "connection.connect.when-available").platform("The instantiated native authority has no deferred initial-acquisition mechanism")),
+            }
+        }
         let peer_id = match (payload.get("peerId"), payload.get("address")) {
             (Some(IpcValue::String(peer)), None) if !peer.is_empty() => peer.clone(),
             (None, Some(address)) => {
@@ -2400,7 +2404,7 @@ impl BtleplugDispatcher {
                             BleErrorCode::ArgumentInvalid,
                             "connection",
                             "tauri.connect-address-type",
-                        ))
+                        ));
                     }
                 };
                 // A core ticket names one operation, not the whole two-stage
@@ -2425,7 +2429,7 @@ impl BtleplugDispatcher {
                     BleErrorCode::ProtocolMalformed,
                     "ipc",
                     "tauri.connect-target",
-                ))
+                ));
             }
         };
         let key = caller_key(caller);
@@ -2449,10 +2453,14 @@ impl BtleplugDispatcher {
         // echo back to the core.
         // The core lease is internal: it takes no number from the 4.x counter.
         let lease = self.internal_id("lease");
-        let connection = authority
-            .connect(&peer_id, &lease, ctl)
-            .await
-            .map_err(|error| DispatchError::from_core(&error))?;
+        let connection = if payload.get("intent") == Some(&string("when-available")) {
+            authority
+                .connect_when_available(&peer_id, &lease, ctl)
+                .await
+        } else {
+            authority.connect(&peer_id, &lease, ctl).await
+        }
+        .map_err(|error| DispatchError::from_core(&error))?;
         let handle = self.id("connection");
         let connection_id = self.id("connection-id");
         // The 4.x public generation; the core's travels with it for matching.

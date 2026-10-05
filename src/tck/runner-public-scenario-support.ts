@@ -60,7 +60,8 @@ export async function connectToDeterministicPeer<
 >(
   manager: PublicManager<Attachment, Identity>,
   fixture: BackendTckFixture<Attachment, Identity, Backend>,
-  definition: TckScenarioDefinition
+  definition: TckScenarioDefinition,
+  intent: 'direct' | 'when-available' = 'direct'
 ) {
   const scan = await fixture.controller.settle(manager.scan(scanOptions(false)))
   const observation = scan.observations[Symbol.asyncIterator]().next()
@@ -75,7 +76,7 @@ export async function connectToDeterministicPeer<
   if (cleanup.state !== 'released' || cleanup.failures.length !== 0) {
     throw new TckAssertionError(definition.id, 'connection setup scan cleanup failed')
   }
-  return fixture.controller.settle(manager.connect(peerId, operationOptions))
+  return fixture.controller.settle(manager.connect(peerId, { ...operationOptions, intent }))
 }
 
 export async function connectAndDiscover<

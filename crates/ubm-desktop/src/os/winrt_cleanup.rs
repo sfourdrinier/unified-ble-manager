@@ -3,6 +3,133 @@
 use crate::errors::{DesktopError, PlatformDetail, PlatformValue};
 use std::sync::{Mutex, PoisonError, TryLockError};
 
+/// A transient native read never adopts connection ownership. Close is
+/// synchronous before another await, including when inspection failed; both
+/// failures are retained rather than allowing one to hide the other.
+pub(crate) fn inspect_transient<T>(
+    read: impl FnOnce() -> Result<T, DesktopError>,
+    close: impl FnOnce() -> Result<(), DesktopError>,
+) -> Result<T, DesktopError> {
+    let read = read();
+    let close = close();
+    match (read, close) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(read), Err(close)) => {
+            cleanup_result(vec![read, close]).and_then(|()| unreachable!("nonempty failure list"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod transient_tests {
+    use super::*;
+    #[tokio::test]
+    async fn failed_handler_cleanup_does_not_skip_independent_peripheral_release() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let mut stages = CleanupStages::new([true; 3]);
+        let mut attempted = Vec::new();
+        let failed = release_session_stages(&mut stages, |stage| {
+            attempted.push(stage);
+            if stage == 0 {
+                Err(DesktopError::connection_failed(
+                    "handler removal retained for retry",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(
+            attempted,
+            [0, 1, 2],
+            "maintain disable and session Close were attempted and succeeded"
+        );
+        let result = release_independent(cleanup_result(failed), async {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+        .await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            result
+                .unwrap_err()
+                .detail()
+                .unwrap()
+                .contains("retained for retry")
+        );
+        let mut retried = Vec::new();
+        assert!(
+            release_session_stages(&mut stages, |stage| {
+                retried.push(stage);
+                Ok::<_, DesktopError>(())
+            })
+            .is_empty()
+        );
+        assert_eq!(
+            retried,
+            [0],
+            "the failed handler remains owned; confirmed sibling stages are not retried"
+        );
+    }
+    #[test]
+    fn transient_inspection_closes_after_success_or_validation_failure() {
+        use std::cell::Cell;
+        for refuse in [false, true] {
+            let closed = Cell::new(false);
+            let result = inspect_transient(
+                || {
+                    if refuse {
+                        Err(DesktopError::connection_failed("native identity mismatch"))
+                    } else {
+                        Ok(7)
+                    }
+                },
+                || {
+                    closed.set(true);
+                    Ok(())
+                },
+            );
+            assert!(closed.get());
+            assert_eq!(result.is_err(), refuse);
+        }
+    }
+    #[test]
+    fn transient_inspection_retains_read_and_close_failures() {
+        let result: Result<(), _> = inspect_transient(
+            || Err(DesktopError::connection_failed("validation failed")),
+            || Err(DesktopError::connection_failed("close failed")),
+        );
+        let error = result.unwrap_err();
+        let metadata = &error.platform().expect("both native failures").metadata;
+        assert!(
+            metadata
+                .values()
+                .any(|value| *value == PlatformValue::Text("validation failed".into()))
+        );
+        assert!(
+            metadata
+                .values()
+                .any(|value| *value == PlatformValue::Text("close failed".into()))
+        );
+    }
+}
+
+/// Independent owned native stages must both be attempted. A failed stage's
+/// owner remains retryable; a successful sibling cannot erase that failure.
+pub(crate) async fn release_independent(
+    maintained: Result<(), DesktopError>,
+    peripheral: impl std::future::Future<Output = Result<(), DesktopError>>,
+) -> Result<(), DesktopError> {
+    let peripheral = peripheral.await;
+    cleanup_result(
+        maintained
+            .err()
+            .into_iter()
+            .chain(peripheral.err())
+            .collect(),
+    )
+}
+
 pub(crate) struct PeerAdmission {
     slots: Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<bool>>>>,
     closing: std::sync::atomic::AtomicBool,

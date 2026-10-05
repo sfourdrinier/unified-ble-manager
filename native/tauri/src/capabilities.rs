@@ -7,9 +7,7 @@ use crate::IpcValue;
 const CAPABILITY_SCHEMA_VERSION: i64 = 1;
 const IMPLEMENTATION_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Capabilities whose mechanics are implemented by this dispatcher. Every
-/// implemented entry remains `limited` until the corresponding physical-radio
-/// evidence is qualified; every other catalog entry is explicitly unsupported.
+/// Complete public catalog: mechanism truth comes from the native instance.
 const TAURI_CAPABILITIES: [&str; 42] = [
     "discovery:continuous-scan",
     "discovery:system-chooser",
@@ -58,208 +56,156 @@ const TAURI_CAPABILITIES: [&str; 42] = [
     "lifecycle:page-persistence",
 ];
 
-const TAURI_LIMITED_CAPABILITIES: [(&str, &str, &str, &str); 7] = [
-    (
-        "discovery:continuous-scan",
-        "scan.owner-join-authority-and-signature",
-        "one-global-scan-owner",
-        "The dispatcher permits one physical scan owner at a time; it does not provide independent concurrent adapter scans.",
-    ),
-    (
-        "connection:direct",
-        "connection.lease-joins-borrowing-transfer-and-revocation",
-        "deterministic-only",
-        "Direct connection and ownership cleanup are implemented, but this receipt is deterministic host evidence rather than a physical-radio qualification.",
-    ),
-    (
-        "connection:rssi",
-        "connection.rssi-and-att-mtu-capability-contract",
-        "deterministic-only",
-        "RSSI dispatch is implemented, but this receipt is deterministic host evidence rather than a physical-radio qualification.",
-    ),
-    (
-        "gatt:descriptors",
-        "gatt.descriptor-discovery-read-write",
-        "deterministic-only",
-        "Descriptor discovery, reads, and writes are implemented, but this receipt is deterministic host evidence rather than a physical-radio qualification.",
-    ),
-    (
-        "gatt:indications",
-        "gatt.indications",
-        "delivery-kind-unknown",
-        "The btleplug notification stream does not distinguish indications from notifications, so delivery is reported as unknown.",
-    ),
-    // Finding 190b (owner decision J): the dispatcher answers these through
-    // the shared desktop core, so Tauri advertises them like the desktop
-    // core instead of bare unsupported.
-    (
-        "gatt:maximum-write-length",
-        "gatt.maximum-write-length",
-        "deterministic-only",
-        "The largest single write the OS accepts on the link for the requested mode, measured per link through the core; deterministic host evidence until physical-radio qualification.",
-    ),
-    (
-        "gatt:long-write",
-        "gatt.long-write",
-        "no-prepared-write-path",
-        "Prepared-write transactions have no btleplug path; long writes are rejected, never silently single-written.",
-    ),
-];
+use ubm_core::central::{CapabilityDescriptor, CapabilityState, EvidenceLevel};
 
-/// Finding 217 follow-up: the effective ATT MTU derivation this OS answers.
-/// Desktop builds report `limited` with the derivation named; a build for
-/// any other target keeps the previous `unsupported` answer with its reason,
-/// so a platform that genuinely cannot answer still says so precisely.
-#[cfg(target_os = "macos")]
-const EFFECTIVE_MTU_STATE: (&str, &str, &str) = (
-    "limited",
-    "corebluetooth-derived-effective-mtu",
-    "The effective ATT MTU is derived per link as CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3 (finding 217, the same derivation as the Apple React Native route); deterministic host evidence until physical-radio qualification.",
-);
-#[cfg(target_os = "windows")]
-const EFFECTIVE_MTU_STATE: (&str, &str, &str) = (
-    "limited",
-    "winrt-gattsession-max-pdu-size",
-    "The effective ATT MTU is the GattSession.MaxPduSize btleplug tracks from MaxPduSizeChanged; deterministic host evidence until physical-radio qualification.",
-);
-#[cfg(target_os = "linux")]
-const EFFECTIVE_MTU_STATE: (&str, &str, &str) = (
-    "limited",
-    "bluez-gatt-characteristic-mtu",
-    "The effective ATT MTU is the org.bluez.GattCharacteristic1 MTU of the link's characteristics; deterministic host evidence until physical-radio qualification.",
-);
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-const EFFECTIVE_MTU_STATE: (&str, &str, &str) = (
-    "unsupported",
-    "effective-mtu-boundary-unavailable",
-    "The dispatcher exposes no authoritative current ATT MTU observation; the OS-measured MTU already bounds every write through the core maximum-write-length.",
-);
+/// These are IPC/ownership restrictions, not operating-system assumptions.
+/// Their missing routes are pinned by dispatcher tests. Native capability rows
+/// otherwise cross unchanged, including instance-specific refusals.
+pub(crate) fn transport_restriction(id: &str) -> Option<&'static str> {
+    match id {
+        "discovery:advertisement-watch" => Some("tauri-advertisement-watch-route-unavailable"),
+        "peer:origin-authorized" => Some("tauri-origin-authorized-directory-unavailable"),
+        "gatt:reliable-write" => Some("tauri-reliable-write-route-unavailable"),
+        "gatt:write-without-response-readiness" => Some("tauri-write-readiness-route-unavailable"),
+        "gatt:high-throughput-acquire" => Some("tauri-throughput-acquire-route-unavailable"),
+        "lifecycle:page-persistence" => Some("tauri-rebind-releases-prior-lease"),
+        _ => None,
+    }
+}
 
-pub(crate) fn snapshot(
-    backend_generation: &str,
-    native: &[ubm_core::central::CapabilityDescriptor],
-) -> IpcValue {
+pub(crate) fn snapshot(backend_generation: &str, native: &[CapabilityDescriptor]) -> IpcValue {
     object([
         ("schemaVersion", number(2)),
         ("backendGeneration", string(backend_generation)),
         (
             "descriptors",
             IpcValue::Array(
-                TAURI_CAPABILITIES.iter().map(|id| {
-                    if matches!(*id, "peer:address-targeting" | "connection:when-available" | "scan:platform-options" | "security:state" | "security:pair" | "security:cancel-pairing" | "security:unpair" | "security:custom-ceremony" | "security:pairing-generation") {
-                        let row = native.iter().find(|row| row.id() == *id);
-                        let state = row.map(|row| row.state()).unwrap_or(ubm_core::central::CapabilityState::Unsupported);
-                        let reason = row.map(|row| row.limitations().join("; ")).unwrap_or_else(|| "native-mechanism-not-implemented".to_owned());
-                        descriptor(id, state.as_str(), "capability.truth-limits-evidence-and-binding", &reason, "The existing IPC route delegates to the instantiated desktop authority. Its implementation limits are preserved; a missing native mechanism is not a claim that the operating system cannot implement it.")
-                    } else if matches!(*id, "connection:direct" | "background:desktop-maintain-connection") && native.iter().any(|row| row.id() == *id && matches!(row.state(), ubm_core::central::CapabilityState::Unsupported | ubm_core::central::CapabilityState::Unavailable)) {
-                        let row = native.iter().find(|row| row.id() == *id).expect("instance row checked");
-                        descriptor(id, row.state().as_str(), "capability.truth-limits-evidence-and-binding", &row.limitations().join("; "), "The instantiated native radio reports this mechanism unavailable; its reason is preserved without substituting a platform matrix.")
-                    } else if matches!(*id, "peer:resolve-reference" | "peer:known" | "peer:system-connected") {
-                        // Resolve uses the same explicit-identifier OS mechanism as
-                        // known; the older native resolve row covers observed IDs only.
-                        let native_id = if *id == "peer:resolve-reference" { "peer:known" } else { id };
-                        let state = native.iter().find(|row| row.id() == native_id).map(|row| row.state()).unwrap_or(ubm_core::central::CapabilityState::Unsupported);
-                        descriptor(id, state.as_str(), "peer.system-directory", if matches!(state,ubm_core::central::CapabilityState::Supported | ubm_core::central::CapabilityState::Limited) { "service-filter-or-explicit-reference-required" } else { "native-directory-unavailable" }, "Read-only OS directory retrieval follows the shared native adapter capability. Connected retrieval requires services; known retrieval requires explicit application references. No connection is acquired; physical qualification is separate.")
-                    } else if *id == "connection:effective-mtu" {
-                        let (state, code, explanation) = EFFECTIVE_MTU_STATE;
-                        descriptor(
-                            id,
-                            state,
-                            if state == "limited" {
-                                "connection.rssi-and-att-mtu-capability-contract"
-                            } else {
-                                "capability.truth-limits-evidence-and-binding"
-                            },
-                            code,
-                            explanation,
-                        )
-                    } else if let Some((_, scenario, code, explanation)) =
-                        TAURI_LIMITED_CAPABILITIES.iter().find(|entry| entry.0 == *id)
-                    {
-                        descriptor(id, "limited", scenario, code, explanation)
-                    } else {
-                        descriptor(
-                            id,
-                            "unsupported",
-                            "capability.truth-limits-evidence-and-binding",
-                            "not-implemented",
-                            "The btleplug dispatcher does not implement this capability in the current host.",
-                        )
-                    }
-                })
+                TAURI_CAPABILITIES
+                    .iter()
+                    .map(|id| {
+                        if let Some(reason) = transport_restriction(id) {
+                            return unsupported(id, reason);
+                        }
+                        let native_id = if *id == "peer:resolve-reference" {
+                            reference_resolution_mechanism(native)
+                        } else {
+                            id
+                        };
+                        match native.iter().find(|row| row.id() == native_id) {
+                            Some(row) => project(id, row),
+                            None => unsupported(id, "native-mechanism-not-registered"),
+                        }
+                    })
                     .collect(),
             ),
         ),
     ])
 }
 
-fn descriptor(
-    id: &str,
-    state: &str,
-    scenario: &str,
-    limitation_code: &str,
-    explanation: &str,
-) -> IpcValue {
-    let limitation = object([
-        ("code", string(limitation_code)),
-        ("explanation", string(explanation)),
-        (
-            "affectedGuarantee",
-            string("The application must not treat this capability as fully supported."),
-        ),
-    ]);
+pub(crate) fn reference_resolution_mechanism(native: &[CapabilityDescriptor]) -> &'static str {
+    if native.iter().any(|row| {
+        row.id() == "peer:known"
+            && matches!(
+                row.state(),
+                CapabilityState::Supported | CapabilityState::Limited
+            )
+    }) {
+        "peer:known"
+    } else {
+        "peer:bonded"
+    }
+}
+
+fn unsupported(id: &str, reason: &str) -> IpcValue {
+    let row = CapabilityDescriptor::new(
+        id,
+        CapabilityState::Unsupported,
+        &[("availability", 0)],
+        &[reason],
+        &format!("tauri-transport-{id}"),
+        EvidenceLevel::Blocked,
+        IMPLEMENTATION_VERSION,
+        "tauri-ipc-route-catalog-v3",
+        &["capability.truth-limits-evidence-and-binding"],
+    )
+    .expect("static transport descriptor");
+    project(id, &row)
+}
+
+fn project(id: &str, native: &CapabilityDescriptor) -> IpcValue {
+    let limitations = IpcValue::Array(
+        native
+            .limitations()
+            .iter()
+            .map(|reason| {
+                object([
+                    ("code", string(reason)),
+                    ("explanation", string(reason)),
+                    (
+                        "affectedGuarantee",
+                        string(
+                            "The native authority bounds this capability with the stated reason.",
+                        ),
+                    ),
+                ])
+            })
+            .collect(),
+    );
+    let scenarios = IpcValue::Array(native.scenario_ids().iter().map(string).collect());
     let schema_range = version_range();
     object([
         ("id", string(id)),
-        ("state", string(state)),
+        ("state", string(native.state().as_str())),
         ("selectedSchemaRange", schema_range.clone()),
         ("implementationOrigin", string("backend-native")),
         (
             "tck",
             object([
                 ("suiteId", string("capability.catalog-v2")),
-                (
-                    "requiredScenarioIds",
-                    IpcValue::Array(vec![string(scenario)]),
-                ),
+                ("requiredScenarioIds", scenarios.clone()),
                 ("contractRange", schema_range),
             ]),
         ),
         (
             "evidence",
             object([
+                ("receiptId", string(native.receipt_id())),
+                ("evidenceLevel", string(native.evidence_level().as_str())),
                 (
-                    "receiptId",
-                    string(format!("tauri-btleplug-capability-{id}-v2")),
+                    "implementationVersion",
+                    string(native.implementation_version()),
                 ),
-                (
-                    "evidenceLevel",
-                    string(if state == "limited" {
-                        "deterministic"
-                    } else {
-                        "blocked"
-                    }),
-                ),
-                ("implementationVersion", string(IMPLEMENTATION_VERSION)),
-                (
-                    "sourceDigest",
-                    string("tauri-btleplug-capability-manifest-v2"),
-                ),
-                ("scenarioIds", IpcValue::Array(vec![string(scenario)])),
-                ("limitations", IpcValue::Array(vec![limitation.clone()])),
+                ("sourceDigest", string(native.source_digest())),
+                ("scenarioIds", scenarios),
+                ("limitations", limitations.clone()),
             ]),
         ),
-        ("limitations", IpcValue::Array(vec![limitation])),
+        ("limitations", limitations),
         (
             "limits",
-            object([(
-                "availability",
-                object([
-                    ("maximum", number(1)),
-                    ("minimum", IpcValue::Null),
-                    ("unit", string("boolean")),
-                ]),
-            )]),
+            IpcValue::Object(
+                native
+                    .limits()
+                    .iter()
+                    .map(|(name, maximum)| {
+                        (
+                            name.clone(),
+                            object([
+                                ("maximum", IpcValue::Number(Number::from(*maximum))),
+                                ("minimum", IpcValue::Null),
+                                (
+                                    "unit",
+                                    string(if name == "availability" {
+                                        "boolean"
+                                    } else {
+                                        "count"
+                                    }),
+                                ),
+                            ]),
+                        )
+                    })
+                    .collect(),
+            ),
         ),
     ])
 }
@@ -271,14 +217,12 @@ fn version_range() -> IpcValue {
         ("maximum", version_number()),
     ])
 }
-
 fn version_number() -> IpcValue {
     object([
         ("axis", string("capability-schema")),
         ("value", number(CAPABILITY_SCHEMA_VERSION)),
     ])
 }
-
 fn object<const N: usize>(entries: [(&str, IpcValue); N]) -> IpcValue {
     IpcValue::Object(
         entries
@@ -287,11 +231,9 @@ fn object<const N: usize>(entries: [(&str, IpcValue); N]) -> IpcValue {
             .collect::<BTreeMap<_, _>>(),
     )
 }
-
 fn string(value: impl Into<String>) -> IpcValue {
     IpcValue::String(value.into())
 }
-
 fn number(value: i64) -> IpcValue {
     IpcValue::Number(Number::from(value))
 }
@@ -299,173 +241,220 @@ fn number(value: i64) -> IpcValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ubm_core::central::{Central, CentralConfig};
+    use ubm_core::contracts::{
+        AdapterGeneration, AdapterId, AttachmentId, AttachmentTuple, BackendGeneration,
+        BackendInstanceId, Generation,
+    };
 
-    #[test]
-    fn instance_connection_refusal_reaches_tauri_with_its_reason() {
-        let native = vec![ubm_core::central::CapabilityDescriptor::new(
-            "connection:direct",
-            ubm_core::central::CapabilityState::Unsupported,
-            &[("availability", 0)],
-            &["bluez-le-bearer-attestation-required"],
-            "test",
-            ubm_core::central::EvidenceLevel::Blocked,
-            "test",
-            "test",
-            &["test"],
+    fn native_for(os: ubm_desktop::DesktopOs) -> Vec<CapabilityDescriptor> {
+        let attachment = AttachmentTuple::new(
+            AttachmentId::new("test").unwrap(),
+            BackendInstanceId::new("test").unwrap(),
+            BackendGeneration::new("test").unwrap(),
+            AdapterId::new("test").unwrap(),
+            AdapterGeneration::new("test").unwrap(),
+        );
+        let mut core = Central::new(
+            attachment,
+            Generation::new("test").unwrap(),
+            CentralConfig::default(),
         )
-        .unwrap()];
-        let projected = snapshot("generation", &native);
-        assert_eq!(
-            row(&projected, "connection:direct"),
-            (
-                "unsupported".into(),
-                "bluez-le-bearer-attestation-required".into()
-            )
-        );
+        .unwrap();
+        ubm_desktop::register_desktop_capabilities_for(&mut core, Some(os), false).unwrap();
+        core.registered_capability_descriptors()
     }
-
-    #[test]
-    fn directory_capabilities_preserve_instantiated_core_state() {
-        use ubm_core::central::CapabilityState;
-        for state in [
-            CapabilityState::Supported,
-            CapabilityState::Limited,
-            CapabilityState::Unavailable,
-            CapabilityState::Unsupported,
-        ] {
-            let snapshot = snapshot(
-                "generation",
-                &["peer:known", "peer:system-connected"].map(|id| {
-                    ubm_core::central::CapabilityDescriptor::new(
-                        id,
-                        state,
-                        &[("availability", 1)],
-                        &["test-reason"],
-                        "test",
-                        ubm_core::central::EvidenceLevel::Deterministic,
-                        "test",
-                        "test",
-                        &["test"],
-                    )
-                    .unwrap()
-                }),
-            );
-            for id in [
-                "peer:resolve-reference",
-                "peer:known",
-                "peer:system-connected",
-            ] {
-                assert_eq!(row(&snapshot, id).0, state.as_str());
-            }
-        }
+    fn json(snapshot: IpcValue) -> serde_json::Value {
+        snapshot.into_wire()
     }
-
-    #[test]
-    fn routed_security_and_address_capabilities_preserve_native_truth() {
-        use ubm_core::central::{CapabilityDescriptor, CapabilityState, EvidenceLevel};
-        for state in [
-            CapabilityState::Limited,
-            CapabilityState::Unsupported,
-            CapabilityState::Unavailable,
-        ] {
-            let native = [
-                "security:state",
-                "security:pair",
-                "security:cancel-pairing",
-                "security:unpair",
-                "peer:address-targeting",
-            ]
-            .map(|id| {
-                CapabilityDescriptor::new(
-                    id,
-                    state,
-                    &[("availability", 1)],
-                    &["native-test-limit"],
-                    "test",
-                    EvidenceLevel::Deterministic,
-                    "test",
-                    "test",
-                    &["test"],
-                )
-                .unwrap()
-            });
-            let projected = snapshot("generation", &native);
-            for descriptor in &native {
-                assert_eq!(
-                    row(&projected, descriptor.id()),
-                    (state.as_str().to_owned(), "native-test-limit".to_owned())
-                );
-            }
-        }
-    }
-
-    fn text(value: &IpcValue, key: &str) -> String {
-        match value {
-            IpcValue::Object(fields) => match fields.get(key) {
-                Some(IpcValue::String(text)) => text.clone(),
-                other => panic!("field {key} is not a string: {other:?}"),
-            },
-            other => panic!("expected an object, got {other:?}"),
-        }
-    }
-
-    /// One descriptor's state and first limitation code by capability id.
-    fn row(snapshot: &IpcValue, id: &str) -> (String, String) {
-        let descriptors = match snapshot {
-            IpcValue::Object(fields) => match fields.get("descriptors") {
-                Some(IpcValue::Array(descriptors)) => descriptors,
-                other => panic!("descriptors is not an array: {other:?}"),
-            },
-            other => panic!("expected an object, got {other:?}"),
-        };
-        let descriptor = descriptors
+    fn row<'a>(snapshot: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+        snapshot["descriptors"]
+            .as_array()
+            .unwrap()
             .iter()
-            .find(|descriptor| text(descriptor, "id") == id)
-            .unwrap_or_else(|| panic!("missing descriptor {id}"));
-        let state = text(descriptor, "state");
-        let limitations = match descriptor {
-            IpcValue::Object(fields) => match fields.get("limitations") {
-                Some(IpcValue::Array(limitations)) => limitations,
-                other => panic!("limitations is not an array: {other:?}"),
-            },
-            other => panic!("expected an object, got {other:?}"),
-        };
-        let code = limitations
-            .first()
-            .map(|limitation| text(limitation, "code"))
-            .unwrap_or_else(|| panic!("{id} has no limitation"));
-        (state, code)
+            .find(|row| row["id"] == id)
+            .unwrap()
     }
 
-    /// Finding 190b (owner decision J): Tauri advertises max-write and
-    /// long-write like the desktop core over the same Rust core. Finding
-    /// 217 follow-up: the effective MTU answers `limited` with the
-    /// derivation this OS names — the desktop core's per-OS answer, so
-    /// every desktop host answers the same.
     #[test]
-    fn finding_190b_write_capabilities_match_the_desktop_core() {
-        let snap = snapshot("backend-generation-1", &[]);
-        assert_eq!(
-            row(&snap, "gatt:maximum-write-length"),
-            ("limited".to_owned(), "deterministic-only".to_owned())
-        );
-        assert_eq!(
-            row(&snap, "gatt:long-write"),
-            ("limited".to_owned(), "no-prepared-write-path".to_owned())
-        );
-        let (state, code) = row(&snap, "connection:effective-mtu");
-        if cfg!(target_os = "macos") {
-            assert_eq!(state, "limited");
-            assert_eq!(code, "corebluetooth-derived-effective-mtu");
-        } else if cfg!(target_os = "windows") {
-            assert_eq!(state, "limited");
-            assert_eq!(code, "winrt-gattsession-max-pdu-size");
-        } else if cfg!(target_os = "linux") {
-            assert_eq!(state, "limited");
-            assert_eq!(code, "bluez-gatt-characteristic-mtu");
-        } else {
-            assert_eq!(state, "unsupported");
-            assert_eq!(code, "effective-mtu-boundary-unavailable");
+    fn native_mechanism_states_are_projected_on_every_desktop_os() {
+        for os in ubm_desktop::DesktopOs::ALL {
+            let native = native_for(os);
+            let projected = json(snapshot("test", &native));
+            assert_eq!(
+                projected["descriptors"].as_array().unwrap().len(),
+                TAURI_CAPABILITIES.len()
+            );
+            for id in TAURI_CAPABILITIES {
+                let native_id = if id == "peer:resolve-reference" {
+                    reference_resolution_mechanism(&native)
+                } else {
+                    id
+                };
+                let expected = if transport_restriction(id).is_some() {
+                    None
+                } else {
+                    native.iter().find(|row| row.id() == native_id)
+                };
+                let projected_row = row(&projected, id);
+                match expected {
+                    Some(native_row) => {
+                        assert_eq!(
+                            projected_row["state"],
+                            native_row.state().as_str(),
+                            "{} {id}",
+                            os.as_str()
+                        );
+                        assert_eq!(
+                            projected_row["evidence"]["receiptId"],
+                            native_row.receipt_id()
+                        );
+                        assert_eq!(
+                            projected_row["evidence"]["evidenceLevel"],
+                            native_row.evidence_level().as_str()
+                        );
+                        assert_eq!(
+                            projected_row["evidence"]["implementationVersion"],
+                            native_row.implementation_version()
+                        );
+                        assert_eq!(
+                            projected_row["evidence"]["sourceDigest"],
+                            native_row.source_digest()
+                        );
+                        assert_eq!(
+                            projected_row["evidence"]["scenarioIds"],
+                            serde_json::json!(native_row.scenario_ids())
+                        );
+                        assert_eq!(
+                            projected_row["limitations"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .map(|v| v["code"].as_str().unwrap())
+                                .collect::<Vec<_>>(),
+                            native_row
+                                .limitations()
+                                .iter()
+                                .map(String::as_str)
+                                .collect::<Vec<_>>()
+                        );
+                        for (key, maximum) in native_row.limits() {
+                            assert_eq!(projected_row["limits"][key]["maximum"], *maximum);
+                        }
+                    }
+                    None => assert_eq!(
+                        projected_row["state"],
+                        "unsupported",
+                        "{} {id}",
+                        os.as_str()
+                    ),
+                }
+            }
         }
+    }
+
+    #[test]
+    fn native_fields_and_multiple_limits_survive_projection() {
+        let native = CapabilityDescriptor::new(
+            "connection:rssi",
+            CapabilityState::Limited,
+            &[("availability", 1), ("samples", 17)],
+            &["first-reason", "second-reason"],
+            "native-receipt",
+            EvidenceLevel::LivePreview,
+            "native-version",
+            "native-digest",
+            &["native-first", "native-second"],
+        )
+        .unwrap();
+        let projected = json(snapshot("test", &[native]));
+        let row = row(&projected, "connection:rssi");
+        assert_eq!(row["limits"]["samples"]["maximum"], 17);
+        assert_eq!(row["limitations"].as_array().unwrap().len(), 2);
+        assert_eq!(row["evidence"]["evidenceLevel"], "live-preview");
+        assert_eq!(row["evidence"]["receiptId"], "native-receipt");
+        assert_eq!(row["evidence"]["implementationVersion"], "native-version");
+        assert_eq!(row["evidence"]["sourceDigest"], "native-digest");
+        assert_eq!(
+            row["evidence"]["scenarioIds"],
+            serde_json::json!(["native-first", "native-second"])
+        );
+        assert_eq!(row["limitations"], row["evidence"]["limitations"]);
+    }
+
+    #[test]
+    fn missing_native_rows_never_invent_an_available_mechanism() {
+        let projected = json(snapshot("test", &[]));
+        for id in TAURI_CAPABILITIES {
+            assert_eq!(row(&projected, id)["state"], "unsupported", "{id}");
+        }
+    }
+
+    #[test]
+    fn supported_native_evidence_is_not_replaced_with_blocked_evidence() {
+        let native = CapabilityDescriptor::new(
+            "connection:rssi",
+            CapabilityState::Supported,
+            &[("availability", 1)],
+            &[],
+            "qualified",
+            EvidenceLevel::Supported,
+            "version",
+            "digest",
+            &["rssi"],
+        )
+        .unwrap();
+        let projected = json(snapshot("test", &[native]));
+        let row = row(&projected, "connection:rssi");
+        assert_eq!(row["state"], "supported");
+        assert_eq!(row["evidence"]["evidenceLevel"], "supported");
+        assert_eq!(row["limitations"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn unavailable_is_not_rewritten_to_unsupported_or_limited() {
+        let native = CapabilityDescriptor::new(
+            "connection:effective-mtu",
+            CapabilityState::Unavailable,
+            &[("availability", 0)],
+            &["native-link-measurement-pending"],
+            "pending-receipt",
+            EvidenceLevel::Blocked,
+            "version",
+            "digest",
+            &["mtu"],
+        )
+        .unwrap();
+        let projected = json(snapshot("test", &[native]));
+        let row = row(&projected, "connection:effective-mtu");
+        assert_eq!(row["state"], "unavailable");
+        assert_eq!(
+            row["limitations"][0]["code"],
+            "native-link-measurement-pending"
+        );
+        assert_eq!(row["evidence"]["receiptId"], "pending-receipt");
+        assert_eq!(row["limits"]["availability"]["maximum"], 0);
+    }
+
+    #[test]
+    fn instance_refusal_keeps_zero_availability_and_all_reasons() {
+        let native = CapabilityDescriptor::new(
+            "connection:direct",
+            CapabilityState::Unsupported,
+            &[("availability", 0)],
+            &["bluez-le-bearer-attestation-required", "instance-refusal"],
+            "instance-receipt",
+            EvidenceLevel::Blocked,
+            "version",
+            "digest",
+            &["connect"],
+        )
+        .unwrap();
+        let projected = json(snapshot("test", &[native]));
+        let row = row(&projected, "connection:direct");
+        assert_eq!(row["state"], "unsupported");
+        assert_eq!(row["limits"]["availability"]["maximum"], 0);
+        assert_eq!(row["limitations"].as_array().unwrap().len(), 2);
+        assert_eq!(row["evidence"]["receiptId"], "instance-receipt");
     }
 }

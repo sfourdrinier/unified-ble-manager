@@ -78,8 +78,8 @@ option or substitutes a supervisor/reconnect loop.
 
 ## Peer directory availability
 
-React Native Android is currently the only first-party backend that exposes the
-system-bonded directory: `manager.peers.bonded()` enumerates the Android bond
+React Native Android exposes the system-bonded directory:
+`manager.peers.bonded()` enumerates the Android bond
 table and `manager.peers.resolve(reference)` rechecks that table before a
 reconnect. The reference is backend-owned and opaque; the native address never
 becomes a public durable MAC identity. `bonded` means paired metadata, not
@@ -87,11 +87,24 @@ reachable or connected. Apps need Android `BLUETOOTH_CONNECT` permission, and a
 permission failure is surfaced as `permission.denied` rather than an empty
 result.
 
-The other backends retain their truthful boundaries: Web Bluetooth exposes
-origin-authorized devices (not bonded devices), while React Native Apple,
-CoreBluetooth, BlueZ, WinRT, Electron, and Tauri do not advertise Android
-bonded or queued `when-available` support without a native primitive that can
-honour it. Their unsupported peer methods fail with `capability.unsupported`.
+Windows and Linux desktop backends also expose system-bonded inventory, using
+WinRT paired LE devices and the selected BlueZ adapter's current bond table.
+Electron and Tauri forward the instantiated radio authority's directory answer;
+they do not infer bonds in the renderer. See [`PEERS.md`](PEERS.md) for reference
+resolution and the distinction between paired metadata and reachability.
+
+For desktop connection intent, macOS and Windows support initial
+`when-available` acquisition through native pending connection mechanisms, with
+the original deadline, cancellation and scoped cleanup. This is not automatic
+post-loss reconnect. Linux LE-specific deferred acquisition remains unsupported
+by the maintained daemon contract; merged stock discovery signals do not replace
+that mechanism. See [`NODE.md`](NODE.md) for the exact host boundaries.
+
+CoreBluetooth does not expose unrestricted system bond inventory. Web Bluetooth
+exposes origin-authorized devices, not system bonds. React Native Apple retains
+its own native directory boundary. Unsupported peer categories fail with
+`capability.unsupported`; inspect the instantiated backend's typed capabilities
+rather than inferring support from an operating-system or host name.
 
 ## React Native notification bursts
 

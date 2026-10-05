@@ -344,14 +344,17 @@ jobs:
           PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
           test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
           cargo --version
-          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-linux-android x86_64-linux-android
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" armv7-linux-androideabi aarch64-linux-android x86_64-linux-android
 
       - name: Install classic example dependencies
         run: node examples-shared/dev/install-example-dependencies.js example --no-frozen-lockfile
 
       - name: Assemble classic RN Android debug APK
         working-directory: example/android
-        run: ./gradlew :app:assembleDebug --no-daemon --console=plain -PreactNativeArchitectures=arm64-v8a
+        run: ./gradlew :app:assembleDebug --no-daemon --console=plain -PreactNativeArchitectures=armeabi-v7a,arm64-v8a
+
+      - name: Inspect classic RN ARM32 native APK graph
+        run: node scripts/ci/check-android-apk-abi.js example/android/app/build/outputs/apk/debug/app-debug.apk armeabi-v7a
 
       - name: Install Expo example dependencies
         run: node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
@@ -372,7 +375,10 @@ jobs:
 
       - name: Assemble Expo CNG Android debug APK
         working-directory: example-expo/android
-        run: NODE_ENV=development ./gradlew :app:assembleDebug --no-daemon --console=plain
+        run: NODE_ENV=development ./gradlew :app:assembleDebug --no-daemon --console=plain -PreactNativeArchitectures=armeabi-v7a,arm64-v8a,x86_64
+
+      - name: Inspect Expo ARM32 native APK graph
+        run: node scripts/ci/check-android-apk-abi.js example-expo/android/app/build/outputs/apk/debug/app-debug.apk armeabi-v7a
 
       - name: Canonical pack+install export smoke
         run: node scripts/ci/pack-install-smoke.js
@@ -409,6 +415,9 @@ jobs:
           PUBLISH_TARBALL=".release-package/${TARBALL_NAME}"
           test -f "${PUBLISH_TARBALL}"
           echo "PUBLISH_TARBALL=${PUBLISH_TARBALL}" >> "$GITHUB_ENV"
+
+      - name: Compile exact packed Expo TV ARM32 consumer
+        run: TV_PACKAGE_TARBALL="${GITHUB_WORKSPACE}/${PUBLISH_TARBALL}" bash scripts/ci/check-android-tv-packed-consumer.sh
 
       - name: Bind linked Tauri application to exact publish tarball
         run: node scripts/ci/check-tauri-pack-binding.js --receipt "${RUNNER_TEMP}/ubm-tauri-packed-proof.json" --tarball "${PUBLISH_TARBALL}"

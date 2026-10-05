@@ -16,17 +16,11 @@ describe('Android Rust cdylib packaging (UBM 5.0 HOST-ANDROID)', () => {
     expect(pkg.files).toContain('android')
     expect(pkg.files).not.toContain('!android/src/main/jniLibs')
     expect(pkg.files).toContain('!android/build')
-    for (const abi of ['arm64-v8a', 'x86_64']) {
-      expect(
-        fs.existsSync(path.join(root, 'android', 'src', 'main', 'jniLibs', abi, 'libubm5_jni_echo.so'))
-      ).toBe(true)
+    for (const abi of ['armeabi-v7a', 'arm64-v8a', 'x86_64']) {
+      expect(fs.existsSync(path.join(root, 'android', 'src', 'main', 'jniLibs', abi, 'libubm5_jni_echo.so'))).toBe(true)
     }
-    expect(fs.existsSync(path.join(root, 'android', 'src', 'main', 'jniLibs', 'build-identity.json'))).toBe(
-      true
-    )
-    expect(fs.existsSync(path.join(root, 'android', 'src', 'main', 'jniLibs', 'build-identity.txt'))).toBe(
-      false
-    )
+    expect(fs.existsSync(path.join(root, 'android', 'src', 'main', 'jniLibs', 'build-identity.json'))).toBe(true)
+    expect(fs.existsSync(path.join(root, 'android', 'src', 'main', 'jniLibs', 'build-identity.txt'))).toBe(false)
   })
 
   test('Gradle verifies prebuilts in packed consumers and fails loud without them', () => {

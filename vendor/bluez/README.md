@@ -6,7 +6,7 @@ reconfigures the system daemon. Application integration and deployment require
 separate review and explicit host action. Do not silently apply it, enable
 experimental APIs, grant privileges or upgrade a host.
 
-The current deployment identity is `5.87-ubm.3`, with unchanged Linux authority
+The current deployment identity is `5.87-ubm.4`, with unchanged Linux authority
 contract `(1,2,1)`. It also corrects the pinned upstream 5.87 UUID discovery
 filter: the upstream call reversed `queue_find`'s callback and match-data
 arguments, causing service-filtered discovery to execute an advertised UUID
@@ -14,6 +14,15 @@ string as a function. The typed equality callback is covered by an executable
 test of the actual daemon filter for matching, nonmatching and empty service
 lists. Older deployment receipts remain evidence for their exact older bytes,
 not qualification of this corrected daemon.
+
+This revision also fixes the ready-callback lifetime failure reproduced against
+`5.87-ubm.3`: pointer-truncated registration IDs could leave a callback queued
+after its watch was freed. IDs now remain exact on 64-bit hosts; registration
+and device owners retain the watch independently, retirement detaches its device,
+and reentrant callback cleanup cannot destroy currently executing user data.
+The older `.3` physical receipt retains that crash and is not a pass for `.4`.
+Native executable tests prove these boundaries; deploying and qualifying `.4`
+remains an explicit, separate host action.
 
 ## Provenance and license
 

@@ -15,14 +15,23 @@ export interface DesktopPeerDirectoryHooks {
   generation(): number
   connected(services: readonly string[], options: BackendPeerQuery): Promise<readonly DesktopRustCoreDirectoryPeer[]>
   resolve(peerId: string, options: BackendPeerQuery): Promise<DesktopRustCoreDirectoryPeer | null>
+  bonded?(options: BackendPeerQuery): Promise<readonly DesktopRustCoreDirectoryPeer[]>
+  readonly resolveFromBonded?: boolean
   peerId(nativeId: string): PeerId<string>
   assertUsable(operation: string, options: BackendPeerQuery): void
 }
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
+const ADDRESS = /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/iu
+const BLUEZ = /^hci[0-9]+\/dev_(?:[0-9A-F]{2}_){5}[0-9A-F]{2}$/u
 
-/** CoreBluetooth's directory semantics, independent of connection ownership. */
+/** Native OS directory semantics, independent of connection ownership. */
 export function createDesktopPeerDirectory(hooks: DesktopPeerDirectoryHooks): PeerDirectoryBackend<string> {
+  const nativeIdentifier = (value: string): string | null => {
+    if (hooks.backendId === 'unified-ble:winrt') return ADDRESS.test(value) ? value.toUpperCase() : null
+    if (hooks.backendId === 'unified-ble:bluez-dbus') return BLUEZ.test(value) ? value : null
+    return GUID.test(value) ? value.toLowerCase() : null
+  }
   const admit = (operation: string, options: BackendPeerQuery) => {
     hooks.assertUsable(operation, options)
     const generation = hooks.generation()
@@ -39,22 +48,24 @@ export function createDesktopPeerDirectory(hooks: DesktopPeerDirectoryHooks): Pe
     if (reference.backendId !== hooks.backendId || reference.scope !== 'application') {
       throw contractError('peer.scope-mismatch', 'connection', operation)
     }
-    if (!GUID.test(reference.opaqueId)) throw contractError('peer.reference-invalid', 'connection', operation)
-    return reference.opaqueId.toLowerCase()
+    const id = nativeIdentifier(reference.opaqueId)
+    if (id === null) throw contractError('peer.reference-invalid', 'connection', operation)
+    return id
   }
   const validateRecord = (record: DesktopRustCoreDirectoryPeer, operation: string): void => {
     if (
       record === null ||
       typeof record !== 'object' ||
       typeof record.peerId !== 'string' ||
-      !GUID.test(record.peerId) ||
+      nativeIdentifier(record.peerId) === null ||
       !(record.name === null || typeof record.name === 'string') ||
       !['connected', 'disconnected', 'unknown'].includes(record.connection)
     )
       throw contractError('protocol.malformed', 'platform', operation)
   }
   const map = (record: DesktopRustCoreDirectoryPeer, source: PeerSource): BackendPeerRecord<string> => {
-    const nativeId = record.peerId.toLowerCase()
+    const nativeId = nativeIdentifier(record.peerId)
+    if (nativeId === null) throw contractError('protocol.malformed', 'platform', 'peers.record')
     return Object.freeze({
       reference: Object.freeze({ version: 1, backendId: hooks.backendId, scope: 'application', opaqueId: nativeId }),
       peerId: hooks.peerId(nativeId),
@@ -64,7 +75,7 @@ export function createDesktopPeerDirectory(hooks: DesktopPeerDirectoryHooks): Pe
       state: Object.freeze({
         reachability: 'unknown',
         connection: record.connection,
-        bond: 'unsupported',
+        bond: source === 'system-bonded' ? 'bonded' : 'unsupported',
         lastSeenAtMonotonicMs: null
       })
     })
@@ -77,19 +88,29 @@ export function createDesktopPeerDirectory(hooks: DesktopPeerDirectoryHooks): Pe
     const assertCurrent = admit(operation, options)
     const nativeId = identifier(reference, operation)
     if (options.services !== undefined && options.services.length > 0) unsupported(`${operation}.services`)
-    const record = await hooks.resolve(nativeId, options)
+    const source: PeerSource = hooks.resolveFromBonded === true ? 'system-bonded' : 'app-reference'
+    let record: DesktopRustCoreDirectoryPeer | null
+    if (hooks.resolveFromBonded === true) {
+      if (hooks.bonded === undefined) return unsupported(operation)
+      const records = await hooks.bonded(options)
+      assertCurrent()
+      if (!Array.isArray(records)) throw contractError('protocol.malformed', 'platform', operation)
+      for (const candidate of records) validateRecord(candidate, operation)
+      record = records.find(candidate => nativeIdentifier(candidate.peerId) === nativeId) ?? null
+    } else record = await hooks.resolve(nativeId, options)
     assertCurrent()
     if (record === null) return null
     validateRecord(record, operation)
-    if (record.peerId.toLowerCase() !== nativeId) throw contractError('protocol.malformed', 'platform', operation)
-    if (options.sources !== undefined && !options.sources.includes('app-reference')) return null
-    return map(record, 'app-reference')
+    if (nativeIdentifier(record.peerId) !== nativeId) throw contractError('protocol.malformed', 'platform', operation)
+    if (options.sources !== undefined && !options.sources.includes(source)) return null
+    return map(record, source)
   }
   return Object.freeze({
     resolve,
     known: async (options: BackendPeerQuery) => {
       const operation = 'peers.known'
       const assertCurrent = admit(operation, options)
+      if (hooks.resolveFromBonded === true) return unsupported(operation)
       if (options.references === undefined) return unsupported(`${operation}.references-required`)
       if (options.services !== undefined && options.services.length > 0) return unsupported(`${operation}.services`)
       // Validate every reference before the first native query, then deduplicate.
@@ -119,12 +140,29 @@ export function createDesktopPeerDirectory(hooks: DesktopPeerDirectoryHooks): Pe
       }
       return Object.freeze(
         records
-          .filter(record => references === null || references.has(record.peerId.toLowerCase()))
+          .filter(record => references === null || references.has(nativeIdentifier(record.peerId) ?? ''))
           .filter(() => options.sources === undefined || options.sources.includes('system-connected'))
           .map(record => map(record, 'system-connected'))
       )
     },
-    bonded: async () => unsupported('peers.bonded'),
+    bonded: async (options: BackendPeerQuery) => {
+      const operation = 'peers.bonded'
+      const assertCurrent = admit(operation, options)
+      if (hooks.bonded === undefined) return unsupported(operation)
+      if (options.services !== undefined && options.services.length > 0) return unsupported(`${operation}.services`)
+      const references =
+        options.references === undefined ? null : new Set(options.references.map(ref => identifier(ref, operation)))
+      const records = await hooks.bonded(options)
+      assertCurrent()
+      if (!Array.isArray(records)) throw contractError('protocol.malformed', 'platform', operation)
+      for (const record of records) validateRecord(record, operation)
+      return Object.freeze(
+        records
+          .filter(record => references === null || references.has(nativeIdentifier(record.peerId) ?? ''))
+          .filter(() => options.sources === undefined || options.sources.includes('system-bonded'))
+          .map(record => map(record, 'system-bonded'))
+      )
+    },
     authorized: async () => unsupported('peers.authorized'),
     restored: async () => unsupported('peers.restored')
   })

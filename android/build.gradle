@@ -131,10 +131,8 @@ react {
 // (bindings/jni, `libubm5_jni_echo.so`) for the app ABI list, staged
 // per-variant so the GATT bridge natives resolve at runtime.
 //
-// ABI list (recorded): arm64-v8a (physical devices — the ABI the apps
-// ship) plus x86_64 (KVM host-matched emulator ABI,
-// system-images;android-34;google_apis;x86_64). armeabi-v7a stays a
-// documented boundary (no 32-bit ARM device on this lane), not a failure.
+// The maintained artifact set includes 32-bit Android/Fire OS app processes
+// (armeabi-v7a), arm64-v8a and x86_64. Builds are not device qualification.
 // Toolchain is pinned (1.98.1) and targets are explicit rustc targets inside
 // android/build-rust-cdylib.sh (single source of truth, shared with the
 // five0 probe-app build); no cargo-ndk required.
@@ -165,7 +163,7 @@ react {
 // outputs isolated under build/ (never a shared tree). Source builds
 // package ONLY their own profile's staging via per-variant jniLibs
 // srcDirs; prebuilt builds package the committed src/main/jniLibs tree.
-def ubmRustAbis = ["arm64-v8a", "x86_64"]
+def ubmRustAbis = ["armeabi-v7a", "arm64-v8a", "x86_64"]
 def ubmRustScript = file("build-rust-cdylib.sh")
 def ubmRust16kScript = file("check-elf-16k-pages.sh")
 def ubmNativeBuildRaw = System.getenv("UBM_NATIVE_BUILD")
@@ -264,7 +262,7 @@ if (ubmRustSourceBuild) {
         if (execResult.exitValue != 0) {
           throw new GradleException(
             "${taskName} FAILED for ABI ${abi} (exit ${execResult.exitValue}). " +
-            "(NDK 27.x, pinned Rust from rust-toolchain.toml + aarch64-linux-android and x86_64-linux-android targets).\n" +
+            "(NDK 27.x, pinned Rust from rust-toolchain.toml + armv7-linux-androideabi, aarch64-linux-android and x86_64-linux-android targets).\n" +
             "--- build-rust-cdylib.sh stdout ---\n${execResult.stdout}\n--- build-rust-cdylib.sh stderr ---\n${execResult.stderr}")
         }
         // PR210-18: the builder sealed the binary with the identity digests

@@ -42,6 +42,8 @@ pub(crate) struct ReleaseObservation {
 }
 
 pub(crate) trait LeaseClient: Clone + Send + Sync + 'static {
+    /// Only a bus-confirmed vanished unique daemon owner retires its obligations.
+    fn owner_retired(&self) -> impl Future<Output = Result<bool, DesktopError>> + Send;
     fn allocate_reservation(&self) -> Result<u64, DesktopError>;
     fn reserve(&self, reservation: u64) -> impl Future<Output = Result<u64, DesktopError>> + Send;
     fn recover(
@@ -310,10 +312,27 @@ impl<C: LeaseClient> Ledger<C> {
         entry: &Arc<Entry<C>>,
     ) -> Result<ReleaseObservation, DesktopError> {
         let mut state = entry.token.lock().await;
+        // Confirmed native release is a retained fact, not a new bus query.
+        // Acknowledgment maintenance remains independently owned below.
+        if let State::Released(observation) = *state {
+            return Ok(observation);
+        }
+        if entry.client.owner_retired().await? {
+            return Ok(self.retire_owner(peer, entry, &mut state));
+        }
         if matches!(*state, State::UnresolvedReservation) {
             // Read-only exact-ID reconciliation installs a daemon no-admission
             // fence on None. It never allocates a replacement reservation.
-            match entry.client.recover(entry.reservation).await? {
+            let recovered = match entry.client.recover(entry.reservation).await {
+                Ok(value) => value,
+                Err(error) => {
+                    if entry.client.owner_retired().await? {
+                        return Ok(self.retire_owner(peer, entry, &mut state));
+                    }
+                    return Err(error);
+                }
+            };
+            match recovered {
                 Some(token) if token != 0 => {
                     *state = State::Owned(Token {
                         id: token,
@@ -338,7 +357,15 @@ impl<C: LeaseClient> Ledger<C> {
             }
         };
         let reason = {
-            let receipt = entry.client.release(token.id, token.generation).await?;
+            let receipt = match entry.client.release(token.id, token.generation).await {
+                Ok(value) => value,
+                Err(error) => {
+                    if entry.client.owner_retired().await? {
+                        return Ok(self.retire_owner(peer, entry, &mut state));
+                    }
+                    return Err(error);
+                }
+            };
             if receipt.token != token.id
                 || token
                     .generation
@@ -382,6 +409,24 @@ impl<C: LeaseClient> Ledger<C> {
         let reservation = entry.reservation;
         drop(self.start_acknowledgment(reservation, &acknowledgment));
         Ok(reason)
+    }
+    fn retire_owner(
+        &self,
+        peer: &str,
+        entry: &Arc<Entry<C>>,
+        state: &mut State,
+    ) -> ReleaseObservation {
+        // This retires daemon-owned tokens only. It reports no invented ACL
+        // generation/reason, and does not touch local streams, matches or handlers.
+        let observation = match *state {
+            State::Released(observation) => observation,
+            _ => ReleaseObservation::default(),
+        };
+        *state = State::Released(observation);
+        entry.loss_reported.store(true, Ordering::Release);
+        self.consume_terminal(peer, entry.physical_generation.load(Ordering::Acquire));
+        self.retire(peer, entry);
+        observation
     }
     fn start_acknowledgment(
         &self,
@@ -434,10 +479,15 @@ impl<C: LeaseClient> Ledger<C> {
     ) -> Result<(), DesktopError> {
         let mut done = acknowledgment.done.lock().await;
         if !*done {
-            acknowledgment
-                .client
-                .acknowledge(acknowledgment.token)
-                .await?;
+            if !acknowledgment.client.owner_retired().await?
+                && let Err(error) = acknowledgment
+                    .client
+                    .acknowledge(acknowledgment.token)
+                    .await
+                && !acknowledgment.client.owner_retired().await?
+            {
+                return Err(error);
+            }
             *done = true;
             let mut maintenance = self.maintenance.lock().expect("lease maintenance");
             if maintenance
@@ -612,11 +662,17 @@ mod tests {
         replay_failure: Shared<Option<DesktopError>>,
         acknowledgment_gate: Shared<Option<Arc<Semaphore>>>,
         allocations: Arc<AtomicU64>,
+        owner_retired: Arc<AtomicBool>,
+        owner_query_failed: Arc<AtomicBool>,
+        owner_queries: Arc<AtomicU64>,
     }
     impl Client {
         fn new() -> Self {
             Self {
                 token: 41,
+                owner_retired: Arc::new(AtomicBool::new(false)),
+                owner_query_failed: Arc::new(AtomicBool::new(false)),
+                owner_queries: Arc::new(AtomicU64::new(0)),
                 generation: 73,
                 reserve: Arc::new(Semaphore::new(0)),
                 connect: Arc::new(Semaphore::new(0)),
@@ -637,6 +693,13 @@ mod tests {
         }
     }
     impl LeaseClient for Client {
+        async fn owner_retired(&self) -> Result<bool, DesktopError> {
+            self.owner_queries.fetch_add(1, Ordering::Relaxed);
+            if self.owner_query_failed.load(Ordering::Acquire) {
+                return Err(failed("bus owner query refused"));
+            }
+            Ok(self.owner_retired.load(Ordering::Acquire))
+        }
         async fn replay_loss(&self, generation: u64, reason: u8) -> Result<(), DesktopError> {
             self.replayed_losses
                 .lock()
@@ -731,6 +794,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn vanished_owner_retires_only_its_owned_lease_without_release_or_ack() {
+        let ledger = Ledger::default();
+        let client = Client::new();
+        client.reserve.add_permits(1);
+        client.connect.add_permits(1);
+        ledger
+            .clone()
+            .connect("peer".into(), client.clone())
+            .await
+            .unwrap();
+        client.owner_retired.store(true, Ordering::Release);
+        let observed = ledger
+            .clone()
+            .release_with_observation("peer")
+            .await
+            .unwrap();
+        assert_eq!(
+            observed,
+            ReleaseObservation::default(),
+            "owner death is not an observed physical disconnect receipt"
+        );
+        assert_eq!(ledger.len(), 0);
+        assert_eq!(ledger.terminal_facts_len(), 0);
+        assert_eq!(ledger.maintenance_len(), 0);
+        assert!(client.calls.lock().unwrap().is_empty());
+        assert!(client.acknowledgments.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn still_live_refusing_owner_remains_owned_until_confirmed_death() {
+        let ledger = Ledger::default();
+        let client = Client::new();
+        client.reserve.add_permits(1);
+        client.connect.add_permits(1);
+        ledger
+            .clone()
+            .connect("peer".into(), client.clone())
+            .await
+            .unwrap();
+        client.receipts.lock().unwrap().push_back(Err(failed(
+            "spoofed ServiceUnknown from still live owner",
+        )
+        .with_platform(PlatformDetail::new(
+            "bluez-dbus",
+            "org.freedesktop.DBus.Error.ServiceUnknown",
+        ))));
+        assert!(ledger.clone().release("peer").await.is_err());
+        assert_eq!(ledger.len(), 1);
+        client.owner_retired.store(true, Ordering::Release);
+        ledger.clone().release("peer").await.unwrap();
+        assert_eq!(ledger.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn owner_query_failure_never_retires_daemon_obligations() {
+        let ledger = Ledger::default();
+        let client = Client::new();
+        client.reserve.add_permits(1);
+        client.connect.add_permits(1);
+        ledger
+            .clone()
+            .connect("peer".into(), client.clone())
+            .await
+            .unwrap();
+        client.owner_retired.store(true, Ordering::Release);
+        client.owner_query_failed.store(true, Ordering::Release);
+        assert!(ledger.clone().release("peer").await.is_err());
+        assert_eq!(ledger.len(), 1);
+        client.owner_query_failed.store(false, Ordering::Release);
+        ledger.clone().release("peer").await.unwrap();
+        assert_eq!(ledger.len(), 0);
+    }
+
+    #[tokio::test]
     async fn cancelled_reservation_keeps_late_token_owned_and_compensates() {
         let ledger = Ledger::default();
         let client = Client::new();
@@ -805,15 +942,20 @@ mod tests {
         settled().await;
         assert_eq!(ledger.len(), 0);
         assert_eq!(ledger.terminal_facts_len(), 1);
+        let owner_queries = client.owner_queries.load(Ordering::Relaxed);
+        client.owner_query_failed.store(true, Ordering::Release);
         assert_eq!(
             ledger
                 .clone()
                 .release_with_observation("peer")
                 .await
-                .unwrap()
-                .disconnect_reason,
-            Some(2)
+                .unwrap(),
+            ReleaseObservation {
+                physical_generation: Some(73),
+                disconnect_reason: Some(2),
+            }
         );
+        assert_eq!(client.owner_queries.load(Ordering::Relaxed), owner_queries);
         assert!(ledger.physical_lost_observed("peer", 73, 2).await);
         assert!(!ledger.physical_lost_observed("peer", 73, 2).await);
         assert_eq!(client.calls.lock().unwrap().len(), 1);
@@ -1156,6 +1298,32 @@ mod tests {
         assert_eq!(ledger.len(), 0);
         assert!(client.calls.lock().unwrap().is_empty());
         assert_eq!(client.reservation_calls.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn vanished_owner_retires_ack_debt_without_repeating_physical_release() {
+        let ledger = Ledger::default();
+        let client = Client::new();
+        client.reserve.add_permits(1);
+        client.connect.add_permits(1);
+        client
+            .acknowledgment_failures
+            .lock()
+            .unwrap()
+            .push_back(failed("ack refused"));
+        ledger
+            .clone()
+            .connect("peer".into(), client.clone())
+            .await
+            .unwrap();
+        ledger.clone().release("peer").await.unwrap();
+        settled().await;
+        assert_eq!(ledger.maintenance_len(), 1);
+        client.owner_retired.store(true, Ordering::Release);
+        assert!(ledger.retry_maintenance().await.is_empty());
+        assert_eq!(ledger.maintenance_len(), 0);
+        assert_eq!(*client.acknowledgments.lock().unwrap(), vec![41]);
+        assert_eq!(client.calls.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

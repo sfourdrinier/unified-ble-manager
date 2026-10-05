@@ -2,6 +2,29 @@ const fs = require('node:fs')
 const path = require('node:path')
 const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
 
+test('Linux prerequisite diagnostics distinguish refused authority from package installation', () => {
+  const guide = read('docs/BLUEZ_DEPLOYMENT.md').replace(/\s+/g, ' ')
+  expect(guide).toContain('connection.authority')
+  expect(guide).toContain('observation-timeout')
+  expect(guide).toContain('compile-config-loadability')
+  expect(guide).toContain('does not verify the running daemon')
+  expect(guide).toContain('Never invoke installation from a renderer or reconnect handler')
+  expect(guide).toContain('ready-callback lifetime')
+})
+
+test('maintained Linux authority distinguishes direct LE connection from unresolved deferred availability', () => {
+  const guide = read('docs/BLUEZ_DEPLOYMENT.md').replace(/\s+/g, ' ')
+  expect(guide).toContain('connection:when-available')
+  expect(guide).toContain('connection.connect.when-available')
+  expect(guide).toContain('capability.unsupported')
+  expect(guide).toContain('fresh native LE advertisement availability is not implemented')
+  expect(guide).toContain('direct scoped LE connection')
+  expect(guide).toContain('merged discovery filters')
+  expect(guide).toContain('Unchanged RSSI')
+  expect(guide).toContain('implementation boundary, not a claim that Linux cannot provide the mechanism')
+  expect(guide).toContain('No cache shortcut, polling loop or hidden retry substitutes')
+})
+
 test('current BlueZ deployment commands use the sealed producer release identity', () => {
   const manifest = JSON.parse(read('vendor/bluez/source-asset-manifest.json'))
   const releases = read('docs/BLUEZ_DEPLOYMENT.md').match(/\b5\.87-ubm\.\d+/g)
@@ -119,4 +142,16 @@ test('BlueZ recovery guidance separates link acceptance from a new ATT attachmen
     'current discovery failure'
   ])
     expect(guide).toContain(requirement)
+})
+
+test('daemon owner death retires only daemon obligations, not local cleanup or physical facts', () => {
+  const guide = read('docs/BLUEZ_DEPLOYMENT.md')
+  for (const text of [
+    'bus-confirmed unique-owner disappearance',
+    'NameHasOwner',
+    'local iterator',
+    'no physical disconnect reason',
+    'unresponsive but still-live'
+  ])
+    expect(guide).toContain(text)
 })

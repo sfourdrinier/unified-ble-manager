@@ -3,10 +3,10 @@
 // The desktop first-party TCK legs run the Rust route (LEGACY-AUDIT-2 N3):
 // the `/testing` desktop provider (`createTestDesktopRustCoreBackendProvider`)
 // over the identity-verified N-API addon, on the addon's own deterministic
-// synthetic radio. Every verb executes `DesktopCentral` in Rust; this module
-// only stages the radio world (advertisements, the GATT database, OS events)
-// through the addon's synthetic staging surface. No legacy backend, boundary
-// or provider is involved, and nothing here is live-radio evidence.
+// synthetic radio. Connection/GATT/cleanup verbs execute `DesktopCentral` in
+// Rust; this module stages its radio world and explicitly doubles only the
+// OS bonded inventory, which the synthetic radio cannot supply. No legacy
+// provider is involved, and nothing here is live-radio evidence.
 
 import { contractError } from '../../backend-contract/errors'
 import { capacity, opaqueId, type SerializableRecord } from '../../backend-contract/primitives'
@@ -23,6 +23,7 @@ import {
   type DesktopRustCoreAdapterPower,
   type DesktopRustCoreBinding,
   type DesktopRustCoreCentral,
+  type DesktopRustCoreDirectoryPeer,
   type DesktopRustCorePlatform
 } from '../../backends/desktop/desktop-rust-core-binding'
 import { loadDesktopCoreBinding } from '../../desktop-core-addon'
@@ -109,6 +110,8 @@ export interface DesktopRustCoreFirstPartyTckRegistrationOptions {
   readonly binding?: DesktopRustCoreBinding
   /** The radio id the synthetic peer advertises under (`tck-peer` by default). */
   readonly nativePeerId?: string
+  /** OS bond-store boundary double only; the synthetic radio has no OS inventory. */
+  readonly bondedInventory?: readonly DesktopRustCoreDirectoryPeer[]
 }
 
 /** The CoreBluetooth leg's options (the Rust route; `/testing` export name kept). */
@@ -249,6 +252,14 @@ const connectionFeatureSuites: readonly TckFeatureSuite[] = Object.freeze([
   Object.freeze({
     suiteId: 'tck.feature.gatt.maximum-write-length',
     scenarioIds: Object.freeze<TckScenarioId[]>(['gatt.maximum-write-length-boundaries'])
+  }),
+  Object.freeze({
+    suiteId: 'tck.feature.connection.when-available',
+    scenarioIds: Object.freeze<TckScenarioId[]>(['connection.when-available-acquires-and-releases'])
+  }),
+  Object.freeze({
+    suiteId: 'tck.feature.peer.bonded',
+    scenarioIds: Object.freeze<TckScenarioId[]>(['peer.bonded-enumeration-preserves-native-facts'])
   })
 ])
 
@@ -430,7 +441,23 @@ function createDesktopRustCoreTckRegistration(
   const bindingFor = async (): Promise<DesktopRustCoreBinding> =>
     syntheticOnlyBinding(options.binding ?? (await loadDesktopCoreBinding(profile)), profile, async central => {
       await seedSyntheticWorld(central, nativePeerId)
-      const leg = legFor(central)
+      // Only the OS inventory is doubled. All connection/GATT/cleanup verbs
+      // continue to execute the real Rust synthetic central.
+      const inventory = options.bondedInventory ?? [
+        {
+          peerId: shape.platform === 'bluez' ? 'hci0/dev_AA_BB_CC_DD_EE_FF' : 'AA:BB:CC:DD:EE:FF',
+          name: 'TCK bonded peer',
+          connection: 'disconnected'
+        }
+      ]
+      const directoryCentral = new Proxy(central, {
+        get(target, property) {
+          if (property === 'bondedPeers') return async () => inventory.map(peer => ({ ...peer }))
+          const value = Reflect.get(target, property)
+          return typeof value === 'function' ? value.bind(target) : value
+        }
+      })
+      const leg = legFor(directoryCentral)
       opened.push(leg.opened)
       return leg.central
     })

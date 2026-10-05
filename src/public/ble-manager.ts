@@ -101,6 +101,11 @@ type PublicInternalManager<
 > = InternalBleManager<Attachment, Identity>
 
 export type GattSubscriptionValue = GattValueEvent
+/** Initial acquisition policy. `when-available` uses the selected backend's
+ * native availability mechanism, bounded by the original deadline and
+ * AbortSignal. It does not enable automatic reconnect after a later link loss;
+ * consult the instantiated capability and its platform limitations.
+ */
 export type ConnectionIntent = 'direct' | 'when-available'
 
 /**
