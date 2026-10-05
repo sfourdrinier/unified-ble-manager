@@ -147,7 +147,11 @@ git tag -a v4.0.0 -m "v4.0.0"
 
 This corrective release aligns installation guidance, historical release status,
 Tauri MTU errors and Windows write-limit descriptions with the implementation.
-It does not change radio behavior or promote backend qualification labels.
+It also corrects public stream initialization, retryable cleanup and terminal
+failure reporting, and adds Linux initial deferred acquisition through the
+optional LE observer in maintained daemon `5.87-ubm.5`. It does not promote
+backend qualification labels. Existing daemon installations are not replaced
+implicitly; private-bus and producer tests are not physical qualification.
 Verify exact current `main`, all `5.0.0-rc.20` identities, required CI and release
 gates, and absence of the registry version and annotated tag before creating
 `v5.0.0-rc.20`. Use the trusted tag publisher only; `next` advances to rc.20 and

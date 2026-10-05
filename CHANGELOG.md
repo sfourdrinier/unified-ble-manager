@@ -14,7 +14,25 @@ All notable changes to `unified-ble-manager` are documented here.
   writes use the OS-managed procedure up to 512 bytes; without-response writes
   remain limited to one ATT payload. Explicit prepared transactions remain refused.
 - Align current package, implementation, Tauri compatibility and consumer pins
-  with rc.20. No radio behavior or backend qualification label is changed.
+  with rc.20. Backend qualification labels are not promoted.
+- Own security-watch initialization as one result, preserving peer-resolution
+  failures without detached rejecting promises. Security and write-readiness
+  streams retain late acquisitions, coalesce cleanup and keep failed cleanup
+  retryable; `source-failed` terminals preserve their public cause and any
+  independent cleanup failure instead of silently completing.
+- Correct addon guidance: Node-API stability is distinct from Node/Electron
+  module ABI. OS, architecture, dependencies, Node-API floor and sealed UBM
+  build identity remain required.
+
+### Added
+
+- Linux initial `when-available` acquisition through the optional LE observer
+  in maintained daemon `5.87-ubm.5`: a fresh, owner-fenced connectable LE
+  advertisement precedes token-bound connection acquisition. Dedicated discovery
+  ownership preserves cancellation, deadline and cleanup isolation. Older
+  daemons report unsupported; cached device records and bearer-ambiguous stock
+  discovery signals are not substitutes. This is not automatic post-loss reconnect
+  or physical qualification, and installation remains an explicit host decision.
 
 ## [5.0.0-rc.19] - 2026-10-05
 

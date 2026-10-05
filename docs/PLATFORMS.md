@@ -96,9 +96,11 @@ resolution and the distinction between paired metadata and reachability.
 For desktop connection intent, macOS and Windows support initial
 `when-available` acquisition through native pending connection mechanisms, with
 the original deadline, cancellation and scoped cleanup. This is not automatic
-post-loss reconnect. Linux LE-specific deferred acquisition remains unsupported
-by the maintained daemon contract; merged stock discovery signals do not replace
-that mechanism. See [`NODE.md`](NODE.md) for the exact host boundaries.
+post-loss reconnect. Linux implements initial acquisition with maintained daemon
+`5.87-ubm.5`'s optional observer: a fresh connectable LE advertisement is required
+before token-bound connection admission. Older daemons report `capability.unsupported`;
+merged stock discovery signals and cached records do not replace that mechanism.
+See [`NODE.md`](NODE.md) for deployment prerequisites and exact host boundaries.
 
 CoreBluetooth does not expose unrestricted system bond inventory. Web Bluetooth
 exposes origin-authorized devices, not system bonds. React Native Apple retains
@@ -148,14 +150,14 @@ Every backend admits a read on a characteristic that notifies or indicates,
 and `characteristic.readReceipt()` reports what the platform knows about the
 value. This is a per-read answer, not a static capability:
 
-| Host | `provenance` |
-| --- | --- |
-| Android (React Native) | `read-response` (`onCharacteristicRead`) |
+| Host                                          | `provenance`                                                                                                                                                       |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Android (React Native)                        | `read-response` (`onCharacteristicRead`)                                                                                                                           |
 | Apple (React Native iOS, Node/Electron macOS) | `read-response` while the characteristic cannot notify; `read-or-notification` while it notifies, has a subscription, or has a notification state change in flight |
-| WinRT | `read-response` (`ReadValueAsync`, uncached) |
-| BlueZ | `read-response` (`ReadValue`) |
-| Web Bluetooth | `read-response` (`readValue()`); the browser's own attribution on its host OS is not observable from the page |
-| Electron renderer, Tauri | the host's answer, verbatim |
+| WinRT                                         | `read-response` (`ReadValueAsync`, uncached)                                                                                                                       |
+| BlueZ                                         | `read-response` (`ReadValue`)                                                                                                                                      |
+| Web Bluetooth                                 | `read-response` (`readValue()`); the browser's own attribution on its host OS is not observable from the page                                                      |
+| Electron renderer, Tauri                      | the host's answer, verbatim                                                                                                                                        |
 
 CoreBluetooth reports a read response and a notification through one
 `didUpdateValueFor` callback. A read on a notifying Apple characteristic

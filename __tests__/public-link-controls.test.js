@@ -6,6 +6,7 @@ const {
 } = require('../src/backends/reactnative/react-native-connection-control-features')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { capacity, opaqueId } = require('../src/backend-contract/primitives')
+const { contractError } = require('../src/backend-contract/errors')
 
 function testManagerHostOptions() {
   return { peerId: value => opaqueId(value, 'peer', 'public-link-controls-test') }
@@ -70,6 +71,7 @@ function fakeInternalManager({
     ordinal: 1
   },
   readinessWatchOverride,
+  readinessOpen,
   effectiveMtuObservation,
   requestMtuResult,
   maximumWriteLengthResult,
@@ -180,6 +182,7 @@ function fakeInternalManager({
     ...(readinessEnabled
       ? {
           writeWithoutResponseReadiness: async () => {
+            if (readinessOpen !== undefined) return readinessOpen()
             if (readinessWatchOverride === undefined) readiness.emit(readinessObservation, 128)
             return readinessWatch
           }
@@ -244,6 +247,223 @@ function failedReadinessCleanup() {
 }
 
 describe('PR8A public link controls', () => {
+  test('rc20 return after failed readiness acquisition succeeds without reacquiring an absent watch', async () => {
+    const failure = contractError('platform.failure', 'platform', 'readiness-open-failed')
+    const readinessOpen = jest.fn(async () => {
+      throw failure
+    })
+    const manager = await createPublicBleManager(
+      fakeInternalManager({ readinessEnabled: true, readinessOpen }),
+      () => 1234,
+      testManagerHostOptions()
+    )
+    const connection = await manager.connect('peer-1')
+    const iterator = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+    await expect(iterator.next()).rejects.toMatchObject({
+      code: 'platform.failure',
+      operation: 'readiness-open-failed'
+    })
+    await expect(iterator.return()).resolves.toEqual({ done: true, value: undefined })
+    await expect(iterator.return()).resolves.toEqual({ done: true, value: undefined })
+    expect(readinessOpen).toHaveBeenCalledTimes(1)
+  })
+  test.each([false, true])(
+    'rc20 readiness acquisition failure is primary and releases partial watch=%s',
+    async partial => {
+      const failure = contractError('protocol.violation', 'platform', 'readiness-acquisition')
+      const close = jest.fn(async () => ({ state: 'released', failures: [] }))
+      const readinessOpen = async () => {
+        if (!partial) throw failure
+        return {
+          events: {
+            [Symbol.asyncIterator]: () => {
+              throw failure
+            }
+          },
+          close
+        }
+      }
+      const manager = await createPublicBleManager(
+        fakeInternalManager({ readinessEnabled: true, readinessOpen }),
+        () => 1234,
+        testManagerHostOptions()
+      )
+      const connection = await manager.connect('peer-1')
+      const iterator = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+      await expect(iterator.next()).rejects.toMatchObject({
+        code: 'protocol.violation',
+        operation: 'readiness-acquisition'
+      })
+      expect(close).toHaveBeenCalledTimes(partial ? 1 : 0)
+    }
+  )
+  test('rc20 concurrent readiness returns await the same cleanup and ordinary close completes normally', async () => {
+    let release
+    const releasing = new Promise(resolve => {
+      release = resolve
+    })
+    const events = readinessEvents(async () => ({
+      done: false,
+      value: {
+        kind: 'terminal',
+        reason: 'owner-released',
+        error: null,
+        droppedItems: 0,
+        droppedBytes: 0,
+        replacedItems: 0
+      }
+    }))
+    const close = jest.fn(() => releasing)
+    const manager = await createPublicBleManager(
+      fakeInternalManager({ readinessEnabled: true, readinessWatchOverride: { events, close } }),
+      () => 1234,
+      testManagerHostOptions()
+    )
+    const connection = await manager.connect('peer-1')
+    const iterator = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+    const next = iterator.next()
+    await Promise.resolve()
+    const returned = iterator.return()
+    let returnedEarly = false
+    returned.then(() => {
+      returnedEarly = true
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(returnedEarly).toBe(false)
+    release({ state: 'released', failures: [] })
+    await expect(next).resolves.toEqual({ done: true, value: undefined })
+    await returned
+    await iterator.return()
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+  test('rc20 return during readiness acquisition releases the late watch without yielding', async () => {
+    let acquire
+    const opening = new Promise(resolve => {
+      acquire = resolve
+    })
+    const events = readinessEvents(async () => ({
+      done: false,
+      value: {
+        kind: 'value',
+        value: {
+          connectionId: 'connection-1',
+          connectionGeneration: 'generation-1',
+          ready: true,
+          observedAtMonotonicMs: 8000,
+          ordinal: 1
+        }
+      }
+    }))
+    const close = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const internal = fakeInternalManager({ readinessEnabled: true, readinessOpen: () => opening })
+    const manager = await createPublicBleManager(internal, () => 1234, testManagerHostOptions())
+    const connection = await manager.connect('peer-1')
+    const iterator = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    const returned = iterator.return()
+    acquire({ events, close })
+    await expect(returned).resolves.toEqual({ done: true, value: undefined })
+    await expect(pending).resolves.toEqual({ done: true, value: undefined })
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(events[Symbol.asyncIterator]().next).not.toHaveBeenCalled()
+  })
+
+  test('rc20 concurrent initial readiness next calls acquire one owned watch', async () => {
+    let acquire
+    const opening = new Promise(resolve => {
+      acquire = resolve
+    })
+    const open = jest.fn(() => opening)
+    const events = readinessEvents(async () => ({ done: true, value: undefined }))
+    const close = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const manager = await createPublicBleManager(
+      fakeInternalManager({ readinessEnabled: true, readinessOpen: open }),
+      () => 1234,
+      testManagerHostOptions()
+    )
+    const connection = await manager.connect('peer-1')
+    const iterator = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+    const pending = [iterator.next(), iterator.next()]
+    acquire({ events, close })
+    await Promise.all(pending)
+    await iterator.return()
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  test('rc20 readiness release failure retains ownership for a real retry and caches success', async () => {
+    const events = readinessEvents(async () => ({
+      done: false,
+      value: {
+        kind: 'value',
+        value: {
+          connectionId: 'connection-1',
+          connectionGeneration: 'generation-1',
+          ready: true,
+          observedAtMonotonicMs: 8000,
+          ordinal: 1
+        }
+      }
+    }))
+    const close = jest
+      .fn()
+      .mockResolvedValueOnce(failedReadinessCleanup())
+      .mockResolvedValue({ state: 'released', failures: [] })
+    const manager = await createPublicBleManager(
+      fakeInternalManager({ readinessEnabled: true, readinessWatchOverride: { events, close } }),
+      () => 1234,
+      testManagerHostOptions()
+    )
+    const connection = await manager.connect('peer-1')
+    const iterator = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+    await iterator.next()
+    await expect(iterator.return()).rejects.toBeDefined()
+    await iterator.return()
+    await iterator.return()
+    expect(close).toHaveBeenCalledTimes(2)
+  })
+
+  test.each([false, true])(
+    'rc20 readiness source-failed terminal preserves cause and cleanup failure=%s',
+    async failCleanup => {
+      const cause = {
+        code: 'platform.failure',
+        domain: 'platform',
+        operation: 'readiness-source',
+        platform: null,
+        retryability: 'never'
+      }
+      const events = readinessEvents(async () => ({
+        done: false,
+        value: {
+          kind: 'terminal',
+          reason: 'source-failed',
+          error: cause,
+          droppedItems: 0,
+          droppedBytes: 0,
+          replacedItems: 0
+        }
+      }))
+      const close = jest.fn(async () => (failCleanup ? failedReadinessCleanup() : { state: 'released', failures: [] }))
+      const manager = await createPublicBleManager(
+        fakeInternalManager({ readinessEnabled: true, readinessWatchOverride: { events, close } }),
+        () => 1234,
+        testManagerHostOptions()
+      )
+      const connection = await manager.connect('peer-1')
+      const iterator = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+      if (failCleanup) {
+        await expect(iterator.next()).rejects.toMatchObject({
+          errors: [expect.objectContaining({ code: cause.code, operation: cause.operation }), expect.any(Error)]
+        })
+      } else {
+        await expect(iterator.next()).rejects.toMatchObject({ code: cause.code, operation: cause.operation })
+      }
+      expect(close).toHaveBeenCalledTimes(1)
+    }
+  )
+
   test('projects typed observations, separates requests from observations, and exposes recovery under controls', async () => {
     const internal = fakeInternalManager()
     const manager = await createPublicBleManager(internal, () => 1234, testManagerHostOptions())

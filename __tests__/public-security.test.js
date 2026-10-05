@@ -1,8 +1,10 @@
 const { createPublicBleManager } = require('../src/public/ble-manager')
-const { withRequiredSecurity } = require('../src/public/security')
+const { withRequiredSecurity, createPublicSecurity } = require('../src/public/security')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { capacity } = require('../src/backend-contract/primitives')
 const { contractError } = require('../src/backend-contract/errors')
+const { spawnSync } = require('node:child_process')
+const path = require('node:path')
 
 function measuredState(overrides = {}) {
   return Object.freeze({
@@ -49,6 +51,190 @@ function internalWithSecurity(security) {
 }
 
 describe('public security façade', () => {
+  test('rc20 return after failed security peer resolution succeeds without reacquiring an absent source', async () => {
+    const resolve = jest.fn(async () => null)
+    const watch = jest.fn()
+    const security = createPublicSecurity(
+      { watch },
+      { resolve },
+      { capability: () => ({ state: 'supported' }) },
+      () => 100
+    )
+    const iterator = security
+      .watch({ version: 1, backendId: 'test', scope: 'application', opaqueId: 'missing' })
+      [Symbol.asyncIterator]()
+    await expect(iterator.next()).rejects.toMatchObject({ code: 'peer.not-found' })
+    await expect(iterator.return()).resolves.toEqual({ done: true, value: undefined })
+    await expect(iterator.return()).resolves.toEqual({ done: true, value: undefined })
+    expect(resolve).toHaveBeenCalledTimes(1)
+    expect(watch).not.toHaveBeenCalled()
+  })
+  test('rc20 iterator acquisition failure releases the security source without inventing a second failure', async () => {
+    const failure = contractError('protocol.violation', 'platform', 'security-iterator-acquisition')
+    const close = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const stream = {
+      [Symbol.asyncIterator]: () => {
+        throw failure
+      },
+      close
+    }
+    const manager = await createPublicBleManager(internalWithSecurity({ watch: () => stream }), () => 100)
+    const iterator = manager.security.watch({ id: 'peer-1', name: null, rssi: null })[Symbol.asyncIterator]()
+    await expect(iterator.next()).rejects.toMatchObject({
+      code: 'protocol.violation',
+      operation: 'security-iterator-acquisition'
+    })
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+  test('rc20 security return during peer resolution retains and closes a late source without yielding', async () => {
+    let resolvePeer
+    const resolution = new Promise(resolve => {
+      resolvePeer = resolve
+    })
+    const events = {
+      next: jest.fn(async () => ({
+        done: false,
+        value: { kind: 'value', value: { kind: 'state', peerId: 'peer-1', sequence: 1, state: measuredState() } }
+      })),
+      return: jest.fn(async () => ({ done: true, value: undefined }))
+    }
+    const close = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const watch = jest.fn(() => ({ [Symbol.asyncIterator]: () => events, close }))
+    const security = createPublicSecurity(
+      { watch },
+      { resolve: () => resolution },
+      { capability: () => ({ state: 'supported' }) },
+      () => 100
+    )
+    const iterator = security
+      .watch({ version: 1, backendId: 'test', scope: 'application', opaqueId: 'peer-1' })
+      [Symbol.asyncIterator]()
+    const pending = iterator.next()
+    const returned = iterator.return()
+    resolvePeer({ id: 'peer-1', name: null, rssi: null })
+    await expect(returned).resolves.toEqual({ done: true, value: undefined })
+    await expect(pending).resolves.toEqual({ done: true, value: undefined })
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(events.next).not.toHaveBeenCalled()
+    expect(watch).toHaveBeenCalledTimes(1)
+  })
+  test('rc20 concurrent security returns coalesce pending teardown and ordinary terminal completes normally', async () => {
+    let release
+    const releasing = new Promise(resolve => {
+      release = resolve
+    })
+    const iterator = {
+      next: async () => ({
+        done: false,
+        value: {
+          kind: 'terminal',
+          reason: 'owner-released',
+          error: null,
+          droppedItems: 0,
+          droppedBytes: 0,
+          replacedItems: 0
+        }
+      }),
+      return: jest.fn(() => releasing)
+    }
+    const close = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const manager = await createPublicBleManager(
+      internalWithSecurity({ watch: () => ({ [Symbol.asyncIterator]: () => iterator, close }) }),
+      () => 100
+    )
+    const watched = manager.security.watch({ id: 'peer-1', name: null, rssi: null })[Symbol.asyncIterator]()
+    const next = watched.next()
+    await Promise.resolve()
+    const returns = [watched.return(), watched.return()]
+    release({ done: true, value: undefined })
+    await expect(next).resolves.toEqual({ done: true, value: undefined })
+    await Promise.all(returns)
+    await watched.return()
+    expect(iterator.return).toHaveBeenCalledTimes(1)
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+  test('rc20 caught actual-module peer resolution rejection does not terminate isolated Node', () => {
+    const result = spawnSync(
+      process.execPath,
+      ['--unhandled-rejections=strict', path.join(__dirname, 'helpers/security-resolution-child.js')],
+      { cwd: path.join(__dirname, '..'), encoding: 'utf8' }
+    )
+    expect(result.stdout).toContain('caught peer.not-found')
+    expect(result.stderr).toBe('')
+    expect(result.status).toBe(0)
+  })
+  test('rc20 security cleanup failure permits a real retry and caches only success', async () => {
+    const iterator = {
+      next: async () => ({
+        done: false,
+        value: { kind: 'value', value: { kind: 'state', peerId: 'peer-1', sequence: 1, state: measuredState() } }
+      }),
+      return: jest.fn(async () => ({ done: true, value: undefined }))
+    }
+    const close = jest
+      .fn()
+      .mockRejectedValueOnce(contractError('platform.failure', 'platform', 'security-close'))
+      .mockResolvedValue({ state: 'released', failures: [] })
+    const stream = { [Symbol.asyncIterator]: () => iterator, close }
+    const manager = await createPublicBleManager(internalWithSecurity({ watch: () => stream }), () => 100)
+    const watched = manager.security.watch({ id: 'peer-1', name: null, rssi: null })[Symbol.asyncIterator]()
+    await watched.next()
+    await expect(watched.return()).rejects.toMatchObject({ code: 'platform.failure' })
+    await watched.return()
+    await watched.return()
+    expect(close).toHaveBeenCalledTimes(2)
+  })
+
+  test.each([false, true])(
+    'rc20 security source-failed terminal retains cause and cleanup failure=%s',
+    async failCleanup => {
+      const cause = contractError('platform.failure', 'platform', 'security-source').normalized
+      const iterator = {
+        next: async () => ({
+          done: false,
+          value: {
+            kind: 'terminal',
+            reason: 'source-failed',
+            error: cause,
+            droppedItems: 0,
+            droppedBytes: 0,
+            replacedItems: 0
+          }
+        }),
+        return: jest.fn(async () => ({ done: true, value: undefined }))
+      }
+      const close = jest.fn(async () => {
+        if (failCleanup) throw contractError('lifecycle.invalid-state', 'core', 'security-cleanup')
+        return { state: 'released', failures: [] }
+      })
+      const manager = await createPublicBleManager(
+        internalWithSecurity({ watch: () => ({ [Symbol.asyncIterator]: () => iterator, close }) }),
+        () => 100
+      )
+      const watched = manager.security.watch({ id: 'peer-1', name: null, rssi: null })[Symbol.asyncIterator]()
+      if (failCleanup) {
+        await expect(watched.next()).rejects.toMatchObject({
+          errors: [
+            expect.objectContaining({ code: cause.code, operation: cause.operation }),
+            expect.objectContaining({ code: 'lifecycle.invalid-state' })
+          ]
+        })
+      } else {
+        await expect(watched.next()).rejects.toMatchObject({ code: cause.code, operation: cause.operation })
+      }
+      expect(close).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  test('rc20 constructing an unconsumed security watch does not acquire a source', async () => {
+    const watch = jest.fn(() => securityStream())
+    const manager = await createPublicBleManager(internalWithSecurity({ watch }), () => 100)
+    manager.security.watch({ id: 'peer-1', name: null, rssi: null })[Symbol.asyncIterator]()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(watch).not.toHaveBeenCalled()
+  })
+
   test('normalizes peer and operation options for state, pair, cancel, and unpair', async () => {
     const stream = securityStream()
     const security = {
@@ -113,9 +299,9 @@ describe('public security façade', () => {
     const manager = await createPublicBleManager(internalWithSecurity(security), () => 100)
     const peer = { id: 'peer-1', name: null, rssi: null }
 
-    await expect(
-      manager.security.pair(peer, { secureConnections: 'sometimes' })
-    ).rejects.toMatchObject({ code: 'argument.invalid' })
+    await expect(manager.security.pair(peer, { secureConnections: 'sometimes' })).rejects.toMatchObject({
+      code: 'argument.invalid'
+    })
     // Fail closed at the public boundary: an invalid value never reaches the backend.
     expect(security.pair).not.toHaveBeenCalled()
   })
@@ -180,10 +366,7 @@ describe('public security façade', () => {
       cancelPairing: jest.fn(),
       unpair: jest.fn()
     }
-    const sourceFailureManager = await createPublicBleManager(
-      internalWithSecurity(sourceFailureSecurity),
-      () => 100
-    )
+    const sourceFailureManager = await createPublicBleManager(internalWithSecurity(sourceFailureSecurity), () => 100)
     const sourceFailureIterator = sourceFailureManager.security
       .watch({ id: 'peer-1', name: null, rssi: null })
       [Symbol.asyncIterator]()

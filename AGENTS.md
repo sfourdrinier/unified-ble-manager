@@ -180,8 +180,10 @@ emulate background scanning or restoration that Web Bluetooth does not provide.
 Renderer reload/rebind is an ownership and security boundary.
 
 **Node desktop**: first-party CoreBluetooth, WinRT and BlueZ backends.
-CoreBluetooth/WinRT addons are built for the exact Node/Electron ABI and
-architecture that loads them. BlueZ is isolated behind its explicit entrypoint
+CoreBluetooth/WinRT addons use ABI-stable Node-API, not the runtime-specific
+Node/Electron module ABI. Match OS/architecture, platform dependencies, the
+required Node-API version and UBM build identity; see `docs/NATIVE_ARTIFACTS.md`.
+BlueZ is isolated behind its explicit entrypoint
 and needs no `dbus-next` on the production path.
 
 ## Evidence and support

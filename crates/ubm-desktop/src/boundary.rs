@@ -1355,6 +1355,11 @@ pub trait RadioBoundary: Send + Sync + 'static {
     fn connection_capability_limitation(&self) -> Option<&'static str> {
         None
     }
+    fn when_available_capability_limitation(
+        &self,
+    ) -> Option<(ubm_core::central::CapabilityState, &'static str)> {
+        None
+    }
     /// Whether an adapter loss tears down live work on this radio (finding
     /// 57): the desktop OS radios do, as their legacy backends did. Default:
     /// the loss is reported as a state change only.

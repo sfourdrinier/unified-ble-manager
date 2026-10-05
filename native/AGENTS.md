@@ -3,8 +3,9 @@
 Conventions for the native tree. Root [`AGENTS.md`](../AGENTS.md) still
 applies; this file adds only what is specific to `native/`.
 
-- CoreBluetooth and WinRT Node-API addons are built for the **exact**
-  Node/Electron ABI and architecture that loads them. The prebuild matrix and
+- CoreBluetooth and WinRT addons use ABI-stable Node-API, not the runtime-specific
+  Node/Electron module ABI. Match OS/architecture, platform dependencies, the
+  required Node-API version and UBM build identity. The prebuild matrix and
   its hashes (`native/PREBUILDS.json`) are produced by the release workflow —
   see [`RELEASE.md`](../RELEASE.md); never hand-edit the hash manifest.
 - Native and private backend protocols are versioned and fail closed. A

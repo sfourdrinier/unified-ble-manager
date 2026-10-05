@@ -3,6 +3,17 @@ const path = require('node:path')
 
 const read = name => fs.readFileSync(path.join(__dirname, '..', name), 'utf8')
 
+test('agent addon guidance preserves Node-API compatibility rather than runtime module-ABI rebuilds', () => {
+  for (const name of ['AGENTS.md', 'native/AGENTS.md']) {
+    const guide = read(name)
+    expect(guide).toContain('Node-API')
+    expect(guide).toContain('build identity')
+    expect(guide).not.toMatch(/exact.*Node\/Electron ABI|exact\*\*[\s\S]*?Node\/Electron ABI/)
+  }
+  expect(read('docs/ELECTRON.md')).toContain('Node-API v4')
+  expect(read('bindings/napi/Cargo.toml')).toContain('"napi4"')
+})
+
 test('platform guidance reflects native desktop peer and deferred-acquisition authority', () => {
   const guide = read('docs/PLATFORMS.md')
   expect(guide).not.toContain('only first-party backend that exposes')
@@ -10,8 +21,32 @@ test('platform guidance reflects native desktop peer and deferred-acquisition au
   expect(guide).toContain('[`PEERS.md`](PEERS.md)')
   expect(guide).toContain('[`NODE.md`](NODE.md)')
   expect(guide).toContain('macOS and Windows support initial')
-  expect(guide).toContain('Linux LE-specific deferred acquisition remains unsupported')
+  expect(guide).toContain('5.87-ubm.5')
+  expect(guide).toContain('fresh connectable LE advertisement')
+  expect(guide).toContain('Older daemons report `capability.unsupported`')
   expect(guide).toContain('CoreBluetooth does not expose unrestricted system bond inventory')
+})
+
+test('rc20 documents owned stream failure and Linux initial acquisition without promoting evidence', () => {
+  const current = read('CHANGELOG.md').split('## [5.0.0-rc.19]')[0]
+  expect(current).toContain('source-failed')
+  expect(current).toContain('retryable')
+  expect(current).toContain('5.87-ubm.5')
+  expect(current).not.toContain('No radio behavior')
+  expect(read('RELEASE.md').split('## Releasing 5.0.0-rc.19 (historical)')[0]).not.toContain(
+    'It does not change radio behavior'
+  )
+  const node = read('docs/NODE.md')
+  expect(node).toContain('LeAdvertisement')
+  expect(node).toContain('GetLeAvailability')
+  expect(node).toContain('not physical qualification')
+  const deployment = read('docs/BLUEZ_DEPLOYMENT.md')
+  expect(deployment).toContain('5.87-ubm.5')
+  expect(deployment).toContain('GetLeAvailability')
+  expect(deployment).not.toContain('### Deferred LE availability remains an explicit mechanism gap')
+  expect(read('docs/BLUEZ_LE_GATT.md')).toContain('GetLeAvailability')
+  expect(read('docs/BONDING.md')).toContain('source-failed')
+  expect(read('docs/UNIFIED_SEMANTICS.md')).toContain('Security and write-readiness watches')
 })
 
 test('release notes distinguish new desktop acquisition mechanisms from remaining platform gaps', () => {

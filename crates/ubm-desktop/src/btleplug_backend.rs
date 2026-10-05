@@ -968,6 +968,8 @@ pub struct BtleplugRadio {
     bluez_connection_policy: Option<crate::boundary::BluezConnectionPolicy>,
     #[cfg(target_os = "linux")]
     bluez_connection_contract: Result<(), DesktopError>,
+    #[cfg(target_os = "linux")]
+    bluez_availability_contract: Result<u64, DesktopError>,
     /// The BlueZ bond-change watcher task (Linux), aborted with the radio.
     #[cfg(target_os = "linux")]
     bluez_watch: Option<tokio::task::JoinHandle<()>>,
@@ -1120,6 +1122,22 @@ impl BtleplugRadio {
             Err(error) => Err(error.clone()),
         };
         #[cfg(target_os = "linux")]
+        let bluez_availability_contract = match &bluez {
+            Ok(authority) => {
+                tokio::time::timeout(Duration::from_secs(5), authority.le_availability())
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(DesktopError::new(
+                            BleErrorCode::CapabilityUnavailable,
+                            BleErrorDomain::Capability,
+                            "connection.connect.when-available",
+                        )
+                        .with_detail("native LE availability observer probe timed out"))
+                    })
+            }
+            Err(error) => Err(error.clone()),
+        };
+        #[cfg(target_os = "linux")]
         let connection_policy = bluez.as_ref().ok().and_then(|authority| {
             authority
                 .bound_owner()
@@ -1181,6 +1199,8 @@ impl BtleplugRadio {
             bluez_connection_policy: connection_policy,
             #[cfg(target_os = "linux")]
             bluez_connection_contract,
+            #[cfg(target_os = "linux")]
+            bluez_availability_contract,
             #[cfg(target_os = "linux")]
             bluez_watch,
             #[cfg(target_os = "linux")]
@@ -3507,6 +3527,35 @@ impl RadioBoundary for BtleplugRadio {
         None
     }
 
+    fn when_available_capability_limitation(
+        &self,
+    ) -> Option<(ubm_core::central::CapabilityState, &'static str)> {
+        #[cfg(target_os = "linux")]
+        {
+            use ubm_core::central::CapabilityState;
+            if self.bluez_connection_contract.is_err() {
+                return Some((
+                    CapabilityState::Unsupported,
+                    crate::capabilities::BLUEZ_LE_AUTHORITY_REQUIRED,
+                ));
+            }
+            if let Err(error) = &self.bluez_availability_contract {
+                return Some(if error.code() == BleErrorCode::CapabilityUnsupported {
+                    (
+                        CapabilityState::Unsupported,
+                        "bluez-native-le-availability-observer-required",
+                    )
+                } else {
+                    (
+                        CapabilityState::Unavailable,
+                        "bluez-native-le-availability-observer-unavailable",
+                    )
+                });
+            }
+        }
+        None
+    }
+
     fn tears_down_on_adapter_loss(&self) -> bool {
         true
     }
@@ -3586,13 +3635,10 @@ impl RadioBoundary for BtleplugRadio {
             .wait_available(peer_id, self._os_events_tx.clone())
             .await?;
         #[cfg(target_os = "linux")]
-        return Err(DesktopError::new(
-            BleErrorCode::CapabilityUnsupported,
-            BleErrorDomain::Capability,
-            "connection.connect.when-available",
-        )
-        .with_detail("fresh native LE advertisement availability is not implemented"));
-        #[cfg(not(target_os = "linux"))]
+        {
+            self.bluez_owner("connection.connect.when-available")?;
+            self.bluez()?.wait_le_available(peer_id).await?;
+        }
         self.connect(peer_id).await
     }
 
@@ -3654,6 +3700,8 @@ impl RadioBoundary for BtleplugRadio {
         // subsequent disconnect refuses because it never acquired its device.
         #[cfg(target_os = "windows")]
         let maintained = self.winrt.release(peer_id);
+        #[cfg(target_os = "linux")]
+        self.bluez()?.finish_availability(peer_id).await?;
         // T-R2: straight to the radio, as legacy went straight to
         // `peripheral.disconnect()` — no pre-disconnect `is_connected()`
         // query (an extra D-Bus read the legacy path never made).

@@ -341,6 +341,10 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         limitation: None,
         per_os: &[
             OsOverride::adapter(
+                DesktopOs::Linux,
+                "The maintained daemon's revision-1 LE availability observer reports fresh connectable LE advertisements; an independently owned LE discovery session waits before existing sender-scoped lease acquisition. This is scan-triggered initial acquisition, not autonomous reconnect.",
+            ),
+            OsOverride::adapter(
                 DesktopOs::MacOs,
                 "CoreBluetooth pending connect waits for the known peer's availability; actual native callback settles acquisition, caller cancellation releases pending ownership.",
             ),
@@ -761,6 +765,31 @@ const NOT_IMPLEMENTED: &str = "not-implemented";
 /// does not implement the versioned lifecycle/lease/GATT authority contract.
 pub const BLUEZ_LE_AUTHORITY_REQUIRED: &str = "bluez-linux-authority-contract-required";
 
+pub(crate) fn apply_when_available_capability_limitation(
+    core: &mut Central,
+    reason: Option<(CapabilityState, &str)>,
+) -> Result<(), CoreError> {
+    let Some((state, reason)) = reason else {
+        return Ok(());
+    };
+    let capability = DESKTOP_CAPABILITIES
+        .iter()
+        .find(|row| row.id == "connection:when-available")
+        .expect("registered deferred connection row");
+    core.register_capability(CapabilityDescriptor::new(
+        capability.id,
+        state,
+        &[("availability", 0)],
+        &[reason],
+        "ubm-desktop-instance-when-available",
+        EvidenceLevel::Blocked,
+        env!("CARGO_PKG_VERSION"),
+        "ubm-desktop-instance-capability-v1",
+        &[capability.scenario],
+    )?)?;
+    Ok(())
+}
+
 /// Apply the instantiated radio's connection refusal, not a platform assumption.
 /// Deterministic and other host radios keep their own registered capabilities.
 pub(crate) fn apply_connection_capability_limitation(
@@ -796,6 +825,54 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{DESKTOP_CAPABILITIES, register_desktop_capabilities};
+
+    #[test]
+    fn instance_le_availability_refusal_does_not_disable_direct_connection() {
+        let mut core = test_core();
+        super::register_desktop_capabilities_for(&mut core, Some(super::DesktopOs::Linux), false)
+            .unwrap();
+        super::apply_when_available_capability_limitation(
+            &mut core,
+            Some((
+                ubm_core::central::CapabilityState::Unsupported,
+                "native-observer-missing",
+            )),
+        )
+        .unwrap();
+        let states = core.registered_capability_states();
+        assert_eq!(
+            states
+                .iter()
+                .find(|(id, _)| id == "connection:when-available")
+                .unwrap()
+                .1,
+            ubm_core::central::CapabilityState::Unsupported
+        );
+        assert_ne!(
+            states
+                .iter()
+                .find(|(id, _)| id == "connection:direct")
+                .unwrap()
+                .1,
+            ubm_core::central::CapabilityState::Unsupported
+        );
+        super::apply_when_available_capability_limitation(
+            &mut core,
+            Some((
+                ubm_core::central::CapabilityState::Unavailable,
+                "native-observer-probe-failed",
+            )),
+        )
+        .unwrap();
+        assert_eq!(
+            core.registered_capability_states()
+                .iter()
+                .find(|(id, _)| id == "connection:when-available")
+                .unwrap()
+                .1,
+            ubm_core::central::CapabilityState::Unavailable
+        );
+    }
 
     #[test]
     fn instance_connection_refusal_overrides_only_dependent_mechanisms() {

@@ -1868,6 +1868,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             boundary.connection_capability_limitation(),
         )
         .map_err(DesktopError::from)?;
+        crate::capabilities::apply_when_available_capability_limitation(
+            &mut core,
+            boundary.when_available_capability_limitation(),
+        )
+        .map_err(DesktopError::from)?;
         let (loop_stop, loop_stop_rx) = watch::channel(false);
         let (lifecycle, _) = broadcast::channel(LIFECYCLE_EVENT_CAPACITY);
         let (adapter, _) = broadcast::channel(LIFECYCLE_EVENT_CAPACITY);

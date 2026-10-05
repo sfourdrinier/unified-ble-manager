@@ -12,16 +12,16 @@ test('Linux prerequisite diagnostics distinguish refused authority from package 
   expect(guide).toContain('ready-callback lifetime')
 })
 
-test('maintained Linux authority distinguishes direct LE connection from unresolved deferred availability', () => {
+test('maintained Linux authority distinguishes optional LE observer from cached discovery', () => {
   const guide = read('docs/BLUEZ_DEPLOYMENT.md').replace(/\s+/g, ' ')
-  expect(guide).toContain('connection:when-available')
-  expect(guide).toContain('connection.connect.when-available')
+  expect(guide).toContain('GetLeAvailability')
+  expect(guide).toContain('LeAdvertisement')
   expect(guide).toContain('capability.unsupported')
-  expect(guide).toContain('fresh native LE advertisement availability is not implemented')
-  expect(guide).toContain('direct scoped LE connection')
+  expect(guide).toContain('older daemons still support direct scoped connection')
+  expect(guide).toContain('sender-scoped LE discovery session')
   expect(guide).toContain('merged discovery filters')
   expect(guide).toContain('Unchanged RSSI')
-  expect(guide).toContain('implementation boundary, not a claim that Linux cannot provide the mechanism')
+  expect(guide).toContain('producer/private-bus tests are not physical-radio proof')
   expect(guide).toContain('No cache shortcut, polling loop or hidden retry substitutes')
 })
 

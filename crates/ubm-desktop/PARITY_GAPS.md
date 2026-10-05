@@ -139,11 +139,15 @@ available here (provenance per row).
 | `connection:when-available` | macos | os-adapter-provides | os-adapter-compile-verified | Initial pending CoreBluetooth connection settled by native callback, bounded only by caller budget/cancellation; no automatic post-loss reconnect. |
 | `connection:when-available` | windows | os-adapter-provides | os-adapter-compile-verified | MaintainConnection before GATT discovery, waiting for native ConnectionStatusChanged with owned callback cleanup; no automatic post-loss reconnect. |
 
-Linux `connection:when-available` remains open: the deployed LE authority has
-no deferred acquisition route, and shared stock discovery signals cannot
-identify an LE advertisement reliably. Peer-presence observations are not an
-LE-availability substitute. Existing direct owner-scoped LE acquisition remains
-available.
+| `connection:when-available` | linux | os-adapter-provides | os-adapter-compile-verified | Optional maintained `.5` LE observer: fresh owner-fenced connectable LE report before token-bound acquisition, with separate discovery sender and retained cancellation/deadline cleanup. Older `.4` daemons remain unsupported for this optional mechanism; no automatic post-loss reconnect. |
+
+Linux initial deferred acquisition requires optional observer revision 1
+(`GetLeAvailability` / `LeAdvertisement`) in `5.87-ubm.5`. Shared stock
+discovery signals and cached peer-presence observations are not substitutes.
+The runtime capability distinguishes missing/unknown observer (unsupported)
+from a failed native probe (unavailable); direct owner-scoped acquisition
+remains available on older `.4`. Private-bus and producer checks do not promote
+physical-radio evidence or reassign earlier direct-connection receipts.
 
 Not capability rows, also closed here: adapter power read as a fact on
 Linux (`Adapter1.Powered`; btleplug reports `PoweredOff` when its read

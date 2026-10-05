@@ -356,8 +356,10 @@ node scripts/ci/build-napi-addon.js
 UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + process.arch').node" your-electron-command
 ```
 
-With Node-API v8, an Electron-targeted rebuild is never required because
-Electron's module ABI differs from Node's. The Electron load smoke verifies
+The shared Rust binding requires Node-API v4 (`napi4`), not Electron's
+runtime-specific module ABI. A different Node/Electron module ABI alone does
+not require rebuilding; OS/architecture, platform dependencies, Node-API
+compatibility and the sealed UBM build identity still must match. The Electron load smoke verifies
 identity and runs a synthetic central; it does not start a real scan, observe
 an advertisement, or establish live-radio support. Published evidence
 records state the exact backend, package digest, OS/runtime/ABI, hardware,

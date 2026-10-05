@@ -1697,10 +1697,12 @@ node scripts/ci/pack-install-smoke.js
 UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + process.arch').node" your-electron-command
 </code></pre>
             <p>
-              With Node-API v8, an Electron-targeted rebuild is never required because Electron's module ABI differs
-              from Node's. The Electron load smoke verifies identity and runs a synthetic central; it does not start a
-              real scan, observe an advertisement, or establish live-radio support. Published evidence records state the
-              exact backend, package digest, OS/runtime/ABI, hardware, scenario, limitations, and proof level. See
+              The shared Rust binding requires Node-API v4 (<code>napi4</code>), not Electron's runtime-specific module
+              ABI. A different Node/Electron module ABI alone does not require rebuilding; OS/architecture, platform
+              dependencies, Node-API compatibility and the sealed UBM build identity still must match. The Electron load
+              smoke verifies identity and runs a synthetic central; it does not start a real scan, observe an
+              advertisement, or establish live-radio support. Published evidence records state the exact backend,
+              package digest, OS/runtime/ABI, hardware, scenario, limitations, and proof level. See
               <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a> and the controlling
               <a href="README.md#current-50-authority">Current 5.0 authority</a>.
             </p>
@@ -1828,9 +1830,11 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
             <p>
               For desktop connection intent, macOS and Windows support initial <code>when-available</code> acquisition
               through native pending connection mechanisms, with the original deadline, cancellation and scoped cleanup.
-              This is not automatic post-loss reconnect. Linux LE-specific deferred acquisition remains unsupported by
-              the maintained daemon contract; merged stock discovery signals do not replace that mechanism. See
-              <a href="NODE.md"><code>NODE.md</code></a> for the exact host boundaries.
+              This is not automatic post-loss reconnect. Linux implements initial acquisition with maintained daemon
+              <code>5.87-ubm.5</code>'s optional observer: a fresh connectable LE advertisement is required before
+              token-bound connection admission. Older daemons report <code>capability.unsupported</code>; merged stock
+              discovery signals and cached records do not replace that mechanism. See
+              <a href="NODE.md"><code>NODE.md</code></a> for deployment prerequisites and exact host boundaries.
             </p>
             <p>
               CoreBluetooth does not expose unrestricted system bond inventory. Web Bluetooth exposes origin-authorized
