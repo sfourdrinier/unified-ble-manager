@@ -3,8 +3,8 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc, Mutex as SyncMutex,
         atomic::{AtomicI64, AtomicU64, Ordering},
+        Arc, Mutex as SyncMutex,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -13,7 +13,7 @@ use std::{
 use btleplug::api::CharPropFlags;
 use serde_json::Number;
 use tauri::async_runtime::JoinHandle as TauriJoinHandle;
-use tokio::sync::{Mutex, broadcast, watch};
+use tokio::sync::{broadcast, watch, Mutex};
 use ubm_core::contracts::{AttachmentTuple, BleErrorCode, CommitState};
 use ubm_desktop::{
     AdapterAuthorization, AdapterAvailability, AdapterPowerState, Budget, CancelAck, CancelRequest,
@@ -24,10 +24,10 @@ use ubm_desktop::{
 };
 use uuid::Uuid;
 
-use crate::ATTACH_REQUEST_KIND;
 use crate::capabilities;
 use crate::desktop_core::{CoreAuthority, CoreSelector};
 use crate::scan_plan::{decode_normalized_scan_query, diagnostic_scan_plan};
+use crate::ATTACH_REQUEST_KIND;
 use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, IpcValue};
 
 const MAX_PENDING_EVENTS: usize = 256;
@@ -6079,8 +6079,8 @@ fn required_string(
 #[cfg(test)]
 mod tests {
     use super::{
-        DispatchError, characteristic_properties, core_identity, negotiate_ipc_versions, object,
-        released, scan_properties_match_optional, string,
+        characteristic_properties, core_identity, negotiate_ipc_versions, object, released,
+        scan_properties_match_optional, string, DispatchError,
     };
     use btleplug::api::CharPropFlags;
     use ubm_core::contracts::BleErrorCode;
@@ -6094,11 +6094,9 @@ mod tests {
             ..Default::default()
         };
         let _dispatcher = super::BtleplugDispatcher::new(options);
-        assert!(
-            super::BtleplugDispatcherOptions::default()
-                .connection_policy
-                .is_none()
-        );
+        assert!(super::BtleplugDispatcherOptions::default()
+            .connection_policy
+            .is_none());
     }
 
     #[tokio::test]
@@ -6733,7 +6731,7 @@ mod tests {
         use crate::{AuthenticatedCaller, IpcValue};
 
         use super::super::{
-            Attachment, BtleplugDispatcher, CallerState, IpcEventSink, caller_key, object, string,
+            caller_key, object, string, Attachment, BtleplugDispatcher, CallerState, IpcEventSink,
         };
 
         const HRM_SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";

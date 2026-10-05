@@ -159,3 +159,11 @@ merged into the release branch at `ad33ea66f562aef527ac11ffb19b4a59037e2de2`.
 The eventual integrated
 release branch must pass its own gates before
 one PR to main; this tracker does not authorize publication or stable promotion.
+
+The second patch's first exact clean preflight at `d2272479` failed the canonical
+Rust formatting gate before compilation. Per-file formatting had used the wrong
+edition for the NAPI/Tauri files. The pinned Cargo formatter corrects four files;
+both workspace and Tauri formatting checks then pass. Android and Apple source
+identities remain unchanged; only the desktop binding needs canonical refresh.
+The corrected commit must pass a new exact clean preflight before push. This
+format-only change does not trigger another APK or physical-radio campaign.

@@ -20,8 +20,8 @@
 //! with `capability.unsupported`, never silently.
 
 use std::collections::HashMap;
-use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex as StdMutex;
 
 use std::sync::Arc;
 
@@ -34,8 +34,8 @@ use napi::threadsafe_function::{
 use napi::{Env, JsFunction};
 use napi::{Error, Status};
 use napi_derive::napi;
-use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::broadcast::{self, error::TryRecvError};
+use tokio::sync::Mutex as AsyncMutex;
 use ubm_core::central::ScanDuplicatePolicy;
 use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CommitState, CoreError, OperationId};
 #[cfg(test)]
@@ -45,16 +45,16 @@ use ubm_desktop::boundary::{AdapterLossCause, AdmissionPolicy};
 use ubm_desktop::central::AdapterResetEvent;
 use ubm_desktop::executor::desktop_runtime;
 use ubm_desktop::{
-    AdapterAuthorization, AdapterEvent, AdapterPowerState, AddressType, AdvertisementExtras,
-    BluezBus, BtleplugRadio, Budget, CancelAck, CancelPairingOutcome, CentralProfile,
-    CharacteristicAccess, CompletionOutcome, DeliveryMode, DesktopCentral, DesktopError, DesktopOs,
-    DiscoveredPath, FakeRadio, FaultOp, InstanceKey, InvalidationCause, LifecycleEvent,
-    LifecycleKind, ManufacturerData, NotificationPoll, ObservationSource, ObservedDelivery,
-    OpControl, OpTicket, PairOutcome, PairRequest, PairingGeneration, PairingGenerationController,
-    PathSelector, PeerSnapshot, PlatformDetail, PlatformValue, PropertyFlags, RadioBoundary,
-    RadioCloseFailure, RadioEvent, Retryability, ScanFilterSpec, ScanStop, ScanTerminalEvent,
-    SecureConnections, SecurityEvent, SecurityState, ServiceData, ServiceSnapshot, UnpairOutcome,
-    WriteLimits, WriteReadinessEvent, desktop_capability_states,
+    desktop_capability_states, AdapterAuthorization, AdapterEvent, AdapterPowerState, AddressType,
+    AdvertisementExtras, BluezBus, BtleplugRadio, Budget, CancelAck, CancelPairingOutcome,
+    CentralProfile, CharacteristicAccess, CompletionOutcome, DeliveryMode, DesktopCentral,
+    DesktopError, DesktopOs, DiscoveredPath, FakeRadio, FaultOp, InstanceKey, InvalidationCause,
+    LifecycleEvent, LifecycleKind, ManufacturerData, NotificationPoll, ObservationSource,
+    ObservedDelivery, OpControl, OpTicket, PairOutcome, PairRequest, PairingGeneration,
+    PairingGenerationController, PathSelector, PeerSnapshot, PlatformDetail, PlatformValue,
+    PropertyFlags, RadioBoundary, RadioCloseFailure, RadioEvent, Retryability, ScanFilterSpec,
+    ScanStop, ScanTerminalEvent, SecureConnections, SecurityEvent, SecurityState, ServiceData,
+    ServiceSnapshot, UnpairOutcome, WriteLimits, WriteReadinessEvent,
 };
 
 /// Typed dispatch failure carrying a frozen C-UBM identity. [`DesktopError`]
@@ -5189,13 +5189,11 @@ mod tests {
             record: Ok(ubm_core::ownership::CleanupRecord::new(
                 None,
                 CleanupState::ReleaseFailed,
-                vec![
-                    ubm_core::ownership::CleanupFailure::new(
-                        "subscription".into(),
-                        BleErrorCode::GattSubscribeFailed,
-                    )
-                    .unwrap(),
-                ],
+                vec![ubm_core::ownership::CleanupFailure::new(
+                    "subscription".into(),
+                    BleErrorCode::GattSubscribeFailed,
+                )
+                .unwrap()],
             )
             .unwrap()),
             ..retry
@@ -5204,11 +5202,9 @@ mod tests {
         assert_eq!(receipt.state, "release-failed");
         assert_eq!(receipt.failures.len(), 1);
         assert_eq!(receipt.failures[0].resource_kind, "subscription");
-        assert!(
-            receipt.failures[0]
-                .error
-                .starts_with("gatt.subscribe-failed|cleanup|")
-        );
+        assert!(receipt.failures[0]
+            .error
+            .starts_with("gatt.subscribe-failed|cleanup|"));
     }
 
     #[tokio::test]
@@ -5243,13 +5239,11 @@ mod tests {
         let radio = central.central.boundary().synthetic("test").unwrap();
         radio.fail_next(ubm_desktop::FaultOp::Connect, "connect refused");
         radio.fail_next(ubm_desktop::FaultOp::Disconnect, "compensation refused");
-        assert!(
-            central
-                .central
-                .connect("half-open", "owner", OpControl::unbounded())
-                .await
-                .is_err()
-        );
+        assert!(central
+            .central
+            .connect("half-open", "owner", OpControl::unbounded())
+            .await
+            .is_err());
         let platform = ubm_desktop::PlatformDetail::new("android", "133").with_message("refused");
         radio.fail_next_with_platform(
             ubm_desktop::FaultOp::Disconnect,
@@ -5719,11 +5713,9 @@ mod tests {
                 ("descriptor-write".to_owned(), 0, 0, Some(0)),
             ]
         );
-        assert!(
-            accesses
-                .iter()
-                .all(|access| access.peer_id == "peer-1" && access.service_uuid == battery)
-        );
+        assert!(accesses
+            .iter()
+            .all(|access| access.peer_id == "peer-1" && access.service_uuid == battery));
         assert_eq!(
             accesses[2].descriptor_uuid.as_deref(),
             Some(user_description)
@@ -5733,11 +5725,9 @@ mod tests {
     #[test]
     fn staged_occurrences_beyond_u32_fail_loudly() {
         let error = staged_occurrence(u64::from(u32::MAX) + 1).expect_err("out of range");
-        assert!(
-            error
-                .wire_message()
-                .starts_with("protocol.violation|core|dispatch.staged-gatt-accesses|")
-        );
+        assert!(error
+            .wire_message()
+            .starts_with("protocol.violation|core|dispatch.staged-gatt-accesses|"));
     }
 
     #[tokio::test]
@@ -5755,16 +5745,14 @@ mod tests {
             .await
             .unwrap();
         assert!(connection.connection_generation.is_some());
-        assert!(
-            central
-                .central
-                .boundary()
-                .synthetic("test")
-                .unwrap()
-                .calls()
-                .iter()
-                .any(|call| call == "connect_when_available")
-        );
+        assert!(central
+            .central
+            .boundary()
+            .synthetic("test")
+            .unwrap()
+            .calls()
+            .iter()
+            .any(|call| call == "connect_when_available"));
         assert_eq!(central.close().await.unwrap().state, "released");
     }
 
@@ -6304,14 +6292,12 @@ mod tests {
             central.disconnect(lease(None)).await.unwrap().state,
             "released"
         );
-        assert!(
-            !central
-                .read(request("lease-b"))
-                .await
-                .unwrap()
-                .value
-                .is_empty()
-        );
+        assert!(!central
+            .read(request("lease-b"))
+            .await
+            .unwrap()
+            .value
+            .is_empty());
         let refusal = central
             .read(request("lease-a"))
             .await
@@ -6427,12 +6413,10 @@ mod tests {
                 .kind,
             "closed"
         );
-        assert!(
-            central
-                .unsubscribe(subscription("consumer-b"))
-                .await
-                .unwrap()
-        );
+        assert!(central
+            .unsubscribe(subscription("consumer-b"))
+            .await
+            .unwrap());
         assert_eq!(central.close().await.unwrap().state, "released");
     }
 
@@ -6928,16 +6912,12 @@ mod tests {
     fn capability_states_answer_per_desktop_os() {
         for platform in ["bluez", "corebluetooth", "winrt"] {
             let states = UbmCentral::capability_states(platform.to_owned(), None).expect("states");
-            assert!(
-                states
-                    .iter()
-                    .any(|row| row.id == "connection:direct" && row.state == "limited")
-            );
-            assert!(
-                states
-                    .iter()
-                    .all(|row| row.state == "limited" || row.state == "unsupported")
-            );
+            assert!(states
+                .iter()
+                .any(|row| row.id == "connection:direct" && row.state == "limited"));
+            assert!(states
+                .iter()
+                .all(|row| row.state == "limited" || row.state == "unsupported"));
         }
         assert!(UbmCentral::capability_states("android".to_owned(), None).is_err());
     }

@@ -25,12 +25,12 @@ use ubm_desktop::{
 };
 
 use super::{
-    Attachment, AuthorityOpener, BtleplugDispatcher, CallerState, DispatchError, IpcEventSink,
-    IpcValue, OrphanResource, ReleasePhase, StreamEnd, attachment_identity_matches,
-    attachment_record, caller_key, into_object, object, required_value, string,
+    attachment_identity_matches, attachment_record, caller_key, into_object, object,
+    required_value, string, Attachment, AuthorityOpener, BtleplugDispatcher, CallerState,
+    DispatchError, IpcEventSink, IpcValue, OrphanResource, ReleasePhase, StreamEnd,
 };
-use crate::AuthenticatedCaller;
 use crate::desktop_core::CoreAuthority;
+use crate::AuthenticatedCaller;
 
 #[path = "../../../crates/test-support/recording_fixture.rs"]
 mod recording_fixture;
@@ -652,15 +652,13 @@ async fn idle_process_handoff_never_opens_bluetooth_even_after_shutdown() {
         );
         assert_eq!(opens.load(AtomicOrdering::SeqCst), 0);
     }
-    assert!(
-        harness
-            .dispatcher
-            .authority_shutdown()
-            .await
-            .core
-            .unwrap()
-            .is_released()
-    );
+    assert!(harness
+        .dispatcher
+        .authority_shutdown()
+        .await
+        .core
+        .unwrap()
+        .is_released());
 }
 
 #[tokio::test]
@@ -693,32 +691,26 @@ async fn process_shutdown_retains_native_claim_and_retry_owner() {
     harness
         .radio()
         .fail_next(FaultOp::Disconnect, "retained cleanup");
-    assert!(
-        !harness
-            .dispatcher
-            .authority_shutdown()
-            .await
-            .core
-            .unwrap()
-            .is_released()
-    );
-    assert!(
-        harness
-            .dispatcher
-            .continuation_describe_backlog()
-            .await
-            .unwrap()
-            .is_object()
-    );
-    assert!(
-        harness
-            .dispatcher
-            .authority_shutdown()
-            .await
-            .core
-            .unwrap()
-            .is_released()
-    );
+    assert!(!harness
+        .dispatcher
+        .authority_shutdown()
+        .await
+        .core
+        .unwrap()
+        .is_released());
+    assert!(harness
+        .dispatcher
+        .continuation_describe_backlog()
+        .await
+        .unwrap()
+        .is_object());
+    assert!(harness
+        .dispatcher
+        .authority_shutdown()
+        .await
+        .core
+        .unwrap()
+        .is_released());
     let claim = harness
         .dispatcher
         .continuation_prepare_claim(256, 65536)
@@ -753,13 +745,11 @@ async fn process_shutdown_retains_native_claim_and_retry_owner() {
             .unwrap()["disposed"],
         true
     );
-    assert!(
-        harness
-            .dispatcher
-            .continuation_execute(peer, &declaration)
-            .await
-            .is_err()
-    );
+    assert!(harness
+        .dispatcher
+        .continuation_execute(peer, &declaration)
+        .await
+        .is_err());
 }
 
 fn directory_mac_profile(
@@ -908,13 +898,11 @@ async fn peer_directory_bonded_preserves_native_fact_without_link_ownership() {
             .connections
             .is_empty()
     );
-    assert!(
-        !harness
-            .radio()
-            .calls()
-            .iter()
-            .any(|call| call.starts_with("connect:"))
-    );
+    assert!(!harness
+        .radio()
+        .calls()
+        .iter()
+        .any(|call| call.starts_with("connect:")));
     let connected = harness
         .execute(
             "connection.connect",
@@ -977,13 +965,11 @@ async fn peer_directory_connected_returns_identity_without_connection_ownership(
             .connections
             .is_empty()
     );
-    assert!(
-        !harness
-            .radio()
-            .calls()
-            .iter()
-            .any(|call| call.starts_with("connect:"))
-    );
+    assert!(!harness
+        .radio()
+        .calls()
+        .iter()
+        .any(|call| call.starts_with("connect:")));
 }
 
 fn directory_reference(id: &str) -> IpcValue {
@@ -1061,13 +1047,11 @@ async fn peer_directory_validates_entire_query_before_native_dispatch() {
         assert_eq!(error.code, code);
         assert_eq!(error.operation, operation);
     }
-    assert!(
-        !harness
-            .radio()
-            .calls()
-            .iter()
-            .any(|call| call == "resolve_peer" || call == "connected_peers")
-    );
+    assert!(!harness
+        .radio()
+        .calls()
+        .iter()
+        .any(|call| call == "resolve_peer" || call == "connected_peers"));
 }
 
 #[tokio::test]
@@ -1255,13 +1239,11 @@ async fn peer_directory_unavailable_hosts_never_short_circuit_to_success_or_mac_
             assert_eq!(error.code, BleErrorCode::CapabilityUnsupported);
             assert_eq!(error.operation, command);
         }
-        assert!(
-            !harness
-                .radio()
-                .calls()
-                .iter()
-                .any(|call| call == "resolve_peer" || call == "connected_peers")
-        );
+        assert!(!harness
+            .radio()
+            .calls()
+            .iter()
+            .any(|call| call == "resolve_peer" || call == "connected_peers"));
     }
 }
 
@@ -1434,13 +1416,11 @@ async fn authority_shutdown_retains_half_open_compensation_cause_until_confirmed
     harness
         .radio()
         .fail_next(FaultOp::Disconnect, "initial compensation refused");
-    assert!(
-        harness
-            .central
-            .connect("half-open", "owner", OpControl::unbounded())
-            .await
-            .is_err()
-    );
+    assert!(harness
+        .central
+        .connect("half-open", "owner", OpControl::unbounded())
+        .await
+        .is_err());
     let platform = PlatformDetail::new("android", "133").with_message("disconnect refused");
     harness
         .radio()
@@ -1512,17 +1492,15 @@ async fn caller_connection_release_preserves_another_native_lease() {
             .await
     );
     other.discover(&other_link).await;
-    assert!(
-        harness
-            .execute(
-                "gatt.discover",
-                Harness::link_entries(&link),
-                None,
-                OpControl::unbounded()
-            )
-            .await
-            .is_err()
-    );
+    assert!(harness
+        .execute(
+            "gatt.discover",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded()
+        )
+        .await
+        .is_err());
     harness.dispatcher.authority_shutdown().await;
 }
 
@@ -1750,16 +1728,14 @@ async fn cancelling_orphan_drain_keeps_its_exact_identity_owned() {
     harness.wait_calls("stop_scan", 2).await;
     drain.abort();
     assert!(matches!(drain.await, Err(error) if error.is_cancelled()));
-    assert!(
-        harness
-            .dispatcher
-            .inner
-            .lock()
-            .await
-            .orphan_debt
-            .iter()
-            .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan))
-    );
+    assert!(harness
+        .dispatcher
+        .inner
+        .lock()
+        .await
+        .orphan_debt
+        .iter()
+        .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan)));
     harness.radio().unblock_op(FaultOp::StopScan);
     harness.dispatcher.authority_shutdown().await;
 }
@@ -1823,13 +1799,11 @@ async fn cancelling_orphan_snapshot_keeps_both_resources_and_other_callers() {
         .await;
     let scan = harness.orphan_a_scan(1).await;
     assert_eq!(harness.debt().await.len(), 2);
-    assert!(
-        harness
-            .dispatcher
-            .settle_orphan_debt(&authority, Some("unrelated-caller"))
-            .await
-            .is_empty()
-    );
+    assert!(harness
+        .dispatcher
+        .settle_orphan_debt(&authority, Some("unrelated-caller"))
+        .await
+        .is_empty());
     assert_eq!(
         harness.debt().await.len(),
         2,
@@ -1847,12 +1821,10 @@ async fn cancelling_orphan_snapshot_keeps_both_resources_and_other_callers() {
         2,
         "both the in-flight and unvisited identity stay owned"
     );
-    assert!(
-        state
-            .orphan_debt
-            .iter()
-            .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan))
-    );
+    assert!(state
+        .orphan_debt
+        .iter()
+        .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan)));
     drop(state);
     harness.radio().unblock_op(FaultOp::Disconnect);
     harness.dispatcher.authority_shutdown().await;
@@ -1873,16 +1845,14 @@ async fn refused_parent_retains_timed_out_orphan_debt_until_clean_retry() {
     harness.radio().unblock_op(FaultOp::StopScan);
     let first = shutdown.await.unwrap();
     assert!(!first.core.unwrap().transport_close_failures.is_empty());
-    assert!(
-        harness
-            .dispatcher
-            .inner
-            .lock()
-            .await
-            .orphan_debt
-            .iter()
-            .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan))
-    );
+    assert!(harness
+        .dispatcher
+        .inner
+        .lock()
+        .await
+        .orphan_debt
+        .iter()
+        .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan)));
     assert!(harness.dispatcher.ensure_authority().await.is_err());
     let retry = harness.dispatcher.authority_shutdown().await;
     assert!(retry.core.unwrap().transport_close_failures.is_empty());
@@ -1936,13 +1906,11 @@ async fn authority_shutdown_retains_transport_cleanup_until_a_clean_retry() {
         .radio()
         .fail_next(FaultOp::FinishClose, "transport close refused");
     let first = harness.dispatcher.authority_shutdown().await;
-    assert!(
-        !first
-            .core
-            .expect("first shutdown report")
-            .transport_close_failures
-            .is_empty()
-    );
+    assert!(!first
+        .core
+        .expect("first shutdown report")
+        .transport_close_failures
+        .is_empty());
     assert!(
         harness.dispatcher.ensure_authority().await.is_err(),
         "failed shutdown never reopens admission"
@@ -1978,25 +1946,21 @@ async fn authority_shutdown_closes_admission_during_transport_cleanup() {
     let dispatcher = harness.dispatcher.clone();
     let shutdown = tokio::spawn(async move { dispatcher.authority_shutdown().await });
     harness.wait_calls("finish_close", 1).await;
-    assert!(
-        tokio::time::timeout(
-            Duration::from_millis(100),
-            harness.dispatcher.ensure_authority()
-        )
-        .await
-        .expect("closed admission must not wait behind cleanup")
-        .is_err()
-    );
+    assert!(tokio::time::timeout(
+        Duration::from_millis(100),
+        harness.dispatcher.ensure_authority()
+    )
+    .await
+    .expect("closed admission must not wait behind cleanup")
+    .is_err());
     harness.radio().unblock_op(FaultOp::FinishClose);
-    assert!(
-        shutdown
-            .await
-            .expect("shutdown task")
-            .core
-            .expect("report")
-            .transport_close_failures
-            .is_empty()
-    );
+    assert!(shutdown
+        .await
+        .expect("shutdown task")
+        .core
+        .expect("report")
+        .transport_close_failures
+        .is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2011,13 +1975,11 @@ async fn cancelled_authority_shutdown_preserves_the_closed_retry_owner() {
     assert!(harness.dispatcher.ensure_authority().await.is_err());
     harness.radio().unblock_op(FaultOp::FinishClose);
     let retry = harness.dispatcher.authority_shutdown().await;
-    assert!(
-        retry
-            .core
-            .expect("cancelled shutdown retains authority")
-            .transport_close_failures
-            .is_empty()
-    );
+    assert!(retry
+        .core
+        .expect("cancelled shutdown retains authority")
+        .transport_close_failures
+        .is_empty());
     assert_eq!(count(&harness.radio().calls(), "finish_close"), 2);
     assert!(harness.dispatcher.authority_shutdown().await.core.is_none());
 }
@@ -2040,13 +2002,11 @@ async fn hung_authority_transport_cleanup_is_bounded_and_retryable() {
     assert!(harness.dispatcher.ensure_authority().await.is_err());
     harness.radio().unblock_op(FaultOp::FinishClose);
     let retry = harness.dispatcher.authority_shutdown().await;
-    assert!(
-        retry
-            .core
-            .expect("timeout retains authority")
-            .transport_close_failures
-            .is_empty()
-    );
+    assert!(retry
+        .core
+        .expect("timeout retains authority")
+        .transport_close_failures
+        .is_empty());
     assert!(harness.dispatcher.authority_shutdown().await.core.is_none());
 }
 
@@ -3884,19 +3844,17 @@ async fn a_notification_terminal_sent_before_disconnect_is_not_sent_twice() {
         .expect("subscribe");
     let notifications = text(&subscription, "handle");
 
-    assert!(
-        harness
-            .dispatcher
-            .notification_terminal(
-                &harness.key(),
-                (LEASE_ID, LEASE_GENERATION),
-                &notifications,
-                "connection-lost",
-                None,
-            )
-            .await
-            .expect("first terminal is sent")
-    );
+    assert!(harness
+        .dispatcher
+        .notification_terminal(
+            &harness.key(),
+            (LEASE_ID, LEASE_GENERATION),
+            &notifications,
+            "connection-lost",
+            None,
+        )
+        .await
+        .expect("first terminal is sent"));
     harness
         .execute(
             "connection.disconnect",
