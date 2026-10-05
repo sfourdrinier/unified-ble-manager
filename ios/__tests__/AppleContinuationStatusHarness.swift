@@ -41,11 +41,16 @@ private let lastWakeKey = "com.sfourdrinier.unifiedblemanager.background-continu
 private let hrService = "0000180d-0000-1000-8000-00805f9b34fb"
 private let hrMeasurement = "00002a37-0000-1000-8000-00805f9b34fb"
 private let peer = "a0:9e:1a:e9:b9:3d"
+private let androidOnlyDeclarations = [
+  "{\"onAppearance\":\"headless-task\",\"headlessTaskName\":\"collect\"}",
+  "{\"onAppearance\":\"foreground-service\",\"foregroundService\":{\"notification\":{\"title\":\"Collect\",\"channelName\":\"Collect\",\"channelId\":\"collect\"}}}"
+]
 
 @main
 enum AppleContinuationStatusHarness {
   static func main() {
     clear()
+    checkRecordOnlyLaunchBootstrap()
     // Metadata reads never install a host. Operations requiring the native
     // owner exercise this explicit installation failure instead of a radio.
     let sessions = UnifiedBleRustCoreSessions(installer: { _ in
@@ -250,10 +255,7 @@ enum AppleContinuationStatusHarness {
 
     // Valid platform-specific declarations are not malformed arguments.
     // Apple must refuse their unavailable mechanism before installing a radio.
-    for deferred in [
-      "{\"onAppearance\":\"headless-task\",\"headlessTaskName\":\"collect\"}",
-      "{\"onAppearance\":\"foreground-service\",\"foregroundService\":{\"notification\":{\"title\":\"Collect\",\"channelName\":\"Collect\",\"channelId\":\"collect\"}}}"
-    ] {
+    for deferred in androidOnlyDeclarations {
       let (_, declarationFailure) = declare(sessions, deferred)
       check(declarationFailure == nil, "valid deferred declaration rejected: \(declarationFailure ?? "")")
       check((statusOf(sessions)["detail"] as? String)?.contains("Android-specific") == true,
@@ -342,6 +344,47 @@ enum AppleContinuationStatusHarness {
     }
     check(report == nil, "status refused: \(report ?? "")")
     return json(answer!)
+  }
+
+  static func checkRecordOnlyLaunchBootstrap() {
+    // Execute the production launch selector's Swift control flow, before any
+    // openSession/JS manager. A refusing installer proves host reachability
+    // without allocating a physical CBCentralManager in the harness.
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ubm-launch-\(UUID().uuidString).bundle")
+    try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try! FileManager.default.removeItem(at: directory); clear() }
+    let info: [String: Any] = ["CFBundleIdentifier": "com.ubm.bootstrap.test",
+      "UnifiedBleProtocolRestorationId": "record-only", "UnifiedBleProtocolRestorationGeneration": "1"]
+    let data = try! PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+    try! data.write(to: directory.appendingPathComponent("Info.plist"))
+    let bundle = Bundle(path: directory.path)!
+    check(UnifiedBleRustCoreSessions.productionRadioConfiguration(bundle: bundle).restoreIdentifierKey != nil,
+          "launch fixture must configure an actual restoration identity")
+    var installations = 0
+    let sessions = UnifiedBleRustCoreSessions(installer: { _ in
+      installations += 1
+      throw MobileCoreError.Failed(code: "platform.failure", domain: "platform", operation: "launch.test", detail: "injected launch installation refusal")
+    })
+    check(sessions.bootstrapNativeContinuation(bundle: .main) == nil && installations == 0,
+          "unconfigured installation remains inert")
+    let launchDeclarations: [String?] = [nil, "{\"onAppearance\":\"record-only\"}", "{\"onAppearance\":\"native\"}"] + androidOnlyDeclarations.map { Optional($0) }
+    for declaration in launchDeclarations {
+      UserDefaults.standard.set(declaration, forKey: continuationKey)
+      let before = installations
+      let failure = sessions.bootstrapNativeContinuation(bundle: bundle)
+      check(installations == before + 1, "configured record-only/native launch must install before JS: \(declaration ?? "default record-only")")
+      check(json(failure ?? "{}")["code"] as? String == "platform.failure",
+            "launch installation refusal remains observable")
+    }
+    UserDefaults.standard.set("{\"onAppearance\":\"native\"}", forKey: continuationKey)
+    let before = installations
+    check(json(sessions.bootstrapNativeContinuation(bundle: .main) ?? "{}")["code"] as? String == "capability.unsupported",
+          "native standing order without restoration identity refuses")
+    check(installations == before, "unconfigured native order never installs")
+    UserDefaults.standard.set("{\"onAppearance\":\"invalid\"}", forKey: continuationKey)
+    check(json(sessions.bootstrapNativeContinuation(bundle: bundle) ?? "{}")["code"] as? String == "argument.invalid",
+          "malformed standing order refuses without silently substituting record-only")
+    check(installations == before, "malformed launch declaration never installs")
   }
 
   static func clear() {

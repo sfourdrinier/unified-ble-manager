@@ -1,6 +1,8 @@
 // The standing order belongs to the native process, not a TurboModule.
 // Register before launch, but allocate no radio until launch completes and
-// the application has explicitly configured native continuation.
+// the application has explicitly configured restoration (record-only by
+// default) or native continuation. A standing order is not required to receive
+// and retain restoration callbacks before JavaScript starts.
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <CoreBluetooth/CoreBluetooth.h>

@@ -157,7 +157,21 @@ A loss that happens before the stream is ready is delivered right after the init
 
 A notification stream ends with the core's own reason: `connection-lost`, `service-changed`, `overflow`, or `source-failed` when the core closed a stream that is still mapped (with `operation.reset` when an adapter loss ended it). When the app itself released the link (`connection.disconnect`), the stream ends `owner-released` — the vocabulary's requested-disconnect word, as on every other host — so a connection supervisor backs off and reconnects instead of stopping. A scan the OS or an adapter loss ended without a stop request ends `source-failed` with the core's own words (`scan.start-failed`, platform detail), or `closed` when the OS stopped it without an error; nothing is left to stop. Each value carries the `delivery` the radio reported for the subscription (`notification`, `indication`, or `unknown` when the platform does not say); the subscribe response reports it too.
 
-Delivery modes follow the 4.x contract: `prefer-notification` and `prefer-indication` pass no requirement; `require-notification` and `require-indication` fail with `gatt.property-not-supported` when the characteristic lacks that property, and are otherwise passed to the core, which has the radio enforce the mode or refuses with `capability.limited` before any effect. btleplug itself cannot select or report the CCCD mode, so today's btleplug radio refuses every hard requirement that way until the radio answers from the characteristic's properties.
+Delivery requirements are planned from characteristic properties before radio
+effects. `prefer-notification` and `prefer-indication` impose no hard requirement.
+A characteristic offering only notification or only indication can satisfy that
+mode on every supported desktop platform; requiring its absent property fails
+with `gatt.property-not-supported`. When both properties are present,
+CoreBluetooth and BlueZ enable notification, so `require-notification` succeeds
+and `require-indication` fails with `capability.limited` before subscribing.
+WinRT can select either mode through the adapter's CCCD write; a failure to
+enforce the selected mode is surfaced, not silently accepted. A platform with no
+documented dual-property rule refuses a hard requirement with
+`capability.limited`. The planner is `crates/ubm-desktop/src/delivery.rs`;
+applications must not drop a delivery requirement just because they use Tauri.
+Planning is separate from observation: notification values preserve the native
+host's reported `delivery`, including `unknown` where the platform cannot report
+the mode.
 
 The maximum write length (`connection.maximum-write-length`, per `mode`) is the core's answer for that write mode, the same limit a write of that mode is admitted against: a reported maximum is never refused. With an OS long write (Windows, Linux) a with-response write reaches 512 bytes; a write without response, and every write on macOS, is bounded by what the OS reports for the link (one ATT payload where the OS has no per-mode readout). An unmeasured limit fails `capability.unavailable`, never a guess. Tauri 4.x reported `mtu - 3` for every mode.
 

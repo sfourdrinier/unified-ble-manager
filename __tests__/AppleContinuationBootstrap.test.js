@@ -66,4 +66,14 @@ describe('Apple native continuation launch wiring', () => {
     expect(lane).toContain('ios/UnifiedBleContinuationBootstrap.mm')
     expect(lane).toContain('OBJC_CLASS_$_UnifiedBleContinuationBootstrap')
   })
+
+  it('executes record-only launch admission through the real sessions bootstrap in the Apple lane', () => {
+    const harness = read('ios/__tests__/AppleContinuationStatusHarness.swift')
+    expect(harness).toContain('checkRecordOnlyLaunchBootstrap()')
+    expect(harness).toContain('sessions.bootstrapNativeContinuation(bundle: bundle)')
+    expect(harness).toContain('installations == before + 1')
+    const lane = read('scripts/native-protocol/test-apple-native-protocol.js')
+    expect(lane).toContain('AppleContinuationStatusHarness.swift')
+    expect(lane).toContain('run(continuationExecutable, [])')
+  })
 })

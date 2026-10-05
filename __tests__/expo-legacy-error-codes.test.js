@@ -136,7 +136,7 @@ describe('legacy Expo error codes (133)', () => {
     await manager.destroy()
   })
 
-  test('a failed restoration claim is capability.unavailable, as legacy wrapped it', async () => {
+  test('a failed restoration claim preserves the owner code and platform detail rather than legacy wrapping', async () => {
     const { native, manager } = await expoManager('apple', {
       clientId: 'ubm-client:expo',
       hostSessionScope: 'ubm-host:expo',
@@ -147,11 +147,31 @@ describe('legacy Expo error codes (133)', () => {
         hostSessionScope: 'ubm-host:expo'
       }
     })
-    native.failNext('peers.claim-restored', 'platform.failure', 'platform', 'peers.claim-restored', 'journal refused')
+    native.failNext(
+      'peers.claim-restored',
+      'platform.failure',
+      'platform',
+      'peers.claim-restored',
+      'journal refused',
+      null,
+      {
+        domain: 'CoreBluetooth',
+        code: 'journal-refused',
+        message: 'journal refused',
+        metadata: { nativeStatus: 7, reason: 'test-refusal' }
+      }
+    )
     await expect(manager.restoration.claim()).rejects.toMatchObject({
       constructor: BleError,
-      code: 'capability.unavailable',
-      operation: 'expo.restoration.claim'
+      code: 'platform.failure',
+      domain: 'platform',
+      operation: 'expo.restoration.claim',
+      platform: {
+        domain: 'CoreBluetooth',
+        code: 'journal-refused',
+        safeMessage: 'journal refused',
+        metadata: { nativeStatus: 7, reason: 'test-refusal' }
+      }
     })
     expectConsoleErrorMatching(
       '[ReactNativeRestorationCoordinator.adopt] Native restoration adoption failed:',

@@ -131,9 +131,16 @@ For a tvOS simulator build, use `-sdk appletvsimulator` and
 This restriction belongs to simulator builds, not physical-device signing or
 Bluetooth permissions.
 
-### 2. Ask Android for runtime permission
+### 2. Request permission explicitly
 
-The plugin writes the manifest. Android 12+ still needs a runtime request. The library will not do this for you.
+#### Bare React Native
+
+The consuming application owns its native permission flow. On Android, manifest
+declarations do not grant runtime permission; call this helper before scanning
+or connecting. Android below API 31 also needs the location declaration in the
+application manifest. The helper is Android-only; it is not an Apple permission
+request. On Apple, arrange the explicit native Bluetooth authorization flow in
+your host. Reading `adapter.state()` does not ask the user for authorization.
 
 ```ts
 import { PermissionsAndroid, Platform } from 'react-native'
@@ -160,6 +167,40 @@ async function ensureAndroidBluetoothPermission(): Promise<void> {
   }
 }
 ```
+
+#### Expo (phone and TV)
+
+The Expo plugin writes native declarations, and the Expo manager exposes an
+explicit permission request on both Android and Apple hosts. After creating
+the Expo manager in step 3, inspect readiness, request permission, and wait for
+the adapter before scan/connect. Reading `readiness()` or `adapter.state()` never prompts.
+Denial must remain visible; follow readiness actions such as opening settings
+or enabling Bluetooth rather than repeatedly requesting a refused permission.
+
+The recipe below is the ordinary global-authorization path, not an AccessorySetupKit
+(ASK) iOS recipe. In an ASK-configured app with global authorization still
+`notDetermined`, the global permission request refuses with
+`capability.unsupported` without allocating a central. Keep the user-initiated
+`manager.choose` accessory flow available instead; its accessory grant is separate
+from global Bluetooth permission. Do not retry a global request to obtain an
+accessory grant. See [ASK authorization](EXPO_PLUGIN.md#permissions).
+
+<!-- expo-permission-flow -->
+```ts
+const beforePermission = await manager.readiness()
+// Present beforePermission.actions in your UI; inspecting them does not prompt.
+// Ordinary global authorization only; ASK uses the separate chooser path above.
+const permission = await manager.permissions.request({ purpose: 'scan-and-connect' })
+if (!permission.granted.includes('bluetooth')) {
+  throw new Error('Bluetooth permission was not granted.')
+}
+await manager.adapter.waitUntilReady({ timeoutMs: 15000 })
+```
+
+TV consumers use the same flow, with the platform-specific declarations and
+limitations in [`TV.md`](TV.md). An Expo app using the bare React Native factory
+instead owns the permission flow described above; no Expo surfaces are added
+to that factory.
 
 ### 3. Create one manager and keep it
 
@@ -232,13 +273,12 @@ if (
 }
 ```
 
-Never gate on a bare `authorization !== 'granted'`. Only an explicit refusal — `'denied'`,
-`'restricted'`, `'unavailable'` — blocks. The other values are not refusals:
-`'unknown'` means the platform exposes no per-application Bluetooth
-authorization concept, as BlueZ on Linux does, or that the host did not query
-one; `'not-determined'` means the user has not been asked yet, and since the
-prompt is raised by _using_ the radio rather than by reading the state, blocking
-on it would stop the prompt from ever appearing.
+Do not treat every value other than `granted` as a denial. `unknown` means the
+platform exposes no per-application Bluetooth authorization concept (as on
+BlueZ), or the host did not query one. `not-determined` means the user has not
+been asked: complete the explicit permission flow in step 2 before radio work.
+State reads never trigger that prompt; a radio operation may refuse undecided
+authorization with `permission.not-determined` instead of asking implicitly.
 
 Then run the finite public journey (`find` → `withDiscoveredConnection` → GATT read → `destroy`) from the root [`README.md`](../README.md):
 
@@ -286,7 +326,10 @@ tvOS, desktop and Web answer instead, is in [`BACKGROUND.md`](BACKGROUND.md).
 
 ## Coming from react-native-ble-plx
 
-This is a rewrite. There is no `new BleManager()` and no Base64 characteristic values. Start with [`MIGRATION_4.0.md`](../MIGRATION_4.0.md).
+This is a rewrite. There is no `new BleManager()` and no Base64 characteristic
+values. [`MIGRATION_4.0.md`](../MIGRATION_4.0.md) is historical comparison,
+not a copyable setup guide. Apps already using UBM should start with
+[`MIGRATION_4.0.28.md`](../MIGRATION_4.0.28.md) and the current host recipes here.
 
 ## Maintainers
 
