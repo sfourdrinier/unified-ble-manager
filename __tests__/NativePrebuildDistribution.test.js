@@ -1,5 +1,6 @@
 const fs = require('fs')
 const path = require('path')
+const YAML = require('yaml')
 const { execFileSync } = require('node:child_process')
 
 const root = path.join(__dirname, '..')
@@ -120,7 +121,14 @@ describe('native Node-API prebuild distribution', () => {
     expect(publish).toContain('actions/upload-artifact@v7')
     expect(publish).toContain('include-hidden-files: true')
     expect(publish).toContain('actions/download-artifact@v8')
-    expect(publish).toContain("pattern: 'native-prebuild-*'")
+    const jobs = YAML.parse(publish).jobs
+    const assembler = jobs['canonical-package']
+    expect(assembler.needs).toContain('native-prebuild')
+    expect(
+      assembler.steps.some(
+        step => step.uses === 'actions/download-artifact@v8' && step.with.pattern === 'native-prebuild-*'
+      )
+    ).toBe(true)
     expect(publish).toContain('pnpm native-prebuild:verify --require-all --write-manifest')
     expect(publish.indexOf('pnpm native-prebuild:verify --require-all --write-manifest')).toBeLessThan(
       publish.indexOf('PACK_OUTPUT="$(npm pack --pack-destination .release-package)"')

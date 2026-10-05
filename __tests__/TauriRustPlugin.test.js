@@ -4,6 +4,7 @@ const fs = require('fs')
 const crypto = require('crypto')
 const os = require('os')
 const path = require('path')
+const YAML = require('yaml')
 const { spawnSync } = require('child_process')
 
 const root = path.resolve(__dirname, '..')
@@ -168,7 +169,7 @@ describe('Tauri v2 Rust plugin boundary', () => {
       .filter(file => file.endsWith('.yml') || file.endsWith('.yaml'))
     const tauriJob = workflow.slice(workflow.indexOf('  tauri-plugin:'), workflow.indexOf('  package:'))
     const packageJob = workflow.slice(workflow.indexOf('  package:'), workflow.indexOf('  contracts:'))
-    const publishJob = publish.slice(publish.indexOf('  publish:'))
+    const publishJobs = YAML.parse(publish).jobs
 
     for (const required of [
       'libwebkit2gtk-4.1-dev',
@@ -189,7 +190,9 @@ describe('Tauri v2 Rust plugin boundary', () => {
 
     expect(tauriJob).toContain(installerCommand)
     expect(packageJob).toContain(installerCommand)
-    expect(publishJob).toContain(installerCommand)
+    for (const id of ['source-gates', 'packed-tauri']) {
+      expect(publishJobs[id].steps.some(step => step.run === installerCommand)).toBe(true)
+    }
     expect(workflow).toContain(`bash ${installerPath} bluez`)
     expect(publish).toContain(`bash ${installerPath} desktop-prebuild`)
     for (const file of workflowFiles) {
@@ -199,11 +202,12 @@ describe('Tauri v2 Rust plugin boundary', () => {
     }
   })
 
-  test('runs the external packed Tauri proof immediately after prepack and before expensive gates', () => {
+  test('runs the external packed Tauri proof after build in CI and against the sealed parallel candidate', () => {
     const workflow = read('.github/workflows/ci.yml')
     const publish = read('.github/workflows/publish.yml')
     const packageJob = workflow.slice(workflow.indexOf('  package:'), workflow.indexOf('  contracts:'))
-    const publishJob = publish.slice(publish.indexOf('  publish:'))
+    const jobs = YAML.parse(publish).jobs
+    const tauri = jobs['packed-tauri']
 
     const assertFailFastOrder = (job, nextExpensiveStep) => {
       const prepack = job.indexOf('- name: Build package artifacts')
@@ -216,14 +220,16 @@ describe('Tauri v2 Rust plugin boundary', () => {
     }
 
     assertFailFastOrder(packageJob, '- name: Generated artifacts match the sources')
-    assertFailFastOrder(publishJob, '- name: Build 4.0 Web Bluetooth public example')
+    expect(tauri.needs).toEqual(['canonical-package'])
+    expect(tauri.env.UBM_PACKED_TARBALL_SHA256).toBe('${{ needs.canonical-package.outputs.sha256 }}')
+    expect(jobs.results.needs).toContain('packed-tauri')
+    expect(tauri.steps.findIndex(step => step.name === 'Packed external Tauri Cargo consumer proof')).toBeGreaterThan(
+      tauri.steps.findIndex(step => step.name === 'Verify immutable candidate digest')
+    )
     expect(read('scripts/ci/tauri-packed-consumer-check.js')).toContain("'cargo', 'build'")
     expect(read('scripts/ci/tauri-packed-consumer-check.js')).toContain('tauri::generate_context!()')
     expect(read('scripts/ci/tauri-packed-consumer-check.js')).toContain('tauriCargoRecipe()')
-    expect(publishJob).toContain('check-tauri-pack-binding.js')
-    expect(publishJob.indexOf('check-tauri-pack-binding.js')).toBeGreaterThan(
-      publishJob.indexOf('Generate the exact canonical npm publish tarball')
-    )
+    expect(tauri.steps.some(step => step.run?.includes('check-tauri-pack-binding.js'))).toBe(true)
   })
 
   test('rejects a linked Tauri proof for different publish tarball bytes', () => {
@@ -232,17 +238,21 @@ describe('Tauri v2 Rust plugin boundary', () => {
       const tarball = path.join(directory, 'package.tgz')
       const receipt = path.join(directory, 'receipt.json')
       const manifest = require('../package.json')
-      const run = () => spawnSync(process.execPath, [
-        path.join(root, 'scripts/ci/check-tauri-pack-binding.js'),
-        '--receipt', receipt,
-        '--tarball', tarball
-      ], { cwd: root, encoding: 'utf8' })
+      const run = () =>
+        spawnSync(
+          process.execPath,
+          [path.join(root, 'scripts/ci/check-tauri-pack-binding.js'), '--receipt', receipt, '--tarball', tarball],
+          { cwd: root, encoding: 'utf8' }
+        )
       fs.writeFileSync(tarball, 'packed bytes')
-      fs.writeFileSync(receipt, JSON.stringify({
-        package: `${manifest.name}@${manifest.version}`,
-        tarballSha256: crypto.createHash('sha256').update('packed bytes').digest('hex'),
-        proof: 'linked-tauri-application'
-      }))
+      fs.writeFileSync(
+        receipt,
+        JSON.stringify({
+          package: `${manifest.name}@${manifest.version}`,
+          tarballSha256: crypto.createHash('sha256').update('packed bytes').digest('hex'),
+          proof: 'linked-tauri-application'
+        })
+      )
       expect(run().status).toBe(0)
       fs.writeFileSync(tarball, 'different bytes')
       expect(run().status).not.toBe(0)
