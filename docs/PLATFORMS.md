@@ -30,7 +30,7 @@ A lower proof level must remain visible as a limitation. Hardware unavailability
 
 WinRT compilation or ABI loading, for example, is not by itself a Windows live-radio claim. The same rule applies across Android, Apple/CoreBluetooth, BlueZ, Web Bluetooth, and Electron host boundaries.
 
-Meta Quest and the controllable nRF52840 fault-injection controller remain deferred to 4.1. Neither is a 4.0 entrypoint or a requirement for the 4.0.0 package/API release.
+Meta Quest and the controllable nRF52840 fault-injection controller are historical roadmap proposals, not current 5.x entrypoints or release prerequisites.
 
 ## Runtime capability truth
 
@@ -61,11 +61,15 @@ work without racing Android's background-service restrictions. Normal
 foreground acquisition resolves its existing caller instead of redundantly
 starting a second headless runtime.
 
-On Android 13 and newer, UBM intentionally requires `POST_NOTIFICATIONS`
-before acquiring this lease. Android can technically run a foreground service
-without drawer notification permission, but UBM chooses a stricter
-user-visible-monitoring policy and fails the acquisition explicitly when the
-permission is denied.
+On Android 13 and newer, `POST_NOTIFICATIONS` is not a prerequisite for
+acquiring this lease. Android still requires the ongoing service notification;
+denial changes where the OS displays it, not whether UBM may start the service.
+The application requests `POST_NOTIFICATIONS` itself when it needs the monitoring
+notification visible in the notification drawer. UBM's
+`permissions.request({ purpose: 'scan-and-connect' })` does not request it.
+Acquisition requires `BLUETOOTH_CONNECT` on API 31+ and the configured
+connected-device foreground-service declarations; other platform startup
+refusals remain visible.
 
 Apple, Web, BlueZ, WinRT, Electron, Tauri, and deterministic backends do not
 claim this Android service capability. They reject the Android-only operation
@@ -148,16 +152,16 @@ one characteristic complete in request order.
 
 ## Evidence records
 
-[`GAPS.4.0.md`](GAPS.4.0.md) inventories current evidence work. The generated support page consumes versioned evidence manifests containing backend identity, protocol versions, package digest where applicable, OS/runtime/hardware, commands, result artifacts, limitations, revalidation rules, and responsible maintainer.
+[`GAPS.4.0.md`](GAPS.4.0.md) is a historical 4.0 inventory, not current implementation or support guidance. The generated support page consumes versioned evidence manifests containing backend identity, protocol versions, package digest where applicable, OS/runtime/hardware, commands, result artifacts, limitations, revalidation rules, and responsible maintainer.
 
-The host guides describe the packed 4.0 contract and its proof boundaries; they do not replace runtime capability or generated evidence inspection:
+The Current host guides describe the packed 5.x contract and its proof boundaries; they do not replace runtime capability or generated evidence inspection:
 
 - [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md)
 - [`BACKGROUND.md`](BACKGROUND.md)
 - [`WEB.md`](WEB.md)
 - [`ELECTRON.md`](ELECTRON.md)
 - [`NODE.md`](NODE.md)
-- [`TVOS.md`](TVOS.md)
+- [`TV.md`](TV.md)
 
 ## Related records
 

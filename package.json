@@ -70,7 +70,8 @@
     "!**/__fixtures__",
     "!**/__mocks__",
     "!**/.*",
-    "MIGRATION_4.0.md"
+    "MIGRATION_4.0.md",
+    "MIGRATION_4.0.28.md"
   ],
   "scripts": {
     "build": "pnpm prepack",

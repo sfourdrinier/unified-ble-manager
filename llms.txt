@@ -31,6 +31,7 @@ Install this candidate with `npm add unified-ble-manager@5.0.0-rc.18` once publi
 - `unified-ble-manager/node/winrt` — Windows WinRT Node provider
 - `unified-ble-manager/node/bluez` — Linux Node provider (shared Rust core over BlueZ)
 - `unified-ble-manager/backend-sdk` — backend authoring contract
+- `unified-ble-manager/advanced` — expert canonicalUuid and createBleManagerFromProvider utilities; no radio or restoration identity forge
 - `unified-ble-manager/testing` — deterministic backend and TCK utilities (test infrastructure, never a production radio)
 - `unified-ble-manager/codecs` — byte/`DataView` helpers and IEEE-11073 numbers
 - `unified-ble-manager/cli` — Node CLI (`ubm`)
@@ -57,7 +58,9 @@ Install this candidate with `npm add unified-ble-manager@5.0.0-rc.18` once publi
 - [Unified semantics](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/UNIFIED_SEMANTICS.md): normative MUST/MUST NOT behavior contract
 - [Platform support](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/generated/PLATFORM_SUPPORT.md): generated, evidence-derived support labels per platform
 - [Platforms policy](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/PLATFORMS.md): what each support label means and how evidence backs it
-- [Migration from react-native-ble-plx](https://github.com/sfourdrinier/unified-ble-manager/blob/main/MIGRATION_4.0.md): side-by-side legacy 3.x API comparison
+- [UBM 4.0.28 to 5.x migration](https://github.com/sfourdrinier/unified-ble-manager/blob/main/MIGRATION_4.0.28.md): current native rebuild, restoration, permissions and error changes
+- [TV hosts](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/TV.md): shared Expo/bare factories and TV platform limitations
+- [Historical ble-plx migration](https://github.com/sfourdrinier/unified-ble-manager/blob/main/MIGRATION_4.0.md): non-copyable legacy comparison
 
 ## Backend authors
 

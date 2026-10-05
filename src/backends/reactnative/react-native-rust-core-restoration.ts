@@ -14,7 +14,7 @@
 // (`peers.claim-restored`); this journal keeps the per-manager one
 // (`alreadyConsumed` for a second adoption on the same attachment).
 
-import { contractError } from '../../backend-contract/errors'
+import { contractError, type BackendContractError } from '../../backend-contract/errors'
 import type { AttachmentRecord } from '../../backend-contract/identity'
 import type {
   ReactNativeRestorationAdoptionRecord,
@@ -57,6 +57,23 @@ export interface RustCoreRestorationJournalOptions {
 }
 
 let nextReceipt = 1
+
+/** The actual missing-source refusal, shared by host admission and its journal. */
+export function missingRestorationSourceError(
+  platform: ReactNativeRestorationPlatform,
+  operation: string
+): BackendContractError {
+  if (platform === 'android') {
+    return contractError('capability.unsupported', 'restoration', operation, {
+      domain: 'react-native-rust-core',
+      code: 'androidRestorationNeedsPresenceWake',
+      safeMessage:
+        'Android restores known peers only through Companion Device Manager presence for an armed associated peer; no restoration source is configured.',
+      metadata: Object.freeze({})
+    })
+  }
+  return contractError('capability.unavailable', 'restoration', operation)
+}
 
 function validInteger(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 1
@@ -109,13 +126,7 @@ export class RustCoreRestorationJournal implements ReactNativeRestorationJournal
       // (API 31+) for an armed associated peer and claimed with the same
       // once-per-process semantics as iOS; that wake-fed path authenticates
       // against its own source, never against this refusal.
-      throw contractError('capability.unsupported', 'restoration', 'react-native-rust-core.restoration.adopt', {
-        domain: 'react-native-rust-core',
-        code: 'androidRestorationNeedsPresenceWake',
-        safeMessage:
-          'Android restores known peers only through Companion Device Manager presence for an armed associated peer; no restoration source is configured.',
-        metadata: Object.freeze({})
-      })
+      throw missingRestorationSourceError(this.options.platform, 'react-native-rust-core.restoration.adopt')
     }
     if (
       attachment === null ||

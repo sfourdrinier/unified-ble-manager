@@ -2,7 +2,7 @@
 
 # Unified BLE 4.0 platform, CI, and evidence inventory
 
-**Status:** Current implementation and evidence inventory; not architecture authority
+**Status:** Historical 4.0 implementation and evidence inventory; not current 5.x guidance. Current support labels live in [`generated/PLATFORM_SUPPORT.md`](generated/PLATFORM_SUPPORT.md); current host guidance starts at [`README.md`](README.md#current-50-authority).
 
 **Architecture authority:** [Current 5.0 authority](README.md#current-50-authority)
 

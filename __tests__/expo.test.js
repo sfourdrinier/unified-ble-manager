@@ -20,7 +20,7 @@ jest.mock('react-native', () => ({
   NativeModules: {}
 }))
 
-const { contractError } = require('../src/backend-contract/errors')
+const { BackendContractError, contractError } = require('../src/backend-contract/errors')
 const { BleError } = require('../src/public/errors')
 const { createExpoBleManager, createExpoBleManagerWithEnvironment, mapExpoReadiness } = require('../src/expo')
 const { createReactNativeManagerHost } = require('../src/react-native-manager')
@@ -77,6 +77,47 @@ describe('Expo factory', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     getNativeUnifiedBleExpoRuntime.mockReturnValue(trustedNativeExpoRuntime())
+  })
+
+  test('an unknown restoration failure remains visible as platform.failure', async () => {
+    const host = hostFor({ adapter: { state: jest.fn().mockResolvedValue(adapterState()) } })
+    host.claimRestoration.mockRejectedValue(
+      Object.assign(new Error('unexpected journal error'), { code: 'future-code' })
+    )
+    createReactNativeManagerHost.mockResolvedValue(host)
+    const manager = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true })
+    )
+    await expect(manager.restoration.claim()).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'platform.failure',
+      operation: 'expo.restoration.claim',
+      platform: { domain: 'expo', code: 'future-code', safeMessage: 'unexpected journal error', metadata: {} }
+    })
+  })
+
+  test('restoration keeps the owner retry and commit answer with its normalized error', async () => {
+    const host = hostFor({ adapter: { state: jest.fn().mockResolvedValue(adapterState()) } })
+    host.claimRestoration.mockRejectedValue(
+      new BackendContractError({
+        ...contractError('operation.timed-out', 'restoration', 'native.restoration.claim').normalized,
+        retryability: 'never',
+        commit: 'uncertain'
+      })
+    )
+    createReactNativeManagerHost.mockResolvedValue(host)
+    const manager = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true })
+    )
+    await expect(manager.restoration.claim()).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'operation.timed-out',
+      domain: 'restoration',
+      operation: 'expo.restoration.claim',
+      retryability: 'never',
+      commit: 'uncertain',
+      platform: null
+    })
   })
 
   test('fails in Expo Go with an actionable development-build error before RN construction', async () => {
@@ -300,16 +341,19 @@ describe('Expo factory', () => {
     })
   })
 
-  test.each(['unknown', 'not-determined'])('uses shared nonblocking authorization for %s without inventing a grant', authorization => {
-    const state = adapterState({ authorization })
-    const result = mapExpoReadiness(state)
-    expect(result.state).toBe('ready')
-    expect(result.adapter).toBe(state)
-    expect(result.actions).toEqual([])
-    expect(mapExpoReadiness(adapterState({ authorization, power: 'off' })).actions).toEqual([
-      { kind: 'enable-bluetooth', systemUiOnly: true }
-    ])
-  })
+  test.each(['unknown', 'not-determined'])(
+    'uses shared nonblocking authorization for %s without inventing a grant',
+    authorization => {
+      const state = adapterState({ authorization })
+      const result = mapExpoReadiness(state)
+      expect(result.state).toBe('ready')
+      expect(result.adapter).toBe(state)
+      expect(result.actions).toEqual([])
+      expect(mapExpoReadiness(adapterState({ authorization, power: 'off' })).actions).toEqual([
+        { kind: 'enable-bluetooth', systemUiOnly: true }
+      ])
+    }
+  )
 
   test('maps powered-off, denied, and unsupported states to distinct actions', () => {
     expect(mapExpoReadiness(adapterState({ power: 'off' })).actions).toEqual([

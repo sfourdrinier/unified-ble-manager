@@ -4,6 +4,22 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+### Corrected
+
+- Bootstrap configured iOS record-only restoration at native launch, without
+  requiring a native reconnect standing order. Preserve AccessorySetupKit
+  authorization gating, serial central ownership and tvOS refusal.
+- Preserve restoration owner error codes and native platform details through
+  Expo. Android without a configured presence source reports
+  `capability.unsupported`; unconfigured Apple remains `capability.unavailable`.
+- Add the current UBM 4.0.28-to-5.x migration guide, expose the expert entrypoint
+  consistently, and remove the stale handwritten Tauri compatibility signature.
+- Align foreground-service notification permissions, Expo/TV permission flows,
+  Tauri delivery-mode guidance and historical document labels with current code.
+
+These corrections do not promote physical qualification labels or claim a new
+timed Apple picker, force-quit or physical Apple TV receipt.
+
 ## [5.0.0-rc.18] - 2026-10-04
 
 ### Before upgrading

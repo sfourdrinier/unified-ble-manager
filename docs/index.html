@@ -226,10 +226,14 @@ npx expo run:ios
               <code>-destination 'generic/platform=tvOS Simulator'</code> with the same <code>ARCHS=arm64</code>. This
               restriction belongs to simulator builds, not physical-device signing or Bluetooth permissions.
             </p>
-            <h3>2. Ask Android for runtime permission</h3>
+            <h3>2. Request permission explicitly</h3>
+            <h4>Bare React Native</h4>
             <p>
-              The plugin writes the manifest. Android 12+ still needs a runtime request. The library will not do this
-              for you.
+              The consuming application owns its native permission flow. On Android, manifest declarations do not grant
+              runtime permission; call this helper before scanning or connecting. Android below API 31 also needs the
+              location declaration in the application manifest. The helper is Android-only; it is not an Apple
+              permission request. On Apple, arrange the explicit native Bluetooth authorization flow in your host.
+              Reading <code>adapter.state()</code> does not ask the user for authorization.
             </p>
             <pre><code>import { PermissionsAndroid, Platform } from 'react-native'
 
@@ -255,6 +259,37 @@ async function ensureAndroidBluetoothPermission(): Promise&#x3C;void> {
   }
 }
 </code></pre>
+            <h4>Expo (phone and TV)</h4>
+            <p>
+              The Expo plugin writes native declarations, and the Expo manager exposes an explicit permission request on
+              both Android and Apple hosts. After creating the Expo manager in step 3, inspect readiness, request
+              permission, and wait for the adapter before scan/connect. Reading <code>readiness()</code> or
+              <code>adapter.state()</code> never prompts. Denial must remain visible; follow readiness actions such as
+              opening settings or enabling Bluetooth rather than repeatedly requesting a refused permission.
+            </p>
+            <p>
+              The recipe below is the ordinary global-authorization path, not an AccessorySetupKit (ASK) iOS recipe. In
+              an ASK-configured app with global authorization still <code>notDetermined</code>, the global permission
+              request refuses with <code>capability.unsupported</code> without allocating a central. Keep the
+              user-initiated <code>manager.choose</code> accessory flow available instead; its accessory grant is
+              separate from global Bluetooth permission. Do not retry a global request to obtain an accessory grant. See
+              <a href="EXPO_PLUGIN.md#permissions">ASK authorization</a>.
+            </p>
+            <pre><code>const beforePermission = await manager.readiness()
+// Present beforePermission.actions in your UI; inspecting them does not prompt.
+// Ordinary global authorization only; ASK uses the separate chooser path above.
+const permission = await manager.permissions.request({ purpose: 'scan-and-connect' })
+if (!permission.granted.includes('bluetooth')) {
+  throw new Error('Bluetooth permission was not granted.')
+}
+await manager.adapter.waitUntilReady({ timeoutMs: 15000 })
+</code></pre>
+            <p>
+              TV consumers use the same flow, with the platform-specific declarations and limitations in
+              <a href="TV.md"><code>TV.md</code></a
+              >. An Expo app using the bare React Native factory instead owns the permission flow described above; no
+              Expo surfaces are added to that factory.
+            </p>
             <h3>3. Create one manager and keep it</h3>
             <h4>Bare React Native</h4>
             <pre><code>import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
@@ -317,13 +352,11 @@ if (
 }
 </code></pre>
             <p>
-              Never gate on a bare <code>authorization !== 'granted'</code>. Only an explicit refusal —
-              <code>'denied'</code>, <code>'restricted'</code>, <code>'unavailable'</code> — blocks. The other values
-              are not refusals: <code>'unknown'</code> means the platform exposes no per-application Bluetooth
-              authorization concept, as BlueZ on Linux does, or that the host did not query one;
-              <code>'not-determined'</code> means the user has not been asked yet, and since the prompt is raised by
-              <em>using</em> the radio rather than by reading the state, blocking on it would stop the prompt from ever
-              appearing.
+              Do not treat every value other than <code>granted</code> as a denial. <code>unknown</code> means the
+              platform exposes no per-application Bluetooth authorization concept (as on BlueZ), or the host did not
+              query one. <code>not-determined</code> means the user has not been asked: complete the explicit permission
+              flow in step 2 before radio work. State reads never trigger that prompt; a radio operation may refuse
+              undecided authorization with <code>permission.not-determined</code> instead of asking implicitly.
             </p>
             <p>
               Then run the finite public journey (<code>find</code> → <code>withDiscoveredConnection</code> → GATT read
@@ -396,9 +429,10 @@ try {
             </p>
             <h2>Coming from react-native-ble-plx</h2>
             <p>
-              This is a rewrite. There is no <code>new BleManager()</code> and no Base64 characteristic values. Start
-              with <a href="../MIGRATION_4.0.md"><code>MIGRATION_4.0.md</code></a
-              >.
+              This is a rewrite. There is no <code>new BleManager()</code> and no Base64 characteristic values.
+              <a href="../MIGRATION_4.0.md"><code>MIGRATION_4.0.md</code></a> is historical comparison, not a copyable
+              setup guide. Apps already using UBM should start with
+              <a href="../MIGRATION_4.0.28.md"><code>MIGRATION_4.0.28.md</code></a> and the current host recipes here.
             </p>
             <h2>Maintainers</h2>
             <p>
@@ -1728,8 +1762,8 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
               applies across Android, Apple/CoreBluetooth, BlueZ, Web Bluetooth, and Electron host boundaries.
             </p>
             <p>
-              Meta Quest and the controllable nRF52840 fault-injection controller remain deferred to 4.1. Neither is a
-              4.0 entrypoint or a requirement for the 4.0.0 package/API release.
+              Meta Quest and the controllable nRF52840 fault-injection controller are historical roadmap proposals, not
+              current 5.x entrypoints or release prerequisites.
             </p>
             <h2>Runtime capability truth</h2>
             <p>
@@ -1763,10 +1797,13 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
               redundantly starting a second headless runtime.
             </p>
             <p>
-              On Android 13 and newer, UBM intentionally requires <code>POST_NOTIFICATIONS</code> before acquiring this
-              lease. Android can technically run a foreground service without drawer notification permission, but UBM
-              chooses a stricter user-visible-monitoring policy and fails the acquisition explicitly when the permission
-              is denied.
+              On Android 13 and newer, <code>POST_NOTIFICATIONS</code> is not a prerequisite for acquiring this lease.
+              Android still requires the ongoing service notification; denial changes where the OS displays it, not
+              whether UBM may start the service. The application requests <code>POST_NOTIFICATIONS</code> itself when it
+              needs the monitoring notification visible in the notification drawer. UBM's
+              <code>permissions.request({ purpose: 'scan-and-connect' })</code> does not request it. Acquisition
+              requires <code>BLUETOOTH_CONNECT</code> on API 31+ and the configured connected-device foreground-service
+              declarations; other platform startup refusals remain visible.
             </p>
             <p>
               Apple, Web, BlueZ, WinRT, Electron, Tauri, and deterministic backends do not claim this Android service
@@ -1876,14 +1913,14 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
             </p>
             <h2>Evidence records</h2>
             <p>
-              <a href="GAPS.4.0.md"><code>GAPS.4.0.md</code></a> inventories current evidence work. The generated
-              support page consumes versioned evidence manifests containing backend identity, protocol versions, package
-              digest where applicable, OS/runtime/hardware, commands, result artifacts, limitations, revalidation rules,
-              and responsible maintainer.
+              <a href="GAPS.4.0.md"><code>GAPS.4.0.md</code></a> is a historical 4.0 inventory, not current
+              implementation or support guidance. The generated support page consumes versioned evidence manifests
+              containing backend identity, protocol versions, package digest where applicable, OS/runtime/hardware,
+              commands, result artifacts, limitations, revalidation rules, and responsible maintainer.
             </p>
             <p>
-              The host guides describe the packed 4.0 contract and its proof boundaries; they do not replace runtime
-              capability or generated evidence inspection:
+              The Current host guides describe the packed 5.x contract and its proof boundaries; they do not replace
+              runtime capability or generated evidence inspection:
             </p>
             <ul>
               <li>
@@ -1902,7 +1939,7 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
                 <a href="NODE.md"><code>NODE.md</code></a>
               </li>
               <li>
-                <a href="TVOS.md"><code>TVOS.md</code></a>
+                <a href="TV.md"><code>TV.md</code></a>
               </li>
             </ul>
             <h2>Related records</h2>

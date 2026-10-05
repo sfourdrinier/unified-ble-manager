@@ -254,14 +254,14 @@ describe('consumer documentation matches the published package', () => {
     expect(platforms).not.toContain('| Host/backend |')
   })
 
-  test('gap inventory separates implemented code from missing physical proof', () => {
+  test('historical gap inventory retains its proof boundaries without remaining current guidance', () => {
     const gaps = read('docs/GAPS.4.0.md')
 
-    expect(gaps).toContain('Current implementation and evidence inventory')
+    expect(gaps).toContain('Historical 4.0 implementation and evidence inventory')
     expect(gaps).toContain('Implementation/package state')
     expect(gaps).toContain('Remaining evidence work')
     expect(gaps).toContain('Implemented contract/core/TCK path')
-    expect(gaps).toContain('not architecture authority')
+    expect(gaps).toContain('not current 5.x guidance')
     expect(gaps).toContain('implementation proof')
     expect(gaps).not.toContain('WinRT remains incomplete')
     expect(gaps).not.toContain('The pre-4.0 source tree contains a transitional')
@@ -540,7 +540,7 @@ describe('consumer documentation matches the published package', () => {
       'WinRT compilation or ABI loading, for example, is not by itself a Windows live-radio claim'
     )
     expect(platforms).toContain(
-      'Meta Quest and the controllable nRF52840 fault-injection controller remain deferred to 4.1'
+      'Meta Quest and the controllable nRF52840 fault-injection controller are historical roadmap proposals'
     )
   })
 
@@ -550,7 +550,7 @@ describe('consumer documentation matches the published package', () => {
 
     expect(platforms).toContain('not a static compatibility matrix')
     expect(platforms).toContain('typed capabilities of its instantiated backend')
-    expect(gaps).toContain('not architecture authority')
+    expect(gaps).toContain('not current 5.x guidance')
     expect(gaps).toContain('implementation proof')
     expect(gaps).toContain('do not become physical-radio support evidence')
     expect(gaps).toContain('must never be presented as live-radio proof')

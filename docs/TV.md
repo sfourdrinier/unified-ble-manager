@@ -5,12 +5,16 @@ Status: Current 5.x consumer guidance. See
 
 ## One public runtime
 
-Apple TV and Android TV use `unified-ble-manager/react-native`, the same explicit
-manager construction, permissions, connection ownership, GATT operations, profiles
-and teardown as the phone reference app. The production radio is
-`UnifiedBleRustCore`; there is no TV-only manager or alternate BLE implementation.
-Choose TV-compatible React Native/Expo build inputs for the application, not a
-different UBM entrypoint. The reference consumer pins Expo SDK 57 and
+Apple TV and Android TV share the phone manager's connection ownership, GATT
+operations, profiles and teardown. Bare React Native applications use
+`createReactNativeBleManager` from `unified-ble-manager/react-native`. Expo TV
+applications use `createExpoBleManager` from `unified-ble-manager/expo` when they
+want `manager.readiness()` and `manager.permissions.request`; an Expo app that
+manages permissions itself may keep the bare factory. Both factories use the
+production `UnifiedBleRustCore` radio; there is no TV-only manager or alternate
+BLE implementation. Reading readiness never prompts; permission requests are
+explicit. See [the permission flow](GETTING_STARTED.md#2-request-permission-explicitly).
+Choose TV-compatible React Native/Expo build inputs for the application. The reference consumer pins Expo SDK 57 and
 `react-native-tvos@0.86.3-0`; the package's Apple deployment floor is tvOS 16.4.
 
 The reference app and shared test driver live in
@@ -47,6 +51,15 @@ background Bluetooth execution or state restoration. AccessorySetupKit is an
 iOS capability, not a tvOS replacement. Request readiness/capabilities from the
 instantiated manager and preserve an explicit unsupported result; never promise
 phone background behavior on Apple TV.
+
+Do not copy the phone reference app's restoration, native continuation or
+connected-device foreground-service configuration into a TV application. Expo
+Apple TV prebuilds use `EXPO_TV=1`; the plugin removes iOS-only background,
+restoration and continuation keys. Android TV consumers should start with
+`background.android.mode: 'none'`. For non-location BLE scans on API 31+, declare
+`permissions.android.neverForLocation: true`; do not request location merely to
+imitate the phone example. Android below API 31 has its own location requirements;
+`legacyLocation: 'none'` does not provide those declarations or authorize scans.
 
 Android TV, Google TV and Fire TV use Android's native mechanisms where the device
 actually provides them. Bluetooth hardware, permissions, companion-device services
