@@ -253,16 +253,8 @@ impl BtleplugDispatcher {
         )?;
         if payload.get("deadline").is_some_and(|value| !matches!(value,IpcValue::Null) && !matches!(value,IpcValue::Number(number) if number.as_f64().is_some_and(|value| value.is_finite() && value >= 0.0 && value <= MAX_SAFE_INTEGER as f64))) { return Err(malformed(command)); }
         let resolving = command == "peers.resolve";
-        let reference_backend = if command == "peers.bonded" || resolving {
-            bonded_backend()
-        } else {
-            BACKEND
-        };
-        let mut references = if resolving {
-            Some(vec![reference(
-                required_value(&payload, "reference", command)?,
-                reference_backend,
-            )?])
+        let mut reference_values = if resolving {
+            Some(vec![required_value(&payload, "reference", command)?.clone()])
         } else {
             None
         };
@@ -314,12 +306,7 @@ impl BtleplugDispatcher {
             let IpcValue::Array(values) = value else {
                 return Err(malformed(command));
             };
-            references = Some(
-                values
-                    .iter()
-                    .map(|value| reference(value, reference_backend))
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
+            reference_values = Some(values.clone());
         }
         let authority = self.ensure_authority().await?;
         let states = authority
@@ -334,6 +321,19 @@ impl BtleplugDispatcher {
             _ => return Err(unsupported(command)),
         };
         let resolving_bonded = resolving && capability == "peer:bonded";
+        let reference_backend = if command == "peers.bonded" || resolving_bonded {
+            bonded_backend()
+        } else {
+            BACKEND
+        };
+        let references = reference_values
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|value| reference(value, reference_backend))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?;
         match states
             .iter()
             .find(|row| row.id() == capability)

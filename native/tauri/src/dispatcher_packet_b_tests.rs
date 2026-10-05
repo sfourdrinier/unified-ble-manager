@@ -1086,6 +1086,42 @@ async fn peer_directory_known_resolve_null_and_existing_connect_path() {
         .into_wire();
     assert_eq!(result["peers"].as_array().unwrap().len(), 1);
     assert_eq!(result["peers"][0]["state"]["connection"], "unknown");
+    let resolved = harness
+        .execute(
+            "peers.resolve",
+            vec![("reference", directory_reference(id))],
+            None,
+            OpControl::default(),
+        )
+        .await
+        .unwrap()
+        .into_wire();
+    assert_eq!(resolved["peer"]["peerId"], id);
+    assert_eq!(
+        resolved["peer"]["reference"]["backendId"],
+        "unified-ble:corebluetooth"
+    );
+    let calls = count(&harness.radio().calls(), "resolve_peer");
+    let foreign = object([
+        ("version", IpcValue::Number(1.into())),
+        ("backendId", string("unified-ble:winrt")),
+        ("scope", string("application")),
+        ("opaqueId", string("AA:BB:CC:DD:EE:FF")),
+    ]);
+    assert_eq!(
+        harness
+            .execute(
+                "peers.resolve",
+                vec![("reference", foreign)],
+                None,
+                OpControl::default()
+            )
+            .await
+            .unwrap_err()
+            .code,
+        BleErrorCode::PeerScopeMismatch
+    );
+    assert_eq!(count(&harness.radio().calls(), "resolve_peer"), calls);
     let missing = harness
         .execute(
             "peers.resolve",

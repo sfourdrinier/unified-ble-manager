@@ -167,3 +167,18 @@ both workspace and Tauri formatting checks then pass. Android and Apple source
 identities remain unchanged; only the desktop binding needs canonical refresh.
 The corrected commit must pass a new exact clean preflight before push. This
 format-only change does not trigger another APK or physical-radio campaign.
+
+The next exact clean run at `818a654b` passed the formatting prerequisites but
+found a Tauri resolver regression: reference decoding selected the bonded OS
+backend before choosing the actual known/bonded mechanism. Decoding now follows
+that selected mechanism, retaining foreign-reference refusal before a native
+directory query. The full Linux Tauri library suite passes 156/156 and Mac
+directory tests pass 13/13. Desktop/mobile native identities are unchanged.
+
+The separate maintained `.3` physical Linux run encountered a real SIGSEGV in
+`ubm_watch_current` during failed GATT discovery/disconnection. Crash evidence
+identifies a stale watch callback; the extension's ready-registration ID was
+truncated from a 64-bit pointer, preventing unregister from removing the queued
+callback before its user data was freed. The daemon lifetime correction and
+executable regressions are in progress. Services were restored after the failed
+test. No Linux qualification pass or release readiness is claimed for this run.
