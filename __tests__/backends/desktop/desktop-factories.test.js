@@ -322,14 +322,28 @@ describe('option audit: every rejected option fails with zero core dispatch', ()
       { code: 'scan.filter-invalid' }
     ))
 
-  test('connection intent when-available', () =>
-    audited(
-      'bluez',
-      ({ backend, stage }) => observePeer(backend, stage),
-      ({ backend }, peerId) =>
-        backend.connections.connect(peerId, 'c', { signal: null, deadline: null, intent: 'when-available' }),
-      { code: 'capability.unsupported' }
-    ))
+  // These identity-verified synthetic radios prove shared-core routing, not
+  // physical availability or installed-daemon support on any host.
+  test.each(['bluez', 'corebluetooth', 'winrt'])(
+    '%s admitted when-available executes the Rust deferred connection route',
+    async platform => {
+      const opened = await openBackend(platform)
+      try {
+        const peerId = await observePeer(opened.backend, opened.stage)
+        const before = opened.harness.calls.length
+        const lease = await opened.backend.connections.connect(peerId, 'c', {
+          signal: null,
+          deadline: null,
+          intent: 'when-available'
+        })
+        expect(lease.connection.state).toBe('connected')
+        expect(opened.harness.calls.slice(before).map(([name]) => name)).toContain('connectWhenAvailable')
+        await lease.release()
+      } finally {
+        await opened.backend.destroy()
+      }
+    }
+  )
 
   test('connection preferred PHY', () =>
     audited(

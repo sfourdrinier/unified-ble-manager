@@ -23,14 +23,18 @@ Historical immutable tags retain their original publisher source and behavior.
 
 Releases are tag-driven and published by GitHub Actions through npm trusted publishing/OIDC. Do not use a long-lived `NPM_TOKEN` or publish a normal release from a developer laptop.
 
-### Experimental parallel dry-run
+### Parallel publisher and preserved serial reference
 
-The production `publish.yml` remains unchanged. The separate manual-only
+The production `publish.yml` uses parallel gates and one sealed candidate
+tarball. The previous serial workflow is preserved at
+`.github/publish-serial-reference.yml`, outside executable workflows.
+The separate manual-only
 `publish-parallel-draft.yml` exercises its prepublication gates concurrently,
 without the npm environment, publishing permissions, tag writes or GitHub
 release creation. It is not a replacement publisher and its green result is
 not publication authorization. See [the draft testing procedure](docs/PARALLEL_PUBLISHER_DRAFT.md)
-for cold/warm comparisons, exact-tarball binding and promotion criteria.
+for cold/warm comparisons and exact-tarball binding. rc.20 is the first
+user-authorized production test; no measured speedup is claimed yet.
 
 ## Trusted publisher configuration
 

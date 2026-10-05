@@ -26,6 +26,10 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Added
 
+- Parallel tag-driven publication gates share one sealed package tarball;
+  only the final protected OIDC job can publish after every lane succeeds.
+  The serial workflow is preserved outside executable workflows. rc.20 is
+  the first production test; performance improvement is not yet measured.
 - Linux initial `when-available` acquisition through the optional LE observer
   in maintained daemon `5.87-ubm.5`: a fresh, owner-fenced connectable LE
   advertisement precedes token-bound connection acquisition. Dedicated discovery

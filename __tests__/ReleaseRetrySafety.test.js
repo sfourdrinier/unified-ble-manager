@@ -2,6 +2,7 @@
 
 const fs = require('fs')
 const path = require('path')
+const YAML = require('yaml')
 
 const root = path.resolve(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
@@ -99,14 +100,13 @@ describe('release retry safety', () => {
   test('every Android build installs only the supported platform-tools SDK package', () => {
     for (const workflowPath of ['.github/workflows/ci.yml', '.github/workflows/publish.yml']) {
       const workflow = read(workflowPath)
-      const setupSteps = workflow.match(
-        /uses: android-actions\/setup-android@v4\.0\.1[\s\S]*?packages: 'platform-tools(?: [^']+)?'/g
-      )
-
-      expect(setupSteps).not.toBeNull()
-      expect(setupSteps).toHaveLength(workflowPath.endsWith('ci.yml') ? 2 : 1)
+      const setupSteps = Object.values(YAML.parse(workflow).jobs)
+        .flatMap(job => job.steps || [])
+        .filter(step => step.uses === 'android-actions/setup-android@v4.0.1')
+      expect(setupSteps).toHaveLength(workflowPath.endsWith('ci.yml') ? 2 : 3)
       for (const setupStep of setupSteps) {
-        expect(setupStep).not.toMatch(/packages: 'tools(?: |')/)
+        expect(setupStep.with.packages.split(' ')).toContain('platform-tools')
+        expect(setupStep.with.packages.split(' ')).not.toContain('tools')
       }
     }
   })

@@ -54,103 +54,103 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 
 ## Start here (consumers)
 
-| Document | What it is | Status |
-| --- | --- | --- |
-| [`../README.md`](../README.md) | Product overview, install, entrypoint table, one complete React Native loop, method index | Current |
-| [`../llms.txt`](../llms.txt) | Machine-readable package overview for AI coding agents: contract facts, entrypoints, curated doc links | Current |
-| [`GETTING_STARTED.md`](GETTING_STARTED.md) | Host chooser and the first scan/connect/read/notify/teardown path | Current |
-| [`TUTORIALS.md`](TUTORIALS.md) | Public API recipes: scan, connect, discover, read/write, subscribe, tear down | Current |
-| [`HELPERS.md`](HELPERS.md) | Application helper recipes — `find`, scoped connections, GATT objects, notifications | Current |
-| [`PROFILES_AND_COMMANDS.md`](PROFILES_AND_COMMANDS.md) | SIG profile codecs (heart rate, battery, DIS, thermometer, blood pressure) and GATT command helpers | Current |
-| [`PEERS.md`](PEERS.md) | `PeerReference` peer directories, persistence, resolve-then-reconnect semantics | Current |
-| [`CONNECTION_MANAGER.md`](CONNECTION_MANAGER.md) | Connection ownership, leases, generations, application-owned reconnect policy | Current |
-| [`BONDING.md`](BONDING.md) | Pairing, bonding, encryption, and authentication semantics via `manager.security` | Current |
-| [`BACKGROUND.md`](BACKGROUND.md) | Background execution and the known-peer restoration how-to: Android presence chain, iOS claim, per-platform refusals | Current |
-| [`../MIGRATION_4.0.28.md`](../MIGRATION_4.0.28.md) | UBM 4.0.28 to 5.x migration, native rebuild and contract changes | Current |
-| [`../MIGRATION_4.0.md`](../MIGRATION_4.0.md) | Non-copyable historical migration map from react-native-ble-plx | Historical |
+| Document                                               | What it is                                                                                                           | Status     |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ---------- |
+| [`../README.md`](../README.md)                         | Product overview, install, entrypoint table, one complete React Native loop, method index                            | Current    |
+| [`../llms.txt`](../llms.txt)                           | Machine-readable package overview for AI coding agents: contract facts, entrypoints, curated doc links               | Current    |
+| [`GETTING_STARTED.md`](GETTING_STARTED.md)             | Host chooser and the first scan/connect/read/notify/teardown path                                                    | Current    |
+| [`TUTORIALS.md`](TUTORIALS.md)                         | Public API recipes: scan, connect, discover, read/write, subscribe, tear down                                        | Current    |
+| [`HELPERS.md`](HELPERS.md)                             | Application helper recipes — `find`, scoped connections, GATT objects, notifications                                 | Current    |
+| [`PROFILES_AND_COMMANDS.md`](PROFILES_AND_COMMANDS.md) | SIG profile codecs (heart rate, battery, DIS, thermometer, blood pressure) and GATT command helpers                  | Current    |
+| [`PEERS.md`](PEERS.md)                                 | `PeerReference` peer directories, persistence, resolve-then-reconnect semantics                                      | Current    |
+| [`CONNECTION_MANAGER.md`](CONNECTION_MANAGER.md)       | Connection ownership, leases, generations, application-owned reconnect policy                                        | Current    |
+| [`BONDING.md`](BONDING.md)                             | Pairing, bonding, encryption, and authentication semantics via `manager.security`                                    | Current    |
+| [`BACKGROUND.md`](BACKGROUND.md)                       | Background execution and the known-peer restoration how-to: Android presence chain, iOS claim, per-platform refusals | Current    |
+| [`../MIGRATION_4.0.28.md`](../MIGRATION_4.0.28.md)     | UBM 4.0.28 to 5.x migration, native rebuild and contract changes                                                     | Current    |
+| [`../MIGRATION_4.0.md`](../MIGRATION_4.0.md)           | Non-copyable historical migration map from react-native-ble-plx                                                      | Historical |
 
 ## Host guides
 
-| Document | What it is | Status |
-| --- | --- | --- |
-| [`WEB.md`](WEB.md) | Web Bluetooth host: chooser, HTTPS, user activation, lifecycle | Current |
-| [`NODE.md`](NODE.md) | Node hosts: CoreBluetooth, WinRT, and BlueZ entrypoints over the shared Rust core, prebuilds, runtime requirements | Current |
-| [`BLUEZ_LE_GATT.md`](BLUEZ_LE_GATT.md) | Strict BlueZ LE GATT observation, explicit source-only daemon extension, deployment boundary and cleanup | Current |
-| [`BLUEZ_DEPLOYMENT.md`](BLUEZ_DEPLOYMENT.md) | Gated maintained source bundle, explicit privileged file deployment and scoped recovery | Current |
-| [`ELECTRON.md`](ELECTRON.md) | Electron main/renderer split, IPC router, composition sequence | Current |
-| [`ELECTRON_SECURITY_MODEL.md`](ELECTRON_SECURITY_MODEL.md) | Electron ownership and threat boundary; renderer permission snapshot rules | Current |
-| [`TAURI.md`](TAURI.md) | Tauri v2 host: `createTauriBleManager()` and the Rust plugin install recipe | Current |
-| [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md) | Expo config-plugin option reference and development-build install | Current |
-| [`TV.md`](TV.md) | Shared TV runtime, exact packed Apple TV consumer and platform qualification limits | Current |
-| [`CLI.md`](CLI.md) | `ubm` CLI command surface: `doctor`, `inspect`, `init`, `support-bundle`, `trace` | Current |
+| Document                                                   | What it is                                                                                                         | Status  |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------- |
+| [`WEB.md`](WEB.md)                                         | Web Bluetooth host: chooser, HTTPS, user activation, lifecycle                                                     | Current |
+| [`NODE.md`](NODE.md)                                       | Node hosts: CoreBluetooth, WinRT, and BlueZ entrypoints over the shared Rust core, prebuilds, runtime requirements | Current |
+| [`BLUEZ_LE_GATT.md`](BLUEZ_LE_GATT.md)                     | Strict BlueZ LE GATT observation, explicit source-only daemon extension, deployment boundary and cleanup           | Current |
+| [`BLUEZ_DEPLOYMENT.md`](BLUEZ_DEPLOYMENT.md)               | Gated maintained source bundle, explicit privileged file deployment and scoped recovery                            | Current |
+| [`ELECTRON.md`](ELECTRON.md)                               | Electron main/renderer split, IPC router, composition sequence                                                     | Current |
+| [`ELECTRON_SECURITY_MODEL.md`](ELECTRON_SECURITY_MODEL.md) | Electron ownership and threat boundary; renderer permission snapshot rules                                         | Current |
+| [`TAURI.md`](TAURI.md)                                     | Tauri v2 host: `createTauriBleManager()` and the Rust plugin install recipe                                        | Current |
+| [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md)                         | Expo config-plugin option reference and development-build install                                                  | Current |
+| [`TV.md`](TV.md)                                           | Shared TV runtime, exact packed Apple TV consumer and platform qualification limits                                | Current |
+| [`CLI.md`](CLI.md)                                         | `ubm` CLI command surface: `doctor`, `inspect`, `init`, `support-bundle`, `trace`                                  | Current |
 
 ## Contract, architecture, and backend authoring
 
-| Document | What it is | Status |
-| --- | --- | --- |
-| [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md) | Normative behavior contract (MUST/MUST NOT) for any conforming unified BLE implementation | Current |
-| [`NATIVE_CAPABILITY_AUDIT.md`](NATIVE_CAPABILITY_AUDIT.md) | Active native operation boundaries, chooser mechanisms and durable intake evidence limits | Current |
-| [`ACCESSORY_CHOOSER_QUALIFICATION.md`](ACCESSORY_CHOOSER_QUALIFICATION.md) | ASK/CDM reference setup and bounded physical qualification procedure; not a receipt | Current |
-| [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md) | Historical clean-baseline architecture and migration plan; not current 5.0 authority | Historical |
-| [`MOBILE_RUST_WIRE.md`](MOBILE_RUST_WIRE.md) | React Native Rust owner: process host, session leases, `ubm-mobile-wire/1` op table, drain records, platform radio interface | Current |
-| [`BACKEND_AUTHORING.md`](BACKEND_AUTHORING.md) | Authoring a third-party backend against `unified-ble-manager/backend-sdk` | Current |
-| [`TCK.md`](TCK.md) | Backend TCK: required scenarios and running `runBackendAuthorTck` externally | Current |
-| [`DISCOVERY_AND_PROFILES.md`](DISCOVERY_AND_PROFILES.md) | Discovery helpers and the profile subpath import map (inherited helpers marked transitional) | Current |
-| [`FORK.md`](FORK.md) | Project lineage from `react-native-ble-plx` and the current 5.x authority boundary | Current |
-| [`ADR/2026-07-4.0-backend-contract.md`](ADR/2026-07-4.0-backend-contract.md) | ADR: one versioned host-neutral `BleCentralBackend` contract | Current |
-| [`ADR/2026-07-4.0-boundary.md`](ADR/2026-07-4.0-boundary.md) | ADR: native/IPC wire projections and boundary protocol rules | Current |
-| [`ADR/2026-07-4.0-capability-registry.md`](ADR/2026-07-4.0-capability-registry.md) | ADR: runtime capability registry, four states, evidence binding | Current |
-| [`ADR/2026-07-4.0-open-source-governance.md`](ADR/2026-07-4.0-open-source-governance.md) | ADR: evidence-governed support claims, certification, deprecation | Current |
-| [`ADR/2026-07-4.0-packaging.md`](ADR/2026-07-4.0-packaging.md) | ADR: ESM-first package, inert root, strict subpath exports | Current |
-| [`ADR/2026-07-4.0-public-api.md`](ADR/2026-07-4.0-public-api.md) | ADR: clean-baseline public API, no 3.x emulation | Current |
-| [`ADR/2026-07-4.0-rn-restoration-bootstrap.md`](ADR/2026-07-4.0-rn-restoration-bootstrap.md) | ADR: native-owned Apple restoration bootstrap before JS manager construction | Current |
-| [`ADR/2026-08-4.0-public-contract-reset.md`](ADR/2026-08-4.0-public-contract-reset.md) | ADR: stable application boundary; supersedes RC1 provisional names | Current |
-| [`ADR/2026-09-5.0-pr210-review-cutover-scope.md`](ADR/2026-09-5.0-pr210-review-cutover-scope.md) | ADR (Draft, 5.0 lane): PR210 review cutover + distribution scope (D1/D2) | Current |
-| [`ADR/2026-09-5.0-restoration-known-peer-reconnect.md`](ADR/2026-09-5.0-restoration-known-peer-reconnect.md) | ADR: 5.0 known-peer restoration on iOS and Android (issue #212) | Current |
+| Document                                                                                                     | What it is                                                                                                                   | Status     |
+| ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md)                                                               | Normative behavior contract (MUST/MUST NOT) for any conforming unified BLE implementation                                    | Current    |
+| [`NATIVE_CAPABILITY_AUDIT.md`](NATIVE_CAPABILITY_AUDIT.md)                                                   | Active native operation boundaries, chooser mechanisms and durable intake evidence limits                                    | Current    |
+| [`ACCESSORY_CHOOSER_QUALIFICATION.md`](ACCESSORY_CHOOSER_QUALIFICATION.md)                                   | ASK/CDM reference setup and bounded physical qualification procedure; not a receipt                                          | Current    |
+| [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)                           | Historical clean-baseline architecture and migration plan; not current 5.0 authority                                         | Historical |
+| [`MOBILE_RUST_WIRE.md`](MOBILE_RUST_WIRE.md)                                                                 | React Native Rust owner: process host, session leases, `ubm-mobile-wire/1` op table, drain records, platform radio interface | Current    |
+| [`BACKEND_AUTHORING.md`](BACKEND_AUTHORING.md)                                                               | Authoring a third-party backend against `unified-ble-manager/backend-sdk`                                                    | Current    |
+| [`TCK.md`](TCK.md)                                                                                           | Backend TCK: required scenarios and running `runBackendAuthorTck` externally                                                 | Current    |
+| [`DISCOVERY_AND_PROFILES.md`](DISCOVERY_AND_PROFILES.md)                                                     | Discovery helpers and the profile subpath import map (inherited helpers marked transitional)                                 | Current    |
+| [`FORK.md`](FORK.md)                                                                                         | Project lineage from `react-native-ble-plx` and the current 5.x authority boundary                                           | Current    |
+| [`ADR/2026-07-4.0-backend-contract.md`](ADR/2026-07-4.0-backend-contract.md)                                 | ADR: one versioned host-neutral `BleCentralBackend` contract                                                                 | Current    |
+| [`ADR/2026-07-4.0-boundary.md`](ADR/2026-07-4.0-boundary.md)                                                 | ADR: native/IPC wire projections and boundary protocol rules                                                                 | Current    |
+| [`ADR/2026-07-4.0-capability-registry.md`](ADR/2026-07-4.0-capability-registry.md)                           | ADR: runtime capability registry, four states, evidence binding                                                              | Current    |
+| [`ADR/2026-07-4.0-open-source-governance.md`](ADR/2026-07-4.0-open-source-governance.md)                     | ADR: evidence-governed support claims, certification, deprecation                                                            | Current    |
+| [`ADR/2026-07-4.0-packaging.md`](ADR/2026-07-4.0-packaging.md)                                               | ADR: ESM-first package, inert root, strict subpath exports                                                                   | Current    |
+| [`ADR/2026-07-4.0-public-api.md`](ADR/2026-07-4.0-public-api.md)                                             | ADR: clean-baseline public API, no 3.x emulation                                                                             | Current    |
+| [`ADR/2026-07-4.0-rn-restoration-bootstrap.md`](ADR/2026-07-4.0-rn-restoration-bootstrap.md)                 | ADR: native-owned Apple restoration bootstrap before JS manager construction                                                 | Current    |
+| [`ADR/2026-08-4.0-public-contract-reset.md`](ADR/2026-08-4.0-public-contract-reset.md)                       | ADR: stable application boundary; supersedes RC1 provisional names                                                           | Current    |
+| [`ADR/2026-09-5.0-pr210-review-cutover-scope.md`](ADR/2026-09-5.0-pr210-review-cutover-scope.md)             | ADR (Draft, 5.0 lane): PR210 review cutover + distribution scope (D1/D2)                                                     | Current    |
+| [`ADR/2026-09-5.0-restoration-known-peer-reconnect.md`](ADR/2026-09-5.0-restoration-known-peer-reconnect.md) | ADR: 5.0 known-peer restoration on iOS and Android (issue #212)                                                              | Current    |
 
 ## Platform support, evidence, and performance
 
-| Document | What it is | Status |
-| --- | --- | --- |
-| [`PLATFORMS.md`](PLATFORMS.md) | Platform support as an evidence index — label definitions, not a static matrix | Current |
-| [`generated/PLATFORM_SUPPORT.md`](generated/PLATFORM_SUPPORT.md) | Platform support evidence projection for the current package version | Generated |
-| [`generated/BACKEND_SDK_REFERENCE.md`](generated/BACKEND_SDK_REFERENCE.md) | Capability states, evidence levels, and required TCK scenario IDs | Generated |
-| [`GAPS.4.0.md`](GAPS.4.0.md) | Historical 4.0 platform/CI inventory; current support labels live in generated/PLATFORM_SUPPORT.md | Historical |
-| [`PERFORMANCE.md`](PERFORMANCE.md) | Performance and resource verification harness and its evidence limits | Current |
-| [`evidence/react-native-apple-physical-device-readiness.md`](evidence/react-native-apple-physical-device-readiness.md) | What is proven before Apple hardware exists; what a live-radio receipt adds | Current |
-| [`platforms/META_QUEST_4.1_SCOPE.md`](platforms/META_QUEST_4.1_SCOPE.md) | Maintainer decision deferring Meta Quest support to 4.1 | Current |
-| [`NATIVE_ARTIFACTS.md`](NATIVE_ARTIFACTS.md) | Precompiled Rust artifact lifecycle: status, one-command refresh, and where the checks run | Current |
+| Document                                                                                                               | What it is                                                                                         | Status     |
+| ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ---------- |
+| [`PLATFORMS.md`](PLATFORMS.md)                                                                                         | Platform support as an evidence index — label definitions, not a static matrix                     | Current    |
+| [`generated/PLATFORM_SUPPORT.md`](generated/PLATFORM_SUPPORT.md)                                                       | Platform support evidence projection for the current package version                               | Generated  |
+| [`generated/BACKEND_SDK_REFERENCE.md`](generated/BACKEND_SDK_REFERENCE.md)                                             | Capability states, evidence levels, and required TCK scenario IDs                                  | Generated  |
+| [`GAPS.4.0.md`](GAPS.4.0.md)                                                                                           | Historical 4.0 platform/CI inventory; current support labels live in generated/PLATFORM_SUPPORT.md | Historical |
+| [`PERFORMANCE.md`](PERFORMANCE.md)                                                                                     | Performance and resource verification harness and its evidence limits                              | Current    |
+| [`evidence/react-native-apple-physical-device-readiness.md`](evidence/react-native-apple-physical-device-readiness.md) | What is proven before Apple hardware exists; what a live-radio receipt adds                        | Current    |
+| [`platforms/META_QUEST_4.1_SCOPE.md`](platforms/META_QUEST_4.1_SCOPE.md)                                               | Maintainer decision deferring Meta Quest support to 4.1                                            | Current    |
+| [`NATIVE_ARTIFACTS.md`](NATIVE_ARTIFACTS.md)                                                                           | Precompiled Rust artifact lifecycle: status, one-command refresh, and where the checks run         | Current    |
 
 ## Policy, security, and process
 
-| Document | What it is | Status |
-| --- | --- | --- |
-| [`../AGENTS.md`](../AGENTS.md) | Single source of agent/contributor principles for this repository | Current |
-| [`../CLAUDE.md`](../CLAUDE.md) | One-line import shim for `AGENTS.md` so the two cannot drift | Current |
-| [`AGENTS.md`](AGENTS.md) | Documentation-tree conventions: status taxonomy, index maintenance, generated artifacts | Current |
-| [`../scripts/AGENTS.md`](../scripts/AGENTS.md) | Script-tree conventions: generators own their outputs; verification commands | Current |
-| [`../native/AGENTS.md`](../native/AGENTS.md) | Native-tree conventions: ABI exactness, versioned protocols, prebuild authority | Current |
-| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Dev setup, canonical pre-PR checks, branch and PR flow | Current |
-| [`../GOVERNANCE.md`](../GOVERNANCE.md) | Maintainer roles, decision process, ADR requirement | Current |
-| [`../RELEASE.md`](../RELEASE.md) | Canonical tag-driven release procedure and invariants | Current |
-| [`PARALLEL_PUBLISHER_DRAFT.md`](PARALLEL_PUBLISHER_DRAFT.md) | Nonpublishing experimental parallel release gates, preserved production workflow and cold/warm benchmark procedure | Current |
-| [`5.0.0-RELEASE-COMPLETION-TRACKER.md`](5.0.0-RELEASE-COMPLETION-TRACKER.md) | rc.16 review intake: all UBM release/platform work, closure criteria and separate consumer handoff | Current |
-| [`5.0.0-LANE.md`](5.0.0-LANE.md) | Historical 5.0 integration-lane rules before the owner authorized the RC release path | Historical |
-| [`5.0.0-U0-BASELINE.md`](5.0.0-U0-BASELINE.md) | UBM 5.0 U0 baseline manifest: retained entrypoints/targets/capabilities, identities, toolchain, boundary | Current |
-| [`5.0.0-GATE-LEDGER.md`](5.0.0-GATE-LEDGER.md) | Historical U-LICENSE and U0–U12 gate receipts; live release status is in `RELEASE.md` | Historical |
-| [`5.0.0-FIX-PLAN.md`](5.0.0-FIX-PLAN.md) | PR #210 fix plan and physical-test ledger: findings, owner decisions, device results | Current |
-| [`5.0.0-U12-HANDOFF.md`](5.0.0-U12-HANDOFF.md) | Historical U12 candidate handoff: identity, gate mapping, reproduction, and blockers at that snapshot | Historical |
-| [`5.0.0-PACKAGING.md`](5.0.0-PACKAGING.md) | Current 5.0 packaging behavior plus historical U8 evidence and migration notes | Current |
-| [`5.0.0-DISTRIBUTION_CONTRACT.md`](5.0.0-DISTRIBUTION_CONTRACT.md) | UBM 5.0 D2(i) distribution contract: prebuilt/source modes, Apple/Android artifact + identity rules, verification gates | Current |
-| [`NATIVE_ARTIFACTS.md`](NATIVE_ARTIFACTS.md) | Native artifact lifecycle: producer authority, prebuilt/source modes, identity checks, and example refresh rules | Current |
-| [`5.0.0-R16-REGRESSION-MATRIX.md`](5.0.0-R16-REGRESSION-MATRIX.md) | UBM 5.0 R16 acceptance layer: 22-row regression matrix dispositions with evidence, relabeled synthetic legs, sequenced follow-ups | Current |
-| [`../SECURITY.md`](../SECURITY.md) | Vulnerability reporting policy | Current |
-| [`../SUPPORT.md`](../SUPPORT.md) | Support policy: package SemVer vs evidence-backed backend labels | Current |
-| [`../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`](../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md) | UBM Source Available License 1.0 text, package authority for new 5.0 material (source-available, not OSI-approved open source) | Current |
-| [`../UBM-CONTRIBUTION-TERMS-1.0.md`](../UBM-CONTRIBUTION-TERMS-1.0.md) | Contribution terms 1.0 for new 5.0 contributions with explicit assent record | Current |
-| [`security/UNIFIED_BLE_4.0_THREAT_MODEL.md`](security/UNIFIED_BLE_4.0_THREAT_MODEL.md) | Repo-wide threat model: trust boundaries, attacker classes, objectives | Current |
-| [`DEPENDENCY_AND_ARTIFACT_POLICY.md`](DEPENDENCY_AND_ARTIFACT_POLICY.md) | SBOM and third-party license generation and policy | Current |
-| [`../CHANGELOG.md`](../CHANGELOG.md) | Package changelog: Unreleased section plus release history | Current |
+| Document                                                                               | What it is                                                                                                                        | Status     |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| [`../AGENTS.md`](../AGENTS.md)                                                         | Single source of agent/contributor principles for this repository                                                                 | Current    |
+| [`../CLAUDE.md`](../CLAUDE.md)                                                         | One-line import shim for `AGENTS.md` so the two cannot drift                                                                      | Current    |
+| [`AGENTS.md`](AGENTS.md)                                                               | Documentation-tree conventions: status taxonomy, index maintenance, generated artifacts                                           | Current    |
+| [`../scripts/AGENTS.md`](../scripts/AGENTS.md)                                         | Script-tree conventions: generators own their outputs; verification commands                                                      | Current    |
+| [`../native/AGENTS.md`](../native/AGENTS.md)                                           | Native-tree conventions: ABI exactness, versioned protocols, prebuild authority                                                   | Current    |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md)                                             | Dev setup, canonical pre-PR checks, branch and PR flow                                                                            | Current    |
+| [`../GOVERNANCE.md`](../GOVERNANCE.md)                                                 | Maintainer roles, decision process, ADR requirement                                                                               | Current    |
+| [`../RELEASE.md`](../RELEASE.md)                                                       | Canonical tag-driven release procedure and invariants                                                                             | Current    |
+| [`PARALLEL_PUBLISHER_DRAFT.md`](PARALLEL_PUBLISHER_DRAFT.md)                           | Parallel production gates, preserved serial reference and nonpublishing cold/warm benchmark procedure                             | Current    |
+| [`5.0.0-RELEASE-COMPLETION-TRACKER.md`](5.0.0-RELEASE-COMPLETION-TRACKER.md)           | rc.16 review intake: all UBM release/platform work, closure criteria and separate consumer handoff                                | Current    |
+| [`5.0.0-LANE.md`](5.0.0-LANE.md)                                                       | Historical 5.0 integration-lane rules before the owner authorized the RC release path                                             | Historical |
+| [`5.0.0-U0-BASELINE.md`](5.0.0-U0-BASELINE.md)                                         | UBM 5.0 U0 baseline manifest: retained entrypoints/targets/capabilities, identities, toolchain, boundary                          | Current    |
+| [`5.0.0-GATE-LEDGER.md`](5.0.0-GATE-LEDGER.md)                                         | Historical U-LICENSE and U0–U12 gate receipts; live release status is in `RELEASE.md`                                             | Historical |
+| [`5.0.0-FIX-PLAN.md`](5.0.0-FIX-PLAN.md)                                               | PR #210 fix plan and physical-test ledger: findings, owner decisions, device results                                              | Current    |
+| [`5.0.0-U12-HANDOFF.md`](5.0.0-U12-HANDOFF.md)                                         | Historical U12 candidate handoff: identity, gate mapping, reproduction, and blockers at that snapshot                             | Historical |
+| [`5.0.0-PACKAGING.md`](5.0.0-PACKAGING.md)                                             | Current 5.0 packaging behavior plus historical U8 evidence and migration notes                                                    | Current    |
+| [`5.0.0-DISTRIBUTION_CONTRACT.md`](5.0.0-DISTRIBUTION_CONTRACT.md)                     | UBM 5.0 D2(i) distribution contract: prebuilt/source modes, Apple/Android artifact + identity rules, verification gates           | Current    |
+| [`NATIVE_ARTIFACTS.md`](NATIVE_ARTIFACTS.md)                                           | Native artifact lifecycle: producer authority, prebuilt/source modes, identity checks, and example refresh rules                  | Current    |
+| [`5.0.0-R16-REGRESSION-MATRIX.md`](5.0.0-R16-REGRESSION-MATRIX.md)                     | UBM 5.0 R16 acceptance layer: 22-row regression matrix dispositions with evidence, relabeled synthetic legs, sequenced follow-ups | Current    |
+| [`../SECURITY.md`](../SECURITY.md)                                                     | Vulnerability reporting policy                                                                                                    | Current    |
+| [`../SUPPORT.md`](../SUPPORT.md)                                                       | Support policy: package SemVer vs evidence-backed backend labels                                                                  | Current    |
+| [`../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`](../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md)     | UBM Source Available License 1.0 text, package authority for new 5.0 material (source-available, not OSI-approved open source)    | Current    |
+| [`../UBM-CONTRIBUTION-TERMS-1.0.md`](../UBM-CONTRIBUTION-TERMS-1.0.md)                 | Contribution terms 1.0 for new 5.0 contributions with explicit assent record                                                      | Current    |
+| [`security/UNIFIED_BLE_4.0_THREAT_MODEL.md`](security/UNIFIED_BLE_4.0_THREAT_MODEL.md) | Repo-wide threat model: trust boundaries, attacker classes, objectives                                                            | Current    |
+| [`DEPENDENCY_AND_ARTIFACT_POLICY.md`](DEPENDENCY_AND_ARTIFACT_POLICY.md)               | SBOM and third-party license generation and policy                                                                                | Current    |
+| [`../CHANGELOG.md`](../CHANGELOG.md)                                                   | Package changelog: Unreleased section plus release history                                                                        | Current    |
 
 ## Historical records
 
@@ -158,30 +158,30 @@ Kept as evidence of how the project got here. Nothing below is guidance.
 
 ### Lineage and superseded scope
 
-| Document | What it is | Status |
-| --- | --- | --- |
-| [`../CHANGELOG_HISTORY.md`](../CHANGELOG_HISTORY.md) | Archived 4.0.0-alpha prerelease changelog entries | Historical |
-| [`../CHANGELOG-pre-3.0.0.md`](../CHANGELOG-pre-3.0.0.md) | Changelog of the `react-native-ble-plx` 1.x–2.x lineage | Historical |
-| [`../ROADMAP.md`](../ROADMAP.md) | 3.x product roadmap for the forked `react-native-ble-plx`; does not govern 4.0 | Historical |
-| [`../ROADMAP.4.0.md`](../ROADMAP.4.0.md) | 4.0 product scope decision record; scope delivered | Historical |
-| [`../TVOS_SUPPORT_SPEC.md`](../TVOS_SUPPORT_SPEC.md) | Spec for adding tvOS support to the 3.x fork | Historical |
-| [`README_V1.md`](README_V1.md) | Original `react-native-ble-plx` v1 README | Historical |
-| [`MIGRATION_V1.md`](MIGRATION_V1.md) | 1.1.0 → 2.0.0 Podfile migration note | Historical |
-| [`TVOS.md`](TVOS.md) | tvOS current-source characterization; not a 4.0 support claim | Historical |
+| Document                                                 | What it is                                                                     | Status     |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------- |
+| [`../CHANGELOG_HISTORY.md`](../CHANGELOG_HISTORY.md)     | Archived 4.0.0-alpha prerelease changelog entries                              | Historical |
+| [`../CHANGELOG-pre-3.0.0.md`](../CHANGELOG-pre-3.0.0.md) | Changelog of the `react-native-ble-plx` 1.x–2.x lineage                        | Historical |
+| [`../ROADMAP.md`](../ROADMAP.md)                         | 3.x product roadmap for the forked `react-native-ble-plx`; does not govern 4.0 | Historical |
+| [`../ROADMAP.4.0.md`](../ROADMAP.4.0.md)                 | 4.0 product scope decision record; scope delivered                             | Historical |
+| [`../TVOS_SUPPORT_SPEC.md`](../TVOS_SUPPORT_SPEC.md)     | Spec for adding tvOS support to the 3.x fork                                   | Historical |
+| [`README_V1.md`](README_V1.md)                           | Original `react-native-ble-plx` v1 README                                      | Historical |
+| [`MIGRATION_V1.md`](MIGRATION_V1.md)                     | 1.1.0 → 2.0.0 Podfile migration note                                           | Historical |
+| [`TVOS.md`](TVOS.md)                                     | tvOS current-source characterization; not a 4.0 support claim                  | Historical |
 
 ### Fix trackers and review rounds
 
-| Document | What it is | Status |
-| --- | --- | --- |
-| [`FIX_TRACKER.4.0.md`](FIX_TRACKER.4.0.md) | E2E review round-1 fix tracker | Historical |
-| [`FIX_TRACKER.4.0-round2.md`](FIX_TRACKER.4.0-round2.md) | E2E review round-2 fix tracker | Historical |
-| [`FIX_TRACKER.4.0-round3.md`](FIX_TRACKER.4.0-round3.md) | E2E review round-3 confirmed findings | Historical |
-| [`review/README.md`](review/README.md) | What the review directory holds and why it is frozen | Current |
-| [`review/RC19_PORT_REVIEW.md`](review/RC19_PORT_REVIEW.md) | Published rc.19 corrections and retained qualification boundaries | Historical |
-| [`review/2026-08-19-pr-26-external-review.md`](review/2026-08-19-pr-26-external-review.md) | Verbatim external review of PR #26 at rc.0 | Historical |
-| [`review/2026-08-19-pr-26-external-review-verification.md`](review/2026-08-19-pr-26-external-review-verification.md) | Multi-agent verification of that review with per-item verdicts | Historical |
-| [`review/2026-09-05-4.0.23-reliability-review.md`](review/2026-09-05-4.0.23-reliability-review.md) | External 4.0.23 reliability review (BLE-01..BLE-18) | Historical |
-| [`review/2026-09-05-4.0.23-reliability-review-verification.md`](review/2026-09-05-4.0.23-reliability-review-verification.md) | Independent verification of those 18 findings | Historical |
+| Document                                                                                                                     | What it is                                                        | Status     |
+| ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | ---------- |
+| [`FIX_TRACKER.4.0.md`](FIX_TRACKER.4.0.md)                                                                                   | E2E review round-1 fix tracker                                    | Historical |
+| [`FIX_TRACKER.4.0-round2.md`](FIX_TRACKER.4.0-round2.md)                                                                     | E2E review round-2 fix tracker                                    | Historical |
+| [`FIX_TRACKER.4.0-round3.md`](FIX_TRACKER.4.0-round3.md)                                                                     | E2E review round-3 confirmed findings                             | Historical |
+| [`review/README.md`](review/README.md)                                                                                       | What the review directory holds and why it is frozen              | Current    |
+| [`review/RC19_PORT_REVIEW.md`](review/RC19_PORT_REVIEW.md)                                                                   | Published rc.19 corrections and retained qualification boundaries | Historical |
+| [`review/2026-08-19-pr-26-external-review.md`](review/2026-08-19-pr-26-external-review.md)                                   | Verbatim external review of PR #26 at rc.0                        | Historical |
+| [`review/2026-08-19-pr-26-external-review-verification.md`](review/2026-08-19-pr-26-external-review-verification.md)         | Multi-agent verification of that review with per-item verdicts    | Historical |
+| [`review/2026-09-05-4.0.23-reliability-review.md`](review/2026-09-05-4.0.23-reliability-review.md)                           | External 4.0.23 reliability review (BLE-01..BLE-18)               | Historical |
+| [`review/2026-09-05-4.0.23-reliability-review-verification.md`](review/2026-09-05-4.0.23-reliability-review-verification.md) | Independent verification of those 18 findings                     | Historical |
 
 The `review/` directory also holds machine-readable findings data
 (`findings-4.0.json`, `findings-4.0-round2.json`,
@@ -189,51 +189,51 @@ The `review/` directory also holds machine-readable findings data
 
 ### Audits
 
-| Document | What it is | Status |
-| --- | --- | --- |
-| [`audits/README.md`](audits/README.md) | What the audits directory holds and why it is frozen | Current |
-| [`audits/2026-08-21-post-pr5-audit-disposition.md`](audits/2026-08-21-post-pr5-audit-disposition.md) | Post-PR5 audit disposition and continuation ledger | Historical |
-| [`audits/2026-08-22-pr41-review-inventory.md`](audits/2026-08-22-pr41-review-inventory.md) | PR41 reviewer-finding table with dispositions | Historical |
-| [`audits/2026-08-23-pr10-review-inventory.md`](audits/2026-08-23-pr10-review-inventory.md) | PR10 (first-class Expo host) review disposition ledger | Historical |
+| Document                                                                                               | What it is                                                     | Status     |
+| ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- | ---------- |
+| [`audits/README.md`](audits/README.md)                                                                 | What the audits directory holds and why it is frozen           | Current    |
+| [`audits/2026-08-21-post-pr5-audit-disposition.md`](audits/2026-08-21-post-pr5-audit-disposition.md)   | Post-PR5 audit disposition and continuation ledger             | Historical |
+| [`audits/2026-08-22-pr41-review-inventory.md`](audits/2026-08-22-pr41-review-inventory.md)             | PR41 reviewer-finding table with dispositions                  | Historical |
+| [`audits/2026-08-23-pr10-review-inventory.md`](audits/2026-08-23-pr10-review-inventory.md)             | PR10 (first-class Expo host) review disposition ledger         | Historical |
 | [`audits/2026-08-24-rc3-audit-current-inventory.md`](audits/2026-08-24-rc3-audit-current-inventory.md) | RC3 external review verified against RC4, per-finding verdicts | Historical |
-| [`audits/ECOSYSTEM_BACKEND_AUTHOR_AUDIT.md`](audits/ECOSYSTEM_BACKEND_AUTHOR_AUDIT.md) | Phase 0 clean-room ecosystem/backend-author audit | Historical |
-| [`audits/FIRST_CONSUMER_AUDIT.md`](audits/FIRST_CONSUMER_AUDIT.md) | Audit of the first consumer and its live BLE host families | Historical |
-| [`audits/HOST_BACKEND_PACKAGE_AUDIT.md`](audits/HOST_BACKEND_PACKAGE_AUDIT.md) | Non-RN host, backend, and package-isolation audit | Historical |
-| [`audits/REACT_NATIVE_FULL_SURFACE_AUDIT.md`](audits/REACT_NATIVE_FULL_SURFACE_AUDIT.md) | Full React Native surface inventory as Phase 0 ADR input | Historical |
+| [`audits/ECOSYSTEM_BACKEND_AUTHOR_AUDIT.md`](audits/ECOSYSTEM_BACKEND_AUTHOR_AUDIT.md)                 | Phase 0 clean-room ecosystem/backend-author audit              | Historical |
+| [`audits/FIRST_CONSUMER_AUDIT.md`](audits/FIRST_CONSUMER_AUDIT.md)                                     | Audit of the first consumer and its live BLE host families     | Historical |
+| [`audits/HOST_BACKEND_PACKAGE_AUDIT.md`](audits/HOST_BACKEND_PACKAGE_AUDIT.md)                         | Non-RN host, backend, and package-isolation audit              | Historical |
+| [`audits/REACT_NATIVE_FULL_SURFACE_AUDIT.md`](audits/REACT_NATIVE_FULL_SURFACE_AUDIT.md)               | Full React Native surface inventory as Phase 0 ADR input       | Historical |
 
 ### Early evidence reports
 
-| Document | What it is | Status |
-| --- | --- | --- |
-| [`evidence/g0/core-model-correction-report.md`](evidence/g0/core-model-correction-report.md) | G0 spike: core model corrections after the draft-root adapter pass | Historical |
-| [`evidence/g0/draft-contract-correction-report.md`](evidence/g0/draft-contract-correction-report.md) | Draft-types correction report on the declaration fixture | Historical |
-| [`evidence/g0/draft-contract-coverage.md`](evidence/g0/draft-contract-coverage.md) | Draft-types coverage table: contract concerns to compile proof | Historical |
+| Document                                                                                             | What it is                                                         | Status     |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ---------- |
+| [`evidence/g0/core-model-correction-report.md`](evidence/g0/core-model-correction-report.md)         | G0 spike: core model corrections after the draft-root adapter pass | Historical |
+| [`evidence/g0/draft-contract-correction-report.md`](evidence/g0/draft-contract-correction-report.md) | Draft-types correction report on the declaration fixture           | Historical |
+| [`evidence/g0/draft-contract-coverage.md`](evidence/g0/draft-contract-coverage.md)                   | Draft-types coverage table: contract concerns to compile proof     | Historical |
 
 ### Delivered plans and specs
 
-| Document | What it is | Status |
-| --- | --- | --- |
-| [`superpowers/README.md`](superpowers/README.md) | What the plans/specs directory holds and why it is frozen | Current |
-| [`superpowers/plans/2026-07-08-expo57-turbomodule-cng.md`](superpowers/plans/2026-07-08-expo57-turbomodule-cng.md) | Plan: Expo SDK 57 / RN 0.86 TurboModule modernization of the 3.x fork | Historical |
-| [`superpowers/plans/2026-07-23-3.9.0-gated-cm-restored-state.md`](superpowers/plans/2026-07-23-3.9.0-gated-cm-restored-state.md) | Plan: 3.9.0 gated ConnectionManager and iOS restored-state handoff | Historical |
-| [`superpowers/plans/2026-08-17-markdown-first-docs.md`](superpowers/plans/2026-08-17-markdown-first-docs.md) | Plan: markdown-first 4.x consumer docs rewrite | Historical |
-| [`superpowers/plans/2026-08-19-rc1-review-response.md`](superpowers/plans/2026-08-19-rc1-review-response.md) | Master plan for landing the PR #26 review and cutting rc.1 | Historical |
-| [`superpowers/plans/2026-08-19-rc1-slice-a-docs.md`](superpowers/plans/2026-08-19-rc1-slice-a-docs.md) | RC1 Slice A: documentation correctness pass | Historical |
-| [`superpowers/plans/2026-08-19-rc1-slice-b-api.md`](superpowers/plans/2026-08-19-rc1-slice-b-api.md) | RC1 Slice B: pre-stable API and example corrections | Historical |
-| [`superpowers/plans/2026-08-19-rc1-slice-c-tests.md`](superpowers/plans/2026-08-19-rc1-slice-c-tests.md) | RC1 Slice C: documentation verification tests | Historical |
-| [`superpowers/plans/2026-08-19-rc1-slice-d-hosts.md`](superpowers/plans/2026-08-19-rc1-slice-d-hosts.md) | RC1 Slice D: host factories, adapter-state stream, host guides | Historical |
-| [`superpowers/plans/2026-08-20-handoff-rc1-to-stable-4.0.md`](superpowers/plans/2026-08-20-handoff-rc1-to-stable-4.0.md) | Agent handoff operating procedure from rc.1 to stable 4.0.0 | Historical |
-| [`superpowers/plans/2026-08-20-next-12-prs.md`](superpowers/plans/2026-08-20-next-12-prs.md) | "Next 12 Pull Requests" product plan from rc.1 to stable 4.0.0 | Historical |
-| [`superpowers/plans/2026-08-22-android-phy-runtime-capability.md`](superpowers/plans/2026-08-22-android-phy-runtime-capability.md) | Plan: Android `connection:phy` capability truth via protocol-v2 handshake | Historical |
-| [`superpowers/plans/2026-08-22-pr8-write-when-ready-remediation.md`](superpowers/plans/2026-08-22-pr8-write-when-ready-remediation.md) | Plan: bound and correct the frozen `writeWhenReady` path | Historical |
-| [`superpowers/plans/2026-08-24-lifecycle-correctness-master.md`](superpowers/plans/2026-08-24-lifecycle-correctness-master.md) | Master plan sequencing lifecycle-correctness Plans A/B/C | Historical |
-| [`superpowers/plans/2026-08-24-pr-a-ipc-lifecycle-and-clone.md`](superpowers/plans/2026-08-24-pr-a-ipc-lifecycle-and-clone.md) | Plan A: IPC lifecycle, stream close, clone/prototype safety | Historical |
-| [`superpowers/plans/2026-08-24-pr-b-backend-unregister.md`](superpowers/plans/2026-08-24-pr-b-backend-unregister.md) | Plan B: backend stream unregister and overflow native release | Historical |
-| [`superpowers/plans/2026-08-24-pr-c-react-hooks.md`](superpowers/plans/2026-08-24-pr-c-react-hooks.md) | Plan C: React hooks and adapter store ownership fixes | Historical |
-| [`superpowers/plans/2026-08-30-web-bluetooth-example.md`](superpowers/plans/2026-08-30-web-bluetooth-example.md) | Plan: TypeScript/Vite Web Bluetooth example and `docs/WEB.md` | Historical |
-| [`superpowers/plans/2026-09-05-release-4.0.25-reliability.md`](superpowers/plans/2026-09-05-release-4.0.25-reliability.md) | Plan: 4.0.25 reliability fixes for BLE-01..BLE-18 | Historical |
-| [`superpowers/plans/2026-09-17-r01-binding-producer.md`](superpowers/plans/2026-09-17-r01-binding-producer.md) | Plan: R01 binding producer (Codegen spec, Kotlin/Swift facades, TS producer, emulator leg) | Historical |
-| [`superpowers/plans/2026-09-17-r01-flip.md`](superpowers/plans/2026-09-17-r01-flip.md) | Plan: R01 RN factory flip (factory default, native-owned manager, poison acceptance) | Historical |
-| [`superpowers/plans/2026-09-18-h10-sim-round2.md`](superpowers/plans/2026-09-18-h10-sim-round2.md) | Plan: H10 simulator full Linux fidelity + remote control (owner) | Current |
-| [`superpowers/specs/2026-07-23-ios-tvos-ci-design.md`](superpowers/specs/2026-07-23-ios-tvos-ci-design.md) | Design spec: CI iOS and tvOS compile checks | Historical |
-| [`superpowers/specs/2026-08-30-web-bluetooth-example-design.md`](superpowers/specs/2026-08-30-web-bluetooth-example-design.md) | Design spec for the Web Bluetooth TypeScript example | Historical |
+| Document                                                                                                                               | What it is                                                                                 | Status     |
+| -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ---------- |
+| [`superpowers/README.md`](superpowers/README.md)                                                                                       | What the plans/specs directory holds and why it is frozen                                  | Current    |
+| [`superpowers/plans/2026-07-08-expo57-turbomodule-cng.md`](superpowers/plans/2026-07-08-expo57-turbomodule-cng.md)                     | Plan: Expo SDK 57 / RN 0.86 TurboModule modernization of the 3.x fork                      | Historical |
+| [`superpowers/plans/2026-07-23-3.9.0-gated-cm-restored-state.md`](superpowers/plans/2026-07-23-3.9.0-gated-cm-restored-state.md)       | Plan: 3.9.0 gated ConnectionManager and iOS restored-state handoff                         | Historical |
+| [`superpowers/plans/2026-08-17-markdown-first-docs.md`](superpowers/plans/2026-08-17-markdown-first-docs.md)                           | Plan: markdown-first 4.x consumer docs rewrite                                             | Historical |
+| [`superpowers/plans/2026-08-19-rc1-review-response.md`](superpowers/plans/2026-08-19-rc1-review-response.md)                           | Master plan for landing the PR #26 review and cutting rc.1                                 | Historical |
+| [`superpowers/plans/2026-08-19-rc1-slice-a-docs.md`](superpowers/plans/2026-08-19-rc1-slice-a-docs.md)                                 | RC1 Slice A: documentation correctness pass                                                | Historical |
+| [`superpowers/plans/2026-08-19-rc1-slice-b-api.md`](superpowers/plans/2026-08-19-rc1-slice-b-api.md)                                   | RC1 Slice B: pre-stable API and example corrections                                        | Historical |
+| [`superpowers/plans/2026-08-19-rc1-slice-c-tests.md`](superpowers/plans/2026-08-19-rc1-slice-c-tests.md)                               | RC1 Slice C: documentation verification tests                                              | Historical |
+| [`superpowers/plans/2026-08-19-rc1-slice-d-hosts.md`](superpowers/plans/2026-08-19-rc1-slice-d-hosts.md)                               | RC1 Slice D: host factories, adapter-state stream, host guides                             | Historical |
+| [`superpowers/plans/2026-08-20-handoff-rc1-to-stable-4.0.md`](superpowers/plans/2026-08-20-handoff-rc1-to-stable-4.0.md)               | Agent handoff operating procedure from rc.1 to stable 4.0.0                                | Historical |
+| [`superpowers/plans/2026-08-20-next-12-prs.md`](superpowers/plans/2026-08-20-next-12-prs.md)                                           | "Next 12 Pull Requests" product plan from rc.1 to stable 4.0.0                             | Historical |
+| [`superpowers/plans/2026-08-22-android-phy-runtime-capability.md`](superpowers/plans/2026-08-22-android-phy-runtime-capability.md)     | Plan: Android `connection:phy` capability truth via protocol-v2 handshake                  | Historical |
+| [`superpowers/plans/2026-08-22-pr8-write-when-ready-remediation.md`](superpowers/plans/2026-08-22-pr8-write-when-ready-remediation.md) | Plan: bound and correct the frozen `writeWhenReady` path                                   | Historical |
+| [`superpowers/plans/2026-08-24-lifecycle-correctness-master.md`](superpowers/plans/2026-08-24-lifecycle-correctness-master.md)         | Master plan sequencing lifecycle-correctness Plans A/B/C                                   | Historical |
+| [`superpowers/plans/2026-08-24-pr-a-ipc-lifecycle-and-clone.md`](superpowers/plans/2026-08-24-pr-a-ipc-lifecycle-and-clone.md)         | Plan A: IPC lifecycle, stream close, clone/prototype safety                                | Historical |
+| [`superpowers/plans/2026-08-24-pr-b-backend-unregister.md`](superpowers/plans/2026-08-24-pr-b-backend-unregister.md)                   | Plan B: backend stream unregister and overflow native release                              | Historical |
+| [`superpowers/plans/2026-08-24-pr-c-react-hooks.md`](superpowers/plans/2026-08-24-pr-c-react-hooks.md)                                 | Plan C: React hooks and adapter store ownership fixes                                      | Historical |
+| [`superpowers/plans/2026-08-30-web-bluetooth-example.md`](superpowers/plans/2026-08-30-web-bluetooth-example.md)                       | Plan: TypeScript/Vite Web Bluetooth example and `docs/WEB.md`                              | Historical |
+| [`superpowers/plans/2026-09-05-release-4.0.25-reliability.md`](superpowers/plans/2026-09-05-release-4.0.25-reliability.md)             | Plan: 4.0.25 reliability fixes for BLE-01..BLE-18                                          | Historical |
+| [`superpowers/plans/2026-09-17-r01-binding-producer.md`](superpowers/plans/2026-09-17-r01-binding-producer.md)                         | Plan: R01 binding producer (Codegen spec, Kotlin/Swift facades, TS producer, emulator leg) | Historical |
+| [`superpowers/plans/2026-09-17-r01-flip.md`](superpowers/plans/2026-09-17-r01-flip.md)                                                 | Plan: R01 RN factory flip (factory default, native-owned manager, poison acceptance)       | Historical |
+| [`superpowers/plans/2026-09-18-h10-sim-round2.md`](superpowers/plans/2026-09-18-h10-sim-round2.md)                                     | Plan: H10 simulator full Linux fidelity + remote control (owner)                           | Current    |
+| [`superpowers/specs/2026-07-23-ios-tvos-ci-design.md`](superpowers/specs/2026-07-23-ios-tvos-ci-design.md)                             | Design spec: CI iOS and tvOS compile checks                                                | Historical |
+| [`superpowers/specs/2026-08-30-web-bluetooth-example-design.md`](superpowers/specs/2026-08-30-web-bluetooth-example-design.md)         | Design spec for the Web Bluetooth TypeScript example                                       | Historical |
