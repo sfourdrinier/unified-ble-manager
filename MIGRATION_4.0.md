@@ -6,7 +6,7 @@
 > must use [`MIGRATION_4.0.28.md`](MIGRATION_4.0.28.md). Old snippets below are
 > API comparison material, not current setup or restoration instructions.
 
-This source targets `5.0.0-rc.18`. The `4.0.0` release is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
+This source targets `5.0.0-rc.19`. The `4.0.0` release is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
 
 This page is for a React Native app that already uses `react-native-ble-plx`. Web, Electron, Node, and Tauri are new hosts — use those pages after you understand the RN rewrite.
 
@@ -33,7 +33,7 @@ host derives identity. Caller-supplied `applicationId` is rejected.
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.18
+pnpm add unified-ble-manager@5.0.0-rc.19
 ```
 
 Both packages may be installed temporarily. Only one BLE stack may own the radio/session. Feature-flag the new stack, migrate one owning session, then `pnpm remove react-native-ble-plx`.

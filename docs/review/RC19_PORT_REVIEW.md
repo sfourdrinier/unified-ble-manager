@@ -279,3 +279,23 @@ CodeRabbit's bounded review of the single Rust file raised zero issues. The
 canonical native refresh rebuilt and verified all maintained local consumers;
 new exact-source gates remain required. Prior physical receipts are not silently
 reassigned to this correction.
+
+Final remediation head `444322e4eb672a61aaa17ae125165ce7989c21fe` also corrects
+the Tauri crate's bonded-directory guide with a test-first, nine-test regression.
+Its clean detached Linux preflight passes: 411 package suites / 5,168 tests,
+67 plugin tests, Tauri and the native/private-bus and packed-consumer gates.
+Canonical CI `37343140098` passes all 21 jobs, including the three Apple and
+both Android builds. PR #248 merged only into `release/5.0.0-rc.19` at
+`5cf05f05137f00fcaa26d13450a6040668d4dee5`; its tree is identical to that tested
+head. Integrated release-branch CI and rc.19 identity preparation remain pending.
+Main and published rc.18 are unchanged; physical qualification gaps above remain
+open and these compile/deterministic results do not promote evidence labels.
+
+Integrated CI exposed a timing-dependent mobile test fixture: its 20 ms deadline
+could expire before radio dispatch while the test assumed post-dispatch orphan
+cleanup. Delayed admission reproduced the exact failure with zero physical
+requests. The test now synchronizes on admitted scan cancellation, preserving
+the refused-first-stop and confirmed retry assertions; a separate queued-expiry
+test requires zero start/stop requests. All nine tests and five repeated batches
+pass, with strict clippy and formatting. No runtime code or native artifact
+changed. The failed integrated run remains retained, not relabeled successful.

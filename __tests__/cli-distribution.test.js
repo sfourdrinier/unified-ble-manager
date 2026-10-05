@@ -139,8 +139,8 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         proofBoundary: 'compile-config-loadability',
         cratePublished: false,
         compatibility: expect.objectContaining({
-          npmRange: '^5.0.0-rc.18',
-          crateRange: '^5.0.0-rc.18',
+          npmRange: '^5.0.0-rc.19',
+          crateRange: '^5.0.0-rc.19',
           ipcProtocol: 5
         })
       })

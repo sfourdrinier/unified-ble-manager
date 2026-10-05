@@ -207,10 +207,7 @@ async fn first_scanner_refused_compensation_is_retried_without_a_member() {
     let stops = Arc::new(AtomicU64::new(0));
     let observed_stops = Arc::clone(&stops);
     let radio = Scripted::new(Box::new(move |request| match request {
-        RadioRequest::StartScan { .. } => {
-            std::thread::sleep(Duration::from_millis(60));
-            Reply::Now(RadioCompletion::Unit)
-        }
+        RadioRequest::StartScan { .. } => Reply::Hold,
         RadioRequest::StopScan { .. } => {
             if observed_stops.fetch_add(1, Ordering::SeqCst) == 0 {
                 Reply::Now(RadioCompletion::Failed(PlatformFailure::new(
@@ -225,16 +222,20 @@ async fn first_scanner_refused_compensation_is_retried_without_a_member() {
     }));
     let (host, _) = open(&radio, MobilePlatform::Android).await;
     let session = host.open_session("first").unwrap();
-    let (error, _) = failure(
-        &call(
-            &session,
-            "scan.start",
-            &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "first", "budgetMs": 20})
-                .to_string(),
-        )
-        .await,
-    );
-    assert_eq!(error["code"], "operation.timed-out");
+    let pending = tokio::spawn({
+        let session = session.clone();
+        async move { call(&session, "scan.start", &scan_args("first")).await }
+    });
+    wait_for(|| radio.held_of(RequestKind::StartScan).len() == 1).await;
+    let ack = ok(&call(
+        &session,
+        "op.cancel",
+        &json!({"operationId": "first"}).to_string(),
+    )
+    .await);
+    assert_eq!(ack["state"], "cancellation-requested");
+    let (error, _) = failure(&pending.await.unwrap());
+    assert_eq!(error["code"], "operation.aborted");
     assert_eq!(
         ok(&call(&session, "session.reconcile", "{}").await)["scan"],
         json!(null)
@@ -249,6 +250,32 @@ async fn first_scanner_refused_compensation_is_retried_without_a_member() {
         2,
         "process owner retries the orphan once"
     );
+}
+
+/// Expiry before dispatch owns no physical scan and therefore has no orphan
+/// compensation. A short admission budget must not select the scenario above.
+#[tokio::test]
+async fn first_scanner_budget_expired_before_dispatch_has_no_cleanup_debt() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("expired-first").unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    session.invoke(
+        "scan.start",
+        &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "first", "admission": 1, "budgetMs": 20}).to_string(),
+        Box::new(move |result| { tx.send(result).unwrap(); }),
+    );
+    // The single-thread executor cannot dispatch while this invoke's original
+    // wall-clock budget expires. This reproduces the CI fixture's other path.
+    std::thread::sleep(Duration::from_millis(40));
+    let (error, _) = failure(&rx.await.unwrap());
+    assert_eq!(error["code"], "operation.timed-out");
+    assert_eq!(radio.count(RequestKind::StartScan), 0);
+    assert_eq!(
+        ok(&call(&session, "session.dispose", "{}").await)["state"],
+        "released"
+    );
+    assert_eq!(radio.count(RequestKind::StopScan), 0);
 }
 
 /// X-R1: B queues behind A's held scan start; cancelling B must fail B with

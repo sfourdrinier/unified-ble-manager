@@ -2,7 +2,20 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## Unreleased
+## [5.0.0-rc.19] - 2026-10-05
+
+### Before upgrading
+
+- Android now includes `armeabi-v7a` alongside `arm64-v8a` and `x86_64`;
+  32-bit application processes need the complete packed native dependency graph.
+  Apple desktop and simulator artifacts remain arm64-only.
+- Linux connection/GATT deployment requires the maintained `5.87-ubm.4`
+  daemon integration and explicit LE-bearer authority. The shipped addon alone
+  does not install, authorize or replace a system daemon.
+- Native bonded inventory is available on Windows/Linux; initial deferred
+  acquisition is available on macOS/Windows. These are not automatic reconnect
+  or a promotion of hardware-evidence labels. Remaining Apple picker, force-quit
+  and physical Apple TV qualification stays explicitly open.
 
 ### Corrected
 
