@@ -578,7 +578,7 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
                 os: DesktopOs::Windows,
                 verdict: CapabilityVerdict::BtleplugProvides,
                 limitation: Some("deterministic-only"),
-                note: "btleplug 0.12's WinRT mtu() tracks GattSession.MaxPduSize (winrtble/ble/device.rs); both modes are bounded by one ATT payload.",
+                note: "btleplug 0.12's WinRT mtu() tracks GattSession.MaxPduSize (winrtble/ble/device.rs); measured limits admit OS-managed ordinary with-response writes up to 512 bytes, while without-response writes remain bounded by one ATT payload. Explicit prepared long-write transactions remain unsupported.",
                 needs_pairing_generation_controller: false,
             },
             OsOverride::adapter(

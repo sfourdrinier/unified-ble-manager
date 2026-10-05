@@ -436,7 +436,8 @@ describe('consumer documentation matches the published package', () => {
     const migration = read('MIGRATION_4.0.md')
     const release = read('RELEASE.md')
 
-    expect(migration).toContain(packageVersion)
+    expect(migration).toContain('Historical, non-copyable migration record')
+    expect(read('MIGRATION_4.0.28.md')).toContain(packageVersion)
     expect(migration).not.toContain('hostSessionScope')
     expect(migration).toContain('Uint8Array')
     expect(migration).toContain('AbortSignal')
@@ -713,7 +714,7 @@ describe('consumer documentation matches the published package', () => {
   test('teaching files that mention 4.0.0-rc. use the current package version', () => {
     const teaching = [
       'README.md',
-      'MIGRATION_4.0.md',
+      'MIGRATION_4.0.28.md',
       'docs/GETTING_STARTED.md',
       'docs/WEB.md',
       'docs/NODE.md',

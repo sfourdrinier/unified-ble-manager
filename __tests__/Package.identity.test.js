@@ -13,7 +13,7 @@ const pluginSrc = fs.readFileSync(path.join(root, 'plugin/src/withBLE.ts'), 'utf
 describe('package identity (unified-ble-manager)', () => {
   test('npm package name and 5.0.0 release-candidate identity', () => {
     expect(pkg.name).toBe('unified-ble-manager')
-    expect(pkg.version).toBe('5.0.0-rc.19')
+    expect(pkg.version).toBe('5.0.0-rc.20')
   })
 
   test('strict package exports isolate manager, backend authoring, and deterministic testing', () => {
@@ -102,7 +102,8 @@ describe('package identity (unified-ble-manager)', () => {
 
   test('MIGRATION_4.0.md records the clean-baseline migration boundary', () => {
     const mig = fs.readFileSync(path.join(root, 'MIGRATION_4.0.md'), 'utf8')
-    expect(mig).toContain(pkg.version)
+    expect(mig).toContain('Historical, non-copyable migration record')
+    expect(mig).toContain('MIGRATION_4.0.28.md')
     expect(mig).toContain('not a source-compatible rename')
     expect(mig).toMatch(/Base64/)
     expect(mig).toContain('Uint8Array')

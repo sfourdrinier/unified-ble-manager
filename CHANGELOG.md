@@ -2,6 +2,20 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.20] - 2026-10-05
+
+### Corrected
+
+- Remove stale pre-publication installation conditions and record rc.19 as
+  immutable published history; preserve its review tracker as a historical record.
+- Describe missing BlueZ effective MTU as `capability.unavailable`, distinct from
+  a backend that does not implement the mechanism (`capability.unsupported`).
+- Correct the Windows capability description: measured ordinary with-response
+  writes use the OS-managed procedure up to 512 bytes; without-response writes
+  remain limited to one ATT payload. Explicit prepared transactions remain refused.
+- Align current package, implementation, Tauri compatibility and consumer pins
+  with rc.20. No radio behavior or backend qualification label is changed.
+
 ## [5.0.0-rc.19] - 2026-10-05
 
 ### Before upgrading

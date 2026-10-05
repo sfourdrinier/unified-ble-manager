@@ -9,7 +9,7 @@ The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The w
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.19 @tauri-apps/api
+pnpm add unified-ble-manager@5.0.0-rc.20 @tauri-apps/api
 ```
 
 Use the Rust plugin source shipped in the same npm package. In the normal
@@ -184,8 +184,9 @@ with `no-prepared-write-path`, never silently converted to an ordinary write.
 core's capability reasons and limits; a limited descriptor does not promise every
 transaction mode. The effective MTU (`connection:effective-mtu`) is the core's
 measurement of the live link through the desktop central, like the desktop and
-Electron hosts; a withheld measurement answers `capability.unsupported` verbatim,
-never a guessed 23.
+Electron hosts. If BlueZ omits the live MTU, the query answers
+`capability.unavailable`; a backend without an effective-MTU mechanism answers
+`capability.unsupported`. Neither case invents a measurement of 23.
 
 Connected RSSI (`connection.rssi`) is the OS measurement of the live link, read through the core; a radio that cannot measure it answers `capability.unsupported`.
 

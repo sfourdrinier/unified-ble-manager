@@ -25,11 +25,33 @@ test('release notes distinguish new desktop acquisition mechanisms from remainin
   expect(unreleased).toContain('confirmed loss of the pinned unique daemon owner')
 })
 
-test('review directory routes ongoing rc19 work to its current tracker', () => {
+test('review directory identifies the shipped rc19 tracker as historical', () => {
   const guide = read('docs/review/README.md')
   expect(guide).toContain('RC19_PORT_REVIEW.md')
+  expect(guide).toContain('published rc.19')
+  expect(read('docs/review/RC19_PORT_REVIEW.md')).toContain('Status: Historical')
+  expect(read('docs/review/RC19_PORT_REVIEW.md')).toContain('f2e98f41e0d416e6abc6a33594b9d445e8c722b6')
   expect(guide).not.toContain('Every document and findings file in this directory is a **historical record**')
   expect(guide).not.toContain('That pair is a live verification')
+})
+
+test('published rc19 guidance does not describe its registry availability as pending', () => {
+  expect(read('MIGRATION_4.0.28.md')).not.toContain('until then the published baseline')
+  expect(read('MIGRATION_4.0.28.md')).not.toContain('published baseline is `5.0.0-rc.18`')
+  expect(read('llms.txt')).not.toContain('once published')
+  expect(read('docs/GETTING_STARTED.md')).not.toContain('After the npm registry lists')
+  expect(read('RELEASE.md')).toContain('## Releasing 5.0.0-rc.19 (historical)')
+  expect(read('docs/5.0.0-RELEASE-COMPLETION-TRACKER.md')).toContain('rc.19 publication is verified')
+})
+
+test('Tauri missing MTU and Windows ordinary write limits retain their actual semantics', () => {
+  const guide = read('docs/TAURI.md')
+  expect(guide).toContain('BlueZ omits the live MTU')
+  expect(guide).toContain('`capability.unavailable`')
+  expect(guide).not.toContain('a withheld measurement answers `capability.unsupported`')
+  const capabilities = read('crates/ubm-desktop/src/capabilities.rs')
+  expect(capabilities).not.toContain('both modes are bounded by one ATT payload')
+  expect(capabilities).toContain('ordinary with-response writes up to 512 bytes')
 })
 
 test('Android monitoring documentation preserves notification denial without inventing a startup gate', () => {

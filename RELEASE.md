@@ -113,7 +113,7 @@ once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
 history. `4.0.28` is immutable tagged history. The unpublished
 `v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
-The prepared candidate is `5.0.0-rc.19`; rc.18, rc.17, rc.16 and rc.14 are immutable published history.
+The next prepared candidate is `5.0.0-rc.20`; rc.19, rc.18, rc.17, rc.16 and rc.14 are immutable published history.
 The immutable `v5.0.0-rc.15` tag remains unpublished: its publisher was cancelled
 before npm publication when the Apple architecture policy changed.
 
@@ -143,7 +143,23 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
-## Releasing 5.0.0-rc.19
+## Releasing 5.0.0-rc.20
+
+This corrective release aligns installation guidance, historical release status,
+Tauri MTU errors and Windows write-limit descriptions with the implementation.
+It does not change radio behavior or promote backend qualification labels.
+Verify exact current `main`, all `5.0.0-rc.20` identities, required CI and release
+gates, and absence of the registry version and annotated tag before creating
+`v5.0.0-rc.20`. Use the trusted tag publisher only; `next` advances to rc.20 and
+`latest` remains 4.0.28. No unrelated physical-device rerun is required.
+
+## Releasing 5.0.0-rc.19 (historical)
+
+`v5.0.0-rc.19` was published on 2026-10-05 from
+`f2e98f41e0d416e6abc6a33594b9d445e8c722b6`. Its npm provenance, registry
+tarball, native identities, GitHub prerelease assets and outside-repository
+installed consumer were verified. The procedure below is historical: do not
+repeat its absent-tag check or recreate the immutable tag.
 
 Integrate all release PRs through `release/5.0.0-rc.19`, then merge that
 qualified combination into `main`. Release only from exact current `main`
@@ -901,7 +917,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.0-rc.19
+version=5.0.0-rc.20
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -912,7 +928,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `next` resolves to `5.0.0-rc.19`, while `latest` remains on the 4.0 stable
+- npm `next` resolves to `5.0.0-rc.20`, while `latest` remains on the 4.0 stable
   line; a stable release moves `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
@@ -920,7 +936,7 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.0-rc.19` explicitly and import the documented host
+  `unified-ble-manager@5.0.0-rc.20` explicitly and import the documented host
   entrypoints. A bare install still selects `latest` (the 4.0 line). This
   catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a

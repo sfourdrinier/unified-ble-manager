@@ -12,8 +12,9 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 
 ## Current 5.0 authority
 
-Release work in progress: [rc.19 port-review tracker](review/RC19_PORT_REVIEW.md)
-(Current; corrections and evidence limits, not a platform-support claim).
+Historical release record: [rc.19 port-review tracker](review/RC19_PORT_REVIEW.md)
+(shipped corrections and retained evidence limits, not current release instructions
+or a platform-support claim).
 
 Use these authorities together, in their respective scopes:
 
@@ -175,6 +176,7 @@ Kept as evidence of how the project got here. Nothing below is guidance.
 | [`FIX_TRACKER.4.0-round2.md`](FIX_TRACKER.4.0-round2.md) | E2E review round-2 fix tracker | Historical |
 | [`FIX_TRACKER.4.0-round3.md`](FIX_TRACKER.4.0-round3.md) | E2E review round-3 confirmed findings | Historical |
 | [`review/README.md`](review/README.md) | What the review directory holds and why it is frozen | Current |
+| [`review/RC19_PORT_REVIEW.md`](review/RC19_PORT_REVIEW.md) | Published rc.19 corrections and retained qualification boundaries | Historical |
 | [`review/2026-08-19-pr-26-external-review.md`](review/2026-08-19-pr-26-external-review.md) | Verbatim external review of PR #26 at rc.0 | Historical |
 | [`review/2026-08-19-pr-26-external-review-verification.md`](review/2026-08-19-pr-26-external-review-verification.md) | Multi-agent verification of that review with per-item verdicts | Historical |
 | [`review/2026-09-05-4.0.23-reliability-review.md`](review/2026-09-05-4.0.23-reliability-review.md) | External 4.0.23 reliability review (BLE-01..BLE-18) | Historical |

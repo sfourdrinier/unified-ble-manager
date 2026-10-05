@@ -4,9 +4,11 @@ Completed review documents and findings files are **historical records**,
 frozen at the commit each examined. Do not act on completed findings as current
 guidance. The documentation map identifies their status explicitly.
 
-Current corrective release work lives in
+The historical record for published rc.19 lives in
 [`RC19_PORT_REVIEW.md`](RC19_PORT_REVIEW.md), covering the supplied rc.18
 reviews and their separate library, downstream and qualification boundaries.
+Its retained pending statuses describe that review's original checkpoints,
+not the current publication state.
 The overarching [5.0 completion tracker](../5.0.0-RELEASE-COMPLETION-TRACKER.md)
 retains prior implementation and receipt history.
 
