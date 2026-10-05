@@ -4,14 +4,14 @@ Status: Current release-branch tracker. Baseline: published rc.18 at
 `bcb490a2cc96e5b1696a12db607caeaef1a95517`. This is one input review, not
 the final release scope; later reviews join `release/5.0.0-rc.19`.
 
-| Review item | UBM correction | Regression boundary |
-| --- | --- | --- |
-| 1 — migration | Current UBM 4.0.28-to-5.x guide shipped in the package; old ble-plx record explicitly historical/non-copyable; installation/restoration/capability/foreground-service recipes corrected | Consumer front-door links, version pin, package files and canonical packed-content gate |
-| 2 — expert/export authority | `/advanced` listed in README and llms; AGENTS delegates to complete list; TV/background links present; Tauri has only generated signatures | Docs index/export coverage and generated API report checks |
-| 3 — record-only iOS launch | Configured restoration bootstraps process host without native standing order; retain ASK authorization gate and tvOS refusal | Executable real Sessions bootstrap admission, startup identity policy, canonical Swift launch-observer compilation |
-| 4 — Expo claim errors | Preserve normalized owner code/domain/platform/metadata/retryability/commit; shared Android no-source refusal also fixes host's earlier admission path | Real Expo Android no-source construction, Apple unavailable, structured failures and unknown failures |
-| 5 — notifications | Document POST_NOTIFICATIONS as app-owned visibility permission, not foreground-service startup gate | Guidance checked against actual driver's required permissions |
-| 6 — host recipes | Expo/bare TV construction and permissions distinguished; TVOS/GAPS historical; Tauri CCCD planning documented accurately | Executed Expo granted/denied recipe; doc checks against current native delivery planner |
+| Review item                 | UBM correction                                                                                                                                                                          | Regression boundary                                                                                                |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| 1 — migration               | Current UBM 4.0.28-to-5.x guide shipped in the package; old ble-plx record explicitly historical/non-copyable; installation/restoration/capability/foreground-service recipes corrected | Consumer front-door links, version pin, package files and canonical packed-content gate                            |
+| 2 — expert/export authority | `/advanced` listed in README and llms; AGENTS delegates to complete list; TV/background links present; Tauri has only generated signatures                                              | Docs index/export coverage and generated API report checks                                                         |
+| 3 — record-only iOS launch  | Configured restoration bootstraps process host without native standing order; retain ASK authorization gate and tvOS refusal                                                            | Executable real Sessions bootstrap admission, startup identity policy, canonical Swift launch-observer compilation |
+| 4 — Expo claim errors       | Preserve normalized owner code/domain/platform/metadata/retryability/commit; shared Android no-source refusal also fixes host's earlier admission path                                  | Real Expo Android no-source construction, Apple unavailable, structured failures and unknown failures              |
+| 5 — notifications           | Document POST_NOTIFICATIONS as app-owned visibility permission, not foreground-service startup gate                                                                                     | Guidance checked against actual driver's required permissions                                                      |
+| 6 — host recipes            | Expo/bare TV construction and permissions distinguished; TVOS/GAPS historical; Tauri CCCD planning documented accurately                                                                | Executed Expo granted/denied recipe; doc checks against current native delivery planner                            |
 
 One scoped CodeRabbit pass raised one minor ASK permission-recipe omission;
 corrected in Getting Started and README/generated HTML with a focused regression.
@@ -25,24 +25,24 @@ The second supplied review is pinned to the same rc.18 source. Its linked
 detailed handoff was not attached; this tracker covers every item in the supplied
 text, without claiming to have inspected that missing document.
 
-| Item | Disposition | Completion evidence required |
-| --- | --- | --- |
-| U01 — Tauri capability truth | Corrected, including new U03 routes | All-catalog/per-OS native projection and routed RSSI/Service Changed pass; native projection regressions and TypeScript boundary tests passed; reference resolution uses current known or bonded authority without promoting unrelated directory capabilities; no physical-radio claim |
-| U02 — ARM32 Fire TV | Three-ABI producer, packed TV ARM32 and classic RN graphs pass | Real ARM32 Rust/JNI identity/hash/alignment and 49 JNI exports verified; Linux Gradle fixture gate rejects 11 malformed objects; packed Expo 57 / RN-TV 0.86 app builds with 19 ELF32 ARM libraries; classic RN builds ARM32/ARM64 with 15 libraries each; complete dependency closure verified; physical ARM32 BLE qualification remains open |
-| U03 — desktop mechanisms | Selected mechanisms implemented; exact-head cross-platform CI pending | Typed Windows address resolution, Windows/Linux bonded enumeration, macOS/Windows native deferred acquisition with cancellation/deadline/retained cleanup and Node/Tauri parity; clean detached consumer/Tauri gates pass; CoreBluetooth unrestricted bond inventory and Linux LE-specific deferred availability remain explicitly unsupported |
-| Q01 — maintained Linux deployment | Approved `.4` deployment and focused radio checks pass | Service-filtered scan/connect/discover/stream, pending acquisition cancellation, repeated reconnect, second-client protection, adapter loss and daemon replacement pass on identified sources/artifacts; final integrated CI remains required |
-| Tauri long-write guidance | Corrected test-first | Distinguish OS-managed ordinary with-response writes from unavailable caller-controlled prepared/reliable transactions |
-| TVOS/PLATFORMS drift | Addressed in first patch | Current TV guide/factory/permission documentation and historical markers |
-| Artifact-bound support | Open qualification boundary, not inferred from a version | Existing evidence schema and exact source/artifact receipts; no synthetic hardware promotion |
+| Item                              | Disposition                                                           | Completion evidence required                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| U01 — Tauri capability truth      | Corrected, including new U03 routes                                   | All-catalog/per-OS native projection and routed RSSI/Service Changed pass; native projection regressions and TypeScript boundary tests passed; reference resolution uses current known or bonded authority without promoting unrelated directory capabilities; no physical-radio claim                                                         |
+| U02 — ARM32 Fire TV               | Three-ABI producer, packed TV ARM32 and classic RN graphs pass        | Real ARM32 Rust/JNI identity/hash/alignment and 49 JNI exports verified; Linux Gradle fixture gate rejects 11 malformed objects; packed Expo 57 / RN-TV 0.86 app builds with 19 ELF32 ARM libraries; classic RN builds ARM32/ARM64 with 15 libraries each; complete dependency closure verified; physical ARM32 BLE qualification remains open |
+| U03 — desktop mechanisms          | Selected mechanisms implemented; exact-head cross-platform CI pending | Typed Windows address resolution, Windows/Linux bonded enumeration, macOS/Windows native deferred acquisition with cancellation/deadline/retained cleanup and Node/Tauri parity; clean detached consumer/Tauri gates pass; CoreBluetooth unrestricted bond inventory and Linux LE-specific deferred availability remain explicitly unsupported |
+| Q01 — maintained Linux deployment | Approved `.4` deployment and focused radio checks pass                | Service-filtered scan/connect/discover/stream, pending acquisition cancellation, repeated reconnect, second-client protection, adapter loss and daemon replacement pass on identified sources/artifacts; final integrated CI remains required                                                                                                  |
+| Tauri long-write guidance         | Corrected test-first                                                  | Distinguish OS-managed ordinary with-response writes from unavailable caller-controlled prepared/reliable transactions                                                                                                                                                                                                                         |
+| TVOS/PLATFORMS drift              | Addressed in first patch                                              | Current TV guide/factory/permission documentation and historical markers                                                                                                                                                                                                                                                                       |
+| Artifact-bound support            | Open qualification boundary, not inferred from a version              | Existing evidence schema and exact source/artifact receipts; no synthetic hardware promotion                                                                                                                                                                                                                                                   |
 
 One bounded independent U03 review produced three corrective findings, handled
 as one batch rather than repeated broad review rounds:
 
-| Finding | Disposition | Regression |
-| --- | --- | --- |
-| R01 — Windows cleanup short-circuit | Corrected | Refused local handler cleanup does not skip authoritative peripheral release; failed obligations remain retryable; focused regression passes |
-| R02 — typed Windows cache race | Corrected | Concurrent same-address public/random lookup shares one atomically inserted identity and reports one type conflict; controlled concurrency regression passes |
-| R03 — Tauri foreign reference | Corrected | Bonded query rejects the wrong backend before native dispatch; same-backend filtered query remains positive; 13 focused directory tests pass |
+| Finding                             | Disposition | Regression                                                                                                                                                   |
+| ----------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| R01 — Windows cleanup short-circuit | Corrected   | Refused local handler cleanup does not skip authoritative peripheral release; failed obligations remain retryable; focused regression passes                 |
+| R02 — typed Windows cache race      | Corrected   | Concurrent same-address public/random lookup shares one atomically inserted identity and reports one type conflict; controlled concurrency regression passes |
+| R03 — Tauri foreign reference       | Corrected   | Bonded query rejects the wrong backend before native dispatch; same-backend filtered query remains positive; 13 focused directory tests pass                 |
 
 Final integration also checks the front-door operation, not just inventory:
 new Windows/Linux bonded references must roundtrip through public
@@ -266,3 +266,16 @@ through the actual synthetic DesktopCentral. This does not promote physical
 evidence. Final local desktop tests pass 309/309; Linux ledger tests pass 28/28
 and actual private-bus ownership tests pass 19/19. Final integrated preflight
 and new-head cross-platform CI remain required.
+
+The subsequent exact-head PR review at `41d60982` found that a cancelled release
+waiter could retain a confirmed release while a retry queried daemon lifetime
+before returning it. A transient query failure then incorrectly reversed that
+confirmed fact. The strengthened cancelled-waiter regression reproduces the
+failure and now verifies the exact retained generation/reason with no additional
+owner query or native release. The narrow correction returns `State::Released`
+first; acknowledgment maintenance remains independently owned. All 28 ledger
+tests, strict clippy and the canonical private-bus/source-producer gate pass.
+CodeRabbit's bounded review of the single Rust file raised zero issues. The
+canonical native refresh rebuilt and verified all maintained local consumers;
+new exact-source gates remain required. Prior physical receipts are not silently
+reassigned to this correction.

@@ -40,6 +40,8 @@ All notable changes to `unified-ble-manager` are documented here.
 - Retire daemon-owned Linux lease obligations only after confirmed loss of the pinned unique daemon owner.
   Do not fabricate a physical-disconnect reason or discard local cleanup failures;
   live-owner refusals and failed lifetime queries remain owned and retryable.
+  An already-confirmed release returns its retained observation before any new
+  owner-lifetime query; transient bus failures cannot reverse that confirmed fact.
 - Bind desktop bonded-inventory and deferred-acquisition capability receipts to
   dedicated scenarios that execute those operations, rather than unrelated scan
   or RSSI scenarios. Keep deterministic inventory proof distinct from radio proof.

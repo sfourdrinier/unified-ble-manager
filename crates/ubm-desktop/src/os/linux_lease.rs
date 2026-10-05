@@ -312,6 +312,11 @@ impl<C: LeaseClient> Ledger<C> {
         entry: &Arc<Entry<C>>,
     ) -> Result<ReleaseObservation, DesktopError> {
         let mut state = entry.token.lock().await;
+        // Confirmed native release is a retained fact, not a new bus query.
+        // Acknowledgment maintenance remains independently owned below.
+        if let State::Released(observation) = *state {
+            return Ok(observation);
+        }
         if entry.client.owner_retired().await? {
             return Ok(self.retire_owner(peer, entry, &mut state));
         }
@@ -659,6 +664,7 @@ mod tests {
         allocations: Arc<AtomicU64>,
         owner_retired: Arc<AtomicBool>,
         owner_query_failed: Arc<AtomicBool>,
+        owner_queries: Arc<AtomicU64>,
     }
     impl Client {
         fn new() -> Self {
@@ -666,6 +672,7 @@ mod tests {
                 token: 41,
                 owner_retired: Arc::new(AtomicBool::new(false)),
                 owner_query_failed: Arc::new(AtomicBool::new(false)),
+                owner_queries: Arc::new(AtomicU64::new(0)),
                 generation: 73,
                 reserve: Arc::new(Semaphore::new(0)),
                 connect: Arc::new(Semaphore::new(0)),
@@ -687,6 +694,7 @@ mod tests {
     }
     impl LeaseClient for Client {
         async fn owner_retired(&self) -> Result<bool, DesktopError> {
+            self.owner_queries.fetch_add(1, Ordering::Relaxed);
             if self.owner_query_failed.load(Ordering::Acquire) {
                 return Err(failed("bus owner query refused"));
             }
@@ -934,15 +942,20 @@ mod tests {
         settled().await;
         assert_eq!(ledger.len(), 0);
         assert_eq!(ledger.terminal_facts_len(), 1);
+        let owner_queries = client.owner_queries.load(Ordering::Relaxed);
+        client.owner_query_failed.store(true, Ordering::Release);
         assert_eq!(
             ledger
                 .clone()
                 .release_with_observation("peer")
                 .await
-                .unwrap()
-                .disconnect_reason,
-            Some(2)
+                .unwrap(),
+            ReleaseObservation {
+                physical_generation: Some(73),
+                disconnect_reason: Some(2),
+            }
         );
+        assert_eq!(client.owner_queries.load(Ordering::Relaxed), owner_queries);
         assert!(ledger.physical_lost_observed("peer", 73, 2).await);
         assert!(!ledger.physical_lost_observed("peer", 73, 2).await);
         assert_eq!(client.calls.lock().unwrap().len(), 1);
