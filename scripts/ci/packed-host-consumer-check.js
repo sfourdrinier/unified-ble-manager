@@ -7,6 +7,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { spawnSync } = require('child_process')
+const { suppliedPackedTarball } = require('./supplied-packed-tarball')
 
 const root = path.resolve(__dirname, '../..')
 const rootPackage = require(path.join(root, 'package.json'))
@@ -369,8 +370,9 @@ function main() {
       NPM_CONFIG_CACHE: npmCache,
       NPM_CONFIG_UPDATE_NOTIFIER: 'false'
     }
-    const tarballPath = path.join(artifactDirectory, tarballName(rootPackage.name, rootPackage.version))
-    run(npmCommand(), ['pack', '--ignore-scripts', '--pack-destination', artifactDirectory, '--loglevel=warn'], {
+    const suppliedTarball = suppliedPackedTarball()
+    const tarballPath = suppliedTarball || path.join(artifactDirectory, tarballName(rootPackage.name, rootPackage.version))
+    if (!suppliedTarball) run(npmCommand(), ['pack', '--ignore-scripts', '--pack-destination', artifactDirectory, '--loglevel=warn'], {
       cwd: root,
       env: npmEnvironment
     })

@@ -15,6 +15,7 @@ const os = require('os')
 const path = require('path')
 const semver = require('semver')
 const { spawnSync } = require('child_process')
+const { suppliedPackedTarball } = require('./supplied-packed-tarball')
 const { runG6APackedConsumerProof, validateThirdPartyTckProof } = require('./g6a-packed-consumer-proof')
 
 const root = path.resolve(__dirname, '../..')
@@ -826,11 +827,12 @@ function main(options = {}) {
     writeLocalPeerStubs(tmp)
     console.log('pack-install-smoke temp:', tmp)
 
-    const rootTgz = assertTarballIsAbsent(artifactDirectory, rootPackage.name, rootPackage.version)
+    const suppliedTarball = suppliedPackedTarball()
+    const rootTgz = suppliedTarball || assertTarballIsAbsent(artifactDirectory, rootPackage.name, rootPackage.version)
 
     // Pack the canonical package into an isolated artifact directory; never create or delete repo-root tarballs.
     const g6aPreflightOptions = options.g6aOnly === true ? { timeoutMs: G6A_CHILD_TIMEOUT_MS } : {}
-    run(npmCommand(), ['pack', '--pack-destination', artifactDirectory, '--loglevel=warn'], {
+    if (!suppliedTarball) run(npmCommand(), ['pack', '--pack-destination', artifactDirectory, '--loglevel=warn'], {
       cwd: root,
       env: npmEnvironment,
       timeoutMs: PACK_INSTALL_CHILD_TIMEOUT_MS,

@@ -133,6 +133,7 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Dev setup, canonical pre-PR checks, branch and PR flow | Current |
 | [`../GOVERNANCE.md`](../GOVERNANCE.md) | Maintainer roles, decision process, ADR requirement | Current |
 | [`../RELEASE.md`](../RELEASE.md) | Canonical tag-driven release procedure and invariants | Current |
+| [`PARALLEL_PUBLISHER_DRAFT.md`](PARALLEL_PUBLISHER_DRAFT.md) | Nonpublishing experimental parallel release gates, preserved production workflow and cold/warm benchmark procedure | Current |
 | [`5.0.0-RELEASE-COMPLETION-TRACKER.md`](5.0.0-RELEASE-COMPLETION-TRACKER.md) | rc.16 review intake: all UBM release/platform work, closure criteria and separate consumer handoff | Current |
 | [`5.0.0-LANE.md`](5.0.0-LANE.md) | Historical 5.0 integration-lane rules before the owner authorized the RC release path | Historical |
 | [`5.0.0-U0-BASELINE.md`](5.0.0-U0-BASELINE.md) | UBM 5.0 U0 baseline manifest: retained entrypoints/targets/capabilities, identities, toolchain, boundary | Current |

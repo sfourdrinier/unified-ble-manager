@@ -23,6 +23,15 @@ Historical immutable tags retain their original publisher source and behavior.
 
 Releases are tag-driven and published by GitHub Actions through npm trusted publishing/OIDC. Do not use a long-lived `NPM_TOKEN` or publish a normal release from a developer laptop.
 
+### Experimental parallel dry-run
+
+The production `publish.yml` remains unchanged. The separate manual-only
+`publish-parallel-draft.yml` exercises its prepublication gates concurrently,
+without the npm environment, publishing permissions, tag writes or GitHub
+release creation. It is not a replacement publisher and its green result is
+not publication authorization. See [the draft testing procedure](docs/PARALLEL_PUBLISHER_DRAFT.md)
+for cold/warm comparisons, exact-tarball binding and promotion criteria.
+
 ## Trusted publisher configuration
 
 The npm package's trusted publisher must identify this repository, not the legacy `react-native-ble-plx` repository:
