@@ -23,6 +23,17 @@ All notable changes to `unified-ble-manager` are documented here.
 - Correct addon guidance: Node-API stability is distinct from Node/Electron
   module ABI. OS, architecture, dependencies, Node-API floor and sealed UBM
   build identity remain required.
+- Preserve Linux discovery failure operation identity: deferred acquisition
+  reports `connection.connect.when-available`, while address resolution keeps
+  `peer.address-targeting`, including retained discovery cleanup failures.
+- Keep same-peer discovery ownership registered while overlapping requests
+  still hold it, so refused cleanup remains reachable at manager teardown.
+- Reconcile current guides and capability ledgers with desktop initial deferred
+  acquisition, BlueZ unmeasured write admission and ordinary OS-managed Windows
+  writes; retain historical snapshots and explicit hardware qualification gaps.
+- Harden publisher gate-preservation checks against disabled or nonblocking
+  steps. Retain the sealed candidate through delayed approval and avoid
+  cancelling an in-flight same-tag publication; expired artifacts fail closed.
 
 ### Added
 

@@ -309,6 +309,127 @@ async fn private_bus_le_availability_other_peer_does_not_wait_for_absent_peer() 
 
 #[tokio::test]
 #[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_queued_same_peer_retains_cleanup_debt_at_close() {
+    const PEER: &str = "hci0/dev_AA_BB_CC_DD_EE_FF";
+    let (bluez, state, server, worker) = fixture().await;
+    let started = state.lock().unwrap().started.clone();
+    let first = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available(PEER).await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    let entry = bluez.availability_discovery(PEER).await.unwrap();
+    let second = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available(PEER).await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while Arc::strong_count(&entry) < 4 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(entry);
+    let report = || {
+        dbus::Message::new_signal(
+            "/org/bluez/hci0",
+            "org.unifiedblemanager.LinuxAuthority1",
+            "LeAdvertisement",
+        )
+        .unwrap()
+        .append2(
+            dbus::Path::new("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF").unwrap(),
+            41u64,
+        )
+    };
+    server.send(report()).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), first)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    state.lock().unwrap().timeout_stop = true;
+    server.send(report()).unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(3), second)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        error.platform().unwrap().code,
+        "org.freedesktop.DBus.Error.NoReply"
+    );
+    let retained = bluez.finish_discovery().await.unwrap_err();
+    assert_eq!(retained.platform(), error.platform());
+    assert_eq!(retained.operation(), "connection.connect.when-available");
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_start_refusal_reports_own_operation() {
+    let (bluez, state, _server, worker) = fixture().await;
+    state.lock().unwrap().refuse_start = true;
+    let error = bluez
+        .wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap_err();
+    assert_eq!(error.operation(), "connection.connect.when-available");
+    assert_eq!(error.platform().unwrap().code, "org.bluez.Error.NotReady");
+    bluez
+        .finish_availability("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap();
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_retained_cancel_cleanup_and_prestart_report_own_operation() {
+    let (bluez, state, _server, worker) = fixture().await;
+    let started = {
+        let mut state = state.lock().unwrap();
+        state.timeout_stop = true;
+        state.started.clone()
+    };
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    waiting.abort();
+    assert!(waiting.await.unwrap_err().is_cancelled());
+    let cleanup = bluez
+        .finish_availability("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap_err();
+    assert_eq!(cleanup.operation(), "connection.connect.when-available");
+    assert_eq!(
+        cleanup.platform().unwrap().code,
+        "org.freedesktop.DBus.Error.NoReply"
+    );
+    let retry = bluez
+        .wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap_err();
+    assert_eq!(retry.operation(), "connection.connect.when-available");
+    assert_eq!(retry.platform(), cleanup.platform());
+    let observed = state.lock().unwrap();
+    assert_eq!((observed.starts, observed.stops), (1, 1));
+    drop(observed);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
 async fn private_bus_le_availability_cleanup_refusal_remains_owned() {
     let (bluez, state, server, worker) = fixture().await;
     let started = {
@@ -343,6 +464,7 @@ async fn private_bus_le_availability_cleanup_refusal_remains_owned() {
         .unwrap()
         .unwrap_err();
     assert_eq!(error.platform().unwrap().code, "org.bluez.Error.Failed");
+    assert_eq!(error.operation(), "connection.connect.when-available");
     bluez
         .finish_availability("hci0/dev_AA_BB_CC_DD_EE_FF")
         .await
@@ -627,13 +749,9 @@ async fn private_bus_address_resolution_reports_stop_refusal_not_success() {
     let result = bluez
         .resolve_address("AA:BB:CC:DD:EE:FF", crate::boundary::AddressType::Public)
         .await;
-    assert!(
-        result
-            .unwrap_err()
-            .detail()
-            .unwrap()
-            .contains("owned stop refused")
-    );
+    let error = result.unwrap_err();
+    assert_eq!(error.operation(), "peer.address-targeting");
+    assert!(error.detail().unwrap().contains("owned stop refused"));
     worker.abort();
 }
 

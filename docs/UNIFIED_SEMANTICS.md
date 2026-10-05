@@ -617,7 +617,8 @@ the minimum of 524,288 bytes, the negotiated boundary maximum, the adapter's
 reported feature maximum, and the operation's protocol maximum. The operation
 fails `bytes.too-large` before dispatch if input exceeds it. An unavailable or
 unmeasured maximum is not infinity: the feature is `unavailable` until a safe
-limit is declared. Output larger than an advertised limit is a backend protocol
+limit is declared. BlueZ's declared 512-byte admission bound when MTU is withheld
+is such a limit, not a measured MTU. Output larger than an advertised limit is a backend protocol
 failure and invalidates the affected attachment.
 
 For React Native, bytes cross the `UnifiedBleRustCore` TurboModule as strict
@@ -926,11 +927,16 @@ limit a write in that mode is admitted against:
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | iOS (React Native), macOS (Node/Electron/Tauri) | `CBPeripheral.maximumWriteValueLength(for: .withResponse)`                                                                                       | `maximumWriteValueLength(for: .withoutResponse)`                                                                                                              |
 | Android (React Native)                          | 512: the stack performs a prepared (long) write past one ATT payload, and `BluetoothGatt.writeCharacteristic` refuses a longer value from API 33 | MTU − 3 of the MTU `onMtuChanged` reported, or of the ATT default MTU 23 (20 bytes) before any exchange; limitation `android-att-default-mtu-before-exchange` |
-| Windows (WinRT)                                 | the long write `WriteValueAsync` performs                                                                                                        | one ATT payload of `GattSession.MaxPduSize`                                                                                                                   |
-| Linux (BlueZ)                                   | the long write BlueZ `WriteValue` performs                                                                                                       | one ATT payload of `GattCharacteristic1.MTU`                                                                                                                  |
+| Windows (WinRT)                                 | ordinary OS-managed with-response writes up to 512 bytes through `WriteValueAsync` | `GattSession.MaxPduSize` − 3 |
+| Linux (BlueZ)                                   | OS-managed `WriteValue` up to 512 bytes | reported `GattCharacteristic1.MTU` − 3; 512-byte admission bound when MTU is withheld |
 
-A limit the platform does not report fails `capability.unavailable`; it is
-never guessed. Web Bluetooth answers `capability.unsupported`.
+When BlueZ withholds MTU, it admits both write modes up to 512 bytes and lets
+the OS answer; this does not promise a write succeeds or manufacture a measured
+MTU. Its effective-MTU query still answers `capability.unavailable` until the OS
+reports a measurement. Other missing per-mode limits answer
+`capability.unavailable`; Web Bluetooth answers `capability.unsupported`.
+These ordinary writes are not caller-controlled prepared/reliable transactions;
+the explicit desktop `long-write` mode remains refused.
 
 Write-without-response readiness is `unsupported` until a backend advertises
 `gatt:write-without-response-readiness`. When advertised, the backend MUST

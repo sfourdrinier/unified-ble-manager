@@ -25,11 +25,26 @@ struct State {
     stop: Option<Reply>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy)]
+pub(super) enum DiscoveryOperation {
+    AddressTargeting,
+    WhenAvailable,
+}
+
+impl DiscoveryOperation {
+    fn name(self) -> &'static str {
+        match self {
+            Self::AddressTargeting => "peer.address-targeting",
+            Self::WhenAvailable => "connection.connect.when-available",
+        }
+    }
+}
+
 pub(super) struct DiscoveryOwner {
     pub(super) gate: Mutex<()>,
     state: StdMutex<Option<State>>,
     scheduled: AtomicBool,
+    operation: DiscoveryOperation,
 }
 
 fn call(
@@ -37,6 +52,7 @@ fn call(
     adapter: String,
     owner: String,
     method: &'static str,
+    operation: DiscoveryOperation,
 ) -> Reply {
     async move {
         connection
@@ -67,7 +83,7 @@ fn call(
                             | "org.bluez.Error.NotAuthorized"
                             | "org.bluez.Error.NotReady"
                     ),
-                    error: platform("peer.address-targeting", error),
+                    error: platform(operation.name(), error),
                 }
             })
     }
@@ -76,6 +92,14 @@ fn call(
 }
 
 impl DiscoveryOwner {
+    pub(super) fn new(operation: DiscoveryOperation) -> Self {
+        Self {
+            gate: Mutex::new(()),
+            state: StdMutex::new(None),
+            scheduled: AtomicBool::new(false),
+            operation,
+        }
+    }
     /// Caller holds gate for its whole resolution; accepted Start is stored
     /// before polling its reply, so cancellation cannot erase admission.
     pub(super) async fn start(
@@ -89,6 +113,7 @@ impl DiscoveryOwner {
             adapter.to_owned(),
             owner.clone(),
             "StartDiscovery",
+            self.operation,
         );
         *self.state.lock().unwrap() = Some(State {
             owner,
@@ -138,6 +163,7 @@ impl DiscoveryOwner {
                     adapter.to_owned(),
                     owner,
                     "StopDiscovery",
+                    self.operation,
                 );
                 self.state
                     .lock()

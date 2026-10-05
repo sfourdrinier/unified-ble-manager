@@ -320,9 +320,12 @@ platform: on Android associate (`ble.association.associate`), arm presence
 `connect` with intent `'when-available'`; on iOS configure
 `background.ios.restoration` and adopt with `restoration.claim()`. iOS
 reconnects directly through a durable restored `PeerReference`, never through
-Android-only `'when-available'`; the shared driver now accepts that reference,
+`'when-available'` (refused on iOS and tvOS); the shared driver now accepts that reference,
 but its physical direct-reconnect qualification is still open. The full task-ordered chain, and what API<31,
 tvOS, desktop and Web answer instead, is in [`BACKGROUND.md`](BACKGROUND.md).
+Desktop initial acquisition implements `when-available` on macOS and Windows,
+and on Linux with the optional maintained-daemon LE observer. This does not
+provide process restoration or automatic post-loss reconnect.
 
 ## Coming from react-native-ble-plx
 

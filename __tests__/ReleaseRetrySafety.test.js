@@ -91,10 +91,10 @@ describe('release retry safety', () => {
     expect(verify).toBeGreaterThan(download)
   })
 
-  test('cancels a superseded run of the same tag without cancelling a different version tag', () => {
+  test('queues a repeated same-tag run without cancelling in-flight OIDC publication', () => {
     const workflow = read('.github/workflows/publish.yml')
     expect(workflow).toContain('group: ${{ github.workflow }}-${{ github.ref }}')
-    expect(workflow).toMatch(/concurrency:\n(?:  .+\n)*  cancel-in-progress: true/)
+    expect(YAML.parse(workflow).concurrency['cancel-in-progress']).toBe(false)
   })
 
   test('every Android build installs only the supported platform-tools SDK package', () => {

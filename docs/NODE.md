@@ -233,6 +233,13 @@ ownership for supported rows.
 
 Cancellation: an aborted `AbortSignal` cancels exactly the in-flight core operation, through a ticket the host mints before the call. An abort before admission ends the operation with `operation.aborted` and no radio call. A caller deadline crosses to the core as a relative budget. Connection acquisition without a deadline is unbounded for both intents: it waits for the native result or cancellation; other operations retain their documented liveness backstops.
 
+Windows admits ordinary OS-managed with-response writes up to 512 bytes;
+commands use `GattSession.MaxPduSize` − 3. Linux uses the same 512-byte request
+bound and reported MTU − 3 for commands. When BlueZ withholds MTU, it admits
+both write modes up to 512 bytes and lets the OS answer; the effective-MTU query
+still reports `capability.unavailable`, not an invented measurement. Explicit
+prepared/reliable transactions remain refused.
+
 ### Parity with the 4.x desktop backends
 
 Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backends offered is tracked in `DESKTOP_RUST_CORE_PARITY`, which `unified-ble-manager/testing` exports (no production entrypoint exports it). Runtime registration reads the instantiated central's `runtimeCapabilityStates`, not the static OS diagnostic table, and is narrowed to mechanisms this provider wires. The native snapshot accepts all four canonical states. Connection refusals retain `unavailable` versus `unsupported` and the instance's reason; a native `supported` mechanism does not by itself promote the public provider's deterministic evidence label.
@@ -243,7 +250,7 @@ Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backend
 - Events: `connection-lost` and `database-changed`.
 - Adapter: power, authorization (macOS, Windows), watch, and enumeration/selection.
 - Operations: exact in-flight cancellation; an honest without-response commit state; the `require-*` delivery check. WinRT additionally carries the requirement to the OS and prefers notify over indicate.
-- Connection: CoreBluetooth connected RSSI; maximum write length and long write; Windows maintain-connection.
+- Connection: CoreBluetooth connected RSSI; per-mode maximum write length and ordinary OS-managed writes; initial `when-available` acquisition on all three desktop OSes (Linux requires the optional maintained-daemon LE observer).
 - Advertisements: solicited and overflow UUIDs and `connectable` (macOS).
 - Security (Windows, Linux): state, pair, cancel, unpair and security events, plus the BlueZ pairing-generation controller.
 - Linux: address targeting, advertisement address type, extended characteristic flags and access requirements, and the priority/parameter reasons.

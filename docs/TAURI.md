@@ -173,9 +173,9 @@ Planning is separate from observation: notification values preserve the native
 host's reported `delivery`, including `unknown` where the platform cannot report
 the mode.
 
-The maximum write length (`connection.maximum-write-length`, per `mode`) is the core's answer for that write mode, the same limit a write of that mode is admitted against: a reported maximum is never refused. With an OS long write (Windows, Linux) a with-response write reaches 512 bytes; a write without response, and every write on macOS, is bounded by what the OS reports for the link (one ATT payload where the OS has no per-mode readout). An unmeasured limit fails `capability.unavailable`, never a guess. Tauri 4.x reported `mtu - 3` for every mode.
+The maximum write length (`connection.maximum-write-length`, per `mode`) is the core's answer for that write mode, the same limit a write of that mode is admitted against: a reported maximum is never refused. Windows admits ordinary OS-managed with-response writes up to 512 bytes; commands use `GattSession.MaxPduSize` − 3. Linux admits with-response values up to 512 bytes and, with a reported MTU, commands up to MTU − 3. When BlueZ withholds the MTU, it admits both write modes up to 512 bytes and lets the OS answer the write; that is an admission limit, not an invented MTU measurement. macOS uses the OS-reported per-mode maximum. Tauri 4.x reported `mtu - 3` for every mode.
 
-Ordinary `with-response` writes within the measured maximum use the OS-managed
+Ordinary `with-response` writes within the admitted maximum use the OS-managed
 write procedure; Windows and Linux can therefore accept a value larger than one
 ATT payload. This is distinct from caller-controlled prepared/reliable transactions:
 the explicit `long-write` mode has no prepared-write radio path and is refused

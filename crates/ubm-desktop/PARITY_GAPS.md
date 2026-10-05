@@ -40,18 +40,19 @@ The same table ships as code in
 projected into the live core by `register_desktop_capabilities`, so runtime
 capability truth matches this report row for row.
 
-## btleplug-provides (6)
+## btleplug-provides (7)
 
 | Capability | Scenario | Bound |
 |---|---|---|
 | `discovery:continuous-scan` | scan.owner-join-authority-and-signature | One global scan owner (`one-global-scan-owner`); explicit stop plus event-source-close settlement; second owner fails `scan.already-active` before any radio effect. |
 | `peer:resolve-reference` | peer.resolve-reference | platform-guid resolution for observed peers (`platform-guid-only`); address domains need OS identity adapters. |
 | `connection:direct` | connection.lease-joins-borrowing-transfer-and-revocation | Direct connect plus ownership cleanup (`deterministic-only`); half-open radio links are disconnected on failure; disconnect waits are bounded (1 s) and failures retained, never reported clean. |
+| `connection:when-available` | connection.when-available | Initial acquisition is wired through the per-OS adapters below: pending CoreBluetooth connect, WinRT MaintainConnection, and the optional maintained Linux LE observer. No automatic post-loss reconnect; no physical evidence promotion. |
 | `connection:rssi` | connection.rssi-and-att-mtu-capability-contract | RSSI reported only when the OS measures the link (`deterministic-only`): `CBPeripheral.readRSSI` through `RadioBoundary::read_rssi` → `DesktopCentral::read_rssi` (lease holder, connected link, bounded by the budget). Windows and Linux answer `capability.unsupported` (see Per-OS verdicts). |
 | `gatt:descriptors` | gatt.descriptor-discovery-read-write | Descriptor discovery/reads/writes with occurrence identity (`deterministic-only`); direct CCCD writes fail `gatt.cccd-managed`, sharing stays with subscribe/unsubscribe. |
 | `gatt:indications` | gatt.indications | Subscribed values buffer per consumer and are observable through the take API (`delivery-kind-unknown`: the btleplug stream does not distinguish indications from notifications; per-value delivery kind stays `unknown`; the enable's CCCD mode is answered before any effect from the characteristic's properties and the platform rule (`delivery::plan_delivery`, finding 39), and the Windows adapter rewrites the CCCD to honour a requirement). Per-instance routing by (service, occurrence, characteristic, occurrence): every notification carries its attribute instance (vendored btleplug patch 6, `attribute-instances`: ATT handle on BlueZ and WinRT, discovery position on CoreBluetooth), so same-UUID instances subscribe side by side and each value reaches only the instance that fired it. |
 
-## narrow-OS-adapter-needed (22)
+## narrow-OS-adapter-needed (21)
 
 | Capability | Scenario | Missing adapter |
 |---|---|---|
@@ -61,8 +62,7 @@ capability truth matches this report row for row.
 | `peer:known` | peer.known-peers | Unrestricted OS-known peer enumeration remains unavailable; explicit CoreBluetooth identifier lookup has the override below. |
 | `peer:system-connected` | peer.system-connected | Adopting OS-connected peripherals. |
 | `peer:bonded` | peer.bonded | OS bond-store readout. |
-| `connection:when-available` | connection.when-available | Deferred auto-connect / reconnect daemon path. |
-| `connection:effective-mtu` | connection.rssi-and-att-mtu-capability-contract | The OS-measured MTU already feeds every write through the core maximum-write-length (fail-closed when unmeasured); the negotiated value is exposed per OS as `DesktopCentral::read_effective_mtu` (lease holder, connected link, bounded by the budget; see Per-OS verdicts). |
+| `connection:effective-mtu` | connection.rssi-and-att-mtu-capability-contract | The measured negotiated value is exposed per OS as `DesktopCentral::read_effective_mtu` (lease holder, connected link, bounded by the budget; see Per-OS verdicts). A missing BlueZ measurement answers unavailable; its write-admission bound does not invent a measurement. |
 | `connection:request-mtu` | connection.mtu-request | OS MTU-request control path. |
 | `connection:priority` | connection.priority | OS connection-priority control. |
 | `connection:parameters` | connection.parameters | OS connection-parameter update. |
@@ -75,7 +75,7 @@ capability truth matches this report row for row.
 | `security:custom-ceremony` | security.custom-ceremony | Reviewed profile plus adapter; no handshake is invented here. |
 | `security:pairing-generation` | security.pairing-generation | Bond-generation tracking on the pairing adapter. |
 | `gatt:service-changed` | gatt.service-changed | Service-changed arrives only where the OS surfaces it (CoreBluetooth); Windows/Linux need an adapter. |
-| `gatt:maximum-write-length` | gatt.maximum-write-length | Measured MTU is wired into the core maximum-write-length on every characteristic/descriptor write (fail-closed when unmeasured); a dedicated maximumWriteLength host query needs an adapter. |
+| `gatt:maximum-write-length` | gatt.maximum-write-length | Per-mode limits feed every characteristic/descriptor write; BlueZ admits up to 512 bytes when MTU is withheld and lets the OS answer. A dedicated maximumWriteLength host query needs an adapter. |
 | `discovery:system-chooser` | chooser.system | Desktop has no system chooser; explicit selection needs an OS picker. |
 
 ## preapproved-limitation-candidate (8)
@@ -125,7 +125,7 @@ available here (provenance per row).
 | `peer:address-targeting` | linux | os-adapter-provides | os-adapter-compile-verified | Existing device object, otherwise an owned LE discovery session until the object exists; address resolution never establishes a link. |
 | `peer:known` | macos | os-adapter-provides | os-adapter-compile-verified | Explicit UUID retrieval on the existing CoreBluetooth manager; no connection lease or unrestricted enumeration. |
 | `peer:system-connected` | macos | os-adapter-provides | os-adapter-compile-verified | Service-filtered system-connected lookup; local peripheral state does not imply global disconnection. No connection ownership is acquired. |
-| `gatt:maximum-write-length` | windows | btleplug-provides | deterministic-only | Commands: btleplug's MTU (`GattSession.MaxPduSize`, 23 until the first change) - 3; requests and descriptor writes: a whole attribute value (512), because `WriteValueAsync` performs the long write, as the legacy addon and Tauri 4.x relied on (finding 81, `WriteLimits::os_long_write`). |
+| `gatt:maximum-write-length` | windows | btleplug-provides | deterministic-only | Commands: btleplug's MTU (`GattSession.MaxPduSize`, 23 until the first change) - 3; ordinary OS-managed requests and descriptor writes: a whole attribute value (512), through `WriteValueAsync` (finding 81, internal `WriteLimits::os_long_write`). This does not expose a caller-controlled prepared transaction. |
 | `gatt:maximum-write-length` | linux | os-adapter-provides | os-adapter-compile-verified | Commands: `GattCharacteristic1.MTU` - 3; when BlueZ withholds the MTU, no gate below the 512-byte attribute value (the legacy BlueZ backend let BlueZ answer, finding 97); requests: a whole attribute value (BlueZ performs the long write). |
 | `gatt:maximum-write-length` | macos | os-adapter-provides | deterministic-only | Vendored btleplug patch 1 (`vendor/btleplug/UBM_PATCHES.md`): `maximumWriteValueLengthForType:` per write type. Unsupported in a workspace linking crates.io btleplug. |
 | `gatt:service-changed` | macos | btleplug-provides | deterministic-only | btleplug reports `didModifyServices`. |

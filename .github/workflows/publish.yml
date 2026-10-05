@@ -11,7 +11,7 @@ permissions:
   contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 defaults:
   run:
     shell: bash
@@ -85,7 +85,7 @@ jobs:
           path: .native-prebuild-artifact
           include-hidden-files: true
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
   native-rustcore:
     name: Native RustCore XCFramework (macOS)
     timeout-minutes: 90
@@ -128,7 +128,7 @@ jobs:
           path: ios/RustCore
           include-hidden-files: true
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
   android-classic:
     name: Source classic RN Android (parallel)
     runs-on: ubuntu-latest
@@ -346,7 +346,7 @@ jobs:
             .release-package/canonical.tgz
             .release-package/source-commit.txt
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
           compression-level: 0
     needs:
       - native-prebuild

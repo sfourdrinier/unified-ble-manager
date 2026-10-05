@@ -3,6 +3,35 @@ const path = require('node:path')
 
 const read = name => fs.readFileSync(path.join(__dirname, '..', name), 'utf8')
 
+test('current guides separate BlueZ write admission from unavailable MTU measurement', () => {
+  for (const name of ['docs/TAURI.md', 'docs/UNIFIED_SEMANTICS.md', 'docs/NODE.md']) {
+    const guide = read(name)
+    expect(guide).toContain('both write modes up to 512 bytes')
+    expect(guide).toContain('ordinary OS-managed with-response writes up to 512 bytes')
+    expect(guide).not.toContain('the long write `WriteValueAsync` performs')
+    expect(guide).not.toContain('An unmeasured limit fails `capability.unavailable`')
+  }
+})
+
+test('current desktop availability and support guidance does not retain obsolete refusals', () => {
+  for (const name of ['docs/TUTORIALS.md', 'docs/GETTING_STARTED.md']) {
+    expect(read(name)).not.toMatch(/(?:when-available.{0,20}Android-only|Android-only.{0,20}when-available)/)
+    expect(read(name)).toContain('Desktop initial acquisition')
+  }
+  const tracker = read('docs/5.0.0-RELEASE-COMPLETION-TRACKER.md')
+  expect(tracker).not.toContain('provider independently refuses deferred')
+  expect(tracker).not.toContain('`SUPPORT.md` still targets the 4.x line')
+  const parity = read('crates/ubm-desktop/PARITY_GAPS.md')
+  expect(parity).not.toContain('Deferred auto-connect / reconnect daemon path.')
+  expect(parity).not.toContain('fail-closed when unmeasured')
+})
+
+test('historical migration and baseline retain snapshots with current-guide pointers', () => {
+  expect(read('MIGRATION_4.0.md')).toContain('Versions and install commands below belong to that historical snapshot')
+  expect(read('docs/5.0.0-U0-BASELINE.md')).toContain('Historical snapshot; not current installation guidance')
+  expect(read('docs/5.0.0-U0-BASELINE.md')).toContain('[`NODE.md`](NODE.md)')
+})
+
 test('agent addon guidance preserves Node-API compatibility rather than runtime module-ABI rebuilds', () => {
   for (const name of ['AGENTS.md', 'native/AGENTS.md']) {
     const guide = read(name)

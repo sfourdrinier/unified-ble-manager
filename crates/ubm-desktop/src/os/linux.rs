@@ -260,7 +260,9 @@ impl Bluez {
                 "gatt.watch",
             )
             .with_detail("LE GATT observation has not been registered"))),
-            address_discovery: Arc::new(discovery::DiscoveryOwner::default()),
+            address_discovery: Arc::new(discovery::DiscoveryOwner::new(
+                discovery::DiscoveryOperation::AddressTargeting,
+            )),
             bus,
             availability_discoveries: Mutex::new(HashMap::new()),
         };
@@ -764,15 +766,23 @@ impl Bluez {
             .cloned();
         if let Some(entry) = entry {
             entry.owner.cleanup(&entry.conn, &self.adapter_path).await?;
-            let mut entries = self.availability_discoveries.lock().await;
-            if entries
-                .get(peer)
-                .is_some_and(|current| Arc::ptr_eq(current, &entry))
-            {
-                entries.remove(peer);
-            }
+            self.release_idle_availability(peer, &entry).await;
         }
         Ok(())
+    }
+
+    async fn release_idle_availability(&self, peer: &str, entry: &Arc<AvailabilityDiscovery>) {
+        let mut entries = self.availability_discoveries.lock().await;
+        // The map and this caller are the only owners when no request has
+        // cloned the entry while waiting for its gate. Keep queued requests
+        // registered so any later refused Stop remains reachable at close.
+        if Arc::strong_count(entry) == 2
+            && entries
+                .get(peer)
+                .is_some_and(|current| Arc::ptr_eq(current, entry))
+        {
+            entries.remove(peer);
+        }
     }
 
     async fn availability_discovery(
@@ -792,7 +802,9 @@ impl Bluez {
         .map_err(|error| platform("connection.connect.when-available", error))?;
         let entry = Arc::new(AvailabilityDiscovery {
             conn,
-            owner: Arc::new(discovery::DiscoveryOwner::default()),
+            owner: Arc::new(discovery::DiscoveryOwner::new(
+                discovery::DiscoveryOperation::WhenAvailable,
+            )),
         });
         entries.insert(peer.to_owned(), entry.clone());
         Ok(entry)
@@ -965,7 +977,7 @@ impl Bluez {
             };
         }
         cleanup.armed = false;
-        self.availability_discoveries.lock().await.remove(peer_id);
+        self.release_idle_availability(peer_id, &entry).await;
         result
     }
 

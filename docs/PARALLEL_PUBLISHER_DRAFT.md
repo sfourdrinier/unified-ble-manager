@@ -13,8 +13,12 @@ Both workflows are generated from the preserved serial steps rather than maintai
 second copy of their commands. Regenerate with
 `node scripts/ci/generate-parallel-publisher-draft.js`; verify freshness with
 the same command followed by `--check`. Add `--production` to generate or
-check the active publisher. Tests fail if a production gate is
-omitted or changed. The explicit publication-only exclusion list covers OIDC
+check the active publisher. Tests compare the full generated dependency graph,
+including each gate's job, step order, conditions, environment and failure
+semantics. Mutation tests reject disabled/nonblocking steps and jobs, relocated
+or duplicated commands, dropped dependencies and weakened publish conditions;
+matching a command string elsewhere cannot satisfy a gate. The explicit
+publication-only exclusion list covers OIDC
 setup, version/channel/current-main admission, npm availability/publication,
 registry digest/provenance binding and GitHub release creation. Those remain
 mandatory in the protected final production job, not proven by this dry-run.
@@ -129,5 +133,20 @@ npm environment, exact-current-main/tag/channel guards, OIDC publish,
 immutable recovery, registry/provenance verification and GitHub assets.
 Only its final protected job has publication authority, after every parallel
 gate succeeds. It publishes the sealed bytes, not a second package build.
+Same-tag runs queue rather than cancelling an in-flight OIDC publication;
+different version tags retain separate concurrency groups.
+Production candidate and native-input artifacts request 90-day retention
+(subject to GitHub repository retention policy), so the protected npm
+environment approval can outlast a week. Approval is not a substitute for
+the source/digest checks after downloading the candidate.
+
+If an artifact expires or is deleted, the download fails closed. There is no
+local repack or missing-artifact fallback in the protected publisher. Do not
+approve a run whose candidate is unavailable: rerun the **entire** immutable-tag
+workflow to rebuild and requalify all lanes and seal a new run-scoped candidate,
+then approve that run only after its gates succeed. Rerunning only the failed
+publisher cannot recreate an expired candidate. Existing-version recovery and
+exact-current-main admission still apply; never move the tag or manually publish
+to bypass them.
 Never publish a comparison version or retag an existing release just to test
 this draft. Physical qualification and support labels remain independent.

@@ -5,6 +5,8 @@
 > Historical, non-copyable migration record. Apps already using UBM 4.0.28
 > must use [`MIGRATION_4.0.28.md`](MIGRATION_4.0.28.md). Old snippets below are
 > API comparison material, not current setup or restoration instructions.
+> Versions and install commands below belong to that historical snapshot;
+> use the current migration guide linked above for current package pins.
 
 This source targets `5.0.0-rc.19`. The `4.0.0` release is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
 

@@ -35,6 +35,11 @@ release creation. It is not a replacement publisher and its green result is
 not publication authorization. See [the draft testing procedure](docs/PARALLEL_PUBLISHER_DRAFT.md)
 for cold/warm comparisons and exact-tarball binding. rc.20 is the first
 user-authorized production test; no measured speedup is claimed yet.
+Same-tag runs queue without cancelling an in-flight publish. Production
+artifacts request 90-day retention; an expired/deleted candidate fails closed.
+Recovery requires an entire immutable-tag workflow rerun and all gates again,
+not a protected-job repack or manual publish. See the linked procedure for
+approval holds and existing-version recovery boundaries.
 
 ## Trusted publisher configuration
 
