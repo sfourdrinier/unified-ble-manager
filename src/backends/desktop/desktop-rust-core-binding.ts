@@ -399,6 +399,7 @@ export interface DesktopRustCoreCentral {
     peerKey: string
     connectionGeneration: string | null
   }>
+  connectWhenAvailable: DesktopRustCoreCentral['connect']
   disconnect(
     options: { readonly peerId: string; readonly lease: string } & DesktopRustCoreControl
   ): Promise<DesktopRustCoreConnectionReleaseReport>
@@ -513,6 +514,7 @@ export interface DesktopRustCoreCentral {
   connectedPeers(
     options: { readonly services: readonly string[] } & DesktopRustCoreControl
   ): Promise<DesktopRustCoreDirectoryPeer[]>
+  bondedPeers(options: DesktopRustCoreControl): Promise<DesktopRustCoreDirectoryPeer[]>
   resolvePeer(
     options: { readonly peerId: string } & DesktopRustCoreControl
   ): Promise<DesktopRustCoreDirectoryPeer | null>

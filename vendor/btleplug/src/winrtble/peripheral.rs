@@ -94,6 +94,7 @@ struct Shared {
 
     // Mutable, advertised, state...
     address_type: RwLock<Option<AddressType>>,
+    explicit_address_type: RwLock<Option<AddressType>>,
     local_name: RwLock<Option<String>>,
     advertisement_name: RwLock<Option<String>>,
     last_tx_power_level: RwLock<Option<i16>>, // XXX: would be nice to avoid lock here!
@@ -105,6 +106,25 @@ struct Shared {
 }
 
 impl Peripheral {
+    pub(crate) fn set_explicit_address_type(&self, requested: AddressType) -> Result<()> {
+        let mut kind = self
+            .shared
+            .explicit_address_type
+            .write()
+            .map_err(Error::from)?;
+        let advertised = *self.shared.address_type.read().map_err(Error::from)?;
+        if kind
+            .or(advertised)
+            .is_some_and(|existing| existing != requested)
+        {
+            return Err(Error::RuntimeError(
+                "explicit address type conflicts with the existing peripheral identity".into(),
+            ));
+        }
+        *kind = Some(requested);
+        Ok(())
+    }
+
     pub(crate) fn new(adapter: Weak<AdapterManager<Self>>, address: BDAddr) -> Self {
         let (broadcast_sender, _) = broadcast::channel(crate::ubm::EVENT_CAPACITY);
         Peripheral {
@@ -117,6 +137,7 @@ impl Peripheral {
                 ble_services: DashMap::new(),
                 notifications_channel: broadcast_sender,
                 address_type: RwLock::new(None),
+                explicit_address_type: RwLock::new(None),
                 local_name: RwLock::new(None),
                 advertisement_name: RwLock::new(None),
                 last_tx_power_level: RwLock::new(None),
@@ -134,7 +155,11 @@ impl Peripheral {
     fn derive_properties(&self) -> PeripheralProperties {
         PeripheralProperties {
             address: self.address(),
-            address_type: *self.shared.address_type.read().unwrap(),
+            address_type: self.shared.explicit_address_type.read().unwrap().or(*self
+                .shared
+                .address_type
+                .read()
+                .unwrap()),
             local_name: self.shared.local_name.read().unwrap().clone(),
             advertisement_name: self.shared.advertisement_name.read().unwrap().clone(),
             tx_power_level: *self.shared.last_tx_power_level.read().unwrap(),
@@ -654,8 +679,15 @@ impl ApiPeripheral for Peripheral {
             }
         });
 
+        let address_type = self
+            .shared
+            .explicit_address_type
+            .read()
+            .map_err(Error::from)?
+            .or(*self.shared.address_type.read().map_err(Error::from)?);
         let device = BLEDevice::new(
             self.shared.address,
+            address_type,
             connection_status_changed,
             max_pdu_size_changed,
         )

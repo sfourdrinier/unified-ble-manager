@@ -41,11 +41,14 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 
+use btleplug::api::{Central as _, Peripheral as _};
 use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
 use windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattClientCharacteristicConfigurationDescriptorValue, GattSession,
 };
-use windows::Devices::Bluetooth::{BluetoothAdapter, BluetoothLEDevice};
+use windows::Devices::Bluetooth::{
+    BluetoothAdapter, BluetoothAddressType, BluetoothConnectionStatus, BluetoothLEDevice,
+};
 use windows::Devices::Enumeration::{
     DeviceInformation, DeviceInformationUpdate, DevicePairingResult, DeviceWatcher,
     DeviceWatcherStatus,
@@ -118,12 +121,29 @@ fn address(peer_id: &str, operation: &str) -> Result<u64, DesktopError> {
     })
 }
 
-async fn device(peer_id: &str, operation: &str) -> Result<BluetoothLEDevice, DesktopError> {
+async fn device(
+    peer_id: &str,
+    operation: &str,
+    kind: Option<crate::boundary::AddressType>,
+) -> Result<BluetoothLEDevice, DesktopError> {
     let address = address(peer_id, operation)?;
-    BluetoothLEDevice::FromBluetoothAddressAsync(address)
-        .map_err(|error| winrt(operation, error))?
-        .await
-        .map_err(|error| winrt(operation, error))
+    match kind {
+        Some(kind) => BluetoothLEDevice::FromBluetoothAddressWithBluetoothAddressTypeAsync(
+            address,
+            native_address_type(kind),
+        ),
+        None => BluetoothLEDevice::FromBluetoothAddressAsync(address),
+    }
+    .map_err(|error| winrt(operation, error))?
+    .await
+    .map_err(|error| winrt(operation, error))
+}
+
+fn native_address_type(kind: crate::boundary::AddressType) -> BluetoothAddressType {
+    match kind {
+        crate::boundary::AddressType::Public => BluetoothAddressType::Public,
+        crate::boundary::AddressType::Random => BluetoothAddressType::Random,
+    }
 }
 
 /// One maintained connection: the GATT session held with
@@ -135,6 +155,7 @@ struct Maintained {
     services_changed: i64,
     cleanup: CleanupStages<3>,
     callbacks: Arc<CallbackGate>,
+    availability: Option<(i64, tokio::sync::watch::Sender<Result<bool, DesktopError>>)>,
 }
 
 /// `GattServicesChanged` reports that found the event queue full. Counted,
@@ -151,6 +172,7 @@ pub(crate) fn services_changed_drops() -> u64 {
 /// maintained GATT sessions of live connections, and the selected
 /// adapter's presence watch (stopped at close, or when the radio drops).
 pub(crate) struct WinRt {
+    adapter: btleplug::platform::Adapter,
     adapter_id: String,
     pairings: StdMutex<HashMap<String, IAsyncOperation<DevicePairingResult>>>,
     sessions: StdMutex<HashMap<String, Vec<Maintained>>>,
@@ -169,12 +191,188 @@ impl WinRt {
     ) -> Result<Self, DesktopError> {
         cleanup_result(retry_failed_watches(adapter_id))?;
         Ok(Self {
+            adapter: adapter.clone(),
             adapter_id: adapter_id.to_owned(),
             pairings: StdMutex::new(HashMap::new()),
             sessions: StdMutex::new(HashMap::new()),
             session_admission: PeerAdmission::new(),
             adapter_watch: StdMutex::new(Some(AdapterWatch::start(adapter_id, adapter, events)?)),
         })
+    }
+
+    async fn device(
+        &self,
+        peer_id: &str,
+        operation: &str,
+    ) -> Result<BluetoothLEDevice, DesktopError> {
+        let id = peer_id
+            .parse::<btleplug::api::BDAddr>()
+            .map_err(|error| winrt_text(operation, error))?
+            .into();
+        let peripheral = self
+            .adapter
+            .add_peripheral(&id)
+            .await
+            .map_err(|error| winrt_text(operation, error))?;
+        let kind = peripheral
+            .properties()
+            .await
+            .map_err(|error| winrt_text(operation, error))?
+            .and_then(|properties| properties.address_type)
+            .map(|kind| match kind {
+                btleplug::api::AddressType::Public => crate::boundary::AddressType::Public,
+                btleplug::api::AddressType::Random => crate::boundary::AddressType::Random,
+            });
+        device(peer_id, operation, kind).await
+    }
+
+    pub(crate) async fn resolve_address(
+        &self,
+        peer_id: &str,
+        kind: crate::boundary::AddressType,
+    ) -> Result<String, DesktopError> {
+        let operation = "peer.address-targeting";
+        let requested = address(peer_id, operation)?;
+        let found = device(peer_id, operation, Some(kind)).await?;
+        super::winrt_cleanup::inspect_transient(
+            || {
+                let observed = found
+                    .BluetoothAddress()
+                    .map_err(|error| winrt(operation, error))?;
+                let observed_type = match found
+                    .BluetoothAddressType()
+                    .map_err(|error| winrt(operation, error))?
+                {
+                    BluetoothAddressType::Public => crate::boundary::AddressType::Public,
+                    BluetoothAddressType::Random => crate::boundary::AddressType::Random,
+                    _ => {
+                        return Err(winrt_text(
+                            operation,
+                            "native lookup returned an unknown LE address type",
+                        ));
+                    }
+                };
+                if !super::winrt_model::address_target_matches(
+                    requested,
+                    kind,
+                    observed,
+                    observed_type,
+                ) {
+                    return Err(winrt_text(
+                        operation,
+                        "native lookup returned a different address or address type",
+                    ));
+                }
+                Ok(())
+            },
+            || found.Close().map_err(|error| winrt(operation, error)),
+        )?;
+        self.register_target(peer_id, kind, operation).await?;
+        Ok(peer_id.to_owned())
+    }
+
+    async fn register_target(
+        &self,
+        peer_id: &str,
+        kind: crate::boundary::AddressType,
+        operation: &str,
+    ) -> Result<(), DesktopError> {
+        let id = peer_id
+            .parse::<btleplug::api::BDAddr>()
+            .map_err(|error| winrt_text(operation, error))?
+            .into();
+        self.adapter
+            .add_peripheral_with_address_type(
+                &id,
+                match kind {
+                    crate::boundary::AddressType::Public => btleplug::api::AddressType::Public,
+                    crate::boundary::AddressType::Random => btleplug::api::AddressType::Random,
+                },
+            )
+            .await
+            .map_err(|error| winrt_text(operation, error))?;
+        Ok(())
+    }
+
+    pub(crate) async fn bonded_peers(
+        &self,
+    ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        let operation = "peers.bonded";
+        let selector = BluetoothLEDevice::GetDeviceSelectorFromPairingState(true)
+            .map_err(|error| winrt(operation, error))?;
+        let devices = DeviceInformation::FindAllAsyncAqsFilter(&selector)
+            .map_err(|error| winrt(operation, error))?
+            .await
+            .map_err(|error| winrt(operation, error))?;
+        let devices: Vec<_> = devices.into_iter().collect();
+        let mut peers = Vec::new();
+        for information in devices {
+            // Read the current OS fact as well as the enumeration selector;
+            // a concurrently unpaired device no longer belongs in this set.
+            if !information
+                .Pairing()
+                .map_err(|error| winrt(operation, error))?
+                .IsPaired()
+                .map_err(|error| winrt(operation, error))?
+            {
+                continue;
+            }
+            let device = BluetoothLEDevice::FromIdAsync(
+                &information.Id().map_err(|error| winrt(operation, error))?,
+            )
+            .map_err(|error| winrt(operation, error))?
+            .await
+            .map_err(|error| winrt(operation, error))?;
+            let (kind, peer) = super::winrt_cleanup::inspect_transient(
+                || {
+                    let native_address = device
+                        .BluetoothAddress()
+                        .map_err(|error| winrt(operation, error))?;
+                    let peer_id = btleplug::api::BDAddr::try_from(native_address)
+                        .map_err(|error| winrt_text(operation, error))?
+                        .to_string();
+                    let kind = match device
+                        .BluetoothAddressType()
+                        .map_err(|error| winrt(operation, error))?
+                    {
+                        BluetoothAddressType::Public => crate::boundary::AddressType::Public,
+                        BluetoothAddressType::Random => crate::boundary::AddressType::Random,
+                        _ => {
+                            return Err(winrt_text(
+                                operation,
+                                "bonded peer has an unknown LE address type",
+                            ));
+                        }
+                    };
+                    Ok((
+                        kind,
+                        crate::boundary::DirectoryPeer {
+                            peer_id,
+                            name: Some(
+                                information
+                                    .Name()
+                                    .map_err(|error| winrt(operation, error))?
+                                    .to_string(),
+                            ),
+                            connection: match device
+                                .ConnectionStatus()
+                                .map_err(|error| winrt(operation, error))?
+                            {
+                                BluetoothConnectionStatus::Connected => "connected",
+                                BluetoothConnectionStatus::Disconnected => "disconnected",
+                                _ => "unknown",
+                            },
+                        },
+                    ))
+                },
+                || device.Close().map_err(|error| winrt(operation, error)),
+            )?;
+            self.register_target(&peer.peer_id, kind, operation).await?;
+            peers.push(peer);
+        }
+        peers.sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
+        peers.dedup_by(|left, right| left.peer_id == right.peer_id);
+        Ok(peers)
     }
 
     /// Stop the adapter presence watch (radio close). Stopping twice is
@@ -209,7 +407,7 @@ impl WinRt {
         &self,
         peer_id: &str,
     ) -> Result<SecurityState, DesktopError> {
-        let device = device(peer_id, "security.state").await?;
+        let device = self.device(peer_id, "security.state").await?;
         let pairing = device
             .DeviceInformation()
             .and_then(|information| information.Pairing())
@@ -232,7 +430,7 @@ impl WinRt {
 
     /// Legacy `PairWinRtPeer`.
     pub(crate) async fn pair(&self, peer_id: &str) -> Result<PairOutcome, DesktopError> {
-        let device = device(peer_id, "security.pair").await?;
+        let device = self.device(peer_id, "security.pair").await?;
         let pairing = device
             .DeviceInformation()
             .and_then(|information| information.Pairing())
@@ -293,7 +491,7 @@ impl WinRt {
 
     /// Legacy `UnpairWinRtPeer`.
     pub(crate) async fn unpair(&self, peer_id: &str) -> Result<UnpairOutcome, DesktopError> {
-        let device = device(peer_id, "security.unpair").await?;
+        let device = self.device(peer_id, "security.unpair").await?;
         let result = device
             .DeviceInformation()
             .and_then(|information| information.Pairing())
@@ -336,7 +534,7 @@ impl WinRt {
         // A healthy owner is shared by additional leases. Only failed
         // cleanup is retried before creating a replacement shared session.
         cleanup_result(self.release_owned(peer_id))?;
-        let device = device(peer_id, "connection.maintain").await?;
+        let device = self.device(peer_id, "connection.maintain").await?;
         let id = device
             .BluetoothDeviceId()
             .map_err(|error| winrt("connection.maintain", error))?;
@@ -351,6 +549,7 @@ impl WinRt {
                 services_changed: 0,
                 cleanup: CleanupStages::new([false, true, true]),
                 callbacks: Arc::new(CallbackGate::new()),
+                availability: None,
             };
             let mut failures = vec![winrt("connection.maintain", error)];
             let cleanup = release_maintained(&mut owner);
@@ -388,6 +587,7 @@ impl WinRt {
                     services_changed: 0,
                     cleanup: CleanupStages::new([false, true, true]),
                     callbacks,
+                    availability: None,
                 };
                 let failures = release_maintained(&mut owner);
                 let mut reported = vec![winrt("connection.maintain", error)];
@@ -407,6 +607,7 @@ impl WinRt {
             services_changed,
             cleanup: CleanupStages::new([true; 3]),
             callbacks,
+            availability: None,
         };
         self.sessions()
             .entry(peer_id.to_owned())
@@ -414,6 +615,78 @@ impl WinRt {
             .push(maintained);
         *healthy = true;
         Ok(())
+    }
+
+    /// Ask Windows to maintain the link before GATT discovery and await its
+    /// actual connection-status callback. The maintained owner owns the
+    /// callback too, so dropped acquisition is compensated by normal release.
+    pub(crate) async fn wait_available(
+        &self,
+        peer_id: &str,
+        events: tokio::sync::mpsc::Sender<RadioEvent>,
+    ) -> Result<(), DesktopError> {
+        self.maintain(peer_id, events).await?;
+        let mut receiver = {
+            let mut owners = self.sessions();
+            let owner = owners
+                .get_mut(peer_id)
+                .and_then(|owners| owners.last_mut())
+                .ok_or_else(|| {
+                    winrt_text(
+                        "connection.connect.when-available",
+                        "maintained session owner is missing",
+                    )
+                })?;
+            if owner.availability.is_none() {
+                let (sender, _) = tokio::sync::watch::channel(Ok(false));
+                let status_sender = sender.clone();
+                let device = owner.device.clone();
+                let callbacks = Arc::clone(&owner.callbacks);
+                let handler =
+                    TypedEventHandler::<BluetoothLEDevice, windows::core::IInspectable>::new(
+                        move |_, _| {
+                            callbacks.run(|| {
+                                publish_availability(
+                                    &status_sender,
+                                    device
+                                        .ConnectionStatus()
+                                        .map(|status| {
+                                            status == BluetoothConnectionStatus::Connected
+                                        })
+                                        .map_err(|error| {
+                                            winrt("connection.connect.when-available", error)
+                                        }),
+                                );
+                            });
+                            Ok(())
+                        },
+                    );
+                let token = owner
+                    .device
+                    .ConnectionStatusChanged(&handler)
+                    .map_err(|error| winrt("connection.connect.when-available", error))?;
+                owner.availability = Some((token, sender));
+            }
+            let (_, sender) = owner.availability.as_ref().expect("availability installed");
+            publish_availability(
+                sender,
+                owner
+                    .device
+                    .ConnectionStatus()
+                    .map(|status| status == BluetoothConnectionStatus::Connected)
+                    .map_err(|error| winrt("connection.connect.when-available", error)),
+            );
+            sender.subscribe()
+        };
+        loop {
+            if receiver.borrow_and_update().clone()? {
+                return Ok(());
+            }
+            receiver
+                .changed()
+                .await
+                .map_err(|error| winrt_text("connection.connect.when-available", error))?;
+        }
     }
 
     /// Release the maintained session of `peer_id`, if any.
@@ -464,9 +737,29 @@ impl WinRt {
     }
 }
 
+fn publish_availability(
+    sender: &tokio::sync::watch::Sender<Result<bool, DesktopError>>,
+    observation: Result<bool, DesktopError>,
+) {
+    sender.send_if_modified(|current| {
+        if current.is_err() {
+            return false;
+        }
+        *current = observation;
+        true
+    });
+}
+
 fn release_maintained(maintained: &mut Maintained) -> Vec<DesktopError> {
     maintained.callbacks.close();
-    release_session_stages(&mut maintained.cleanup, |stage| {
+    let mut failures = Vec::new();
+    if let Some((token, _)) = maintained.availability.as_ref() {
+        match maintained.device.RemoveConnectionStatusChanged(*token) {
+            Ok(()) => maintained.availability = None,
+            Err(error) => failures.push(winrt("connection.maintain.release.availability", error)),
+        }
+    }
+    failures.extend(release_session_stages(&mut maintained.cleanup, |stage| {
         let (operation, result) = match stage {
             0 => (
                 "connection.maintain.release.handler",
@@ -484,7 +777,8 @@ fn release_maintained(maintained: &mut Maintained) -> Vec<DesktopError> {
             ),
         };
         result.map_err(|error| winrt(operation, error))
-    })
+    }));
+    failures
 }
 
 fn cleanup_result(failures: Vec<DesktopError>) -> Result<(), DesktopError> {

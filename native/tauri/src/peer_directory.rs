@@ -4,6 +4,86 @@ use super::*;
 
 const BACKEND: &str = "unified-ble:corebluetooth";
 
+fn bonded_backend() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "unified-ble:winrt"
+    } else if cfg!(target_os = "linux") {
+        "unified-ble:bluez-dbus"
+    } else {
+        BACKEND
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+
+    #[test]
+    fn directory_reference_scope_matches_the_requested_native_route() {
+        for (backend, id) in [
+            (BACKEND, "00112233-4455-6677-8899-aabbccddeeff"),
+            ("unified-ble:winrt", "AA:BB:CC:DD:EE:FF"),
+            ("unified-ble:bluez-dbus", "hci0/dev_AA_BB_CC_DD_EE_FF"),
+        ] {
+            let value = object([
+                ("version", IpcValue::Number(1.into())),
+                ("backendId", string(backend)),
+                ("scope", string("application")),
+                ("opaqueId", string(id)),
+            ]);
+            assert_eq!(reference(&value, backend).unwrap(), id);
+            for foreign in [BACKEND, "unified-ble:winrt", "unified-ble:bluez-dbus"] {
+                if foreign != backend {
+                    assert_eq!(
+                        reference(&value, foreign).unwrap_err().code,
+                        BleErrorCode::PeerScopeMismatch
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn native_identifier(value: &str, backend: &str, op: &str) -> Result<String, DispatchError> {
+    match backend {
+        "unified-ble:winrt" => {
+            let parts = value.split(':').collect::<Vec<_>>();
+            if parts.len() != 6
+                || parts.iter().any(|part| {
+                    part.len() != 2 || !part.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            {
+                return Err(malformed(op));
+            }
+            Ok(value.to_uppercase())
+        }
+        "unified-ble:bluez-dbus" => {
+            let (adapter, device) = value.split_once('/').ok_or_else(|| malformed(op))?;
+            let index = adapter.strip_prefix("hci").ok_or_else(|| malformed(op))?;
+            let bytes = device
+                .strip_prefix("dev_")
+                .ok_or_else(|| malformed(op))?
+                .split('_')
+                .collect::<Vec<_>>();
+            if index.is_empty()
+                || !index.bytes().all(|byte| byte.is_ascii_digit())
+                || bytes.len() != 6
+                || bytes.iter().any(|part| {
+                    part.len() != 2
+                        || !part
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
+                })
+            {
+                return Err(malformed(op));
+            }
+            Ok(value.to_owned())
+        }
+        BACKEND => uuid(&value.to_lowercase(), op),
+        _ => Err(malformed(op)),
+    }
+}
+
 fn malformed(operation: &str) -> DispatchError {
     DispatchError::new(BleErrorCode::ProtocolMalformed, "ipc", operation)
 }
@@ -53,8 +133,8 @@ fn uuid(value: &str, op: &str) -> Result<String, DispatchError> {
     Ok(canonical)
 }
 
-fn reference(value: &IpcValue) -> Result<String, DispatchError> {
-    decode_reference(value).map_err(|error| {
+fn reference(value: &IpcValue, expected_backend: &str) -> Result<String, DispatchError> {
+    decode_reference(value, expected_backend).map_err(|error| {
         if error.code == BleErrorCode::ProtocolMalformed {
             DispatchError::new(
                 BleErrorCode::PeerReferenceInvalid,
@@ -67,7 +147,7 @@ fn reference(value: &IpcValue) -> Result<String, DispatchError> {
     })
 }
 
-fn decode_reference(value: &IpcValue) -> Result<String, DispatchError> {
+fn decode_reference(value: &IpcValue, expected_backend: &str) -> Result<String, DispatchError> {
     let op = "peers.reference";
     let record = into_object(value.clone(), op)?;
     keys(&record, &["version", "backendId", "scope", "opaqueId"], op)?;
@@ -79,17 +159,16 @@ fn decode_reference(value: &IpcValue) -> Result<String, DispatchError> {
         ));
     }
     let opaque = required_string(&record, "opaqueId", op)?;
-    let canonical = uuid(&opaque.to_lowercase(), op)
-        .map_err(|_| DispatchError::new(BleErrorCode::PeerReferenceInvalid, "connection", op))?;
-    if required_string(&record, "backendId", op)? != BACKEND
-        || required_string(&record, "scope", op)? != "application"
-    {
+    let backend = required_string(&record, "backendId", op)?;
+    if backend != expected_backend || required_string(&record, "scope", op)? != "application" {
         return Err(DispatchError::new(
             BleErrorCode::PeerScopeMismatch,
             "connection",
             op,
         ));
     }
+    let canonical = native_identifier(&opaque, &backend, op)
+        .map_err(|_| DispatchError::new(BleErrorCode::PeerReferenceInvalid, "connection", op))?;
     Ok(canonical)
 }
 
@@ -109,8 +188,13 @@ fn strings(value: Option<&IpcValue>, op: &str) -> Result<Option<Vec<String>>, Di
 }
 
 fn record(peer: ubm_desktop::DirectoryPeer, source: &str) -> Result<IpcValue, DispatchError> {
-    let id = uuid(&peer.peer_id, "peers.record")?;
-    if !matches!(peer.connection, "connected" | "unknown") {
+    let backend = if source == "system-bonded" {
+        bonded_backend()
+    } else {
+        BACKEND
+    };
+    let id = native_identifier(&peer.peer_id, backend, "peers.record")?;
+    if !matches!(peer.connection, "connected" | "disconnected" | "unknown") {
         return Err(malformed("peers.record"));
     }
     Ok(object([
@@ -118,7 +202,7 @@ fn record(peer: ubm_desktop::DirectoryPeer, source: &str) -> Result<IpcValue, Di
             "reference",
             object([
                 ("version", IpcValue::Number(Number::from(1))),
-                ("backendId", string(BACKEND)),
+                ("backendId", string(backend)),
                 ("scope", string("application")),
                 ("opaqueId", string(&id)),
             ]),
@@ -132,7 +216,14 @@ fn record(peer: ubm_desktop::DirectoryPeer, source: &str) -> Result<IpcValue, Di
             object([
                 ("reachability", string("unknown")),
                 ("connection", string(peer.connection)),
-                ("bond", string("unsupported")),
+                (
+                    "bond",
+                    string(if source == "system-bonded" {
+                        "bonded"
+                    } else {
+                        "unsupported"
+                    }),
+                ),
                 ("lastSeenAtMonotonicMs", IpcValue::Null),
             ]),
         ),
@@ -162,12 +253,16 @@ impl BtleplugDispatcher {
         )?;
         if payload.get("deadline").is_some_and(|value| !matches!(value,IpcValue::Null) && !matches!(value,IpcValue::Number(number) if number.as_f64().is_some_and(|value| value.is_finite() && value >= 0.0 && value <= MAX_SAFE_INTEGER as f64))) { return Err(malformed(command)); }
         let resolving = command == "peers.resolve";
+        let reference_backend = if command == "peers.bonded" || resolving {
+            bonded_backend()
+        } else {
+            BACKEND
+        };
         let mut references = if resolving {
-            Some(vec![reference(required_value(
-                &payload,
-                "reference",
-                command,
-            )?)?])
+            Some(vec![reference(
+                required_value(&payload, "reference", command)?,
+                reference_backend,
+            )?])
         } else {
             None
         };
@@ -222,20 +317,23 @@ impl BtleplugDispatcher {
             references = Some(
                 values
                     .iter()
-                    .map(reference)
+                    .map(|value| reference(value, reference_backend))
                     .collect::<Result<Vec<_>, _>>()?,
             );
         }
         let authority = self.ensure_authority().await?;
-        let capability = match command {
-            "peers.resolve" | "peers.known" => "peer:known",
-            "peers.connected" => "peer:system-connected",
-            _ => return Err(unsupported(command)),
-        };
         let states = authority
             .capability_descriptors()
             .await
             .map_err(|error| DispatchError::from_core(&error))?;
+        let capability = match command {
+            "peers.resolve" => capabilities::reference_resolution_mechanism(&states),
+            "peers.known" => "peer:known",
+            "peers.connected" => "peer:system-connected",
+            "peers.bonded" => "peer:bonded",
+            _ => return Err(unsupported(command)),
+        };
+        let resolving_bonded = resolving && capability == "peer:bonded";
         match states
             .iter()
             .find(|row| row.id() == capability)
@@ -250,26 +348,31 @@ impl BtleplugDispatcher {
                     BleErrorCode::CapabilityUnavailable,
                     "connection",
                     command,
-                ))
+                ));
             }
             _ => return Err(unsupported(command)),
         }
         match command {
             "peers.connected" if services.is_empty() => {
-                return Err(unsupported("peers.connected.services-required"))
+                return Err(unsupported("peers.connected.services-required"));
             }
             "peers.known" if references.is_none() => {
-                return Err(unsupported("peers.known.references-required"))
+                return Err(unsupported("peers.known.references-required"));
             }
             "peers.known" if !services.is_empty() => {
-                return Err(unsupported("peers.known.services"))
+                return Err(unsupported("peers.known.services"));
             }
-            "peers.resolve" | "peers.connected" | "peers.known" => {}
+            "peers.bonded" if !services.is_empty() => {
+                return Err(unsupported("peers.bonded.services"));
+            }
+            "peers.resolve" | "peers.connected" | "peers.known" | "peers.bonded" => {}
             _ => return Err(unsupported(command)),
         }
         admit(&ctl, command)?;
         let source = if command == "peers.connected" {
             "system-connected"
+        } else if command == "peers.bonded" || resolving_bonded {
+            "system-bonded"
         } else {
             "app-reference"
         };
@@ -286,6 +389,18 @@ impl BtleplugDispatcher {
                         return Err(malformed("peers.connected.record"));
                     }
                     let id = uuid(&peer.peer_id, "peers.record")?;
+                    if references.as_ref().is_none_or(|refs| refs.contains(&id)) && seen.insert(id)
+                    {
+                        records.push(record(peer, source)?);
+                    }
+                }
+            } else if command == "peers.bonded" || resolving_bonded {
+                let peers = authority
+                    .bonded_peers(ctl.clone())
+                    .await
+                    .map_err(|error| DispatchError::from_core(&error))?;
+                for peer in peers {
+                    let id = native_identifier(&peer.peer_id, bonded_backend(), "peers.record")?;
                     if references.as_ref().is_none_or(|refs| refs.contains(&id)) && seen.insert(id)
                     {
                         records.push(record(peer, source)?);

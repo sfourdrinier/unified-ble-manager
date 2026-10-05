@@ -216,6 +216,27 @@ describe('first-party backend standard TCK registrations', () => {
 
   // The desktop legs run the Rust route (LEGACY-AUDIT-2 N3): the production
   // desktop provider over the REAL N-API addon on its synthetic radio.
+  test.each(['corebluetooth', 'winrt'])(
+    '%s deferred feature reaches native acquisition, not only a catalog binding',
+    async platform => {
+      const { openBackend, observePeer, callNames } = require('../helpers/desktop-rust-core-harness')
+      const { backend, stage, harness } = await openBackend(platform)
+      try {
+        const peerId = await observePeer(backend, stage)
+        const lease = await backend.connections.connect(peerId, 'tck-deferred', {
+          intent: 'when-available',
+          signal: null,
+          deadline: performance.now() + 1000
+        })
+        expect(callNames(harness.calls)).toContain('connectWhenAvailable')
+        expect(callNames(harness.calls)).not.toContain('connect')
+        expect(await lease.release()).toEqual({ state: 'released', failures: [] })
+      } finally {
+        await backend.destroy()
+      }
+    }
+  )
+
   test('runs every applicable CoreBluetooth scenario on the Rust route without unsupported promotion', async () => {
     const registration = createCoreBluetoothFirstPartyTckRegistration({
       now: () => performance.now(),
@@ -245,6 +266,7 @@ describe('first-party backend standard TCK registrations', () => {
       'gatt:descriptors',
       BUILT_IN_FEATURE_IDS.peerKnown,
       BUILT_IN_FEATURE_IDS.peerSystemConnected,
+      BUILT_IN_FEATURE_IDS.connectionWhenAvailable,
       BUILT_IN_FEATURE_IDS.connectionRssi,
       // finding 217 follow-up: desktop routes measure the effective ATT MTU
       // (macOS maximumWriteValueLength + 3, WinRT MaxPduSize, BlueZ characteristic MTU).
@@ -253,6 +275,21 @@ describe('first-party backend standard TCK registrations', () => {
       BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness
     ])
     expectEveryReceiptHolds(report)
+    const deferredBinding = report.standard.featureBindings.find(
+      binding => binding.featureId === BUILT_IN_FEATURE_IDS.connectionWhenAvailable
+    )
+    expect(deferredBinding).toMatchObject({
+      suiteId: 'connection-controls',
+      requiredScenarioIds: ['connection.rssi-and-att-mtu-capability-contract'],
+      evidenceScenarioIds: ['connection.rssi-and-att-mtu-capability-contract']
+    })
+    for (const scenarioId of deferredBinding.evidenceScenarioIds) {
+      const receipt = report.standard.receipts.find(receipt => receipt.scenarioId === scenarioId)
+      expect(receipt).toBeDefined()
+      expect(receipt.error).toBeNull()
+      expect(receipt.facts.length).toBeGreaterThan(0)
+      expect(receipt.facts.every(fact => fact.holds)).toBe(true)
+    }
     expect(report.standard.receipts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -302,7 +339,11 @@ describe('first-party backend standard TCK registrations', () => {
       ])
       // finding 217 follow-up: BlueZ and WinRT now measure the effective ATT MTU,
       // so the connection-controls suite applies to them as it does on macOS.
-      expect(report.standard.featureSuiteIds).toEqual(['connection-controls', securitySuite, 'tck.feature.gatt.maximum-write-length'])
+      expect(report.standard.featureSuiteIds).toEqual([
+        'connection-controls',
+        securitySuite,
+        'tck.feature.gatt.maximum-write-length'
+      ])
       expectEveryReceiptHolds(report)
       const security = report.standard.receipts.filter(
         receipt => receipt.scenarioId === 'security.state-pair-cancel-unpair'

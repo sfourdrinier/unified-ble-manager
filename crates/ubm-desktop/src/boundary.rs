@@ -995,6 +995,17 @@ pub trait RadioBoundary: Send + Sync + 'static {
         }
     }
 
+    fn bonded_peers(
+        &self,
+    ) -> impl Future<Output = Result<Vec<DirectoryPeer>, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "peers.bonded",
+                "the OS does not expose a bonded-peer inventory",
+            ))
+        }
+    }
+
     fn resolve_peer(
         &self,
         _peer_id: &str,
@@ -1039,6 +1050,19 @@ pub trait RadioBoundary: Send + Sync + 'static {
         &'a self,
         peer_id: &'a str,
     ) -> impl Future<Output = Result<(), DesktopError>> + Send + 'a;
+    /// Native deferred mechanism; absence is an explicit refusal, never direct fallback.
+    fn connect_when_available<'a>(
+        &'a self,
+        _peer_id: &'a str,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send + 'a {
+        async {
+            Err(DesktopError::new(
+                ubm_core::contracts::BleErrorCode::CapabilityUnsupported,
+                ubm_core::contracts::BleErrorDomain::Capability,
+                "connection.connect.when-available",
+            ))
+        }
+    }
     fn disconnect<'a>(
         &'a self,
         peer_id: &'a str,
@@ -1440,6 +1464,7 @@ struct FakeInner {
     #[cfg(target_os = "linux")]
     physical_generations: HashMap<String, u64>,
     directory_peers: Option<Vec<DirectoryPeer>>,
+    bonded_directory_peers: Option<Vec<DirectoryPeer>>,
     directory_unblocked_reads: usize,
     canonical_peer_ids: HashMap<String, String>,
     faults: HashMap<FaultOp, VecDeque<(String, Option<crate::errors::PlatformDetail>)>>,
@@ -1594,6 +1619,7 @@ impl FakeRadio {
             state: StdMutex::new(FakeInner {
                 disconnect_observations: HashMap::new(),
                 directory_peers: None,
+                bonded_directory_peers: None,
                 directory_unblocked_reads: 0,
                 canonical_peer_ids: HashMap::new(),
                 #[cfg(target_os = "linux")]
@@ -1661,6 +1687,13 @@ impl FakeRadio {
     /// Explicit opt-in deterministic directory; never a production fallback.
     pub fn set_directory_peers(&self, peers: Vec<DirectoryPeer>) {
         self.state.lock().expect("fake radio state").directory_peers = Some(peers);
+    }
+
+    pub fn set_bonded_directory_peers(&self, peers: Vec<DirectoryPeer>) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .bonded_directory_peers = Some(peers);
     }
 
     /// Let exactly the next `count` directory calls bypass the scripted gate.
@@ -2223,6 +2256,17 @@ impl RadioBoundary for FakeRadio {
             .ok_or_else(|| unsupported("peers.connected", "directory not scripted"))
     }
 
+    async fn bonded_peers(&self) -> Result<Vec<DirectoryPeer>, DesktopError> {
+        self.record("bonded_peers");
+        self.directory_gate().await;
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .bonded_directory_peers
+            .clone()
+            .ok_or_else(|| unsupported("peers.bonded", "bonded directory not scripted"))
+    }
+
     async fn resolve_peer(&self, peer_id: &str) -> Result<Option<DirectoryPeer>, DesktopError> {
         self.record("resolve_peer");
         self.directory_gate().await;
@@ -2301,6 +2345,11 @@ impl RadioBoundary for FakeRadio {
             .expect("fake radio state")
             .known_peers
             .clone())
+    }
+
+    async fn connect_when_available(&self, peer_id: &str) -> Result<(), DesktopError> {
+        self.record("connect_when_available");
+        self.connect(peer_id).await
     }
 
     async fn connect(&self, peer_id: &str) -> Result<(), DesktopError> {

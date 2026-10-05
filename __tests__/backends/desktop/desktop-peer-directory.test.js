@@ -38,6 +38,48 @@ test('connected membership is reported without acquiring a connection or fabrica
   expect(hooks.resolve).not.toHaveBeenCalled()
 })
 
+test.each([
+  ['unified-ble:winrt', 'AA:BB:CC:DD:EE:FF'],
+  ['unified-ble:bluez-dbus', 'hci0/dev_AA_BB_CC_DD_EE_FF']
+])('bonded directory preserves native identities and no-link facts for %s', async (backendId, peerId) => {
+  const hooks = {
+    backendId,
+    generation: () => 1,
+    assertUsable: jest.fn(),
+    peerId: id => `mapped:${id}`,
+    bonded: jest.fn(async () => [{ peerId, name: 'saved H10', connection: 'disconnected' }]),
+    resolveFromBonded: true,
+    connected: jest.fn(),
+    resolve: jest.fn()
+  }
+  const directory = createDesktopPeerDirectory(hooks)
+  const [record] = await directory.bonded({})
+  expect(record).toMatchObject({
+    reference: { version: 1, backendId, scope: 'application', opaqueId: peerId },
+    peerId: `mapped:${peerId}`,
+    source: 'system-bonded',
+    state: { bond: 'bonded', connection: 'disconnected', reachability: 'unknown' }
+  })
+  expect(await directory.bonded({ sources: ['scan-observed'] })).toEqual([])
+  expect(
+    await directory.bonded({ references: [{ version: 1, backendId, scope: 'application', opaqueId: peerId }] })
+  ).toHaveLength(1)
+  await expect(directory.bonded({ services: ['180d'] })).rejects.toThrow(
+    'capability.unsupported: peers.bonded.services'
+  )
+  expect(hooks.resolve).not.toHaveBeenCalled()
+  await expect(directory.known({ references: [record.reference] })).rejects.toThrow(
+    'capability.unsupported: peers.known'
+  )
+  expect(await directory.resolve(record.reference, {})).toMatchObject({
+    source: 'system-bonded',
+    state: { bond: 'bonded' }
+  })
+  hooks.bonded.mockResolvedValue([])
+  expect(await directory.resolve(record.reference, {})).toBeNull()
+  expect(hooks.resolve).not.toHaveBeenCalled()
+})
+
 test.each([undefined, []])('connected query requires an explicit service filter (%p)', async services => {
   const { peers, hooks } = fixture()
   await expect(peers.connected({ services })).rejects.toMatchObject({

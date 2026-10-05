@@ -36,7 +36,8 @@ describe('Android canonical C dependency toolchain', () => {
   function run(host, abi, target, archiver = true) {
     const hostTag = host === 'Darwin' ? 'darwin-x86_64' : 'linux-x86_64'
     const tools = `ndk/toolchains/llvm/prebuilt/${hostTag}/bin`
-    const compiler = shellPath(write(`${tools}/${target}26-clang`, '#!/bin/sh\nexit 0\n', true))
+    const compilerTriple = target === 'armv7-linux-androideabi' ? 'armv7a-linux-androideabi' : target
+    const compiler = shellPath(write(`${tools}/${compilerTriple}26-clang`, '#!/bin/sh\nexit 0\n', true))
     const ar = shellPath(path.join(fixture, tools, 'llvm-ar'))
     if (archiver) write(`${tools}/llvm-ar`, '#!/bin/sh\nexit 0\n', true)
     write(`${tools}/llvm-nm`, '#!/bin/sh\nexit 0\n', true)
@@ -150,9 +151,11 @@ switch (process.argv[2]) {
   })
 
   test.each([
+    ['Linux', 'armeabi-v7a', 'armv7-linux-androideabi'],
     ['Linux', 'arm64-v8a', 'aarch64-linux-android'],
     ['Linux', 'x86_64', 'x86_64-linux-android'],
     ['Darwin', 'arm64-v8a', 'aarch64-linux-android'],
+    ['Darwin', 'armeabi-v7a', 'armv7-linux-androideabi'],
     ['Darwin', 'x86_64', 'x86_64-linux-android']
   ])('%s %s supplies target-specific compiler and archiver to Cargo', (host, abi, target) => {
     const { result, capture, compiler, ar } = run(host, abi, target)

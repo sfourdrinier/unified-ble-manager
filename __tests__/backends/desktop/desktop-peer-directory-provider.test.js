@@ -11,6 +11,56 @@ const { createNodeBleManagerFromProvider } = require('../../../src/node-host-man
 const { createPublicBleManager } = require('../../../src/public/ble-manager')
 const ID = '00e2ce71-3ba4-6569-e3de-3081ce0c95fb'
 
+test.each([
+  ['winrt', 'AA:BB:CC:DD:EE:FF', 'win32'],
+  ['bluez', 'hci0/dev_AA_BB_CC_DD_EE_FF', 'linux']
+])(
+  'public bonded reference resolves current native inventory before explicit %s connection',
+  async (platform, peerId, hostPlatform) => {
+    const harness = h.realBinding(platform)
+    const open = harness.binding.openSynthetic
+    let records = [{ peerId, name: 'saved H10', connection: 'disconnected' }]
+    const bonded = jest.fn(async () => records)
+    harness.binding.openSynthetic = async (...args) => {
+      const central = await open(...args)
+      return new Proxy(central, {
+        get(target, key) {
+          return key === 'bondedPeers' ? bonded : Reflect.get(target, key)
+        }
+      })
+    }
+    const now = () => performance.now()
+    const provider = createTestDesktopRustCoreBackendProvider({
+      platform,
+      owner: 'bonded-roundtrip',
+      now,
+      radio: 'synthetic',
+      binding: harness.binding,
+      hostPlatform
+    })
+    const internal = await createNodeBleManagerFromProvider(
+      provider,
+      DESKTOP_RUST_CORE_PROFILES[platform].compatibility,
+      { now }
+    )
+    const manager = await createPublicBleManager(internal, now)
+    try {
+      const [peer] = await manager.peers.bonded()
+      expect(harness.calls.filter(([method]) => method === 'connect')).toHaveLength(0)
+      const connection = await manager.connect(peer.reference, { timeoutMs: 1000 })
+      expect(bonded).toHaveBeenCalledTimes(2)
+      expect(harness.calls.filter(([method]) => method === 'resolvePeer')).toHaveLength(0)
+      expect(harness.calls.filter(([method]) => method === 'connect')).toHaveLength(1)
+      expect(await connection.release()).toEqual({ state: 'released', failures: [] })
+      records = []
+      expect(await manager.peers.resolve(peer.reference)).toBeNull()
+      expect(manager.capabilities.supports('peer:known')).toBe(false)
+    } finally {
+      expect(await manager.destroy()).toEqual({ state: 'released', failures: [] })
+    }
+  }
+)
+
 async function fixture(heldQuery) {
   const harness = h.realBinding('corebluetooth')
   const open = harness.binding.openSynthetic

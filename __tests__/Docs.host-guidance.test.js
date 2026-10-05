@@ -3,6 +3,22 @@ const path = require('node:path')
 
 const read = name => fs.readFileSync(path.join(__dirname, '..', name), 'utf8')
 
+test('release notes distinguish new desktop acquisition mechanisms from remaining platform gaps', () => {
+  const unreleased = read('CHANGELOG.md').split('## [5.0.0-rc.18]')[0]
+  expect(unreleased).toContain('typed Windows public/random address targeting')
+  expect(unreleased).toContain('Windows/Linux bonded-peer enumeration')
+  expect(unreleased).toContain('initial deferred acquisition')
+  expect(unreleased).toContain('not automatic post-loss reconnect')
+  expect(unreleased).toContain('Linux LE-specific deferred availability remains unsupported')
+})
+
+test('review directory routes ongoing rc19 work to its current tracker', () => {
+  const guide = read('docs/review/README.md')
+  expect(guide).toContain('RC19_PORT_REVIEW.md')
+  expect(guide).not.toContain('Every document and findings file in this directory is a **historical record**')
+  expect(guide).not.toContain('That pair is a live verification')
+})
+
 test('Android monitoring documentation preserves notification denial without inventing a startup gate', () => {
   const guide = read('docs/PLATFORMS.md')
   const driver = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/background/AndroidConnectedDeviceForegroundServiceDriver.java')
@@ -59,4 +75,12 @@ test('Tauri delivery documentation matches property-based planning rather than b
   expect(guide).toContain('capability.limited')
   expect(guide).not.toContain('refuses every hard requirement')
   expect(guide).not.toContain('Delivery modes follow the 4.x contract')
+})
+
+test('Tauri distinguishes OS-managed ordinary writes from explicit prepared transactions', () => {
+  const guide = read('docs/TAURI.md')
+  expect(guide).toContain('Ordinary `with-response` writes')
+  expect(guide).toContain('caller-controlled prepared/reliable transactions')
+  expect(guide).not.toContain('so long writes are rejected')
+  expect(guide).toContain('`no-prepared-write-path`')
 })

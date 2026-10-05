@@ -1072,6 +1072,24 @@ impl CapabilityDescriptor {
     pub const fn evidence_level(&self) -> EvidenceLevel {
         self.evidence_level
     }
+
+    /// Version of the implementation that supplied the evidence.
+    #[must_use]
+    pub fn implementation_version(&self) -> &str {
+        &self.implementation_version
+    }
+
+    /// Source identity of the evidence, not the projecting transport.
+    #[must_use]
+    pub fn source_digest(&self) -> &str {
+        &self.source_digest
+    }
+
+    /// Native evidence scenarios, preserved across host projections.
+    #[must_use]
+    pub fn scenario_ids(&self) -> &[String] {
+        &self.scenario_ids
+    }
 }
 
 /// Required central capability ids. The frozen required-capability matrix

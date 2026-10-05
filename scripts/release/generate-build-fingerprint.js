@@ -184,10 +184,9 @@ function androidNativeIdentity(root, files) {
     }))
 }
 
-const ANDROID_ABI_TRIPLES = {
-  'arm64-v8a': 'aarch64-linux-android',
-  x86_64: 'x86_64-linux-android'
-}
+const ANDROID_ABI_TRIPLES = Object.fromEntries(
+  nativeBuildIdentity.ANDROID_DECLARED_ABIS.map(({ abi, target }) => [abi, target])
+)
 
 function readProducerSdk(root, relative, field, staged, validate) {
   if (!staged) return null

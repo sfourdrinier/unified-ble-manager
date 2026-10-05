@@ -1,14 +1,19 @@
 # docs/review/
 
-Every document and findings file in this directory is a **historical record**
-of an external review round, frozen at the commit it examined. Findings were
-dispositioned in their fix trackers at the time; do not act on them now. For
-live documentation, start at the [documentation map](../README.md).
+Completed review documents and findings files are **historical records**,
+frozen at the commit each examined. Do not act on completed findings as current
+guidance. The documentation map identifies their status explicitly.
 
-The current exception is the 4.0.23 reliability review:
+Current corrective release work lives in
+[`RC19_PORT_REVIEW.md`](RC19_PORT_REVIEW.md), covering the supplied rc.18
+reviews and their separate library, downstream and qualification boundaries.
+The overarching [5.0 completion tracker](../5.0.0-RELEASE-COMPLETION-TRACKER.md)
+retains prior implementation and receipt history.
+
+The completed 4.0.23 reliability review is historical:
 
 - [`2026-09-05-4.0.23-reliability-review.md`](./2026-09-05-4.0.23-reliability-review.md)
 - [`2026-09-05-4.0.23-reliability-review-verification.md`](./2026-09-05-4.0.23-reliability-review-verification.md)
 
-That pair is a live verification of `c6a3984e` / package `4.0.23`. The
-findings are implemented on `release/4.0.25`.
+That pair records verification of `c6a3984e` / package `4.0.23` and the
+subsequent corrections on `release/4.0.25`; it is not the current release scope.

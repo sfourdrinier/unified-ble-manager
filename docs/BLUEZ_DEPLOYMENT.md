@@ -106,6 +106,28 @@ state migration remain the operator's separately approved actions.
 
 ## Admission and recovery after activation
 
+### Diagnose prerequisites before attempting recovery
+
+`ubm doctor` without a backend reports `compile-config-loadability`; it does not
+verify the running daemon or qualify a radio. Installing the npm package does
+not install the maintained daemon. A `connection.authority` refusal means that
+the current native owner could not establish the required authority contract:
+
+- A missing-method or interface error retains the D-Bus answer under `platform`;
+  verify the deployed binary and experimental API enablement.
+- A malformed or unsupported version reply is not compatible merely because
+  the daemon is named BlueZ. Verify the exact `(1,2,1)` contract below.
+- `platform.domain = ubm-linux-authority`, `platform.code = observation-timeout`
+  means the bounded contract observation did not complete; it is not proof that
+  the peer is absent or permission was denied.
+- Owner replacement requires a fresh manager and fresh authority admission;
+  old obligations remain attached to their original owner.
+
+Keep the complete structured error in diagnostics. Never invoke installation
+from a renderer or reconnect handler. A trusted deployment owner follows the
+reviewed file-install, separately approved service cutover and scoped rollback
+steps above; reconnecting cannot repair a missing daemon contract.
+
 Under the freshly resolved unique daemon owner, the selected adapter must
 answer `org.unifiedblemanager.LinuxAuthority1.GetContract` with exact `(1,2,1)`.
 The lease mechanism is `LELease1.ReserveLease(deviceObjectPath, privateReservationId)` then
@@ -149,6 +171,34 @@ Create a **fresh manager** bound to that verified new owner. Never rebind old
 lease tokens, attachment identities or pending cleanup onto a replacement
 daemon. Retain original failed obligations/diagnostics under their old owner;
 recovery is not a claim that previous physical resources were released.
+
+### Deferred LE availability remains an explicit mechanism gap
+
+The maintained `5.87-ubm.3` contract supports direct scoped LE connection and
+current LE-specific GATT discovery. It does **not** establish fresh LE-specific
+advertisement availability for deferred acquisition. The instantiated Linux
+`connection:when-available` capability remains unsupported; a request with
+`intent: 'when-available'` fails closed as `capability.unsupported` at
+`connection.connect.when-available`, retaining the native reason
+`fresh native LE advertisement availability is not implemented`.
+
+This is an implementation boundary, not a claim that Linux cannot provide the mechanism.
+BlueZ's ordinary `Device1` RSSI, manufacturer-data and service-data changes do
+not identify the discovery bearer. With merged discovery filters from other
+clients, those observations can represent Classic inquiry as well as LE
+advertising. An existing device object, cached data or a fresh bearer-ambiguous
+property change therefore cannot prove the LE availability this intent requires.
+
+Unchanged RSSI is not itself the limitation: filtered discovery can emit RSSI
+observations without its normal delta threshold, and `DuplicateData` can report
+unchanged manufacturer/service data. These mechanisms still do not establish
+the event's bearer. See the upstream [Adapter discovery-filter contract](https://github.com/bluez/bluez/blob/5.87/doc/org.bluez.Adapter.rst)
+and [device-found event handling](https://github.com/bluez/bluez/blob/5.87/src/adapter.c).
+No cache shortcut, polling loop or hidden retry substitutes for the unresolved
+native LE-specific availability mechanism. Direct acquisition and an explicitly
+chosen application reconnect policy remain separate supported paths; neither
+should be relabeled as native deferred acquisition. Deployment, existing direct
+connection receipts and successful package gates do not close this mechanism gap.
 
 ## Scoped rollback
 

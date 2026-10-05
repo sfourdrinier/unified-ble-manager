@@ -27,6 +27,18 @@ pub fn address_of_peer(peer_id: &str) -> Option<u64> {
     Some(value)
 }
 
+/// A typed lookup names exactly the native address and type, not a best-effort
+/// match against another peripheral sharing the address bytes.
+#[must_use]
+pub fn address_target_matches(
+    requested: u64,
+    requested_type: crate::boundary::AddressType,
+    observed: u64,
+    observed_type: crate::boundary::AddressType,
+) -> bool {
+    requested == observed && requested_type == observed_type
+}
+
 /// What one `PairAsync` ended as, by `DevicePairingResultStatus`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PairingStatus {
@@ -257,6 +269,36 @@ impl AdapterPresence {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn explicit_address_target_requires_both_native_address_and_type() {
+        use crate::boundary::AddressType;
+        for kind in [AddressType::Public, AddressType::Random] {
+            assert!(super::address_target_matches(
+                0xaabbccddeeff,
+                kind,
+                0xaabbccddeeff,
+                kind
+            ));
+            assert!(!super::address_target_matches(
+                0xaabbccddeeff,
+                kind,
+                0xaabbccddeefe,
+                kind
+            ));
+        }
+        assert!(!super::address_target_matches(
+            1,
+            AddressType::Public,
+            1,
+            AddressType::Random
+        ));
+        assert!(!super::address_target_matches(
+            1,
+            AddressType::Random,
+            1,
+            AddressType::Public
+        ));
+    }
     use super::{
         AdapterPresence, ListedAdapter, PairingStatus, PresenceChange, PresenceReport, RadioAccess,
         UnpairingStatus, address_of_peer, deployment_from_status, pairing_status, radio_access,

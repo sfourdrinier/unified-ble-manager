@@ -259,10 +259,16 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         scenario: "peer.address-targeting",
         note: "CoreBluetooth hides addresses entirely; address targeting needs a narrow OS identity adapter.",
         limitation: None,
-        per_os: &[OsOverride::adapter(
-            DesktopOs::Linux,
-            "BlueZ (os::linux): an existing device object by address, otherwise an owned LE discovery session until the object exists. Address resolution never calls Adapter1.ConnectDevice or establishes a link.",
-        )],
+        per_os: &[
+            OsOverride::adapter(
+                DesktopOs::Linux,
+                "BlueZ (os::linux): an existing device object by address, otherwise an owned LE discovery session until the object exists. Address resolution never calls Adapter1.ConnectDevice or establishes a link.",
+            ),
+            OsOverride::adapter(
+                DesktopOs::Windows,
+                "WinRT typed Bluetooth address lookup validates both address and public/random type, retained for subsequent connection acquisition; lookup does not establish a link.",
+            ),
+        ],
     },
     DesktopCapability {
         id: "peer:known",
@@ -292,7 +298,16 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         scenario: "peer.bonded",
         note: "The bond store is OS-side; reading it needs a narrow adapter.",
         limitation: None,
-        per_os: &[],
+        per_os: &[
+            OsOverride::adapter(
+                DesktopOs::Windows,
+                "Read-only paired BluetoothLE DeviceInformation inventory, validated against current pairing state; no connection lease is acquired.",
+            ),
+            OsOverride::adapter(
+                DesktopOs::Linux,
+                "Read-only selected-adapter Device1 inventory from the bound BlueZ owner, using explicit Paired/Bonded facts; no connection lease is acquired.",
+            ),
+        ],
     },
     DesktopCapability {
         id: "peer:origin-authorized",
@@ -324,7 +339,16 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         scenario: "connection.when-available",
         note: "Deferred auto-connect needs an OS adapter/daemon path beyond btleplug connect.",
         limitation: None,
-        per_os: &[],
+        per_os: &[
+            OsOverride::adapter(
+                DesktopOs::MacOs,
+                "CoreBluetooth pending connect waits for the known peer's availability; actual native callback settles acquisition, caller cancellation releases pending ownership.",
+            ),
+            OsOverride::adapter(
+                DesktopOs::Windows,
+                "GattSession MaintainConnection is acquired before discovery and native ConnectionStatusChanged reports availability; caller cancellation releases the owned maintained session and callback.",
+            ),
+        ],
     },
     DesktopCapability {
         id: "connection:rssi",

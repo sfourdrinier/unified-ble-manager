@@ -28,9 +28,16 @@ The Tauri plugin (`native/tauri`) is not a precompiled artifact: it compiles
 inside the Tauri app build, so it needs no status row and no refresh.
 
 Android's default prebuilt Gradle path verifies the committed identity, byte
-length, SHA-256, ELF machine, and every load segment's 16 KiB alignment using
+length, SHA-256, ELF class/machine, and every load segment's 16 KiB alignment using
 Gradle's JVM. Packed consumers need no shell, NDK, or `readelf` for that check.
 The explicit `UBM_NATIVE_BUILD=source` path still uses the native build tools.
+The maintained Android matrix is `armeabi-v7a`, `arm64-v8a` and `x86_64`, sealed
+by `scripts/release/native-build-identity.js`. ARM32 uses Rust target
+`armv7-linux-androideabi` but NDK compiler prefix `armv7a-linux-androideabi`.
+The refresh producer builds all three targets; packed consumers do not rebuild
+them. CI additionally compiles the packed Expo SDK 57 / React Native TV 0.86
+graph for ARM32 and checks the APK's complete native-library graph. This is
+compile/artifact proof, not physical Android TV or Fire OS qualification.
 
 ## The fourth thing a Rust change stales: the expected identity
 

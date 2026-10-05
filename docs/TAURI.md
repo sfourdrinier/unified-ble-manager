@@ -175,7 +175,17 @@ the mode.
 
 The maximum write length (`connection.maximum-write-length`, per `mode`) is the core's answer for that write mode, the same limit a write of that mode is admitted against: a reported maximum is never refused. With an OS long write (Windows, Linux) a with-response write reaches 512 bytes; a write without response, and every write on macOS, is bounded by what the OS reports for the link (one ATT payload where the OS has no per-mode readout). An unmeasured limit fails `capability.unavailable`, never a guess. Tauri 4.x reported `mtu - 3` for every mode.
 
-`gatt:maximum-write-length` and `gatt:long-write` are advertised like the desktop core over the same Rust core (`limited`, deterministic host evidence): the dispatcher measures the maximum per link through the core, and prepared-write transactions have no btleplug path, so long writes are rejected — never silently single-written — with `no-prepared-write-path`. The effective MTU (`connection:effective-mtu`) is the core's measurement of the live link through the desktop central, like the desktop and Electron hosts; a withheld measurement answers `capability.unsupported` verbatim, never a guessed 23.
+Ordinary `with-response` writes within the measured maximum use the OS-managed
+write procedure; Windows and Linux can therefore accept a value larger than one
+ATT payload. This is distinct from caller-controlled prepared/reliable transactions:
+the explicit `long-write` mode has no prepared-write radio path and is refused
+with `no-prepared-write-path`, never silently converted to an ordinary write.
+`gatt:maximum-write-length` and `gatt:long-write` retain the instantiated desktop
+core's capability reasons and limits; a limited descriptor does not promise every
+transaction mode. The effective MTU (`connection:effective-mtu`) is the core's
+measurement of the live link through the desktop central, like the desktop and
+Electron hosts; a withheld measurement answers `capability.unsupported` verbatim,
+never a guessed 23.
 
 Connected RSSI (`connection.rssi`) is the OS measurement of the live link, read through the core; a radio that cannot measure it answers `capability.unsupported`.
 

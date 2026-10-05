@@ -300,6 +300,64 @@ impl Bluez {
         })
     }
 
+    /// Read selected-adapter bond facts from one current daemon epoch.
+    pub(crate) async fn bonded_peers(
+        &self,
+    ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        let operation = "peers.bonded";
+        let owner = self.current_daemon_owner_for(operation).await?;
+        let reply = self
+            .conn
+            .call_method(
+                Some(owner.as_str()),
+                "/",
+                Some(OBJECT_MANAGER),
+                "GetManagedObjects",
+                &(),
+            )
+            .await
+            .map_err(|error| platform(operation, error))?;
+        let managed = reply
+            .body()
+            .deserialize::<Managed>()
+            .map_err(|error| platform(operation, error))?;
+        if self.current_daemon_owner_for(operation).await? != owner {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                operation,
+            )
+            .with_detail(
+                "the BlueZ daemon owner changed during bonded enumeration; create a fresh manager",
+            ));
+        }
+        let mut peers = Vec::new();
+        for (path, interfaces) in managed {
+            let Some(properties) = interfaces.get(DEVICE) else {
+                continue;
+            };
+            let Some(id) = bluez_model::bonded_peer_id(
+                path.as_str(),
+                &self.adapter_path,
+                bool_of(properties, "Paired"),
+                bool_of(properties, "Bonded"),
+            ) else {
+                continue;
+            };
+            peers.push(crate::boundary::DirectoryPeer {
+                peer_id: id.to_owned(),
+                name: string_of(properties, "Name"),
+                connection: match bool_of(properties, "Connected") {
+                    Some(true) => "connected",
+                    Some(false) => "disconnected",
+                    None => "unknown",
+                },
+            });
+        }
+        peers.sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
+        Ok(peers)
+    }
+
     /// `Device1.Paired`/`Bonded` of one peer.
     pub(crate) async fn security_state(
         &self,
@@ -470,6 +528,11 @@ impl Bluez {
     }
 
     async fn current_daemon_owner(&self) -> Result<String, DesktopError> {
+        self.current_daemon_owner_for("peer.address-targeting")
+            .await
+    }
+
+    async fn current_daemon_owner_for(&self, operation: &str) -> Result<String, DesktopError> {
         let owner: String = self
             .conn
             .call_method(
@@ -480,10 +543,10 @@ impl Bluez {
                 &(BLUEZ,),
             )
             .await
-            .map_err(|error| platform("peer.address-targeting", error))?
+            .map_err(|error| platform(operation, error))?
             .body()
             .deserialize()
-            .map_err(|error| platform("peer.address-targeting", error))?;
+            .map_err(|error| platform(operation, error))?;
         if self
             .le_owner
             .as_ref()
@@ -492,7 +555,7 @@ impl Bluez {
             return Err(DesktopError::new(
                 BleErrorCode::CapabilityUnsupported,
                 BleErrorDomain::Capability,
-                "peer.address-targeting",
+                operation,
             )
             .with_detail("the bound BlueZ daemon owner changed; create a fresh manager to resolve and verify native authority"));
         }
@@ -1183,6 +1246,116 @@ mod watch_tests {
         fn get_contract(&self) -> (u32, u32, u32) {
             *self.0.lock().unwrap()
         }
+    }
+
+    fn bonded_snapshot() -> HashMap<dbus::Path<'static>, HashMap<String, dbus::arg::PropMap>> {
+        use dbus::arg::Variant;
+        let mut properties = dbus::arg::PropMap::new();
+        properties.insert("Paired".into(), Variant(Box::new(true)));
+        properties.insert("Bonded".into(), Variant(Box::new(true)));
+        properties.insert("Connected".into(), Variant(Box::new(false)));
+        HashMap::from([(
+            dbus::Path::new("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF").unwrap(),
+            HashMap::from([(DEVICE.to_owned(), properties)]),
+        )])
+    }
+
+    async fn bonded_snapshot_fixture(
+        hold: bool,
+    ) -> (
+        Arc<dbus::nonblock::SyncConnection>,
+        Arc<StdMutex<(usize, Option<dbus::Message>)>>,
+        Arc<tokio::sync::Notify>,
+        tokio::task::JoinHandle<dbus_tokio::connection::IOResourceError>,
+    ) {
+        use dbus::channel::{MatchingReceiver, Sender};
+        let (resource, publisher) = dbus_tokio::connection::new_session_sync().unwrap();
+        let worker = tokio::spawn(resource);
+        publisher
+            .request_name(BLUEZ, false, false, false)
+            .await
+            .unwrap();
+        let state = Arc::new(StdMutex::new((0, None)));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let observed = state.clone();
+        let notified = entered.clone();
+        publisher.start_receive(
+            dbus::message::MatchRule::new_method_call(),
+            Box::new(move |message, connection| {
+                if message.member().as_deref() == Some("GetManagedObjects") {
+                    let mut state = observed.lock().unwrap();
+                    state.0 += 1;
+                    notified.notify_one();
+                    if hold {
+                        state.1 = Some(message);
+                    } else {
+                        connection
+                            .send(message.method_return().append1(bonded_snapshot()))
+                            .unwrap();
+                    }
+                }
+                true
+            }),
+        );
+        (publisher, state, entered, worker)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a dedicated dbus-run-session; no system Bluetooth access"]
+    async fn private_bus_bonded_snapshot_owner_replacement_refuses_old_epoch() {
+        use dbus::channel::Sender;
+        assert_eq!(
+            std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
+            Ok("1")
+        );
+        let (publisher, state, entered, worker) = bonded_snapshot_fixture(true).await;
+        let old_owner = publisher.unique_name().to_string();
+        let authority = Arc::new(
+            Bluez::open_authority("hci0", crate::boundary::BluezBus::Session, None)
+                .await
+                .unwrap(),
+        );
+        let queried = authority.clone();
+        let pending = tokio::spawn(async move { queried.bonded_peers().await });
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .unwrap();
+        publisher.release_name(BLUEZ).await.unwrap();
+        let (replacement, replacement_state, _, replacement_worker) =
+            bonded_snapshot_fixture(false).await;
+        assert_ne!(old_owner, replacement.unique_name().to_string());
+        let held = state.lock().unwrap().1.take().expect("old snapshot held");
+        publisher
+            .send(held.method_return().append1(bonded_snapshot()))
+            .unwrap();
+        let refusal = tokio::time::timeout(Duration::from_secs(2), pending)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refusal.code(), BleErrorCode::CapabilityUnsupported);
+        assert_eq!(
+            authority.bound_owner(),
+            Some(old_owner.as_str()),
+            "old inventory authority never rebinds"
+        );
+        assert!(authority.bonded_peers().await.is_err());
+        assert_eq!(state.lock().unwrap().0, 1, "no second old-owner snapshot");
+        assert_eq!(
+            replacement_state.lock().unwrap().0,
+            0,
+            "old authority never queries replacement"
+        );
+        let fresh = Bluez::open_authority("hci0", crate::boundary::BluezBus::Session, None)
+            .await
+            .unwrap();
+        let peers = fresh.bonded_peers().await.unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].peer_id, "hci0/dev_AA_BB_CC_DD_EE_FF");
+        assert_eq!(peers[0].connection, "disconnected");
+        assert_eq!(replacement_state.lock().unwrap().0, 1);
+        worker.abort();
+        replacement_worker.abort();
     }
 
     #[tokio::test]

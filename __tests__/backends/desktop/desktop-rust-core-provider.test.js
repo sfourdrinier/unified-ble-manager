@@ -1922,16 +1922,22 @@ describe('public errors report the 4.x operation id of each host', () => {
     })
   })
 
-  test('CoreBluetooth when-available intent keeps its legacy operation id (F5)', async () => {
-    await withBackend('corebluetooth', async ({ backend, stage }) => {
-      const peerId = await observePeer(backend, stage)
-      await expect(
-        backend.connections.connect(peerId, 'client-1', { signal: null, deadline: null, intent: 'when-available' })
-      ).rejects.toMatchObject({
-        normalized: { code: 'capability.unsupported', operation: 'direct-gatt.connect.when-available' }
+  test.each(['corebluetooth', 'winrt'])(
+    '%s when-available intent reaches native deferred acquisition',
+    async platform => {
+      await withBackend(platform, async ({ backend, stage, harness }) => {
+        const peerId = await observePeer(backend, stage)
+        const connection = await backend.connections.connect(peerId, 'client-1', {
+          signal: null,
+          deadline: null,
+          intent: 'when-available'
+        })
+        expect(callNames(harness.calls)).toContain('connectWhenAvailable')
+        expect(callNames(harness.calls)).not.toContain('connect')
+        await connection.release()
       })
-    })
-  })
+    }
+  )
 
   test.each(PLATFORMS)('%s: provider and loader ids', async platform => {
     const harness = realBinding(platform)

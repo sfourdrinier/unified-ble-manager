@@ -17,7 +17,7 @@ const path = require('path')
 const root = path.join(__dirname, '..')
 const prebuiltDir = path.join(root, 'android', 'src', 'main', 'jniLibs')
 const identityFile = path.join(prebuiltDir, 'build-identity.json')
-const EXPECTED_ABIS = ['arm64-v8a', 'x86_64']
+const EXPECTED_ABIS = ['armeabi-v7a', 'arm64-v8a', 'x86_64']
 const EXPECTED_FILE = 'libubm5_jni_echo.so'
 
 function identityEntries() {
@@ -31,9 +31,8 @@ function sha256(filePath) {
 }
 
 // D2(iii): offline 16 KB page-size check (Android 15+ install requirement).
-// Pure-JS ELF program-header walk — no readelf, no NDK. Both shipped ABIs
-// are 64-bit little-endian; anything else fails closed (unsupported, not
-// assumed-aligned). Every PT_LOAD segment must carry p_align >= 0x4000.
+// Pure-JS ELF32/ELF64 program-header walk — no readelf, no NDK.
+// Every PT_LOAD segment must carry p_align >= 0x4000.
 function loadSegmentAlignments(filePath) {
   const bytes = fs.readFileSync(filePath)
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
@@ -41,16 +40,18 @@ function loadSegmentAlignments(filePath) {
   for (let i = 0; i < magic.length; i += 1) {
     if (view.getUint8(i) !== magic[i]) throw new Error(`${filePath}: not an ELF file`)
   }
-  if (view.getUint8(4) !== 2) throw new Error(`${filePath}: not 64-bit ELF (EI_CLASS=${view.getUint8(4)})`)
+  const elfClass = view.getUint8(4)
+  if (![1, 2].includes(elfClass)) throw new Error(`${filePath}: unsupported ELF class ${elfClass}`)
   if (view.getUint8(5) !== 1) throw new Error(`${filePath}: not little-endian ELF (EI_DATA=${view.getUint8(5)})`)
-  const phoff = Number(view.getBigUint64(32, true))
-  const phentsize = view.getUint16(54, true)
-  const phnum = view.getUint16(56, true)
+  const phoff = elfClass === 1 ? view.getUint32(28, true) : Number(view.getBigUint64(32, true))
+  const phentsize = view.getUint16(elfClass === 1 ? 42 : 54, true)
+  const phnum = view.getUint16(elfClass === 1 ? 44 : 56, true)
   const aligns = []
   for (let i = 0; i < phnum; i += 1) {
     const base = phoff + i * phentsize
     const type = view.getUint32(base, true)
-    if (type === 1) aligns.push(Number(view.getBigUint64(base + 48, true)))
+    if (type === 1)
+      aligns.push(elfClass === 1 ? view.getUint32(base + 28, true) : Number(view.getBigUint64(base + 48, true)))
   }
   return aligns
 }
@@ -130,7 +131,7 @@ describe('committed Android prebuilts seal (D1 / finding 157)', () => {
    * segment (PT_DYNAMIC → DT_SYMTAB/DT_STRTAB with the DT_HASH or DT_GNU_HASH
    * symbol count). Pure JS so the seal runs in every gate with no NDK; the
    * reader was cross-validated byte-for-byte against NDK llvm-nm
-   * (`llvm-nm -D --defined-only`) on both shipped ABIs.
+   * (`llvm-nm -D --defined-only`) on the shipped ELF32/ELF64 ABIs.
    */
   function definedDynamicSymbols(filePath) {
     const bytes = fs.readFileSync(filePath)
@@ -139,19 +140,20 @@ describe('committed Android prebuilts seal (D1 / finding 157)', () => {
     for (let i = 0; i < magic.length; i += 1) {
       if (view.getUint8(i) !== magic[i]) throw new Error(`${filePath}: not an ELF file`)
     }
-    if (view.getUint8(4) !== 2) throw new Error(`${filePath}: not 64-bit ELF`)
+    const is32 = view.getUint8(4) === 1
+    if (!is32 && view.getUint8(4) !== 2) throw new Error(`${filePath}: unsupported ELF class`)
     if (view.getUint8(5) !== 1) throw new Error(`${filePath}: not little-endian ELF`)
-    const phoff = Number(view.getBigUint64(32, true))
-    const phentsize = view.getUint16(54, true)
-    const phnum = view.getUint16(56, true)
+    const phoff = is32 ? view.getUint32(28, true) : Number(view.getBigUint64(32, true))
+    const phentsize = view.getUint16(is32 ? 42 : 54, true)
+    const phnum = view.getUint16(is32 ? 44 : 56, true)
     const loads = []
     let dynamic = null
     for (let i = 0; i < phnum; i += 1) {
       const base = phoff + i * phentsize
       const type = view.getUint32(base, true)
-      const offset = Number(view.getBigUint64(base + 8, true))
-      const vaddr = Number(view.getBigUint64(base + 16, true))
-      const filesz = Number(view.getBigUint64(base + 32, true))
+      const offset = is32 ? view.getUint32(base + 4, true) : Number(view.getBigUint64(base + 8, true))
+      const vaddr = is32 ? view.getUint32(base + 8, true) : Number(view.getBigUint64(base + 16, true))
+      const filesz = is32 ? view.getUint32(base + 16, true) : Number(view.getBigUint64(base + 32, true))
       if (type === 1) loads.push({ offset, vaddr, filesz })
       if (type === 2) dynamic = { offset, filesz }
     }
@@ -169,9 +171,9 @@ describe('committed Android prebuilts seal (D1 / finding 157)', () => {
     let symtab = 0
     let hash = 0
     let gnuHash = 0
-    for (let off = dynamic.offset; ; off += 16) {
-      const tag = Number(view.getBigInt64(off, true))
-      const value = Number(view.getBigUint64(off + 8, true))
+    for (let off = dynamic.offset; ; off += is32 ? 8 : 16) {
+      const tag = is32 ? view.getInt32(off, true) : Number(view.getBigInt64(off, true))
+      const value = is32 ? view.getUint32(off + 4, true) : Number(view.getBigUint64(off + 8, true))
       if (tag === 0) break
       if (tag === 5) strtab = value
       else if (tag === 10) strsz = value
@@ -191,7 +193,7 @@ describe('committed Android prebuilts seal (D1 / finding 157)', () => {
       const nbuckets = view.getUint32(base, true)
       const symoffset = view.getUint32(base + 4, true)
       const bloomSize = view.getUint32(base + 8, true)
-      const buckets = base + 16 + bloomSize * 8
+      const buckets = base + 16 + bloomSize * (is32 ? 4 : 8)
       const chain = buckets + nbuckets * 4
       let highest = symoffset
       for (let bucket = 0; bucket < nbuckets; bucket += 1) {
@@ -215,9 +217,9 @@ describe('committed Android prebuilts seal (D1 / finding 157)', () => {
     const symOff = toOffset(symtab)
     const strOff = toOffset(strtab)
     for (let i = 0; i < symbolCount; i += 1) {
-      const base = symOff + i * 24
+      const base = symOff + i * (is32 ? 16 : 24)
       const nameOff = view.getUint32(base, true)
-      const section = view.getUint16(base + 6, true)
+      const section = view.getUint16(base + (is32 ? 14 : 6), true)
       if (section !== 0 && nameOff < strsz) names.add(readCString(strOff + nameOff))
     }
     return names

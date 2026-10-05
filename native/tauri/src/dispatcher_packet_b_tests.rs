@@ -25,12 +25,12 @@ use ubm_desktop::{
 };
 
 use super::{
-    attachment_identity_matches, attachment_record, caller_key, into_object, object,
-    required_value, string, Attachment, AuthorityOpener, BtleplugDispatcher, CallerState,
-    DispatchError, IpcEventSink, IpcValue, OrphanResource, ReleasePhase, StreamEnd,
+    Attachment, AuthorityOpener, BtleplugDispatcher, CallerState, DispatchError, IpcEventSink,
+    IpcValue, OrphanResource, ReleasePhase, StreamEnd, attachment_identity_matches,
+    attachment_record, caller_key, into_object, object, required_value, string,
 };
-use crate::desktop_core::CoreAuthority;
 use crate::AuthenticatedCaller;
+use crate::desktop_core::CoreAuthority;
 
 #[path = "../../../crates/test-support/recording_fixture.rs"]
 mod recording_fixture;
@@ -151,16 +151,17 @@ async fn security_watch_retains_racing_event_order_without_regressing_to_an_unse
             "an unsequenced snapshot cannot be placed ahead of or after a racing native event"
         );
         assert_eq!(
-            events.iter().map(|event| event["item"]["value"]["sequence"].as_u64().unwrap()).collect::<Vec<_>>(),
+            events
+                .iter()
+                .map(|event| event["item"]["value"]["sequence"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
             [1, 2, 3, 4],
             "retained racing observations use the watch sequence, not a snapshot/source-counter mixture"
         );
-        assert!(events
-            .windows(2)
-            .all(
-                |pair| pair[0]["item"]["value"]["state"]["measuredAtMonotonicMs"].as_u64()
-                    <= pair[1]["item"]["value"]["state"]["measuredAtMonotonicMs"].as_u64()
-            ));
+        assert!(events.windows(2).all(|pair| {
+            pair[0]["item"]["value"]["state"]["measuredAtMonotonicMs"].as_u64()
+                <= pair[1]["item"]["value"]["state"]["measuredAtMonotonicMs"].as_u64()
+        }));
         harness.dispatcher.release(&harness.key()).await;
         harness.central.shutdown().await;
     }
@@ -651,13 +652,15 @@ async fn idle_process_handoff_never_opens_bluetooth_even_after_shutdown() {
         );
         assert_eq!(opens.load(AtomicOrdering::SeqCst), 0);
     }
-    assert!(harness
-        .dispatcher
-        .authority_shutdown()
-        .await
-        .core
-        .unwrap()
-        .is_released());
+    assert!(
+        harness
+            .dispatcher
+            .authority_shutdown()
+            .await
+            .core
+            .unwrap()
+            .is_released()
+    );
 }
 
 #[tokio::test]
@@ -690,26 +693,32 @@ async fn process_shutdown_retains_native_claim_and_retry_owner() {
     harness
         .radio()
         .fail_next(FaultOp::Disconnect, "retained cleanup");
-    assert!(!harness
-        .dispatcher
-        .authority_shutdown()
-        .await
-        .core
-        .unwrap()
-        .is_released());
-    assert!(harness
-        .dispatcher
-        .continuation_describe_backlog()
-        .await
-        .unwrap()
-        .is_object());
-    assert!(harness
-        .dispatcher
-        .authority_shutdown()
-        .await
-        .core
-        .unwrap()
-        .is_released());
+    assert!(
+        !harness
+            .dispatcher
+            .authority_shutdown()
+            .await
+            .core
+            .unwrap()
+            .is_released()
+    );
+    assert!(
+        harness
+            .dispatcher
+            .continuation_describe_backlog()
+            .await
+            .unwrap()
+            .is_object()
+    );
+    assert!(
+        harness
+            .dispatcher
+            .authority_shutdown()
+            .await
+            .core
+            .unwrap()
+            .is_released()
+    );
     let claim = harness
         .dispatcher
         .continuation_prepare_claim(256, 65536)
@@ -744,11 +753,13 @@ async fn process_shutdown_retains_native_claim_and_retry_owner() {
             .unwrap()["disposed"],
         true
     );
-    assert!(harness
-        .dispatcher
-        .continuation_execute(peer, &declaration)
-        .await
-        .is_err());
+    assert!(
+        harness
+            .dispatcher
+            .continuation_execute(peer, &declaration)
+            .await
+            .is_err()
+    );
 }
 
 fn directory_mac_profile(
@@ -766,6 +777,166 @@ async fn directory_harness() -> Harness {
             .unwrap(),
     )
     .await
+}
+
+#[tokio::test]
+async fn deferred_connect_dispatch_uses_shared_native_lease_authority() {
+    let harness = directory_harness().await;
+    let result = harness
+        .route(
+            "connection.connect",
+            "deferred-dispatch",
+            vec![
+                ("peerId", string("00112233-4455-6677-8899-aabbccddeeff")),
+                ("intent", string("when-available")),
+            ],
+            None,
+        )
+        .await
+        .expect("native deferred route")
+        .into_wire();
+    assert!(result["handle"].is_string());
+    assert_eq!(count(&harness.radio().calls(), "connect_when_available"), 1);
+}
+
+#[tokio::test]
+async fn peer_directory_bonded_preserves_native_fact_without_link_ownership() {
+    fn bonded_profile(
+        core: &mut ubm_core::central::Central,
+    ) -> Result<(), ubm_core::contracts::CoreError> {
+        ubm_desktop::register_desktop_capabilities_for(
+            core,
+            Some(ubm_desktop::DesktopOs::Windows),
+            false,
+        )
+    }
+    let mut profile = ubm_desktop::CentralProfile::desktop("tauri-bonded-test");
+    profile.register_capabilities = bonded_profile;
+    let harness = Harness::over(
+        DesktopCentral::open_with(os_radio(AdmissionPolicy::LifecycleOnly), profile)
+            .await
+            .unwrap(),
+    )
+    .await;
+    let id = if cfg!(target_os = "windows") {
+        "AA:BB:CC:DD:EE:FF"
+    } else if cfg!(target_os = "linux") {
+        "hci0/dev_AA_BB_CC_DD_EE_FF"
+    } else {
+        "00112233-4455-6677-8899-aabbccddeeff"
+    };
+    harness
+        .radio()
+        .set_bonded_directory_peers(vec![ubm_desktop::DirectoryPeer {
+            peer_id: id.to_owned(),
+            name: Some("bonded native peer".into()),
+            connection: "disconnected",
+        }]);
+    let backend = if cfg!(target_os = "windows") {
+        "unified-ble:winrt"
+    } else if cfg!(target_os = "linux") {
+        "unified-ble:bluez-dbus"
+    } else {
+        "unified-ble:corebluetooth"
+    };
+    let foreign_backend = if backend == "unified-ble:corebluetooth" {
+        "unified-ble:winrt"
+    } else {
+        "unified-ble:corebluetooth"
+    };
+    let reference = |scope_backend| {
+        object([
+            ("version", IpcValue::Number(1.into())),
+            ("backendId", string(scope_backend)),
+            ("scope", string("application")),
+            ("opaqueId", string(id)),
+        ])
+    };
+    let before = count(&harness.radio().calls(), "bonded_peers");
+    let foreign = harness
+        .route(
+            "peers.bonded",
+            "bonded-foreign-reference",
+            vec![(
+                "query",
+                object([(
+                    "references",
+                    IpcValue::Array(vec![reference(foreign_backend)]),
+                )]),
+            )],
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(foreign.code, BleErrorCode::PeerScopeMismatch);
+    assert_eq!(count(&harness.radio().calls(), "bonded_peers"), before);
+    let result = harness
+        .route(
+            "peers.bonded",
+            "bonded-positive",
+            vec![(
+                "query",
+                object([("references", IpcValue::Array(vec![reference(backend)]))]),
+            )],
+            None,
+        )
+        .await
+        .expect("native bonded route")
+        .into_wire();
+    assert_eq!(result["peers"][0]["peerId"], id);
+    assert_eq!(result["peers"].as_array().unwrap().len(), 1);
+    assert_eq!(count(&harness.radio().calls(), "bonded_peers"), before + 1);
+    assert_eq!(result["peers"][0]["state"]["bond"], "bonded");
+    assert_eq!(result["peers"][0]["state"]["connection"], "disconnected");
+    let resolved = harness
+        .route(
+            "peers.resolve",
+            "bonded-reference-resolve",
+            vec![("reference", reference(backend))],
+            None,
+        )
+        .await
+        .expect("bonded reference roundtrip")
+        .into_wire();
+    assert_eq!(resolved["peer"]["peerId"], id);
+    assert_eq!(resolved["peer"]["source"], "system-bonded");
+    assert_eq!(resolved["peer"]["state"]["bond"], "bonded");
+    assert_eq!(count(&harness.radio().calls(), "bonded_peers"), before + 2);
+    assert_eq!(count(&harness.radio().calls(), "resolve_peer"), 0);
+    assert!(
+        harness.dispatcher.inner.lock().await.callers[&harness.key()]
+            .connections
+            .is_empty()
+    );
+    assert!(
+        !harness
+            .radio()
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("connect:"))
+    );
+    let connected = harness
+        .execute(
+            "connection.connect",
+            vec![("peerId", string(id))],
+            None,
+            OpControl::default(),
+        )
+        .await
+        .expect("explicit resolved identity connection");
+    assert_eq!(text(&connected, "peerId"), id);
+    harness.radio().set_bonded_directory_peers(Vec::new());
+    let removed = harness
+        .route(
+            "peers.resolve",
+            "removed-bond-reference",
+            vec![("reference", reference(backend))],
+            None,
+        )
+        .await
+        .unwrap()
+        .into_wire();
+    assert_eq!(removed["peer"], Value::Null);
 }
 
 #[tokio::test]
@@ -806,11 +977,13 @@ async fn peer_directory_connected_returns_identity_without_connection_ownership(
             .connections
             .is_empty()
     );
-    assert!(!harness
-        .radio()
-        .calls()
-        .iter()
-        .any(|call| call.starts_with("connect:")));
+    assert!(
+        !harness
+            .radio()
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("connect:"))
+    );
 }
 
 fn directory_reference(id: &str) -> IpcValue {
@@ -888,11 +1061,13 @@ async fn peer_directory_validates_entire_query_before_native_dispatch() {
         assert_eq!(error.code, code);
         assert_eq!(error.operation, operation);
     }
-    assert!(!harness
-        .radio()
-        .calls()
-        .iter()
-        .any(|call| call == "resolve_peer" || call == "connected_peers"));
+    assert!(
+        !harness
+            .radio()
+            .calls()
+            .iter()
+            .any(|call| call == "resolve_peer" || call == "connected_peers")
+    );
 }
 
 #[tokio::test]
@@ -1080,11 +1255,13 @@ async fn peer_directory_unavailable_hosts_never_short_circuit_to_success_or_mac_
             assert_eq!(error.code, BleErrorCode::CapabilityUnsupported);
             assert_eq!(error.operation, command);
         }
-        assert!(!harness
-            .radio()
-            .calls()
-            .iter()
-            .any(|call| call == "resolve_peer" || call == "connected_peers"));
+        assert!(
+            !harness
+                .radio()
+                .calls()
+                .iter()
+                .any(|call| call == "resolve_peer" || call == "connected_peers")
+        );
     }
 }
 
@@ -1257,11 +1434,13 @@ async fn authority_shutdown_retains_half_open_compensation_cause_until_confirmed
     harness
         .radio()
         .fail_next(FaultOp::Disconnect, "initial compensation refused");
-    assert!(harness
-        .central
-        .connect("half-open", "owner", OpControl::unbounded())
-        .await
-        .is_err());
+    assert!(
+        harness
+            .central
+            .connect("half-open", "owner", OpControl::unbounded())
+            .await
+            .is_err()
+    );
     let platform = PlatformDetail::new("android", "133").with_message("disconnect refused");
     harness
         .radio()
@@ -1333,15 +1512,17 @@ async fn caller_connection_release_preserves_another_native_lease() {
             .await
     );
     other.discover(&other_link).await;
-    assert!(harness
-        .execute(
-            "gatt.discover",
-            Harness::link_entries(&link),
-            None,
-            OpControl::unbounded()
-        )
-        .await
-        .is_err());
+    assert!(
+        harness
+            .execute(
+                "gatt.discover",
+                Harness::link_entries(&link),
+                None,
+                OpControl::unbounded()
+            )
+            .await
+            .is_err()
+    );
     harness.dispatcher.authority_shutdown().await;
 }
 
@@ -1569,14 +1750,16 @@ async fn cancelling_orphan_drain_keeps_its_exact_identity_owned() {
     harness.wait_calls("stop_scan", 2).await;
     drain.abort();
     assert!(matches!(drain.await, Err(error) if error.is_cancelled()));
-    assert!(harness
-        .dispatcher
-        .inner
-        .lock()
-        .await
-        .orphan_debt
-        .iter()
-        .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan)));
+    assert!(
+        harness
+            .dispatcher
+            .inner
+            .lock()
+            .await
+            .orphan_debt
+            .iter()
+            .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan))
+    );
     harness.radio().unblock_op(FaultOp::StopScan);
     harness.dispatcher.authority_shutdown().await;
 }
@@ -1640,11 +1823,13 @@ async fn cancelling_orphan_snapshot_keeps_both_resources_and_other_callers() {
         .await;
     let scan = harness.orphan_a_scan(1).await;
     assert_eq!(harness.debt().await.len(), 2);
-    assert!(harness
-        .dispatcher
-        .settle_orphan_debt(&authority, Some("unrelated-caller"))
-        .await
-        .is_empty());
+    assert!(
+        harness
+            .dispatcher
+            .settle_orphan_debt(&authority, Some("unrelated-caller"))
+            .await
+            .is_empty()
+    );
     assert_eq!(
         harness.debt().await.len(),
         2,
@@ -1662,10 +1847,12 @@ async fn cancelling_orphan_snapshot_keeps_both_resources_and_other_callers() {
         2,
         "both the in-flight and unvisited identity stay owned"
     );
-    assert!(state
-        .orphan_debt
-        .iter()
-        .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan)));
+    assert!(
+        state
+            .orphan_debt
+            .iter()
+            .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan))
+    );
     drop(state);
     harness.radio().unblock_op(FaultOp::Disconnect);
     harness.dispatcher.authority_shutdown().await;
@@ -1686,14 +1873,16 @@ async fn refused_parent_retains_timed_out_orphan_debt_until_clean_retry() {
     harness.radio().unblock_op(FaultOp::StopScan);
     let first = shutdown.await.unwrap();
     assert!(!first.core.unwrap().transport_close_failures.is_empty());
-    assert!(harness
-        .dispatcher
-        .inner
-        .lock()
-        .await
-        .orphan_debt
-        .iter()
-        .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan)));
+    assert!(
+        harness
+            .dispatcher
+            .inner
+            .lock()
+            .await
+            .orphan_debt
+            .iter()
+            .any(|debt| matches!(&debt.resource, OrphanResource::Scan(id) if *id == scan))
+    );
     assert!(harness.dispatcher.ensure_authority().await.is_err());
     let retry = harness.dispatcher.authority_shutdown().await;
     assert!(retry.core.unwrap().transport_close_failures.is_empty());
@@ -1747,11 +1936,13 @@ async fn authority_shutdown_retains_transport_cleanup_until_a_clean_retry() {
         .radio()
         .fail_next(FaultOp::FinishClose, "transport close refused");
     let first = harness.dispatcher.authority_shutdown().await;
-    assert!(!first
-        .core
-        .expect("first shutdown report")
-        .transport_close_failures
-        .is_empty());
+    assert!(
+        !first
+            .core
+            .expect("first shutdown report")
+            .transport_close_failures
+            .is_empty()
+    );
     assert!(
         harness.dispatcher.ensure_authority().await.is_err(),
         "failed shutdown never reopens admission"
@@ -1787,21 +1978,25 @@ async fn authority_shutdown_closes_admission_during_transport_cleanup() {
     let dispatcher = harness.dispatcher.clone();
     let shutdown = tokio::spawn(async move { dispatcher.authority_shutdown().await });
     harness.wait_calls("finish_close", 1).await;
-    assert!(tokio::time::timeout(
-        Duration::from_millis(100),
-        harness.dispatcher.ensure_authority()
-    )
-    .await
-    .expect("closed admission must not wait behind cleanup")
-    .is_err());
-    harness.radio().unblock_op(FaultOp::FinishClose);
-    assert!(shutdown
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            harness.dispatcher.ensure_authority()
+        )
         .await
-        .expect("shutdown task")
-        .core
-        .expect("report")
-        .transport_close_failures
-        .is_empty());
+        .expect("closed admission must not wait behind cleanup")
+        .is_err()
+    );
+    harness.radio().unblock_op(FaultOp::FinishClose);
+    assert!(
+        shutdown
+            .await
+            .expect("shutdown task")
+            .core
+            .expect("report")
+            .transport_close_failures
+            .is_empty()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1816,11 +2011,13 @@ async fn cancelled_authority_shutdown_preserves_the_closed_retry_owner() {
     assert!(harness.dispatcher.ensure_authority().await.is_err());
     harness.radio().unblock_op(FaultOp::FinishClose);
     let retry = harness.dispatcher.authority_shutdown().await;
-    assert!(retry
-        .core
-        .expect("cancelled shutdown retains authority")
-        .transport_close_failures
-        .is_empty());
+    assert!(
+        retry
+            .core
+            .expect("cancelled shutdown retains authority")
+            .transport_close_failures
+            .is_empty()
+    );
     assert_eq!(count(&harness.radio().calls(), "finish_close"), 2);
     assert!(harness.dispatcher.authority_shutdown().await.core.is_none());
 }
@@ -1843,11 +2040,13 @@ async fn hung_authority_transport_cleanup_is_bounded_and_retryable() {
     assert!(harness.dispatcher.ensure_authority().await.is_err());
     harness.radio().unblock_op(FaultOp::FinishClose);
     let retry = harness.dispatcher.authority_shutdown().await;
-    assert!(retry
-        .core
-        .expect("timeout retains authority")
-        .transport_close_failures
-        .is_empty());
+    assert!(
+        retry
+            .core
+            .expect("timeout retains authority")
+            .transport_close_failures
+            .is_empty()
+    );
     assert!(harness.dispatcher.authority_shutdown().await.core.is_none());
 }
 
@@ -2441,7 +2640,9 @@ fn wire_error(error: &DispatchError) -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open() {
     let module = module_path!().split_once("::").unwrap().1;
-    let test = format!("{module}::trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open");
+    let test = format!(
+        "{module}::trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open"
+    );
     let Some(directory) = recording_fixture::isolated_fixture_process(&test) else {
         return;
     };
@@ -3683,17 +3884,19 @@ async fn a_notification_terminal_sent_before_disconnect_is_not_sent_twice() {
         .expect("subscribe");
     let notifications = text(&subscription, "handle");
 
-    assert!(harness
-        .dispatcher
-        .notification_terminal(
-            &harness.key(),
-            (LEASE_ID, LEASE_GENERATION),
-            &notifications,
-            "connection-lost",
-            None,
-        )
-        .await
-        .expect("first terminal is sent"));
+    assert!(
+        harness
+            .dispatcher
+            .notification_terminal(
+                &harness.key(),
+                (LEASE_ID, LEASE_GENERATION),
+                &notifications,
+                "connection-lost",
+                None,
+            )
+            .await
+            .expect("first terminal is sent")
+    );
     harness
         .execute(
             "connection.disconnect",
@@ -4140,6 +4343,165 @@ async fn connected_rssi_reads_the_live_link_through_the_core() {
         .await
         .expect("the OS measurement crosses");
     assert_eq!(field(&rssi, "rssi"), &number(-55));
+}
+
+/// U01: capability truth is checked at the actual bootstrap boundary, beside
+/// routed operations and delivered service-change events, not serialization only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_capability_bootstrap_agrees_with_routed_rssi_and_service_change() {
+    fn mac(core: &mut ubm_core::central::Central) -> Result<(), ubm_core::contracts::CoreError> {
+        ubm_desktop::register_desktop_capabilities_for(
+            core,
+            Some(ubm_desktop::DesktopOs::MacOs),
+            false,
+        )
+    }
+    fn windows(
+        core: &mut ubm_core::central::Central,
+    ) -> Result<(), ubm_core::contracts::CoreError> {
+        ubm_desktop::register_desktop_capabilities_for(
+            core,
+            Some(ubm_desktop::DesktopOs::Windows),
+            false,
+        )
+    }
+    fn linux(core: &mut ubm_core::central::Central) -> Result<(), ubm_core::contracts::CoreError> {
+        ubm_desktop::register_desktop_capabilities_for(
+            core,
+            Some(ubm_desktop::DesktopOs::Linux),
+            false,
+        )
+    }
+    for (os, registration) in [
+        (
+            ubm_desktop::DesktopOs::MacOs,
+            mac as fn(
+                &mut ubm_core::central::Central,
+            ) -> Result<(), ubm_core::contracts::CoreError>,
+        ),
+        (ubm_desktop::DesktopOs::Windows, windows),
+        (ubm_desktop::DesktopOs::Linux, linux),
+    ] {
+        let mut profile = ubm_desktop::CentralProfile::desktop("native-capability-bootstrap");
+        profile.register_capabilities = registration;
+        let harness = Harness::over(
+            DesktopCentral::open_with(FakeRadio::new(), profile)
+                .await
+                .unwrap(),
+        )
+        .await;
+        let response = harness
+            .dispatcher
+            .bootstrap(
+                AuthenticatedCaller::new("test-app".to_owned(), "capability-probe".to_owned()),
+                IpcEventSink::new(Channel::new(|_| Ok(()))),
+                version_offer(),
+            )
+            .await
+            .unwrap()
+            .into_wire();
+        let descriptors = response["bootstrap"]["capabilities"]["descriptors"]
+            .as_array()
+            .unwrap();
+        let native = harness.central.capability_descriptors().await;
+        for id in [
+            "connection:rssi",
+            "gatt:service-changed",
+            "background:desktop-maintain-connection",
+        ] {
+            let row = descriptors.iter().find(|row| row["id"] == id).unwrap();
+            let native = native.iter().find(|row| row.id() == id).unwrap();
+            assert_eq!(
+                row["state"],
+                native.state().as_str(),
+                "{} {id}",
+                os.as_str()
+            );
+            assert_eq!(row["evidence"]["receiptId"], native.receipt_id());
+        }
+        let link = harness.connect("peer-a").await;
+        if os == ubm_desktop::DesktopOs::MacOs {
+            harness.radio().set_rssi("peer-a", -55);
+        }
+        let rssi = harness
+            .execute(
+                "connection.rssi",
+                Harness::link_entries(&link),
+                None,
+                OpControl::default(),
+            )
+            .await;
+        if os == ubm_desktop::DesktopOs::MacOs {
+            assert_eq!(field(&rssi.unwrap(), "rssi"), &number(-55));
+        } else {
+            assert_eq!(rssi.unwrap_err().code, BleErrorCode::CapabilityUnsupported);
+        }
+        let database = harness.discover(&link).await;
+        let subscription = harness
+            .subscribe(&link, &database, NOTIFY_ONLY, None)
+            .await
+            .unwrap();
+        let notifications = text(&subscription, "handle");
+        harness
+            .radio()
+            .push_event(RadioEvent::ServicesChanged("peer-a".to_owned()));
+        let ended = harness.wait_items(&notifications, 1).await;
+        assert_eq!(ended[0]["reason"], "service-changed", "{}", os.as_str());
+        assert!(super::is_released(
+            &harness.dispatcher.release(&harness.key()).await
+        ));
+    }
+}
+
+#[tokio::test]
+async fn transport_only_restrictions_match_absent_routes_and_rebind_ownership() {
+    let harness = Harness::new().await;
+    for (id, command) in [
+        ("discovery:advertisement-watch", "advertisement.watch"),
+        ("gatt:reliable-write", "gatt.reliable-write"),
+        (
+            "gatt:write-without-response-readiness",
+            "gatt.write-readiness",
+        ),
+        (
+            "gatt:high-throughput-acquire",
+            "gatt.high-throughput-acquire",
+        ),
+    ] {
+        assert!(crate::capabilities::transport_restriction(id).is_some());
+        let error = harness
+            .execute(command, vec![], None, OpControl::default())
+            .await
+            .unwrap_err();
+        assert_eq!(error.operation, "tauri.route-command");
+    }
+    assert!(crate::capabilities::transport_restriction("peer:origin-authorized").is_some());
+    let error = harness
+        .execute(
+            "peers.authorized",
+            vec![("query", object([]))],
+            None,
+            OpControl::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, BleErrorCode::CapabilityUnsupported);
+    assert!(crate::capabilities::transport_restriction("lifecycle:page-persistence").is_some());
+    let _link = harness.connect("peer-a").await;
+    harness
+        .dispatcher
+        .bootstrap(
+            harness.caller.clone(),
+            IpcEventSink::new(Channel::new(|_| Ok(()))),
+            version_offer(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        harness
+            .with_caller(|caller| caller.connections.is_empty())
+            .await
+    );
 }
 
 /// A route's attachment identity is compared field by field against the

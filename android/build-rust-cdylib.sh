@@ -8,11 +8,8 @@
 # five0 probe-app build; this script is the single source of truth so the
 # two call sites cannot drift.
 #
-# Supported ABI list (recorded): arm64-v8a (physical devices — the ABI the
-# apps ship) plus x86_64 (KVM host-matched emulator ABI,
-# system-images;android-34;google_apis;x86_64). armeabi-v7a stays unwired:
-# no 32-bit ARM device exists on this lane, so it is a documented boundary,
-# not a failure.
+# Supported ABIs: armeabi-v7a (32-bit Android/Fire OS processes), arm64-v8a
+# and x86_64. Artifact coverage is not physical-device qualification.
 #
 # PR210-18: before cargo runs, the builder seals the build identity:
 # scripts/release/native-build-identity.js computes the jni source digest and
@@ -21,7 +18,7 @@
 # bindings/jni/build.rs embeds them in the binary. Needs Node (NODE_BINARY
 # or `node` on PATH).
 #
-# Usage: build-rust-cdylib.sh --abi arm64-v8a|x86_64 --profile debug|release \
+# Usage: build-rust-cdylib.sh --abi armeabi-v7a|arm64-v8a|x86_64 --profile debug|release \
 #          --libdir <dir> [--minsdk 24]
 #        build-rust-cdylib.sh --prepare [--profile debug|release]
 #          PR210-19 direct source-preparation step (`pnpm native:android:prepare`):
@@ -54,7 +51,7 @@ done
 
 fail() { echo "build-rust-cdylib: FAIL $1" >&2; exit 1; }
 
-DECLARED_ABIS="arm64-v8a x86_64"
+DECLARED_ABIS="armeabi-v7a arm64-v8a x86_64"
 if [ "$PREPARE" = "1" ]; then
   [ -z "$ABI" ] && [ -z "$LIBDIR" ] || fail "--prepare builds every declared ABI; do not combine it with --abi/--libdir"
   [ "$PROFILE" = "debug" ] || [ "$PROFILE" = "release" ] || fail "--profile must be debug|release, got '$PROFILE'"
@@ -68,9 +65,9 @@ if [ "$PREPARE" = "1" ]; then
   exit 0
 fi
 
-[ -n "$ABI" ] || fail "missing --abi (supported: arm64-v8a x86_64)"
+[ -n "$ABI" ] || fail "missing --abi (supported: $DECLARED_ABIS)"
 [ -n "$LIBDIR" ] || fail "missing --libdir (staging directory)"
-[ "$ABI" = "x86_64" ] || [ "$ABI" = "arm64-v8a" ] || fail "unsupported ABI '$ABI' (supported: arm64-v8a x86_64; armeabi-v7a is a documented boundary — no 32-bit ARM device on this lane)"
+[ "$ABI" = "x86_64" ] || [ "$ABI" = "arm64-v8a" ] || [ "$ABI" = "armeabi-v7a" ] || fail "unsupported ABI '$ABI' (supported: $DECLARED_ABIS)"
 [ "$PROFILE" = "debug" ] || [ "$PROFILE" = "release" ] || fail "--profile must be debug|release, got '$PROFILE'"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -79,9 +76,14 @@ CRATE="ubm5_jni_echo"
 LIB="lib${CRATE}.so"
 
 case "$ABI" in
+  armeabi-v7a) TARGET="armv7-linux-androideabi" ;;
   x86_64) TARGET="x86_64-linux-android" ;;
   arm64-v8a) TARGET="aarch64-linux-android" ;;
 esac
+# Rust and the NDK use different ARM32 triples. Cargo's target and cc-rs
+# environment keys remain the Rust triple; the compiler uses NDK's armv7a.
+COMPILER_TARGET="$TARGET"
+[ "$ABI" != "armeabi-v7a" ] || COMPILER_TARGET="armv7a-linux-androideabi"
 
 # --- NDK resolution (actionable when absent) ---
 if [ -n "${ANDROID_NDK_HOME:-}" ] && [ -d "$ANDROID_NDK_HOME" ]; then
@@ -101,7 +103,7 @@ case "$(uname -s)" in
   Darwin) HOST_TAG="darwin-x86_64" ;;
   *) fail "unsupported build host '$(uname -s)' (Linux and macOS only)" ;;
 esac
-LINKER="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/${TARGET}${MINSDK}-clang"
+LINKER="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/${COMPILER_TARGET}${MINSDK}-clang"
 [ -x "$LINKER" ] || fail "NDK linker missing: $LINKER (NDK=$NDK host=$HOST_TAG). Reinstall NDK 27.x via: sdkmanager 'ndk;27.1.12297006'"
 LLVM_NM="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/llvm-nm"
 [ -x "$LLVM_NM" ] || fail "NDK symbol reader missing: $LLVM_NM (NDK=$NDK host=$HOST_TAG). Reinstall NDK 27.x via: sdkmanager 'ndk;27.1.12297006'"

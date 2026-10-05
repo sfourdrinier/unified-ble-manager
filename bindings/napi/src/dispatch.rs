@@ -20,8 +20,8 @@
 //! with `capability.unsupported`, never silently.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use std::sync::Arc;
 
@@ -34,8 +34,8 @@ use napi::threadsafe_function::{
 use napi::{Env, JsFunction};
 use napi::{Error, Status};
 use napi_derive::napi;
-use tokio::sync::broadcast::{self, error::TryRecvError};
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::broadcast::{self, error::TryRecvError};
 use ubm_core::central::ScanDuplicatePolicy;
 use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CommitState, CoreError, OperationId};
 #[cfg(test)]
@@ -45,16 +45,16 @@ use ubm_desktop::boundary::{AdapterLossCause, AdmissionPolicy};
 use ubm_desktop::central::AdapterResetEvent;
 use ubm_desktop::executor::desktop_runtime;
 use ubm_desktop::{
-    desktop_capability_states, AdapterAuthorization, AdapterEvent, AdapterPowerState, AddressType,
-    AdvertisementExtras, BluezBus, BtleplugRadio, Budget, CancelAck, CancelPairingOutcome,
-    CentralProfile, CharacteristicAccess, CompletionOutcome, DeliveryMode, DesktopCentral,
-    DesktopError, DesktopOs, DiscoveredPath, FakeRadio, FaultOp, InstanceKey, InvalidationCause,
-    LifecycleEvent, LifecycleKind, ManufacturerData, NotificationPoll, ObservationSource,
-    ObservedDelivery, OpControl, OpTicket, PairOutcome, PairRequest, PairingGeneration,
-    PairingGenerationController, PathSelector, PeerSnapshot, PlatformDetail, PlatformValue,
-    PropertyFlags, RadioBoundary, RadioCloseFailure, RadioEvent, Retryability, ScanFilterSpec,
-    ScanStop, ScanTerminalEvent, SecureConnections, SecurityEvent, SecurityState, ServiceData,
-    ServiceSnapshot, UnpairOutcome, WriteLimits, WriteReadinessEvent,
+    AdapterAuthorization, AdapterEvent, AdapterPowerState, AddressType, AdvertisementExtras,
+    BluezBus, BtleplugRadio, Budget, CancelAck, CancelPairingOutcome, CentralProfile,
+    CharacteristicAccess, CompletionOutcome, DeliveryMode, DesktopCentral, DesktopError, DesktopOs,
+    DiscoveredPath, FakeRadio, FaultOp, InstanceKey, InvalidationCause, LifecycleEvent,
+    LifecycleKind, ManufacturerData, NotificationPoll, ObservationSource, ObservedDelivery,
+    OpControl, OpTicket, PairOutcome, PairRequest, PairingGeneration, PairingGenerationController,
+    PathSelector, PeerSnapshot, PlatformDetail, PlatformValue, PropertyFlags, RadioBoundary,
+    RadioCloseFailure, RadioEvent, Retryability, ScanFilterSpec, ScanStop, ScanTerminalEvent,
+    SecureConnections, SecurityEvent, SecurityState, ServiceData, ServiceSnapshot, UnpairOutcome,
+    WriteLimits, WriteReadinessEvent, desktop_capability_states,
 };
 
 /// Typed dispatch failure carrying a frozen C-UBM identity. [`DesktopError`]
@@ -286,6 +286,21 @@ impl RadioBoundary for DispatchRadio {
         match self {
             Self::Radio(radio) => radio.connected_peers(services).await,
             Self::Synthetic(radio) => radio.connected_peers(services).await,
+        }
+    }
+
+    async fn bonded_peers(
+        &self,
+    ) -> std::result::Result<Vec<ubm_desktop::DirectoryPeer>, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.bonded_peers().await,
+            Self::Synthetic(radio) => radio.bonded_peers().await,
+        }
+    }
+    async fn connect_when_available(&self, peer_id: &str) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.connect_when_available(peer_id).await,
+            Self::Synthetic(radio) => radio.connect_when_available(peer_id).await,
         }
     }
     async fn resolve_peer(
@@ -3610,6 +3625,22 @@ impl UbmCentral {
     }
 
     #[napi(catch_unwind)]
+    pub async fn bonded_peers(&self, options: ControlOptions) -> Result<Vec<DirectoryPeerInfo>> {
+        let ctl = self
+            .control(
+                options.timeout_ms,
+                options.ticket.as_deref(),
+                "peers.bonded",
+            )
+            .map_err(to_napi)?;
+        self.central
+            .bonded_peers(ctl)
+            .await
+            .map(|peers| peers.into_iter().map(DirectoryPeerInfo::from).collect())
+            .map_err(fail)
+    }
+
+    #[napi(catch_unwind)]
     pub async fn resolve_peer(
         &self,
         options: PeerControlOptions,
@@ -3867,6 +3898,19 @@ impl UbmCentral {
     /// Connect to a known peer.
     #[napi(catch_unwind)]
     pub async fn connect(&self, options: ConnectOptions) -> Result<ConnectionInfo> {
+        self.connect_intent(options, false).await
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn connect_when_available(&self, options: ConnectOptions) -> Result<ConnectionInfo> {
+        self.connect_intent(options, true).await
+    }
+
+    async fn connect_intent(
+        &self,
+        options: ConnectOptions,
+        deferred: bool,
+    ) -> Result<ConnectionInfo> {
         let ctl = self
             .control(
                 options.timeout_ms,
@@ -3875,11 +3919,16 @@ impl UbmCentral {
             )
             .map_err(to_napi)?;
         bump(&self.counters.connect);
-        let handle = self
-            .central
-            .connect(&options.peer_id, &options.lease, ctl)
-            .await
-            .map_err(fail)?;
+        let handle = if deferred {
+            self.central
+                .connect_when_available(&options.peer_id, &options.lease, ctl)
+                .await
+        } else {
+            self.central
+                .connect(&options.peer_id, &options.lease, ctl)
+                .await
+        }
+        .map_err(fail)?;
         Ok(ConnectionInfo {
             peer_key: handle.peer_key,
             connection_generation: handle.connection_generation,
@@ -5140,11 +5189,13 @@ mod tests {
             record: Ok(ubm_core::ownership::CleanupRecord::new(
                 None,
                 CleanupState::ReleaseFailed,
-                vec![ubm_core::ownership::CleanupFailure::new(
-                    "subscription".into(),
-                    BleErrorCode::GattSubscribeFailed,
-                )
-                .unwrap()],
+                vec![
+                    ubm_core::ownership::CleanupFailure::new(
+                        "subscription".into(),
+                        BleErrorCode::GattSubscribeFailed,
+                    )
+                    .unwrap(),
+                ],
             )
             .unwrap()),
             ..retry
@@ -5153,9 +5204,11 @@ mod tests {
         assert_eq!(receipt.state, "release-failed");
         assert_eq!(receipt.failures.len(), 1);
         assert_eq!(receipt.failures[0].resource_kind, "subscription");
-        assert!(receipt.failures[0]
-            .error
-            .starts_with("gatt.subscribe-failed|cleanup|"));
+        assert!(
+            receipt.failures[0]
+                .error
+                .starts_with("gatt.subscribe-failed|cleanup|")
+        );
     }
 
     #[tokio::test]
@@ -5190,11 +5243,13 @@ mod tests {
         let radio = central.central.boundary().synthetic("test").unwrap();
         radio.fail_next(ubm_desktop::FaultOp::Connect, "connect refused");
         radio.fail_next(ubm_desktop::FaultOp::Disconnect, "compensation refused");
-        assert!(central
-            .central
-            .connect("half-open", "owner", OpControl::unbounded())
-            .await
-            .is_err());
+        assert!(
+            central
+                .central
+                .connect("half-open", "owner", OpControl::unbounded())
+                .await
+                .is_err()
+        );
         let platform = ubm_desktop::PlatformDetail::new("android", "133").with_message("refused");
         radio.fail_next_with_platform(
             ubm_desktop::FaultOp::Disconnect,
@@ -5664,9 +5719,11 @@ mod tests {
                 ("descriptor-write".to_owned(), 0, 0, Some(0)),
             ]
         );
-        assert!(accesses
-            .iter()
-            .all(|access| access.peer_id == "peer-1" && access.service_uuid == battery));
+        assert!(
+            accesses
+                .iter()
+                .all(|access| access.peer_id == "peer-1" && access.service_uuid == battery)
+        );
         assert_eq!(
             accesses[2].descriptor_uuid.as_deref(),
             Some(user_description)
@@ -5676,9 +5733,69 @@ mod tests {
     #[test]
     fn staged_occurrences_beyond_u32_fail_loudly() {
         let error = staged_occurrence(u64::from(u32::MAX) + 1).expect_err("out of range");
-        assert!(error
-            .wire_message()
-            .starts_with("protocol.violation|core|dispatch.staged-gatt-accesses|"));
+        assert!(
+            error
+                .wire_message()
+                .starts_with("protocol.violation|core|dispatch.staged-gatt-accesses|")
+        );
+    }
+
+    #[tokio::test]
+    async fn deferred_connect_dispatch_uses_shared_native_lease_authority() {
+        let central = UbmCentral::open_synthetic("deferred-dispatch".into(), None)
+            .await
+            .unwrap();
+        let connection = central
+            .connect_when_available(ConnectOptions {
+                peer_id: "peer".into(),
+                lease: "lease".into(),
+                timeout_ms: Some(1000),
+                ticket: None,
+            })
+            .await
+            .unwrap();
+        assert!(connection.connection_generation.is_some());
+        assert!(
+            central
+                .central
+                .boundary()
+                .synthetic("test")
+                .unwrap()
+                .calls()
+                .iter()
+                .any(|call| call == "connect_when_available")
+        );
+        assert_eq!(central.close().await.unwrap().state, "released");
+    }
+
+    #[tokio::test]
+    async fn bonded_directory_dispatch_preserves_no_link_native_facts() {
+        let central = UbmCentral::open_synthetic("bonded-directory-test".to_owned(), None)
+            .await
+            .unwrap();
+        central
+            .central
+            .boundary()
+            .synthetic("test")
+            .unwrap()
+            .set_bonded_directory_peers(vec![ubm_desktop::DirectoryPeer {
+                peer_id: "AA:BB:CC:DD:EE:FF".into(),
+                name: Some("saved peer".into()),
+                connection: "disconnected",
+            }]);
+        let peers = central
+            .bonded_peers(ControlOptions {
+                timeout_ms: Some(1000),
+                ticket: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].peer_id, "AA:BB:CC:DD:EE:FF");
+        assert_eq!(peers[0].connection, "disconnected");
+        assert!(central.peer_records().await.unwrap().is_empty());
+        assert_eq!(central.dispatch_counters().unwrap().connect, 0);
+        assert_eq!(central.close().await.unwrap().state, "released");
     }
 
     #[tokio::test]
@@ -6187,12 +6304,14 @@ mod tests {
             central.disconnect(lease(None)).await.unwrap().state,
             "released"
         );
-        assert!(!central
-            .read(request("lease-b"))
-            .await
-            .unwrap()
-            .value
-            .is_empty());
+        assert!(
+            !central
+                .read(request("lease-b"))
+                .await
+                .unwrap()
+                .value
+                .is_empty()
+        );
         let refusal = central
             .read(request("lease-a"))
             .await
@@ -6308,10 +6427,12 @@ mod tests {
                 .kind,
             "closed"
         );
-        assert!(central
-            .unsubscribe(subscription("consumer-b"))
-            .await
-            .unwrap());
+        assert!(
+            central
+                .unsubscribe(subscription("consumer-b"))
+                .await
+                .unwrap()
+        );
         assert_eq!(central.close().await.unwrap().state, "released");
     }
 
@@ -6807,12 +6928,16 @@ mod tests {
     fn capability_states_answer_per_desktop_os() {
         for platform in ["bluez", "corebluetooth", "winrt"] {
             let states = UbmCentral::capability_states(platform.to_owned(), None).expect("states");
-            assert!(states
-                .iter()
-                .any(|row| row.id == "connection:direct" && row.state == "limited"));
-            assert!(states
-                .iter()
-                .all(|row| row.state == "limited" || row.state == "unsupported"));
+            assert!(
+                states
+                    .iter()
+                    .any(|row| row.id == "connection:direct" && row.state == "limited")
+            );
+            assert!(
+                states
+                    .iter()
+                    .all(|row| row.state == "limited" || row.state == "unsupported")
+            );
         }
         assert!(UbmCentral::capability_states("android".to_owned(), None).is_err());
     }

@@ -495,6 +495,9 @@ jobs:
               - 'android/**'
               - 'native/protocol/**'
               - 'scripts/native-protocol/**'
+              - 'scripts/ci/check-android*'
+              - 'scripts/release/native-build-identity.js'
+              - '.github/workflows/ci.yml'
               - 'plugin/**'
               - 'example/android/**'
               - 'example-expo/**'
@@ -596,7 +599,7 @@ jobs:
           PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
           test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
           cargo --version
-          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-linux-android x86_64-linux-android
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" armv7-linux-androideabi aarch64-linux-android x86_64-linux-android
 
       - name: Install Expo example dependencies
         run: node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
@@ -624,7 +627,17 @@ jobs:
 
       - name: Build generated Android project
         working-directory: example-expo/android
-        run: NODE_ENV=development ./gradlew :app:assembleDebug --no-daemon --console=plain
+        run: NODE_ENV=development ./gradlew :app:assembleDebug --no-daemon --console=plain -PreactNativeArchitectures=armeabi-v7a,arm64-v8a,x86_64
+
+      - name: Inspect Expo ARM32 native APK graph
+        run: node scripts/ci/check-android-apk-abi.js example-expo/android/app/build/outputs/apk/debug/app-debug.apk armeabi-v7a
+
+      - name: Compile packed Expo TV ARM32 consumer
+        run: |
+          PACK_DIR="$(mktemp -d "${RUNNER_TEMP}/ubm-arm32-pack.XXXXXX")"
+          npm pack --ignore-scripts --pack-destination "$PACK_DIR"
+          PACKAGE_NAME="$(node -p "require('./package.json').name + '-' + require('./package.json').version + '.tgz'")"
+          TV_PACKAGE_TARBALL="$PACK_DIR/$PACKAGE_NAME" bash scripts/ci/check-android-tv-packed-consumer.sh
 
   # Classic RN example Android compile — same android/ library sources as Expo,
   # wired through the bare example app (not only CNG). Gated by android path filter.
@@ -679,7 +692,7 @@ jobs:
           PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
           test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
           cargo --version
-          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-linux-android x86_64-linux-android
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" armv7-linux-androideabi aarch64-linux-android x86_64-linux-android
 
       - name: Install classic example dependencies
         # example/.npmrc uses node-linker=hoisted so @react-native/gradle-plugin is at
@@ -696,7 +709,10 @@ jobs:
 
       - name: Assemble classic example debug APK
         working-directory: example/android
-        run: ./gradlew :app:assembleDebug --no-daemon --console=plain -PreactNativeArchitectures=arm64-v8a
+        run: ./gradlew :app:assembleDebug --no-daemon --console=plain -PreactNativeArchitectures=armeabi-v7a,arm64-v8a
+
+      - name: Inspect classic RN ARM32 native APK graph
+        run: node scripts/ci/check-android-apk-abi.js example/android/app/build/outputs/apk/debug/app-debug.apk armeabi-v7a
 
   # --- Apple compile checks (#20) ---
   # Compile/link only. No simulator boot, no BLE runtime (see #14).

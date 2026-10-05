@@ -19,6 +19,7 @@ const crypto = require('crypto')
 const { assertPackedAndroidPrebuilts, assertPackedRustCore } = require('../scripts/ci/verify-package-tarballs')
 const {
   ANDROID_PREBUILT_SCHEMA,
+  ANDROID_DECLARED_ABIS,
   APPLE_DECLARED_LIBRARIES,
   APPLE_STAGING_SCHEMA
 } = require('../scripts/release/native-build-identity')
@@ -33,22 +34,21 @@ function sha256(buffer) {
 }
 
 function androidFixture() {
-  const arm = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x01, 0x02, 0x03, 0x04])
-  const x64 = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x05, 0x06, 0x07, 0x08, 0x09])
+  const files = new Map()
+  const abis = ANDROID_DECLARED_ABIS.map(({ abi, target }, index) => {
+    const content = Buffer.alloc(8 + index, index + 1)
+    content.set([0x7f, 0x45, 0x4c, 0x46])
+    files.set(`package/android/src/main/jniLibs/${abi}/libubm5_jni_echo.so`, content)
+    return { abi, target, file: 'libubm5_jni_echo.so', sha256: sha256(content), bytes: content.length }
+  })
   const record = {
     schema: ANDROID_PREBUILT_SCHEMA,
     binding: 'jni',
     profile: 'release',
-    abis: [
-      { abi: 'arm64-v8a', target: 'aarch64-linux-android', file: 'libubm5_jni_echo.so', sha256: sha256(arm), bytes: 8 },
-      { abi: 'x86_64', target: 'x86_64-linux-android', file: 'libubm5_jni_echo.so', sha256: sha256(x64), bytes: 9 }
-    ]
+    abis
   }
-  return new Map([
-    [ANDROID_IDENTITY, Buffer.from(JSON.stringify(record))],
-    ['package/android/src/main/jniLibs/arm64-v8a/libubm5_jni_echo.so', arm],
-    ['package/android/src/main/jniLibs/x86_64/libubm5_jni_echo.so', x64]
-  ])
+  files.set(ANDROID_IDENTITY, Buffer.from(JSON.stringify(record)))
+  return files
 }
 
 function editRecord(files, identityPath, edit) {
@@ -81,7 +81,11 @@ function appleFixture(libraries = APPLE_DECLARED_LIBRARIES) {
 
 describe('packed Android prebuilt checks (D2 iv)', () => {
   test('coherent prebuilt tree passes and reports bytes', () => {
-    expect(assertPackedAndroidPrebuilts(androidFixture())).toBe(8 + 9)
+    const files = androidFixture()
+    const expectedBytes = [...files]
+      .filter(([name]) => name.endsWith('.so'))
+      .reduce((total, [, bytes]) => total + bytes.length, 0)
+    expect(assertPackedAndroidPrebuilts(files)).toBe(expectedBytes)
   })
 
   test('missing identity fails', () => {
@@ -111,9 +115,9 @@ describe('packed Android prebuilt checks (D2 iv)', () => {
   test('an undeclared ABI fails', () => {
     const files = androidFixture()
     editRecord(files, ANDROID_IDENTITY, record => {
-      record.abis.push({ ...record.abis[0], abi: 'armeabi-v7a' })
+      record.abis.push({ ...record.abis[0], abi: 'x86' })
     })
-    expect(() => assertPackedAndroidPrebuilts(files)).toThrow(/undeclared ABI\(s\): armeabi-v7a/)
+    expect(() => assertPackedAndroidPrebuilts(files)).toThrow(/undeclared ABI\(s\): x86/)
   })
 
   test('missing .so fails', () => {
@@ -124,8 +128,9 @@ describe('packed Android prebuilt checks (D2 iv)', () => {
 
   test('byte mismatch fails', () => {
     const files = androidFixture()
+    const originalBytes = files.get('package/android/src/main/jniLibs/x86_64/libubm5_jni_echo.so').length
     files.set('package/android/src/main/jniLibs/x86_64/libubm5_jni_echo.so', Buffer.from([0x00]))
-    expect(() => assertPackedAndroidPrebuilts(files)).toThrow(/is 1 bytes, identity says 9/)
+    expect(() => assertPackedAndroidPrebuilts(files)).toThrow(`is 1 bytes, identity says ${originalBytes}`)
   })
 
   test('sha mismatch fails', () => {

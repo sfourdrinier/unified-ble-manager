@@ -181,6 +181,11 @@ export interface BackendConnection<Attachment extends string, _Connection extend
   readonly state: ConnectionState
   disconnect(): Promise<BackendConnectionCleanupRecord>
 }
+/** Initial acquisition policy. `when-available` waits using the backend's native
+ * availability mechanism within the original operation budget; it does not
+ * enable automatic reconnect after a later link loss. Capability limitations
+ * identify mechanisms such as scan-triggered acquisition versus OS auto-connect.
+ */
 export type ConnectionIntent = 'direct' | 'when-available'
 /**
  * A canonical out-of-band radio address accepted by the optional `peer:address-targeting`

@@ -20,6 +20,23 @@ use std::pin::Pin;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 
+fn get_or_insert_cached<K: Eq + std::hash::Hash, V: Clone>(
+    cache: &DashMap<K, V>,
+    id: K,
+    make: impl FnOnce() -> V,
+) -> (V, bool) {
+    let mut created = false;
+    let identity = cache
+        .entry(id)
+        .or_insert_with(|| {
+            created = true;
+            make()
+        })
+        .value()
+        .clone();
+    (identity, created)
+}
+
 #[derive(Debug)]
 pub struct AdapterManager<PeripheralType>
 where
@@ -106,6 +123,17 @@ where
     pub fn peripheral(&self, id: &PeripheralId) -> Option<PeripheralType> {
         self.peripherals.get(id).map(|val| val.value().clone())
     }
+
+    /// One cached identity owns all concurrent explicit/observed admissions.
+    /// Never replace an existing peripheral while applying a typed target.
+    #[allow(dead_code)]
+    pub fn peripheral_or_insert_with(
+        &self,
+        id: PeripheralId,
+        make: impl FnOnce() -> PeripheralType,
+    ) -> (PeripheralType, bool) {
+        get_or_insert_cached(&self.peripherals, id, make)
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +142,45 @@ mod ubm_lag_tests {
     use crate::api::{CentralEvent, CentralState};
     use crate::platform::Peripheral;
     use futures::stream::StreamExt;
+
+    #[test]
+    fn concurrent_typed_targets_share_one_cached_identity_and_refuse_conflict() {
+        use crate::api::AddressType;
+        use std::sync::{Arc, Barrier, Mutex};
+        let cache = Arc::new(dashmap::DashMap::new());
+        let barrier = Arc::new(Barrier::new(2));
+        let workers: Vec<_> = [AddressType::Public, AddressType::Random]
+            .into_iter()
+            .map(|requested| {
+                let cache = Arc::clone(&cache);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let (identity, created) =
+                        super::get_or_insert_cached(&cache, 7u8, || Arc::new(Mutex::new(None)));
+                    let accepted = {
+                        let mut kind = identity.lock().unwrap();
+                        match *kind {
+                            Some(existing) if existing != requested => false,
+                            _ => {
+                                *kind = Some(requested);
+                                true
+                            }
+                        }
+                    };
+                    (identity, created, accepted)
+                })
+            })
+            .collect();
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert!(Arc::ptr_eq(&results[0].0, &results[1].0));
+        assert_eq!(results.iter().filter(|result| result.1).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.2).count(), 1);
+        assert_eq!(cache.len(), 1);
+    }
 
     #[test]
     fn a_lagging_event_receiver_is_told_what_it_lost() {

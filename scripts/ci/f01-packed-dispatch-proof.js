@@ -250,7 +250,7 @@ function legTauriPlugin(installed, toolchain, rustc) {
 
 // Leg I: Android prebuilts are real objects for the declared ABIs.
 function legAndroid(installed) {
-  const ELF_MACHINE = { 'arm64-v8a': 183, x86_64: 62 }
+  const ELF_MACHINE = { 'armeabi-v7a': 40, 'arm64-v8a': 183, x86_64: 62 }
   for (const [abi, machine] of Object.entries(ELF_MACHINE)) {
     const so = path.join(installed, 'android', 'src', 'main', 'jniLibs', abi, 'libubm5_jni_echo.so')
     if (!fs.existsSync(so)) fail(`packed candidate is missing the ${abi} prebuilt`)
@@ -258,7 +258,9 @@ function legAndroid(installed) {
     if (!(header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46)) {
       fail(`${abi} prebuilt is not ELF`)
     }
-    if (header.readUInt16LE(18) !== machine) fail(`${abi} prebuilt has the wrong ELF machine`)
+    if (header[4] !== (abi === 'armeabi-v7a' ? 1 : 2) || header[5] !== 1 || header.readUInt16LE(18) !== machine) {
+      fail(`${abi} prebuilt has the wrong ELF class/machine`)
+    }
   }
   // PR210-18: the committed identity is JSON (build-identity.json).
   const identity = JSON.parse(
@@ -268,7 +270,7 @@ function legAndroid(installed) {
   for (const abi of Object.keys(ELF_MACHINE)) {
     if (!recordedAbis.includes(abi)) fail(`build-identity.json does not cover ${abi}`)
   }
-  log('Android arm64-v8a + x86_64 prebuilts are real ELF objects (device load runs on device CI)')
+  log('Android armeabi-v7a + arm64-v8a + x86_64 prebuilts are real ELF objects (device load is separate qualification)')
 }
 
 // Leg J: Apple matrix check + shipped podspec selection.

@@ -23,9 +23,9 @@ use ubm_desktop::{
     RadioEvent, ServiceSnapshot,
 };
 
-use super::{object, string, BtleplugDispatcher, IpcEventSink, IpcValue};
-use crate::desktop_core::CoreAuthority;
+use super::{BtleplugDispatcher, IpcEventSink, IpcValue, object, string};
 use crate::AuthenticatedCaller;
+use crate::desktop_core::CoreAuthority;
 
 const HRM_SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
 const HRM_MEASUREMENT: &str = "00002a37-0000-1000-8000-00805f9b34fb";

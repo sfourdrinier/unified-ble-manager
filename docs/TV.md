@@ -61,6 +61,25 @@ restoration and continuation keys. Android TV consumers should start with
 imitate the phone example. Android below API 31 has its own location requirements;
 `legacyLocation: 'none'` does not provide those declarations or authorize scans.
 
+For Android/Fire OS API 24–30, set `permissions.android.legacyLocation: 'auto'`
+in the Expo plugin so the application declares fine-location permission.
+Only when `neverForLocation: true` is also selected does the plugin add
+`maxSdkVersion: 30` to that declaration. Before scanning, explicitly call
+`manager.permissions.request({ purpose: 'scan-and-connect' })`, inspect the returned
+permission outcome, and require ready scan readiness. The Expo manager resolves
+the required runtime permissions for the actual API level; a declaration alone
+is not a permission grant. API 31+ uses Bluetooth permissions instead. Bare
+React Native consumers must declare/request the corresponding permissions in
+their application; the factory does not perform runtime requests for them.
+
+The maintained Android native package includes `armeabi-v7a`, `arm64-v8a` and
+`x86_64`. ARM32 is required by 32-bit Android application environments such as
+Fire TV Stick 4K Plus (2025), even though its CPU is ARM64
+([Amazon device specifications](https://developer.amazon.com/docs/device-specs/device-specifications-fire-tv-streaming-media-player.html)). This is Android/Fire
+OS coverage, not a Vega OS port. The packed TV consumer gate builds the Expo
+SDK 57 / React Native TV 0.86 graph for ARM32 and inspects every native object in
+the APK. Compilation does not qualify Bluetooth on a physical Fire TV.
+
 Android TV, Google TV and Fire TV use Android's native mechanisms where the device
 actually provides them. Bluetooth hardware, permissions, companion-device services
 and background policy vary by device/OS; a television brand is not a static

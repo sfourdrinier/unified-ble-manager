@@ -1,0 +1,17 @@
+'use strict'
+const fs = require('node:fs')
+const path = require('node:path')
+const read = name => fs.readFileSync(path.join(__dirname, '..', name), 'utf8')
+test('desktop guides distinguish implemented native acquisition and bond stores from authority gaps', () => {
+  const node = read('docs/NODE.md')
+  expect(node).toContain('ConnectionStatusChanged')
+  expect(node).toContain('pending CoreBluetooth')
+  expect(node).toContain('bearer-ambiguous')
+  expect(node).toContain('forwarded')
+  expect(node).toContain('unbounded')
+  expect(node).not.toContain('Each option below is rejected before any core call')
+  expect(read('docs/PEERS.md')).toContain('BlueZ Device1')
+  expect(read('docs/PEERS.md')).toContain('WinRT paired')
+  expect(read('docs/PEERS.md')).toContain('removed bond resolves to `null`')
+  expect(read('src/public/ble-manager.ts')).toContain('automatic reconnect after a later link loss')
+})

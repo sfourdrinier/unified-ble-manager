@@ -186,12 +186,15 @@ describe('build fingerprint (F23)', () => {
     expect(first.files['src/a.ts']).toMatch(/^[0-9a-f]{64}$/)
     expect(first.files['android/src/main/jniLibs/arm64-v8a/libubm5_jni_echo.so']).toMatch(/^[0-9a-f]{64}$/)
     expect(first.native.android).toEqual(
-      ['arm64-v8a', 'x86_64'].map(abi => ({
-        abi,
-        file: `android/src/main/jniLibs/${abi}/libubm5_jni_echo.so`,
-        sha256: first.files[`android/src/main/jniLibs/${abi}/libubm5_jni_echo.so`],
-        bytes: 8
-      }))
+      require('../scripts/release/native-build-identity')
+        .ANDROID_DECLARED_ABIS.map(({ abi }) => abi)
+        .sort()
+        .map(abi => ({
+          abi,
+          file: `android/src/main/jniLibs/${abi}/libubm5_jni_echo.so`,
+          sha256: first.files[`android/src/main/jniLibs/${abi}/libubm5_jni_echo.so`],
+          bytes: 8
+        }))
     )
     expect(first.fingerprint).toMatch(/^[0-9a-f]{64}$/)
   })
@@ -281,7 +284,14 @@ describe('build fingerprint (F23)', () => {
     expect(seal.toolchain.rust).toBe('1.98.1')
     expect(seal.features).toEqual({ jni: ['alpha', 'beta'], uniffi: ['default'] })
     expect(seal.deploymentMinimum).toEqual({ ios: '16.4', tvos: '16.4', androidMinSdk: 24 })
-    expect(seal.targets.android).toEqual({ 'arm64-v8a': 'aarch64-linux-android', x86_64: 'x86_64-linux-android' })
+    expect(seal.targets.android).toEqual(
+      Object.fromEntries(
+        require('../scripts/release/native-build-identity').ANDROID_DECLARED_ABIS.map(({ abi, target }) => [
+          abi,
+          target
+        ])
+      )
+    )
     const slices = require('../scripts/release/native-build-identity')
       .APPLE_DECLARED_LIBRARIES.map(entry => entry.libraryIdentifier)
       .sort()

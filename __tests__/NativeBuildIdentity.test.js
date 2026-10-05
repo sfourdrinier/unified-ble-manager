@@ -468,7 +468,11 @@ describe('generated TypeScript identity (src/generated/native-build-identity.ts)
 
   test('declares a target set per binding', () => {
     const computed = identity.computeNativeBuildIdentity(repoRoot)
-    expect(computed.bindings.jni.targets).toEqual(['aarch64-linux-android', 'x86_64-linux-android'])
+    expect(computed.bindings.jni.targets).toEqual([
+      'armv7-linux-androideabi',
+      'aarch64-linux-android',
+      'x86_64-linux-android'
+    ])
     expect(computed.bindings.uniffi.targets).toEqual([
       'aarch64-apple-ios',
       'aarch64-apple-ios-sim',
