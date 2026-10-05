@@ -532,6 +532,41 @@ impl Bluez {
             .await
     }
 
+    pub(crate) async fn lease_owner_retired(&self, owner: &str) -> Result<bool, DesktopError> {
+        let operation = "connection.disconnect.owner-lifetime";
+        zbus::names::UniqueName::try_from(owner).map_err(|error| {
+            DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Cleanup,
+                operation,
+            )
+            .with_detail(error.to_string())
+        })?;
+        if self.le_owner.as_deref() != Some(owner) {
+            return Err(DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Cleanup,
+                operation,
+            )
+            .with_detail("lease retirement must check its original pinned unique owner"));
+        }
+        let present: bool = self
+            .conn
+            .call_method(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"),
+                "NameHasOwner",
+                &(owner,),
+            )
+            .await
+            .map_err(|error| platform(operation, error))?
+            .body()
+            .deserialize()
+            .map_err(|error| platform(operation, error))?;
+        Ok(!present)
+    }
+
     async fn current_daemon_owner_for(&self, operation: &str) -> Result<String, DesktopError> {
         let owner: String = self
             .conn
@@ -1237,6 +1272,132 @@ impl DeviceConnectionEvidence {
 
 #[cfg(test)]
 mod watch_tests {
+    #[derive(Clone)]
+    struct OwnerLifetimeLease {
+        authority: Arc<Bluez>,
+        owner: String,
+        release_calls: Arc<std::sync::atomic::AtomicU64>,
+    }
+    impl super::super::linux_lease::LeaseClient for OwnerLifetimeLease {
+        async fn owner_retired(&self) -> Result<bool, DesktopError> {
+            self.authority.lease_owner_retired(&self.owner).await
+        }
+        fn allocate_reservation(&self) -> Result<u64, DesktopError> {
+            Ok(11)
+        }
+        async fn reserve(&self, _: u64) -> Result<u64, DesktopError> {
+            Ok(7)
+        }
+        async fn recover(&self, _: u64) -> Result<Option<u64>, DesktopError> {
+            panic!("no indeterminate reservation")
+        }
+        async fn connect(&self, _: u64) -> Result<u64, DesktopError> {
+            Ok(13)
+        }
+        async fn release(
+            &self,
+            _: u64,
+            _: Option<u64>,
+        ) -> Result<super::super::linux_lease::Receipt, DesktopError> {
+            self.release_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(DesktopError::new(
+                BleErrorCode::PlatformFailure,
+                BleErrorDomain::Cleanup,
+                "connection.disconnect",
+            )
+            .with_detail("live owner refuses release"))
+        }
+        async fn acknowledge(&self, _: u64) -> Result<(), DesktopError> {
+            panic!("owner death must not send acknowledgment")
+        }
+        async fn replay_loss(&self, _: u64, _: u8) -> Result<(), DesktopError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a dedicated dbus-run-session; native ownership proof only"]
+    async fn private_bus_dead_unique_owner_retires_leases_without_rebinding_or_local_cleanup() {
+        use super::super::linux_lease::Ledger;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        assert_eq!(
+            std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
+            Ok("1")
+        );
+        let publisher = zbus::Connection::session().await.unwrap();
+        publisher.request_name(BLUEZ).await.unwrap();
+        let owner = publisher.unique_name().unwrap().to_string();
+        let authority = Bluez::open_authority("hci0", crate::boundary::BluezBus::Session, None)
+            .await
+            .unwrap();
+        assert!(!authority.lease_owner_retired(&owner).await.unwrap());
+        assert!(authority.lease_owner_retired(BLUEZ).await.is_err());
+        let client = OwnerLifetimeLease {
+            authority: authority.clone(),
+            owner: owner.clone(),
+            release_calls: Arc::new(AtomicU64::new(0)),
+        };
+        let ledger = Ledger::default();
+        ledger
+            .clone()
+            .connect("peer".into(), client.clone())
+            .await
+            .unwrap();
+        assert!(
+            ledger.clone().release("peer").await.is_err(),
+            "live refusing owner must retain lease"
+        );
+        publisher.release_name(BLUEZ).await.unwrap();
+        let replacement = zbus::Connection::session().await.unwrap();
+        replacement.request_name(BLUEZ).await.unwrap();
+        assert!(
+            !authority.lease_owner_retired(&owner).await.unwrap(),
+            "well-known replacement is not unique owner death"
+        );
+        publisher.close().await.unwrap();
+        assert!(authority.lease_owner_retired(&owner).await.unwrap());
+        assert!(
+            authority
+                .lease_owner_retired(replacement.unique_name().unwrap().as_str())
+                .await
+                .is_err(),
+            "wrong epoch cannot retire original owner obligations"
+        );
+        let observation = ledger
+            .clone()
+            .release_with_observation("peer")
+            .await
+            .unwrap();
+        assert_eq!(
+            observation,
+            super::super::linux_lease::ReleaseObservation::default()
+        );
+        assert!(ledger.peers().is_empty());
+        assert_eq!(
+            client.release_calls.load(Ordering::Relaxed),
+            1,
+            "no release sent to replacement or dead owner"
+        );
+        assert!(ledger.retry_maintenance().await.is_empty());
+        // Local cleanup is independent: its refusal is not erased by retiring daemon tokens.
+        let local_failure: Result<(), DesktopError> = Err(DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Cleanup,
+            "local.match.remove",
+        ));
+        assert!(
+            ledger
+                .with_release_scope("peer", Some(13), || local_failure)
+                .unwrap()
+                .is_err()
+        );
+        authority.conn.clone().close().await.unwrap();
+        assert!(
+            authority.lease_owner_retired(&owner).await.is_err(),
+            "disconnected client bus is not evidence of daemon death"
+        );
+    }
     use super::*;
 
     struct LinuxContractFixture(Arc<StdMutex<(u32, u32, u32)>>);

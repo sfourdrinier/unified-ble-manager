@@ -34,6 +34,15 @@ All notable changes to `unified-ble-manager` are documented here.
   cancellation/deadline and scoped ownership. This is not automatic post-loss reconnect;
   Linux LE-specific deferred availability remains unsupported because the current
   daemon boundary cannot provide an unambiguous native LE availability observation.
+- Correct the maintained BlueZ ready-callback lifetime bug during failed discovery
+  and disconnection, advancing its explicit daemon producer to `5.87-ubm.4`.
+  Retain the same authority contract, deployment hardening and rollback boundary.
+- Retire daemon-owned Linux lease obligations only after confirmed loss of the pinned unique daemon owner.
+  Do not fabricate a physical-disconnect reason or discard local cleanup failures;
+  live-owner refusals and failed lifetime queries remain owned and retryable.
+- Bind desktop bonded-inventory and deferred-acquisition capability receipts to
+  dedicated scenarios that execute those operations, rather than unrelated scan
+  or RSSI scenarios. Keep deterministic inventory proof distinct from radio proof.
 
 These corrections do not promote physical qualification labels or claim a new
 timed Apple picker, force-quit or physical Apple TV receipt.

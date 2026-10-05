@@ -29,8 +29,8 @@ text, without claiming to have inspected that missing document.
 | --- | --- | --- |
 | U01 — Tauri capability truth | Corrected, including new U03 routes | All-catalog/per-OS native projection and routed RSSI/Service Changed pass; native projection regressions and TypeScript boundary tests passed; reference resolution uses current known or bonded authority without promoting unrelated directory capabilities; no physical-radio claim |
 | U02 — ARM32 Fire TV | Three-ABI producer, packed TV ARM32 and classic RN graphs pass | Real ARM32 Rust/JNI identity/hash/alignment and 49 JNI exports verified; Linux Gradle fixture gate rejects 11 malformed objects; packed Expo 57 / RN-TV 0.86 app builds with 19 ELF32 ARM libraries; classic RN builds ARM32/ARM64 with 15 libraries each; complete dependency closure verified; physical ARM32 BLE qualification remains open |
-| U03 — desktop mechanisms | Selected mechanisms implemented; full consumer/qualification gates pending | Typed Windows address resolution, Windows/Linux bonded enumeration, macOS/Windows native deferred acquisition with cancellation/deadline/retained cleanup and Node/Tauri parity; 304 desktop, 155 Tauri and 198 fresh-addon consumer tests pass; CoreBluetooth unrestricted bond inventory and Linux LE-specific deferred availability remain explicitly unsupported |
-| Q01 — maintained Linux deployment | Existing explicit deployment/rollback boundary; receipts and coverage being audited | Actual deployed daemon scan/connect/discover/stream, cancellation, reconnect, second-client protection, adapter loss and owner replacement; reuse only identifiable unchanged receipts |
+| U03 — desktop mechanisms | Selected mechanisms implemented; exact-head cross-platform CI pending | Typed Windows address resolution, Windows/Linux bonded enumeration, macOS/Windows native deferred acquisition with cancellation/deadline/retained cleanup and Node/Tauri parity; clean detached consumer/Tauri gates pass; CoreBluetooth unrestricted bond inventory and Linux LE-specific deferred availability remain explicitly unsupported |
+| Q01 — maintained Linux deployment | Approved `.4` deployment and focused radio checks pass | Service-filtered scan/connect/discover/stream, pending acquisition cancellation, repeated reconnect, second-client protection, adapter loss and daemon replacement pass on identified sources/artifacts; final integrated CI remains required |
 | Tauri long-write guidance | Corrected test-first | Distinguish OS-managed ordinary with-response writes from unavailable caller-controlled prepared/reliable transactions |
 | TVOS/PLATFORMS drift | Addressed in first patch | Current TV guide/factory/permission documentation and historical markers |
 | Artifact-bound support | Open qualification boundary, not inferred from a version | Existing evidence schema and exact source/artifact receipts; no synthetic hardware promotion |
@@ -68,7 +68,7 @@ not this library patch. They are tracked, not claimed fixed in UBM.
 
 ### Linux receipt audit
 
-Read-only inspection confirms lx5090 is running the maintained
+Initial read-only inspection confirmed lx5090 was running the maintained
 `5.87-ubm.3-824a9e2c8572` deployment with zero systemd restarts. Existing `.3`
 cutover and public Electron/Tauri scan/GATT/read receipts remain retained.
 The actual deployed executable SHA-256 is
@@ -82,7 +82,7 @@ owner replacement and second-client protection must be checked against the
 final changed Linux implementation, after its native source is frozen. Private
 D-Bus coverage is retained separately from actual deployed-radio outcomes.
 
-The maintained `.3` daemon does not expose a bearer-specific peer-availability
+The maintained daemon contract does not expose a bearer-specific peer-availability
 event. Stock Device1 RSSI/manufacturer/service-data changes can include Classic
 inquiry when discovery filters merge across clients. Waiting for those signals
 and then attempting LE is not the same native deferred-acquisition mechanism;
@@ -125,7 +125,19 @@ Apple's final canonical refresh verifies four ARM64 slices; the final Mac addon
 also passes 166 targeted tests across five affected suites, including public
 bonded-reference connection and deferred-intent dispatch. Local plugin, lint,
 evidence, native status, dependency artifacts and regenerated API/docs checks
-pass. The full package suite and clean detached integrated preflight remain pending.
+pass. The final clean detached preflight at `82a63d1bb41b8fa9fa60f11f2ea815ad1a846f85`
+passed in 556 seconds: 411 package suites / 5,161 tests, 67 plugin tests,
+156 Tauri library tests, private-bus suites and outside-repository packed consumers.
+The later dead-owner cleanup correction requires its own changed-source gates;
+these results are not silently reassigned to that correction.
+
+PR #248's exact-head CI at `82a63d1` found one stale Windows capability-test
+expectation: it still admitted address targeting only on Linux. Windows's
+implemented typed lookup correctly projected `ProceedWithLimitation`. The
+regression now requires that exact admission on both implemented platforms and
+retains macOS's `CapabilityUnsupported` assertion. The failed run is retained;
+it is not represented as a green cross-platform pass. A new integrated head
+must pass CI after this correction and the Linux owner-retirement fix.
 
 The first full local package run passed 408 suites and failed three (8 assertions):
 the new ARM32 commit-admission guard, stale two-ABI tarball fixtures and the old
@@ -133,7 +145,8 @@ CoreBluetooth TCK feature list. The commit-admission rule and all tarball fixtur
 negatives are now corrected and pass focused retests; the TCK correction includes
 an actual deferred-intent dispatch assertion, not merely a new string. All five
 affected/reference-roundtrip suites pass 64 focused tests.
-The next clean integrated preflight will establish the complete final result.
+The clean integrated preflight above established the complete result for its
+identified source, without erasing the initial failures.
 The native review corrections invalidate the initial frozen source identities;
 their refreshed final artifacts must pass before these earlier compile receipts
 can be treated as evidence for unchanged mechanisms, not the final package bytes.
@@ -188,8 +201,68 @@ passes the canonical isolated daemon producer gate; one independent bounded
 review found zero actionable issues and reran both focused native executables.
 Patch SHA-256 is
 `f227176d86a045cca4df371971972763e3747f4a06e047e9e3e4c0e4d533afb9`.
-The authority contract stays `(1,2,1)`. No running daemon was replaced.
+The authority contract stays `(1,2,1)`. At that stage no running daemon was replaced.
 Services were restored after the failed test. The simulator exited in the same
 window, but its termination reason remains unverified. No Linux qualification
 pass or release readiness is claimed for the failed run; the bounded deployed
-radio rerun requires explicit `.4` cutover approval.
+radio rerun required explicit `.4` cutover approval.
+
+The user subsequently authorized cutover on lx5090. The sealed `.4` daemon
+SHA-256 `4288da8f14534465280296f874f5e746a13d60bbd6deb6e10713df6a52d8b96b`
+was installed through the existing explicit host deployment boundary; the `.3`
+prefix and prior service override were retained for rollback. The actual Linux
+addon SHA-256 was `16bbf062ac9aa6b6f7052b61a841c978d9745114f59ab8dc5747ef652deef084`.
+The previous failed-discovery cleanup no longer crashed `.4`. An asymmetric
+simulator bond caused an independently diagnosed SMP authentication failure;
+only the dedicated test peer's record was removed after a root-only backup.
+A temporary pairing agent authorized only the two dedicated adapter peers and
+was retired after testing. Unrelated devices and rtx3090 were untouched.
+
+Focused physical checks then passed: service-filtered discovery and positive
+72 bpm heart-rate delivery, pending public acquisition abort followed by recovery,
+two repeated fresh acquisitions, two independent clients with protected release
+preserving the other's fresh data, final physical release and retained-handle
+retry, plus actual adapter interruption and restoration. These are two-adapter
+simulator-radio results, not a real Polar-device, phone or shipped-package claim.
+
+Graceful daemon replacement first produced the actual `adapter-loss` event when
+the service powered down its adapters; it was not relabeled `backend-restart`.
+The old authority did not rebind, and a fresh authority delivered new values.
+However, old-manager cleanup repeatedly returned `release-failed` for the
+conclusively vanished unique daemon owner. The bounded correction checks the
+original pinned unique owner's lifetime with the bus daemon. Only a confirmed
+absence retires that owner's lease/reservation/acknowledgment obligations; it
+does not fabricate an ACL generation or reason or retire arbitrary local cleanup.
+Live-owner refusal, misleading error names and failed lifetime queries retain
+ownership. All 28 ledger regressions and an actual private-bus lifetime test pass.
+
+The focused physical reproduction now passes on desktop source digest
+`c67f0a542bd3608752d0edf0d0ad59bbb786769e10ca43edc0abeb84db79580b`,
+schema `ec99669af6af60b703ca48c0fa791aa54efeb829a27f61d1c7154d59612ec5a1`,
+and Linux addon SHA-256
+`3af78b19f7ea223c18a431d00d64799cea223563c2b555a41d8b167027790ef9`.
+After owner `:1.1406` was replaced by `:1.1428`, old-manager destruction released
+on its first attempt with no failures. A new manager then acquired the
+service-filtered simulator, discovered fresh GATT, received three 72 bpm values,
+disconnected with the observed reason and destroyed successfully. The actual
+graceful-stop terminal remains `adapter-loss`, not an invented restart reason.
+
+Receipts are retained under `/tmp/ubm-rc19-final-q01.jw82pM` on lx5090:
+`owner-fixed.log`, `new-owner-final-positive.log` and
+`dead-owner-prepack-current-jni.log`, alongside the original failed attempts.
+Both adapters were restored powered on, WirePlumber and fwupd were restored
+active, and the temporary pairing agent was retired. The simulator remains an
+explicit test fixture. Unchanged successful physical scenarios were not rerun
+for this isolated correction or documentation edits.
+
+PR review identified capability receipts bound to unrelated scan/RSSI scenarios.
+The corrected suites now run `peer.bonded-enumeration-preserves-native-facts`
+and `connection.when-available-acquires-and-releases`. The original bindings
+reproduced seven failed expectations, including false passes for empty bonded
+inventory and refused deferred acquisition; the correction passes all 14
+focused registration tests. Bond-store input is an explicitly deterministic OS
+inventory double, while native connection acquisition and teardown execute
+through the actual synthetic DesktopCentral. This does not promote physical
+evidence. Final local desktop tests pass 309/309; Linux ledger tests pass 28/28
+and actual private-bus ownership tests pass 19/19. Final integrated preflight
+and new-head cross-platform CI remain required.

@@ -11900,15 +11900,15 @@ mod adapter_tests {
                 BleErrorCode::CapabilityUnsupported
             );
         }
-        // ...and a row a narrow OS adapter fills opens only on that OS
-        // (BlueZ address targeting, `os::linux`).
+        // ...and address targeting opens only where a narrow native adapter
+        // supplies it (BlueZ resolution or WinRT typed address lookup).
         let targeting = central
             .with_core(|core| core.check_capability("peer:address-targeting", "desktop.probe"))
             .await;
-        if cfg!(target_os = "linux") {
+        if cfg!(any(target_os = "linux", target_os = "windows")) {
             assert!(
-                targeting.is_ok(),
-                "BlueZ provides address targeting: {targeting:?}"
+                matches!(targeting, Ok(CapabilityAdmission::ProceedWithLimitation)),
+                "the native OS adapter provides limited address targeting: {targeting:?}"
             );
         } else {
             assert_eq!(

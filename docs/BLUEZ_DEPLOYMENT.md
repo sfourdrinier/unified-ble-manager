@@ -174,7 +174,12 @@ an observer never starts another held native request or cancels its driver.
 
 Create a **fresh manager** bound to that verified new owner. Never rebind old
 lease tokens, attachment identities or pending cleanup onto a replacement
-daemon. Retain original failed obligations/diagnostics under their old owner;
+daemon. A bus-confirmed unique-owner disappearance (`NameHasOwner` for the
+original pinned unique name returns false) retires only that daemon's lease,
+reservation and acknowledgment obligations. It supplies no physical disconnect reason
+and does not retire local iterator, event-handler or D-Bus match cleanup.
+An unresponsive but still-live owner, a refused owner query, or a method error
+alone leaves cleanup owned and retryable. Retain original diagnostics;
 recovery is not a claim that previous physical resources were released.
 
 ### Deferred LE availability remains an explicit mechanism gap

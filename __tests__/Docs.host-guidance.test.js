@@ -3,6 +3,17 @@ const path = require('node:path')
 
 const read = name => fs.readFileSync(path.join(__dirname, '..', name), 'utf8')
 
+test('platform guidance reflects native desktop peer and deferred-acquisition authority', () => {
+  const guide = read('docs/PLATFORMS.md')
+  expect(guide).not.toContain('only first-party backend that exposes')
+  expect(guide).toContain('Windows and Linux desktop backends also expose')
+  expect(guide).toContain('[`PEERS.md`](PEERS.md)')
+  expect(guide).toContain('[`NODE.md`](NODE.md)')
+  expect(guide).toContain('macOS and Windows support initial')
+  expect(guide).toContain('Linux LE-specific deferred acquisition remains unsupported')
+  expect(guide).toContain('CoreBluetooth does not expose unrestricted system bond inventory')
+})
+
 test('release notes distinguish new desktop acquisition mechanisms from remaining platform gaps', () => {
   const unreleased = read('CHANGELOG.md').split('## [5.0.0-rc.18]')[0]
   expect(unreleased).toContain('typed Windows public/random address targeting')
@@ -10,6 +21,8 @@ test('release notes distinguish new desktop acquisition mechanisms from remainin
   expect(unreleased).toContain('initial deferred acquisition')
   expect(unreleased).toContain('not automatic post-loss reconnect')
   expect(unreleased).toContain('Linux LE-specific deferred availability remains unsupported')
+  expect(unreleased).toContain('`5.87-ubm.4`')
+  expect(unreleased).toContain('confirmed loss of the pinned unique daemon owner')
 })
 
 test('review directory routes ongoing rc19 work to its current tracker', () => {

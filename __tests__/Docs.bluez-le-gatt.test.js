@@ -143,3 +143,15 @@ test('BlueZ recovery guidance separates link acceptance from a new ATT attachmen
   ])
     expect(guide).toContain(requirement)
 })
+
+test('daemon owner death retires only daemon obligations, not local cleanup or physical facts', () => {
+  const guide = read('docs/BLUEZ_DEPLOYMENT.md')
+  for (const text of [
+    'bus-confirmed unique-owner disappearance',
+    'NameHasOwner',
+    'local iterator',
+    'no physical disconnect reason',
+    'unresponsive but still-live'
+  ])
+    expect(guide).toContain(text)
+})

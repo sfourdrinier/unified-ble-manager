@@ -90,6 +90,18 @@ export const baseTckScenarios: readonly TckScenarioDefinition[] = [
     requiredControllerActions: []
   },
   {
+    id: 'connection.when-available-acquires-and-releases',
+    execution: 'feature',
+    requiredFacts: ['connection-when-available-acquires-and-releases'],
+    requiredControllerActions: ['queue-advertisement']
+  },
+  {
+    id: 'peer.bonded-enumeration-preserves-native-facts',
+    execution: 'feature',
+    requiredFacts: ['peer-bonded-enumeration-preserves-native-facts'],
+    requiredControllerActions: []
+  },
+  {
     id: 'connection.rssi-and-att-mtu-capability-contract',
     execution: 'feature',
     requiredFacts: [

@@ -5059,9 +5059,11 @@ export function createDesktopRustCoreFeatureRegistry(
       })
     )
   }
-  if (wiring.peerBonded) registrations.push(registration(BUILT_IN_FEATURE_IDS.peerBonded, 'capability.catalog-v2'))
+  if (wiring.peerBonded) registrations.push(registration(BUILT_IN_FEATURE_IDS.peerBonded, 'tck.feature.peer.bonded'))
   if (wiring.whenAvailable)
-    registrations.push(registration(BUILT_IN_FEATURE_IDS.connectionWhenAvailable, 'connection-controls'))
+    registrations.push(
+      registration(BUILT_IN_FEATURE_IDS.connectionWhenAvailable, 'tck.feature.connection.when-available')
+    )
   // F7: RSSI reports integer dBm precision, as the legacy registry did.
   if (wiring.rssi) {
     registrations.push(
@@ -5139,6 +5141,8 @@ export function createDesktopRustCoreFeatureRegistry(
 
 /** The scenario a desktop capability row's TCK suite runs to prove it. */
 function desktopRustCoreSuiteScenarios(suiteId: string): readonly string[] {
+  if (suiteId === 'tck.feature.peer.bonded') return ['peer.bonded-enumeration-preserves-native-facts']
+  if (suiteId === 'tck.feature.connection.when-available') return ['connection.when-available-acquires-and-releases']
   if (suiteId === 'connection-controls') return ['connection.rssi-and-att-mtu-capability-contract']
   if (suiteId === 'tck.feature.gatt.maximum-write-length') return ['gatt.maximum-write-length-boundaries']
   if (suiteId.startsWith('tck.feature.security.')) return ['security.state-pair-cancel-unpair']

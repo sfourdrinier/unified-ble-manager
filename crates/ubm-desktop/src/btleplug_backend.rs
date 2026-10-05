@@ -59,6 +59,7 @@ pub const CLOSE_SCOPE_BOUND: Duration = Duration::from_secs(5);
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
 struct LinuxLeaseClient {
+    authority: Arc<crate::os::linux::Bluez>,
     peripheral: Peripheral,
     owner: String,
     peer: String,
@@ -67,6 +68,9 @@ struct LinuxLeaseClient {
 
 #[cfg(target_os = "linux")]
 impl crate::os::linux_lease::LeaseClient for LinuxLeaseClient {
+    async fn owner_retired(&self) -> Result<bool, DesktopError> {
+        self.authority.lease_owner_retired(&self.owner).await
+    }
     async fn replay_loss(&self, generation: u64, reason: u8) -> Result<(), DesktopError> {
         self.events
             .try_send(RadioEvent::LinuxPhysicalLost {
@@ -3609,6 +3613,7 @@ impl RadioBoundary for BtleplugRadio {
             .connect(
                 peer_id.to_owned(),
                 LinuxLeaseClient {
+                    authority: self.bluez.as_ref().map(Arc::clone).map_err(Clone::clone)?,
                     peripheral: peripheral.clone(),
                     owner: owner.to_owned(),
                     peer: peer_id.to_owned(),
