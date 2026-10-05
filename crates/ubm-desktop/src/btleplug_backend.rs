@@ -30,6 +30,26 @@ use std::sync::{
 };
 use std::time::Duration;
 
+#[cfg(any(test, target_os = "linux"))]
+async fn release_linux_link<T>(
+    discovery: Result<(), DesktopError>,
+    link: impl Future<Output = Result<T, DesktopError>>,
+) -> Result<T, DesktopError> {
+    let link = link.await;
+    let mut failures: Vec<_> = discovery.err().into_iter().collect();
+    match link {
+        Ok(observation) => {
+            crate::errors::cleanup_result("bluez-dbus", failures)?;
+            Ok(observation)
+        }
+        Err(error) => {
+            failures.push(error);
+            crate::errors::cleanup_result("bluez-dbus", failures)
+                .and_then(|()| unreachable!("nonempty failure list"))
+        }
+    }
+}
+
 use btleplug::api::{
     Central as _, CentralEvent, CharPropFlags, Characteristic, Descriptor, Manager as _,
     Peripheral as _, ScanFilter, Service, ValueNotification,
@@ -3701,23 +3721,41 @@ impl RadioBoundary for BtleplugRadio {
         #[cfg(target_os = "windows")]
         let maintained = self.winrt.release(peer_id);
         #[cfg(target_os = "linux")]
-        self.bluez()?.finish_availability(peer_id).await?;
+        let discovery = match self.bluez() {
+            Ok(bluez) => bluez.finish_availability(peer_id).await,
+            Err(error) => Err(error),
+        };
         // T-R2: straight to the radio, as legacy went straight to
         // `peripheral.disconnect()` — no pre-disconnect `is_connected()`
         // query (an extra D-Bus read the legacy path never made).
         #[cfg(target_os = "linux")]
-        let receipt = self
-            .linux_leases
-            .clone()
-            .release_with_observation(peer_id)
-            .await?;
-        #[cfg(target_os = "linux")]
-        let observation = crate::boundary::DisconnectObservation {
-            platform: receipt
-                .disconnect_reason
-                .map(crate::boundary::bluez_disconnect_observation),
-            physical_generation: receipt.physical_generation,
-        };
+        // Discovery and the token-bound link are independent owners. Preserve
+        // discovery cleanup debt, but never let its refusal skip link release.
+        let observation = release_linux_link(discovery, async {
+            let receipt = self
+                .linux_leases
+                .clone()
+                .release_with_observation(peer_id)
+                .await?;
+            let observation = crate::boundary::DisconnectObservation {
+                platform: receipt
+                    .disconnect_reason
+                    .map(crate::boundary::bluez_disconnect_observation),
+                physical_generation: receipt.physical_generation,
+            };
+            if let Some(result) = self.linux_leases.with_release_scope(
+                peer_id,
+                observation.physical_generation,
+                || {
+                    self.gatt.evict(peer_id);
+                    self.release_link_state(peer_id)
+                },
+            ) {
+                result?;
+            }
+            Ok(observation)
+        })
+        .await?;
         #[cfg(not(target_os = "linux"))]
         let observation = crate::boundary::DisconnectObservation::default();
         #[cfg(not(target_os = "linux"))]
@@ -3752,16 +3790,6 @@ impl RadioBoundary for BtleplugRadio {
         crate::os::winrt_cleanup::release_independent(maintained, disconnected).await?;
         #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         disconnected.await?;
-        #[cfg(target_os = "linux")]
-        if let Some(result) =
-            self.linux_leases
-                .with_release_scope(peer_id, observation.physical_generation, || {
-                    self.gatt.evict(peer_id);
-                    self.release_link_state(peer_id)
-                })
-        {
-            result?;
-        }
         #[cfg(not(target_os = "linux"))]
         {
             self.gatt.evict(peer_id);
@@ -5048,6 +5076,88 @@ pub fn core_property_bits(flags: PropertyFlags) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn linux_disconnect_attempts_link_after_discovery_refusal_and_retries_only_debt() {
+        let discovery_debt = std::cell::Cell::new(true);
+        let link_owned = std::cell::Cell::new(true);
+        let release_count = std::cell::Cell::new(0);
+        let refused = crate::errors::DesktopError::new(
+            ubm_core::contracts::BleErrorCode::PlatformFailure,
+            ubm_core::contracts::BleErrorDomain::Cleanup,
+            "connection.when-available",
+        );
+        let result = super::release_linux_link(Err(refused), async {
+            release_count.set(release_count.get() + 1);
+            link_owned.set(false);
+            Ok(42u64)
+        })
+        .await;
+        assert_eq!(result.unwrap_err().operation(), "connection.when-available");
+        assert!(
+            !link_owned.get(),
+            "discovery refusal must not leave the link owned"
+        );
+        assert!(
+            discovery_debt.get(),
+            "the failed independent stage remains retryable"
+        );
+        discovery_debt.set(false);
+        let observation = super::release_linux_link(Ok(()), async {
+            assert!(
+                !link_owned.get(),
+                "the retained release observation is reused"
+            );
+            Ok(42u64)
+        })
+        .await
+        .unwrap();
+        assert_eq!(observation, 42);
+        assert_eq!(release_count.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn linux_disconnect_retains_both_structured_failures() {
+        use crate::errors::{DesktopError, PlatformDetail, PlatformValue};
+        let failure = |operation: &str, code: &str| {
+            DesktopError::new(
+                ubm_core::contracts::BleErrorCode::PlatformFailure,
+                ubm_core::contracts::BleErrorDomain::Cleanup,
+                operation,
+            )
+            .with_platform(PlatformDetail::new("bluez-dbus", code))
+        };
+        let error = super::release_linux_link(
+            Err(failure(
+                "connection.when-available",
+                "StopDiscovery.Refused",
+            )),
+            async { Err::<u64, _>(failure("connection.disconnect", "ReleaseLease.Refused")) },
+        )
+        .await
+        .unwrap_err();
+        let platform = error.platform().unwrap();
+        assert_eq!(platform.domain, "bluez-dbus");
+        assert_eq!(
+            platform.metadata.get("failure.0.platform.code"),
+            Some(&PlatformValue::Text("StopDiscovery.Refused".into()))
+        );
+        assert_eq!(
+            platform.metadata.get("failure.1.platform.code"),
+            Some(&PlatformValue::Text("ReleaseLease.Refused".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn linux_disconnect_preserves_successful_release_observation() {
+        assert_eq!(
+            super::release_linux_link(Ok(()), async {
+                Ok::<_, crate::errors::DesktopError>((7u64, 19u8))
+            })
+            .await
+            .unwrap(),
+            (7, 19)
+        );
+    }
     #[test]
     fn discovery_reports_missing_le_gatt_mechanism_without_losing_platform_answer() {
         use ubm_core::contracts::{BleErrorCode, BleErrorDomain};

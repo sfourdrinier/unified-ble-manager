@@ -115,7 +115,7 @@ export type SecurityPeer = BlePeer | PeerReference
 export interface BleSecurity {
   state(peer: SecurityPeer, options?: OperationOptions): Promise<PeerSecurityState>
   /**
-   * Lazily acquires an owned source. Source failure rejects iteration with its
+   * Each iterator lazily acquires its own source. Source failure rejects iteration with its
    * public cause; ordinary closure completes. Return awaits late acquisition,
    * and failed cleanup remains retryable through the same iterator's return().
    */
@@ -462,34 +462,34 @@ function snapshotUnpairResult(value: InternalSecurityUnpairResult, operation: st
 function mapSecurityEvents(
   openSource: () => Promise<{ source: BoundedAsyncStream<InternalPeerSecurityEvent>; peerId: string }>
 ): AsyncIterable<PeerSecurityEvent> {
-  let sourcePromise: ReturnType<typeof openSource> | null = null
-  let sourceResolved = false
-  const source = () => {
-    if (sourcePromise === null) {
-      sourcePromise = Promise.resolve()
-        .then(openSource)
-        .then(value => {
-          sourceResolved = true
-          return value
-        })
-    }
-    return sourcePromise
-  }
-  let closePromise: Promise<void> | null = null
-  const closeSource = (): Promise<void> => {
-    if (closePromise !== null) return closePromise
-    closePromise = source()
-      .then(async value => {
-        assertSecurityStreamCleanup(await value.source.close())
-      })
-      .catch(error => {
-        closePromise = null
-        throw error
-      })
-    return closePromise
-  }
   return {
     [Symbol.asyncIterator]() {
+      let sourcePromise: ReturnType<typeof openSource> | null = null
+      let sourceResolved = false
+      const source = () => {
+        if (sourcePromise === null) {
+          sourcePromise = Promise.resolve()
+            .then(openSource)
+            .then(value => {
+              sourceResolved = true
+              return value
+            })
+        }
+        return sourcePromise
+      }
+      let closePromise: Promise<void> | null = null
+      const closeSource = (): Promise<void> => {
+        if (closePromise !== null) return closePromise
+        closePromise = source()
+          .then(async value => {
+            assertSecurityStreamCleanup(await value.source.close())
+          })
+          .catch(error => {
+            closePromise = null
+            throw error
+          })
+        return closePromise
+      }
       let iteratorPromise: Promise<BoundedAsyncStreamIterator<InternalPeerSecurityEvent>> | null = null
       let acquiredIterator: BoundedAsyncStreamIterator<InternalPeerSecurityEvent> | null = null
       const iterator = () => {

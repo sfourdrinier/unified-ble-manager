@@ -373,6 +373,92 @@ async fn private_bus_le_availability_queued_same_peer_retains_cleanup_debt_at_cl
 
 #[tokio::test]
 #[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_discovery_close_attempts_every_owner_and_retains_all_failures() {
+    let (bluez, state, _server, worker) = fixture().await;
+    let daemon = bluez.current_daemon_owner().await.unwrap();
+    for peer in ["hci0/dev_AA_BB_CC_DD_EE_FF", "hci0/dev_11_22_33_44_55_66"] {
+        let entry = bluez.availability_discovery(peer).await.unwrap();
+        entry
+            .owner
+            .start(&entry.conn, &bluez.adapter_path, daemon.clone())
+            .await
+            .unwrap();
+    }
+    bluez
+        .address_discovery
+        .start(&bluez.conn, &bluez.adapter_path, daemon)
+        .await
+        .unwrap();
+    state.lock().unwrap().timeout_stop = true;
+    let error = bluez.finish_discovery().await.unwrap_err();
+    assert_eq!(
+        state.lock().unwrap().stops,
+        3,
+        "every retained sender must be stopped despite earlier failures"
+    );
+    let metadata = &error.platform().unwrap().metadata;
+    assert_eq!(
+        metadata.get("failure.2.operation"),
+        Some(&crate::errors::PlatformValue::Text(
+            "peer.address-targeting".into()
+        ))
+    );
+    for index in 0..3 {
+        assert_eq!(
+            metadata.get(&format!("failure.{index}.platform.code")),
+            Some(&crate::errors::PlatformValue::Text(
+                "org.freedesktop.DBus.Error.NoReply".into()
+            ))
+        );
+    }
+    let retained = bluez.finish_discovery().await.unwrap_err();
+    assert_eq!(retained, error);
+    assert_eq!(
+        state.lock().unwrap().stops,
+        3,
+        "unknown stop outcomes retain their original replies without resend"
+    );
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_discovery_close_refusal_does_not_starve_successful_other_owners() {
+    let (bluez, state, _server, worker) = fixture().await;
+    let daemon = bluez.current_daemon_owner().await.unwrap();
+    for peer in ["hci0/dev_AA_BB_CC_DD_EE_FF", "hci0/dev_11_22_33_44_55_66"] {
+        let entry = bluez.availability_discovery(peer).await.unwrap();
+        entry
+            .owner
+            .start(&entry.conn, &bluez.adapter_path, daemon.clone())
+            .await
+            .unwrap();
+    }
+    bluez
+        .address_discovery
+        .start(&bluez.conn, &bluez.adapter_path, daemon)
+        .await
+        .unwrap();
+    state.lock().unwrap().refuse_stop = true;
+    bluez.finish_discovery().await.unwrap_err();
+    assert_eq!(state.lock().unwrap().stops, 3);
+    assert_eq!(
+        bluez.availability_discoveries.lock().await.len(),
+        1,
+        "only failed debt remains registered"
+    );
+    bluez.finish_discovery().await.unwrap();
+    assert_eq!(
+        state.lock().unwrap().stops,
+        4,
+        "retry only the failed owner"
+    );
+    assert!(bluez.availability_discoveries.lock().await.is_empty());
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
 async fn private_bus_le_availability_start_refusal_reports_own_operation() {
     let (bluez, state, _server, worker) = fixture().await;
     state.lock().unwrap().refuse_start = true;

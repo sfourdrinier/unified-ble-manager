@@ -742,19 +742,28 @@ impl Bluez {
     }
 
     pub(crate) async fn finish_discovery(&self) -> Result<(), DesktopError> {
-        let peers: Vec<_> = self
+        let mut peers: Vec<_> = self
             .availability_discoveries
             .lock()
             .await
             .keys()
             .cloned()
             .collect();
+        peers.sort();
+        let mut failures = Vec::new();
         for peer in peers {
-            self.finish_availability(&peer).await?;
+            if let Err(error) = self.finish_availability(&peer).await {
+                failures.push(error);
+            }
         }
-        self.address_discovery
+        if let Err(error) = self
+            .address_discovery
             .cleanup(&self.conn, &self.adapter_path)
             .await
+        {
+            failures.push(error);
+        }
+        crate::errors::cleanup_result("bluez-dbus", failures)
     }
 
     pub(crate) async fn finish_availability(&self, peer: &str) -> Result<(), DesktopError> {

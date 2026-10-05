@@ -28,6 +28,11 @@ All notable changes to `unified-ble-manager` are documented here.
   `peer.address-targeting`, including retained discovery cleanup failures.
 - Keep same-peer discovery ownership registered while overlapping requests
   still hold it, so refused cleanup remains reachable at manager teardown.
+- Give each security-watch iterator its own lazy source and retryable cleanup;
+  closing one iterator cannot consume or close a sibling's stream.
+- Attempt Linux link release despite an independent discovery-cleanup refusal,
+  and attempt every retained peer and address discovery during shutdown. Preserve
+  all structured cleanup failures and keep refused obligations retryable.
 - Reconcile current guides and capability ledgers with desktop initial deferred
   acquisition, BlueZ unmeasured write admission and ordinary OS-managed Windows
   writes; retain historical snapshots and explicit hardware qualification gaps.

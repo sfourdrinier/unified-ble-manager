@@ -51,6 +51,52 @@ function internalWithSecurity(security) {
 }
 
 describe('public security façade', () => {
+  test('rc20 iterators from one security watch independently acquire, consume and release their sources', async () => {
+    const sources = []
+    const watch = jest.fn(() => {
+      let sequence = 0
+      const events = {
+        next: jest.fn(async () => ({
+          done: false,
+          value: {
+            kind: 'data',
+            value: { kind: 'state', peerId: 'peer-1', sequence: ++sequence, state: measuredState() }
+          }
+        })),
+        return: jest.fn(async () => ({ done: true, value: undefined }))
+      }
+      const source = {
+        [Symbol.asyncIterator]: () => events,
+        close: jest.fn(async () => ({ outcome: 'released' }))
+      }
+      sources.push({ source, events })
+      return source
+    })
+    const manager = await createPublicBleManager(internalWithSecurity({ watch }), () => 100)
+    const watched = manager.security.watch({ id: 'peer-1', name: null, rssi: null })
+    const first = watched[Symbol.asyncIterator]()
+    const second = watched[Symbol.asyncIterator]()
+    expect(watch).not.toHaveBeenCalled()
+    const initial = await Promise.all([first.next(), second.next()])
+    expect(watch).toHaveBeenCalledTimes(2)
+    expect(initial.map(item => item.value.sequence)).toEqual([1, 1])
+    await watched[Symbol.asyncIterator]().return()
+    expect(watch).toHaveBeenCalledTimes(2)
+    expect(sources[0].source.close).not.toHaveBeenCalled()
+    expect(sources[1].source.close).not.toHaveBeenCalled()
+
+    await first.return()
+    expect(sources[0].events.return).toHaveBeenCalledTimes(1)
+    expect(sources[0].source.close).toHaveBeenCalledTimes(1)
+    expect(sources[1].events.return).not.toHaveBeenCalled()
+    expect(sources[1].source.close).not.toHaveBeenCalled()
+    await expect(second.next()).resolves.toMatchObject({ done: false, value: { sequence: 2 } })
+    await second.return()
+    await Promise.all([first.return(), second.return()])
+    expect(sources[0].source.close).toHaveBeenCalledTimes(1)
+    expect(sources[1].source.close).toHaveBeenCalledTimes(1)
+  })
+
   test('rc20 return after failed security peer resolution succeeds without reacquiring an absent source', async () => {
     const resolve = jest.fn(async () => null)
     const watch = jest.fn()
