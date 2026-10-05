@@ -34,8 +34,12 @@ test('review directory routes ongoing rc19 work to its current tracker', () => {
 
 test('Android monitoring documentation preserves notification denial without inventing a startup gate', () => {
   const guide = read('docs/PLATFORMS.md')
-  const driver = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/background/AndroidConnectedDeviceForegroundServiceDriver.java')
-  expect(driver).toMatch(/static String\[\] requiredRuntimePermissions\(int sdk\)[\s\S]*?Manifest\.permission\.BLUETOOTH_CONNECT/)
+  const driver = read(
+    'android/src/main/java/com/sfourdrinier/unifiedblemanager/background/AndroidConnectedDeviceForegroundServiceDriver.java'
+  )
+  expect(driver).toMatch(
+    /static String\[\] requiredRuntimePermissions\(int sdk\)[\s\S]*?Manifest\.permission\.BLUETOOTH_CONNECT/
+  )
   expect(guide).toContain('`POST_NOTIFICATIONS` is not a prerequisite')
   expect(guide).toContain('The application requests `POST_NOTIFICATIONS` itself')
   expect(guide).not.toContain('UBM intentionally requires `POST_NOTIFICATIONS`')
@@ -66,7 +70,9 @@ test('Expo permission recipe requests explicitly before radio work, rather than 
   for (const granted of [true, false]) {
     const manager = {
       readiness: jest.fn(async () => ({ state: 'action-required' })),
-      permissions: { request: jest.fn(async () => ({ granted: granted ? ['bluetooth'] : [], denied: granted ? [] : ['bluetooth'] })) },
+      permissions: {
+        request: jest.fn(async () => ({ granted: granted ? ['bluetooth'] : [], denied: granted ? [] : ['bluetooth'] }))
+      },
       adapter: { waitUntilReady: jest.fn(async () => undefined) }
     }
     const execute = new Function('manager', `return (async () => { ${snippet} })()`)
@@ -96,4 +102,19 @@ test('Tauri distinguishes OS-managed ordinary writes from explicit prepared tran
   expect(guide).toContain('caller-controlled prepared/reliable transactions')
   expect(guide).not.toContain('so long writes are rejected')
   expect(guide).toContain('`no-prepared-write-path`')
+})
+
+test('Tauri crate peer-directory guidance includes native bonded routes and truthful filters', () => {
+  const guide = read('native/tauri/README.md')
+  expect(guide).toContain('`peers.bonded`')
+  expect(guide).toContain('Windows and Linux')
+  expect(guide).toContain('`unified-ble:winrt`')
+  expect(guide).toContain('`unified-ble:bluez-dbus`')
+  expect(guide).toContain('`scope: "application"`')
+  expect(guide).toContain('`peers.bonded.services`')
+  expect(guide).toContain('`system-bonded`')
+  expect(guide).toContain('Source filters are applied after native lookup')
+  expect(guide).toContain('an empty or excluding source list returns no records')
+  expect(guide).not.toContain('Other\ncategories and adapters without these native mechanisms report unsupported')
+  expect(guide).not.toContain('including empty or source-filtered queries')
 })
