@@ -178,8 +178,15 @@ the controller had already initiated the bonded link and the lease adopted
 it as borrowed. `5.87-ubm.8` releases a locally initiated link when no other
 application hold remains. The authority contract stays `(1, 2, 1)`.
 Installing `5.87-ubm.8`, the glibc Linux H10 session reported disconnect
-`released` and close `released`, and the link was down. It does not promote
-backend qualification labels and it does not make a physical radio receipt.
+`released` and close `released`, and the link was down. `5.87-ubm.9` fails an
+unbonded LE attribute operation that returns Insufficient Encryption or
+Insufficient Authentication instead of raising link security. Installing it,
+the unbonded glibc Linux H10 session on source digest `0b31ce8e` completed the
+same exchange, reported disconnect `released` and close `released`, and left
+the link down with no pairing request. The same digest completed that session
+on macOS Apple Silicon and, twice back to back, on Windows x64. It does not
+promote backend qualification labels and it does not make a physical radio
+receipt.
 Verify exact current `main`, all `5.0.0-rc.21` identities, required CI and
 release gates, and absence of the registry version and annotated tag before
 creating `v5.0.0-rc.21`. Use the trusted tag publisher only; `next` advances to

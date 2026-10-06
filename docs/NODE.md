@@ -134,7 +134,7 @@ All resulting peer identities remain fenced to the original daemon owner.
 
 ### Linux initial deferred acquisition
 
-Maintained daemon `5.87-ubm.5` adds optional observer revision 1 on
+Maintained daemon `5.87-ubm.9` includes optional observer revision 1, introduced in `5.87-ubm.5`, on
 `org.unifiedblemanager.LinuxAuthority1`: `GetLeAvailability` reports the current
 monotonic advertisement sequence, and `LeAdvertisement` reports fresh
 connectable LE advertisements with their device and sequence. The client
@@ -217,7 +217,7 @@ ownership for supported rows.
 
 | Option                                                   | Behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Scan query / filters                                     | Required service UUIDs go to the OS scan filter (`scanner.plan`). A caller's `localNamePrefix` also goes to the OS: BlueZ receives it as the `SetDiscoveryFilter` `Pattern`, as the 4.x dbus-next backend sent it; CoreBluetooth and WinRT have no OS name filter. `Pattern` also matches an address prefix, so the OS only narrows. Name-prefix, manufacturer and address predicates always match in software as the final filter.                                                                                                                                 |
+| Scan query / filters                                     | Required service UUIDs go to the OS scan filter on CoreBluetooth and BlueZ (`scanner.plan`). WinRT clears the OS advertisement service-UUID filter and matches those UUIDs in software. A caller's `localNamePrefix` also goes to the OS on BlueZ as the `SetDiscoveryFilter` `Pattern`, as the 4.x dbus-next backend sent it; CoreBluetooth and WinRT have no OS name filter. `Pattern` also matches an address prefix, so the OS only narrows. Name-prefix, manufacturer and address predicates always match in software as the final filter.                     |
 | Scan `duplicatePolicy`                                   | Carried to the OS scan: `all` asks for every advertisement; `first` and `merged` ask the OS to filter repeats (BlueZ `DuplicateData: false`, CoreBluetooth `AllowDuplicates: NO`). `first` also delivers one sighting per peer per consumer. `merged` is the default of `scanForServices` / `scanUntil`.                                                                                                                                                                                                                                                            |
 | Scan `platform` options                                  | `capability.unsupported` (not registered)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Scan share / join                                        | One core scan fanned out to joined leases. A forged token is `ownership.denied`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -246,7 +246,7 @@ Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backend
 
 **Implemented on the Rust path:**
 
-- Scanning: the OS service-UUID scan filter; software name, manufacturer and address filters; scan share/join; first-sighting duplicates.
+- Scanning: the OS service-UUID scan filter on CoreBluetooth and BlueZ; on WinRT the OS advertisement service-UUID filter stays empty and the software filter admits the requested services; software name, manufacturer and address filters; scan share/join; first-sighting duplicates.
 - Events: `connection-lost` and `database-changed`.
 - Adapter: power, authorization (macOS, Windows), watch, and enumeration/selection.
 - Operations: exact in-flight cancellation; an honest without-response commit state; the `require-*` delivery check. WinRT additionally carries the requirement to the OS and prefers notify over indicate.
@@ -266,7 +266,7 @@ Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backend
   - `resetting` / `unsupported` states;
   - `merged` scans that reach the OS duplicate filter, and LE-only BlueZ scans;
   - repeated service, characteristic and descriptor UUIDs that keep their instances;
-  - uncached WinRT discovery;
+  - uncached WinRT service and characteristic discovery; the descriptor list stays empty because discovery does not call `GetDescriptors` or `GetDescriptorsForUuid`;
   - maximum write length without discovery;
   - WinRT selection of any listed adapter, with its `deployment`;
   - the 4.x backend and adapter ids;

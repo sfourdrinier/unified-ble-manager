@@ -6,7 +6,7 @@ reconfigures the system daemon. Application integration and deployment require
 separate review and explicit host action. Do not silently apply it, enable
 experimental APIs, grant privileges or upgrade a host.
 
-The current source deployment identity is `5.87-ubm.8`, with unchanged Linux
+The current source deployment identity is `5.87-ubm.9`, with unchanged Linux
 authority contract `(1,2,1)`. A finished GATT characteristic or descriptor
 read or write holds the link only while that ATT operation is in flight.
 Connect, pair, StartNotify, and Acquire hold until the sender's bus
@@ -34,7 +34,7 @@ and device owners retain the watch independently, retirement detaches its device
 and reentrant callback cleanup cannot destroy currently executing user data.
 The older `.3` physical receipt retains that crash and is not a pass for `.4`.
 Native executable tests prove these boundaries; deploying and qualifying `.4`,
-`.5`, `.6`, `.7`, or `.8` remains an explicit, separate host action. A receipt for `.4`
+`.5`, `.6`, `.7`, `.8`, or `.9` remains an explicit, separate host action. A receipt for `.4`
 is not physical qualification of `.5` or its availability observer. A receipt
 for `.4` or `.5` is not qualification of `.6`. The installed `5.87-ubm.6`
 daemon returned `lease-released-indeterminate` for the bonded H10 session and
@@ -44,8 +44,15 @@ initiated the link, auto-connect was armed, and no application interest was
 tracked, so the lease adopted it as borrowed. `.8` releases a locally
 initiated link when no other application hold remains. The installed
 `5.87-ubm.8` daemon's H10 session reported disconnect `released` and the link
-was down. A receipt for `.6` or `.7` is not qualification of `.8`. That
-session does not change a platform evidence label.
+was down. A receipt for `.6` or `.7` is not qualification of `.8`. `.9` does
+not raise link security when an unbonded LE attribute returns Insufficient
+Encryption or Insufficient Authentication. That ATT operation fails and the
+ACL stays up. A paired link still retries so an existing key can encrypt it,
+and explicit Pair still raises security itself. Installing `5.87-ubm.9`,
+the unbonded H10 session completed that GATT exchange, reported disconnect
+`released`, and left the link down. The capture had no pairing request. A
+receipt for `.8` is not qualification of `.9`. That session does not change
+a platform evidence label.
 
 ## Provenance and license
 

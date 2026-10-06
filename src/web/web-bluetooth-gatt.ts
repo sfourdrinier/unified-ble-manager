@@ -486,8 +486,19 @@ export class WebBluetoothGattRuntime {
     correlation: OperationOptions<string, string>['correlation']
   ): Promise<WebManagedSubscription> {
     const characteristic = this.requireCharacteristic(database, path, 'web-gatt.subscribe')
-    if (!characteristic.properties.notify && !characteristic.properties.indicate) {
+    const notify = characteristic.properties.notify
+    const indicate = characteristic.properties.indicate
+    if (!notify && !indicate) {
       throw contractError('gatt.property-not-supported', 'gatt', 'web-gatt.subscribe')
+    }
+    const mode = options.deliveryMode
+    if ((mode === 'require-notification' && !notify) || (mode === 'require-indication' && !indicate)) {
+      throw contractError('gatt.property-not-supported', 'gatt', 'web-gatt.subscribe')
+    }
+    // startNotifications() writes the notification bit whenever notify is
+    // present. A hard indication requirement cannot be honored then.
+    if (mode === 'require-indication' && notify) {
+      throw contractError('capability.limited', 'gatt', 'web-gatt.subscribe')
     }
     const stream = new CoreBoundedStream<NotificationValue>(options.delivery, options.delivery.overflowPolicy)
     const subscriptionId = this.host.identifiers().subscriptionId(`web-subscription-${this.nextSubscription}`)

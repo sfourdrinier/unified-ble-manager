@@ -578,8 +578,9 @@ and connect confirmation ~898) queried every level `Uncached`, required
 **Change.**
 
 - `ble/device.rs`: `GATT_CACHE_TIMEOUT` and the cached fallback removed.
-  Services, characteristics and descriptors are queried `Uncached` every
-  time. Any non-success status is `Err("<stage> failed with
+  Services and characteristics are queried `Uncached` every
+  time. Descriptor discovery does not call `GetDescriptors` or
+  `GetDescriptorsForUuid`, and the descriptor list stays empty. Any non-success status is `Err("<stage> failed with
   GattCommunicationStatus <Name> (<raw>)")`; a status that cannot be read is
   an error too. `discover_services` returns the fresh service list.
   One exception: services Windows keeps for itself (HID, the LE Audio

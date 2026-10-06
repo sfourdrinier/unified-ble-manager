@@ -887,11 +887,18 @@
  			DBG("EATT channel connected");
  			g_io_channel_set_close_on_unref(io, FALSE);
  			return true;
-@@ -6488,6 +6793,7 @@
+@@ -6488,6 +6793,14 @@
  
  	dev->attrib = attrib;
  	dev->att = g_attrib_get_att(attrib);
 +	ubm_attach_primary(dev, dst_type);
++	/* No LE pairing record: do not let an unsolicited encrypted
++	 * attribute start pairing. That ATT operation fails and the ACL
++	 * stays up. Explicit Pair still raises security itself. A paired
++	 * link keeps the stock retry so an existing key can encrypt it.
++	 */
++	if (dst_type != BDADDR_BREDR && !dev->le_state.paired)
++		bt_att_set_security_retry(dev->att, false);
  
  	bt_att_ref(dev->att);
  
@@ -1887,7 +1894,38 @@
  
 --- a/src/shared/att.c
 +++ b/src/shared/att.c
-@@ -1068,7 +1068,12 @@
+@@ -74,6 +74,8 @@
+ 	struct queue *ind_queue;	/* Queued ATT protocol indications */
+ 	struct queue *write_queue;	/* Queue of PDUs ready to send */
+ 	bool in_disc;			/* Cleanup queues on disconnect_cb */
++	bool no_security_retry;	/* Fail ATT security errors; do not pair */
++	unsigned int security_upgrade_attempts;
+ 
+ 	bt_att_timeout_func_t timeout_callback;
+ 	bt_att_destroy_func_t timeout_destroy;
+@@ -769,6 +771,13 @@
+ 	if (chan->sec_level != BT_ATT_SECURITY_AUTO)
+ 		return false;
+ 
++	/* Unbonded LE: an encrypted attribute must fail this operation.
++	 * Raising security starts pairing and the kernel drops the ACL
++	 * when no agent confirms it.
++	 */
++	if (chan->att->no_security_retry)
++		return false;
++
+ 	security = bt_att_chan_get_security(chan);
+ 
+ 	if (ecode == BT_ATT_ERROR_INSUFFICIENT_ENCRYPTION &&
+@@ -787,6 +796,7 @@
+ 		return false;
+ 	}
+ 
++	chan->att->security_upgrade_attempts++;
+ 	return bt_att_chan_set_security(chan, security);
+ }
+ 
+@@ -1068,7 +1078,12 @@
  	 * If this was not a command and no handler was registered for it,
  	 * respond with "Not Supported"
  	 */
@@ -1901,7 +1939,7 @@
  		respond_not_supported(att, opcode);
  
  	bt_att_unref(att);
-@@ -1607,7 +1612,7 @@
+@@ -1607,7 +1622,7 @@
  	mtu->id = att->next_reg_id++;
  
  	if (!queue_push_tail(att->exchange_list, mtu)) {
@@ -1910,6 +1948,31 @@
  		return 0;
  	}
  
+@@ -2103,6 +2118,14 @@
+ 	return bt_att_chan_set_security(chan, level);
+ }
+ 
++void bt_att_set_security_retry(struct bt_att *att, bool retry)
++{
++	if (!att)
++		return;
++
++	att->no_security_retry = !retry;
++}
++
+ void bt_att_set_enc_key_size(struct bt_att *att, uint8_t enc_size)
+ {
+ 	if (!att)
+--- a/src/shared/att.h
++++ b/src/shared/att.h
+@@ -112,6 +112,7 @@
+ 
+ int bt_att_get_security(struct bt_att *att, uint8_t *enc_size);
+ bool bt_att_set_security(struct bt_att *att, int level);
++void bt_att_set_security_retry(struct bt_att *att, bool retry);
+ void bt_att_set_enc_key_size(struct bt_att *att, uint8_t enc_size);
+ 
+ bool bt_att_set_local_key(struct bt_att *att, uint8_t sign_key[16],
 --- a/src/shared/gatt-client.c
 +++ b/src/shared/gatt-client.c
 @@ -20,6 +20,7 @@
@@ -3461,7 +3524,7 @@
 +#endif
 --- a/unit/test-ubm-att-exchange.c
 +++ b/unit/test-ubm-att-exchange.c
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,211 @@
 +// SPDX-License-Identifier: LGPL-2.1-or-later
 +/* Actual ATT registration and indication paths; no Bluetooth/system bus. */
 +#define queue_push_tail test_queue_push_tail
@@ -3554,9 +3617,101 @@
 +	puts("Incoming server-only indication confirms exactly once: OK");
 +}
 +
++
++static void security_error_response(uint8_t opcode, const void *pdu,
++					uint16_t length, void *user_data)
++{
++	unsigned int *seen = user_data;
++	const uint8_t *bytes = pdu;
++
++	assert(opcode == BT_ATT_OP_ERROR_RSP);
++	assert(length >= 4);
++	assert(bytes[3] == BT_ATT_ERROR_INSUFFICIENT_ENCRYPTION);
++	(*seen)++;
++}
++
++static void pump_att(void)
++{
++	while (g_main_context_iteration(NULL, false))
++		;
++}
++
++static struct bt_att *new_auto_att(int sockets[2])
++{
++	struct bt_att_chan *chan;
++	struct bt_att *att;
++
++	assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets));
++	assert(fcntl(sockets[1], F_SETFL, O_NONBLOCK) == 0);
++	att = bt_att_new(sockets[0], false);
++	assert(att);
++	chan = queue_peek_head(att->chans);
++	/* A real L2CAP channel keeps sec_level at zero, which is AUTO.
++	 * This AF_UNIX channel is LOCAL, so imitate that gate.
++	 */
++	assert(chan && chan->type == BT_ATT_LOCAL);
++	chan->sec_level = BT_ATT_SECURITY_AUTO;
++	return att;
++}
++
++static void exchange_read_error(struct bt_att *att, int peer, unsigned int *seen)
++{
++	uint8_t request[8];
++	uint16_t handle = 0x007c;
++	uint8_t error[] = { BT_ATT_OP_ERROR_RSP, BT_ATT_OP_READ_REQ, 0x7c, 0x00,
++				BT_ATT_ERROR_INSUFFICIENT_ENCRYPTION };
++	ssize_t n;
++
++	assert(bt_att_send(att, BT_ATT_OP_READ_REQ, &handle, sizeof(handle),
++				security_error_response, seen, NULL));
++	pump_att();
++	n = recv(peer, request, sizeof(request), 0);
++	assert(n == 3 && request[0] == BT_ATT_OP_READ_REQ);
++	assert(send(peer, error, sizeof(error), 0) == (ssize_t)sizeof(error));
++	pump_att();
++}
++
++/* Stock AUTO retries an Insufficient Encryption error by raising
++ * security. An unbonded link must finish the operation instead, so
++ * pairing never starts and the ACL stays up.
++ */
++static void unbonded_security_error_does_not_raise(void)
++{
++	int sockets[2];
++	uint8_t extra[8];
++	unsigned int seen = 0;
++	struct bt_att *att = new_auto_att(sockets);
++
++	bt_att_set_security_retry(att, false);
++	exchange_read_error(att, sockets[1], &seen);
++	assert(seen == 1);
++	assert(att->security_upgrade_attempts == 0);
++	assert(recv(sockets[1], extra, sizeof(extra), 0) == -1 &&
++						(errno == EAGAIN || errno == EWOULDBLOCK));
++	bt_att_set_security_retry(NULL, false);
++	bt_att_unref(att);
++	close(sockets[1]);
++
++	seen = 0;
++	att = new_auto_att(sockets);
++	exchange_read_error(att, sockets[1], &seen);
++	assert(seen == 0);
++	assert(att->security_upgrade_attempts == 1);
++	/* The upgrade requeues the same read. A second error completes it
++	 * because the recorded level is no longer AUTO.
++	 */
++	exchange_read_error(att, sockets[1], &seen);
++	assert(seen == 1);
++	assert(att->security_upgrade_attempts == 1);
++	bt_att_unref(att);
++	close(sockets[1]);
++	puts("Unbonded ATT security error does not raise security: OK");
++}
++
 +int main(void)
 +{
 +	incoming_server_indication();
++	unbonded_security_error_does_not_raise();
 +	int sockets[2];
 +	unsigned int disconnect_id;
 +	assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets));

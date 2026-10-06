@@ -27,7 +27,8 @@ export { TAURI_PLUGIN_COMPATIBILITY }
 // host-specific module owns only transport loading and host-option admission;
 // scan, connection, GATT, stream, lifecycle, and cleanup policy live in the
 // common adapter.
-const createTauriPublicManager = (ipc: IpcBleManager): BleManager => new IpcPublicManagerAdapter(ipc)
+const createTauriPublicManager = (ipc: IpcBleManager): BleManager =>
+  new IpcPublicManagerAdapter(ipc, { gattDeliverySelection: 'controllable' })
 
 // Normal Tauri factory — imports invoke/Channel from @tauri-apps/api/core internally.
 // No transport plumbing from application code.

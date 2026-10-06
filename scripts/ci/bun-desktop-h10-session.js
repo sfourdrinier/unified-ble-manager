@@ -27,8 +27,24 @@ const MANUFACTURER_NAME = '00002a29-0000-1000-8000-00805f9b34fb'
 const PMD_SERVICE = 'fb005c80-02e7-f387-1cad-8acd2d8df0c8'
 const PMD_CONTROL = 'fb005c81-02e7-f387-1cad-8acd2d8df0c8'
 
+let activeState = null
+let releasing = false
+
 function fail(message) {
+  const error = new Error(message)
+  error.ubmSessionFailure = true
+  throw error
+}
+
+async function releaseAndExit(message) {
   console.error(`bun-desktop-h10: FAIL ${message}`)
+  if (!releasing) {
+    releasing = true
+    if (activeState) {
+      const errors = await cleanup(activeState)
+      for (const error of errors) console.error(`bun-desktop-h10: cleanup ${error}`)
+    }
+  }
   process.exit(1)
 }
 
@@ -145,7 +161,7 @@ async function cleanup(state) {
 
 async function main() {
   const watchdog = setTimeout(() => {
-    fail(`session exceeded ${SESSION_BUDGET_MS}ms`)
+    void releaseAndExit(`session exceeded ${SESSION_BUDGET_MS}ms`)
   }, SESSION_BUDGET_MS)
   const bun = assertBun()
   const platform = process.env.UBM_RADIO_PLATFORM
@@ -184,6 +200,7 @@ async function main() {
     error: entry.error ?? null
   }))
   const state = { central: null, scanId: null, peerId: null, subscriptions: [] }
+  activeState = state
   let wakes = 0
   try {
     state.central = await UbmCentral.open({
@@ -420,13 +437,18 @@ async function main() {
       )
     }
   } catch (error) {
-    const cleanupErrors = await cleanup(state)
     const detail = error && error.message ? error.message : String(error)
-    const extra = cleanupErrors.length === 0 ? '' : `; cleanup: ${cleanupErrors.join('; ')}`
-    fail(`${detail}${extra}`)
+    let extra = ''
+    if (!releasing) {
+      releasing = true
+      const cleanupErrors = await cleanup(state)
+      if (cleanupErrors.length > 0) extra = `; cleanup: ${cleanupErrors.join('; ')}`
+    }
+    console.error(`bun-desktop-h10: FAIL ${detail}${extra}`)
+    process.exit(1)
   }
 }
 
 main().catch(error => {
-  fail(error && error.message ? error.message : String(error))
+  void releaseAndExit(error && error.message ? error.message : String(error))
 })

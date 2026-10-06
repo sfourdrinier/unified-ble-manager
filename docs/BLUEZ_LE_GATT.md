@@ -60,7 +60,7 @@ stock BlueZ protects another external LE client.
 The maintained source includes the authoritative lease mechanism and versioned
 native capability handshake. Dual-mode/second-client physical qualification
 remains separate: no physical dual-mode peer or second-client test was run during
-this source assessment. SSH host `rtx3090` reports BlueZ 5.72 and one `hci0`
+this source assessment. One inspected host reported stock BlueZ 5.72 and one
 adapter; neither its daemon nor its system configuration was changed.
 
 Primary references: [BlueZ Device API](https://bluez.readthedocs.io/en/latest/device-api/),

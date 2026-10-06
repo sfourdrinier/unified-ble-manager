@@ -1257,6 +1257,45 @@ describe('InMemoryWebBluetoothTckBoundary', () => {
     // A browser grants only the services a request names; this one names none.
     await expect(choosing).resolves.toMatchObject({ grantedServices: [] })
   })
+
+  test('refuses a delivery mode Web Bluetooth cannot write before startNotifications', async () => {
+    const boundary = new InMemoryWebBluetoothTckBoundary()
+    const { backend } = await createAttachedWebBackend(boundary)
+    const chooser = backend.choose(chooserRequest(), noDeadline())
+    await boundary.flush()
+    boundary.resolveChooser()
+    const selected = await chooser
+    const lease = await backend.connections.connect(selected.peerId, 'delivery-client', noDeadline())
+    const database = await backend.gatt.discover(lease.connection, noDeadline())
+    const snapshot = await database.snapshot()
+    const path = snapshot.characteristics[0].path
+    const delivery = {
+      itemCapacity: 2,
+      byteCapacity: 16,
+      reservedControlCapacity: 1,
+      overflowPolicy: 'error'
+    }
+    const before = boundary.notificationStarts
+    await expect(
+      database.subscribe(path, { signal: null, deadline: null, delivery, deliveryMode: 'require-indication' })
+    ).rejects.toMatchObject({ normalized: { code: 'gatt.property-not-supported' } })
+    boundary.characteristic.properties = {
+      read: true,
+      write: false,
+      writeWithoutResponse: false,
+      notify: true,
+      indicate: true
+    }
+    await expect(
+      database.subscribe(path, { signal: null, deadline: null, delivery, deliveryMode: 'require-indication' })
+    ).rejects.toMatchObject({ normalized: { code: 'capability.limited' } })
+    await expect(
+      database.subscribe(path, { signal: null, deadline: null, delivery, deliveryMode: 'prefer-indication' })
+    ).resolves.toEqual(expect.anything())
+    expect(boundary.notificationStarts).toBe(before + 1)
+    await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
 })
 
 async function createAttachedWebBackend(boundary) {

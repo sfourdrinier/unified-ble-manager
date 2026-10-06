@@ -55,6 +55,22 @@ All notable changes to `unified-ble-manager` are documented here.
   Installing `5.87-ubm.8` and repeating that H10 session reported disconnect
   `released` and close `released`, and the link was down. No platform evidence
   label changes.
+- Source daemon `5.87-ubm.9` does not raise link security when an unbonded LE
+  attribute returns Insufficient Encryption or Insufficient Authentication.
+  That ATT operation fails and the ACL stays up. A paired link still retries
+  so an existing key can encrypt it, and explicit Pair still raises security
+  itself. The experimental ranging client reads an encrypted feature and, on
+  the previous daemon, that error started pairing with no agent and dropped
+  the unbonded H10 link before the battery read. Installing `5.87-ubm.9` and
+  repeating the unbonded glibc Linux session on source digest `0b31ce8e`
+  read battery 90 and manufacturer Polar Electro Oy, completed the PMD
+  indication and one 72 bpm notification (flags `0x10`), ran `setEventWaker`
+  with no wake failures, reported disconnect `released` and close `released`,
+  and left the link down. The peer was not paired and the capture had no
+  pairing request. The same digest's macOS Apple Silicon session and two
+  back-to-back Windows x64 sessions, without restarting the Bluetooth service
+  between them, completed that exchange and left the link down. No platform
+  evidence label changes.
 - WinRT discovery leaves the services Windows keeps for itself (HID, LE Audio,
   Microphone Control, Ranging) out before `GetCharacteristics`, and it does not
   call `GetDescriptors`. That call reads Characteristic User Description. When

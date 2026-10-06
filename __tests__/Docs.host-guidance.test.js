@@ -88,7 +88,7 @@ test('rc20 documents owned stream failure and Linux initial acquisition without 
   expect(node).toContain('GetLeAvailability')
   expect(node).toContain('not physical qualification')
   const deployment = read('docs/BLUEZ_DEPLOYMENT.md')
-  expect(deployment).toContain('5.87-ubm.8')
+  expect(deployment).toContain('5.87-ubm.9')
   expect(deployment).toContain('GetLeAvailability')
   expect(deployment).not.toContain('### Deferred LE availability remains an explicit mechanism gap')
   expect(read('docs/BLUEZ_LE_GATT.md')).toContain('GetLeAvailability')
