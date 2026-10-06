@@ -21,6 +21,7 @@ struct Fixture {
     refuse_start: bool,
     refuse_filter: bool,
     timeout_stop: bool,
+    missing_owner_stop: bool,
     hold_found: bool,
     found_reply: Option<dbus::Message>,
     found: Arc<tokio::sync::Notify>,
@@ -131,6 +132,14 @@ async fn fixture() -> (
                         .discovery_stoppers
                         .push(message.sender().unwrap().to_string());
                     state.stopped.notify_one();
+                    if state.missing_owner_stop {
+                        return connection
+                            .send(error(
+                                "org.freedesktop.DBus.Error.NameHasNoOwner",
+                                "still-live owner refusal",
+                            ))
+                            .is_ok();
+                    }
                     if state.hold_stop
                         || state.hold_stop_sender.as_ref().is_some_and(|sender| {
                             message
@@ -674,6 +683,106 @@ async fn private_bus_le_availability_retained_cancel_cleanup_and_prestart_report
     let observed = state.lock().unwrap();
     assert_eq!((observed.starts, observed.stops), (1, 1));
     drop(observed);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_discovery_departed_unique_owner_retires_without_contacting_replacement() {
+    const PEER: &str = "hci0/dev_AA_BB_CC_DD_EE_FF";
+    let (bluez, state, server, worker) = fixture().await;
+    let daemon = bluez.current_daemon_owner().await.unwrap();
+    let entry = bluez.availability_discovery(PEER).await.unwrap();
+    entry
+        .owner
+        .start(&entry.conn, &bluez.adapter_path, daemon.clone())
+        .await
+        .unwrap();
+    bluez
+        .address_discovery
+        .start(&bluez.conn, &bluez.adapter_path, daemon.clone())
+        .await
+        .unwrap();
+    let retired_entry = Arc::downgrade(&entry);
+    drop(entry);
+    state.lock().unwrap().timeout_stop = true;
+    bluez.finish_discovery().await.unwrap_err();
+    assert!(
+        bluez
+            .availability_discoveries
+            .lock()
+            .await
+            .contains_key(PEER),
+        "NoReply while owner lives remains unresolved debt"
+    );
+    worker.abort();
+    assert!(worker.await.unwrap_err().is_cancelled());
+    drop(server);
+    let (resource, replacement) = dbus_tokio::connection::new_session_sync().unwrap();
+    let replacement_worker = tokio::spawn(resource);
+    replacement
+        .request_name("org.bluez", false, false, false)
+        .await
+        .unwrap();
+    let new_owner_stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = new_owner_stops.clone();
+    replacement.start_receive(
+        MatchRule::new_method_call(),
+        Box::new(move |message, connection| {
+            assert_eq!(message.member().as_deref(), Some("StopDiscovery"));
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            connection.send(message.method_return()).unwrap();
+            true
+        }),
+    );
+    tokio::time::timeout(Duration::from_secs(3), bluez.finish_discovery())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(bluez.availability_discoveries.lock().await.is_empty());
+    assert!(
+        retired_entry.upgrade().is_none(),
+        "confirmed retirement releases the dedicated sender"
+    );
+    assert_eq!(new_owner_stops.load(std::sync::atomic::Ordering::SeqCst), 0);
+    bluez.finish_discovery().await.unwrap();
+    replacement_worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_discovery_live_owner_missing_name_error_keeps_cleanup_debt() {
+    const PEER: &str = "hci0/dev_AA_BB_CC_DD_EE_FF";
+    let (bluez, state, _server, worker) = fixture().await;
+    let daemon = bluez.current_daemon_owner().await.unwrap();
+    let entry = bluez.availability_discovery(PEER).await.unwrap();
+    entry
+        .owner
+        .start(&entry.conn, &bluez.adapter_path, daemon)
+        .await
+        .unwrap();
+    drop(entry);
+    state.lock().unwrap().missing_owner_stop = true;
+    let error = bluez.finish_availability(PEER).await.unwrap_err();
+    assert_eq!(
+        error.platform().unwrap().code,
+        "org.freedesktop.DBus.Error.NameHasNoOwner"
+    );
+    assert!(
+        bluez
+            .availability_discoveries
+            .lock()
+            .await
+            .contains_key(PEER)
+    );
+    assert_eq!(bluez.finish_availability(PEER).await.unwrap_err(), error);
+    assert!(
+        bluez
+            .availability_discoveries
+            .lock()
+            .await
+            .contains_key(PEER)
+    );
     worker.abort();
 }
 

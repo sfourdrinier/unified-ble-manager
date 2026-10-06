@@ -6,6 +6,10 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Corrected
 
+- Retire discovery obligations only when the bus confirms the session's captured
+  unique daemon owner disappeared; live or indeterminate debt remains retryable,
+  and cleanup never targets a replacement daemon.
+
 - Release Linux physical links independently of pending discovery cleanup and
   deliver confirmed release observations without losing retained cleanup debt.
 - Keep indexed structured observation and discovery-cleanup causes, including

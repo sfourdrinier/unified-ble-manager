@@ -480,6 +480,8 @@ Failed or cancelled Linux initial availability requests retire their dedicated d
 
 Linux final discovery teardown attempts independent peer and address owners concurrently: one pending Stop reply cannot prevent the others from being attempted. Cancellation retains pending replies and unresolved ownership for a later teardown retry.
 
+If the bus confirms that a discovery session's captured unique daemon owner disappeared, that session's obligation is retired without contacting the replacement daemon. A live daemon's refusal or an unavailable owner probe does not prove retirement and leaves cleanup retryable.
+
 WinRT retries only unconfirmed handler, watcher and maintained-session cleanup stages. Additional leases reuse a healthy maintained session. If opening a watcher fails and compensating cleanup is also refused, a process-owned cleanup vault retains that partial watcher for the next native radio open or explicit close on the same adapter. An unrelated adapter does not inherit that cleanup debt. There is no background retry loop; without either trigger, the retained owner lasts until process exit. These ownership rules do not constitute Windows physical-radio qualification.
 
 ## Verification
