@@ -86,6 +86,19 @@ All notable changes to `unified-ble-manager` are documented here.
   (flags `0x10`), ran `setEventWaker` with no wake failures, reported disconnect
   `released` and close `released`, and left the link down. No platform evidence
   label changes.
+- Tauri forwards a hard delivery requirement to the core on every host.
+  CoreBluetooth and BlueZ still refuse `require-indication` with
+  `capability.limited` when the characteristic also notifies, before any
+  radio effect. WinRT still receives the requirement and can write that mode.
+- The mobile host pump admits one journaled notification per value turn
+  before a queued security or lifecycle signal. Each record is its own
+  SQLite commit, so writing the whole queued scope first held the other
+  peer's control events for the entire backlog. On the Windows CI runner
+  that drain took 13.6s and the recording setup, whose deadline is 20s,
+  timed out. Values that arrived before a lifecycle transition are still
+  drained completely, ahead of the transition. The sustained two-peer
+  test again waits for those control drains before acknowledging setup.
+  The desktop Node-API digest is unchanged.
 
 ## [5.0.0-rc.20] - 2026-10-05
 

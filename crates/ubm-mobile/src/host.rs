@@ -116,6 +116,15 @@ pub(crate) struct PeerInfo {
 /// Why a consumer's stream ended: (reason, dropped items, dropped bytes).
 pub(crate) type StreamEnd = (&'static str, u64, u64);
 
+/// Result of draining one notification route for a bounded pump turn.
+enum RouteDrain {
+    /// The route is still installed. `pending` means the budget stopped the
+    /// drain while the core still holds values.
+    Live { taken: usize, pending: bool },
+    /// The route reached a terminal answer after `taken` admitted values.
+    Ended { taken: usize, terminal: StreamEnd },
+}
+
 enum HostSignal {
     Advertisements,
     /// At least one value scope is dirty; the scopes themselves wait in the
@@ -146,6 +155,12 @@ const SIGNALS_CAP: usize = 1024;
 /// cannot starve lifecycle and current-state signals; leftovers requeue
 /// the marker for another turn.
 const VALUE_SCOPE_BATCH: usize = 32;
+
+/// Journaled records one scope may admit during that same turn. Each record
+/// is its own committed SQLite transaction on the pump, so an unbounded
+/// drain holds every already-queued security and lifecycle signal until the
+/// whole backlog has been written.
+const VALUE_RECORD_BATCH: usize = 1;
 
 /// One advertisement turn must yield to queued lifecycle/deadline markers.
 const ADVERTISEMENT_BATCH: usize = 32;
@@ -924,7 +939,9 @@ impl HostInner {
                 // leftovers requeue the marker for another turn.
                 let batch = self.signals.take_value_batch(VALUE_SCOPE_BATCH);
                 for scope in &batch {
-                    self.flush_scope(scope).await;
+                    if self.flush_scope(scope, VALUE_RECORD_BATCH).await {
+                        self.signals.push_value(scope.clone());
+                    }
                 }
                 self.signals.requeue_values_if_dirty();
             }
@@ -1057,15 +1074,32 @@ impl HostInner {
         })
     }
 
-    /// Move every value the core holds for `scope` into the owning
+    /// Move up to `limit` values the core holds for `scope` into the owning
     /// sessions' outboxes, ending streams on terminal answers.
-    async fn flush_scope(&self, scope: &InstanceKey) {
+    ///
+    /// Returns whether the core still holds values for a live route, or a
+    /// later route was not visited because the budget was spent. The caller
+    /// requeues the scope so a queued control signal can run first.
+    async fn flush_scope(&self, scope: &InstanceKey, limit: usize) -> bool {
+        let mut remaining = limit;
         for route in self.live_routes(scope) {
-            if let Some(terminal) = self.drain_route(&route).await {
-                self.mark_ended(scope, &route, terminal);
-                self.end_route(&route, terminal);
+            if remaining == 0 {
+                return true;
+            }
+            match self.drain_route(&route, remaining).await {
+                RouteDrain::Live { pending: true, .. } => return true,
+                RouteDrain::Live {
+                    taken,
+                    pending: false,
+                } => remaining = remaining.saturating_sub(taken),
+                RouteDrain::Ended { taken, terminal } => {
+                    remaining = remaining.saturating_sub(taken);
+                    self.mark_ended(scope, &route, terminal);
+                    self.end_route(&route, terminal);
+                }
             }
         }
+        false
     }
 
     fn live_routes(&self, scope: &InstanceKey) -> Vec<Route> {
@@ -1081,16 +1115,26 @@ impl HostInner {
             .unwrap_or_default()
     }
 
-    /// Move every value the core holds for one consumer into its session's
-    /// outbox; answer the terminal that ended the stream, if any, without
-    /// emitting it (the caller orders it against lifecycle records).
-    async fn drain_route(&self, route: &Route) -> Option<StreamEnd> {
+    /// Move up to `limit` values the core holds for one consumer into its
+    /// session's outbox. A full budget returns with work still pending and
+    /// does not poll another value. A terminal answer is returned and not
+    /// emitted; the caller orders it against lifecycle records. Lifecycle
+    /// passes `usize::MAX` so values that arrived before the transition
+    /// all land first.
+    async fn drain_route(&self, route: &Route, limit: usize) -> RouteDrain {
+        let mut taken = 0usize;
         loop {
+            if taken == limit {
+                return RouteDrain::Live {
+                    taken,
+                    pending: true,
+                };
+            }
             let poll = self
                 .central
                 .poll_notification(&route.peer_id, &route.selector, &route.core_consumer)
                 .await;
-            return match poll {
+            match poll {
                 Ok(NotificationPoll::Value(bytes)) => {
                     let Some(session) = self.session(route.session_id) else {
                         continue;
@@ -1102,31 +1146,66 @@ impl HostInner {
                         ("delivery", Value::from(route.delivery)),
                     ]);
                     match session.outbox.push_data(record) {
-                        Ok(()) => continue,
+                        Ok(()) => taken += 1,
                         Err(ubm_desktop::continuation_outbox::DataIngressFailure::Stopped {
                             ..
-                        }) => None,
+                        }) => {
+                            return RouteDrain::Live {
+                                taken,
+                                pending: false,
+                            };
+                        }
                         Err(ubm_desktop::continuation_outbox::DataIngressFailure::Overflow {
                             bytes,
-                        }) => Some(("overflow", 1, bytes as u64)),
+                        }) => {
+                            return RouteDrain::Ended {
+                                taken,
+                                terminal: ("overflow", 1, bytes as u64),
+                            };
+                        }
                         // The session's journal failure retains the precise
                         // storage cause; closed is the frozen wire lifecycle
                         // name, never a fabricated queue overflow.
                         Err(ubm_desktop::continuation_outbox::DataIngressFailure::Storage {
                             bytes,
                             ..
-                        }) => Some(("closed", 1, bytes as u64)),
+                        }) => {
+                            return RouteDrain::Ended {
+                                taken,
+                                terminal: ("closed", 1, bytes as u64),
+                            };
+                        }
                     }
                 }
-                Ok(NotificationPoll::Empty) => None,
-                Ok(NotificationPoll::Terminal(terminal)) => Some((
-                    "overflow",
-                    terminal.dropped_items(),
-                    terminal.dropped_bytes(),
-                )),
-                Ok(NotificationPoll::Invalidated(_)) => Some(("invalidated", 0, 0)),
-                Ok(NotificationPoll::Closed) | Err(_) => Some(("closed", 0, 0)),
-            };
+                Ok(NotificationPoll::Empty) => {
+                    return RouteDrain::Live {
+                        taken,
+                        pending: false,
+                    };
+                }
+                Ok(NotificationPoll::Terminal(terminal)) => {
+                    return RouteDrain::Ended {
+                        taken,
+                        terminal: (
+                            "overflow",
+                            terminal.dropped_items(),
+                            terminal.dropped_bytes(),
+                        ),
+                    };
+                }
+                Ok(NotificationPoll::Invalidated(_)) => {
+                    return RouteDrain::Ended {
+                        taken,
+                        terminal: ("invalidated", 0, 0),
+                    };
+                }
+                Ok(NotificationPoll::Closed) | Err(_) => {
+                    return RouteDrain::Ended {
+                        taken,
+                        terminal: ("closed", 0, 0),
+                    };
+                }
+            }
         }
     }
 
@@ -1198,7 +1277,9 @@ impl HostInner {
         let mut ended = Vec::new();
         for scope in &scopes {
             for route in self.live_routes(scope) {
-                if let Some(terminal) = self.drain_route(&route).await {
+                if let RouteDrain::Ended { terminal, .. } =
+                    self.drain_route(&route, usize::MAX).await
+                {
                     self.mark_ended(scope, &route, terminal);
                     ended.push((route, terminal));
                 }
@@ -1217,7 +1298,7 @@ impl HostInner {
         }
         // Hubs the core invalidated after the first pass end here.
         for scope in &scopes {
-            self.flush_scope(scope).await;
+            let _ = self.flush_scope(scope, usize::MAX).await;
         }
     }
 
