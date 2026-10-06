@@ -1,6 +1,6 @@
 {
   "name": "unified-ble-manager",
-  "version": "5.0.0-rc.20",
+  "version": "5.0.0-rc.21",
   "description": "Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop",
   "packageManager": "pnpm@10.14.0",
   "main": "lib/commonjs/index.js",
@@ -78,6 +78,7 @@
     "test": "pnpm test:package",
     "pretest:package": "pnpm prepack && node scripts/ci/build-napi-addon.js",
     "test:package": "jest --config jest.package.config.js",
+    "test:bun-desktop-host": "bun scripts/ci/bun-desktop-host-smoke.js",
     "test:driver": "node examples-shared/dev/install-example-dependencies.js example-expo --force --frozen-lockfile && pnpm --dir example-expo test:driver",
     "test:parity": "bindings/napi/run_napi_roundtrip.sh && jest --config jest.config.js __tests__/tck/rust-parity",
     "contracts:test": "jest --config contracts/jest.config.cjs",

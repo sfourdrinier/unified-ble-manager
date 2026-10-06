@@ -100,6 +100,23 @@ post-loss reconnect. Linux implements initial acquisition with maintained daemon
 `5.87-ubm.5`'s optional observer: a fresh connectable LE advertisement is required
 before token-bound connection admission. Older daemons report `capability.unsupported`;
 merged stock discovery signals and cached records do not replace that mechanism.
+On source `5.87-ubm.6`, another process's finished GATT read or write does not
+keep the ACL when this process is the only application owner. An in-flight
+read or write, StartNotify, Acquire, or an explicit Connect or Pair still
+does. Replacing the running `5.87-ubm.4` daemon with `5.87-ubm.6` changed the
+glibc Linux H10 disconnect from `lease-released-protected` to
+`lease-released-indeterminate` and left the link up: profile probing arms
+auto-connect, and that bookkeeping was recorded as an unknown holder. Source
+`5.87-ubm.7` does not treat that bookkeeping as a hold on an exclusive link
+this process created, and that exclusive release stops kernel auto-connect
+for an untrusted device, the same gate `Device1.Disconnect` uses. Installing
+it changed the glibc Linux H10 disconnect to `lease-released-protected` and
+left the link up: the controller had already initiated the bonded link, and
+the lease adopted it as borrowed. Source `5.87-ubm.8` releases a locally
+initiated link when no other application hold remains. A link this controller
+did not initiate stays protected. The same in-flight and explicit holds still
+do. Installing `5.87-ubm.8`, the glibc Linux H10 session reported `released`
+and the link was down.
 See [`NODE.md`](NODE.md) for deployment prerequisites and exact host boundaries.
 
 CoreBluetooth does not expose unrestricted system bond inventory. Web Bluetooth

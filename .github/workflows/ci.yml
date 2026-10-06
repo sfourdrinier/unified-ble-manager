@@ -156,6 +156,16 @@ jobs:
         # failures diagnosable apart from jest.)
         run: node scripts/ci/build-napi-addon.js
 
+      - name: Bun 1.4.2 desktop host smoke
+        # The debug addon just built is the source-mode binary. Bun 1.4.2 must
+        # load it and run the synthetic central. Adapter listing stays a host
+        # receipt; GitHub runners have no radio for --list-adapters.
+        if: runner.os == 'Linux' && matrix.node == '22'
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.2"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+          UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.linux-x64.node" "$HOME/.bun/bin/bun" scripts/ci/bun-desktop-host-smoke.js
+
       - name: Build UniFFI mobile host for the Apple harness
         # AppleNativeProtocolV2.test.js executes the Apple harness, which links
         # the real Rust mobile host. Building it here, once, keeps the cold

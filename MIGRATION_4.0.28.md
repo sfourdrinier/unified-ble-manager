@@ -6,7 +6,7 @@ your lockfile. Published release history and immutable source identities are
 recorded in [`RELEASE.md`](RELEASE.md); source preparation is not publication.
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.20
+pnpm add unified-ble-manager@5.0.0-rc.21
 ```
 
 Pin the exact candidate and rebuild native projects. Never mix a 4.0.28 binary

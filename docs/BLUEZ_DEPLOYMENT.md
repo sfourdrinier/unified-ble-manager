@@ -27,7 +27,7 @@ fresh, disjoint directories outside the repository:
 ```sh
 node /absolute/ubm/vendor/bluez/deployment/bundle.mjs \
   /absolute/bluez-5.87.tar.xz /absolute/new-bluez-bundle \
-  /absolute/new-bluez-build-work 5.87-ubm.5
+  /absolute/new-bluez-build-work 5.87-ubm.8
 node --test /absolute/ubm/vendor/bluez/deployment/deployment.test.mjs
 ```
 
@@ -145,7 +145,9 @@ An absent reason has canonical byte zero. Outcomes
 are `reservation-released` (generation zero, only when no physical effect was
 accepted or is in flight), `physical-released` (nonzero generation), `lease-released-protected`, or
 `lease-released-indeterminate`; a retired lease is not automatically a closed
-physical ACL. `LEGatt1` separately proves current LE-specific discovery.
+physical ACL. A finished characteristic or descriptor read or write is not a
+protected external interest. An in-flight read or write, StartNotify, Acquire,
+or an explicit Connect or Pair still is. `LEGatt1` separately proves current LE-specific discovery.
 An owner lookup or successful introspection is not enough to admit lifecycle
 work. Missing/unknown contracts fail closed, without a stock-BlueZ fallback.
 
@@ -185,7 +187,7 @@ recovery is not a claim that previous physical resources were released.
 
 ### Optional authoritative deferred LE availability
 
-Maintained `5.87-ubm.5` adds optional observer revision 1 on
+Maintained `5.87-ubm.8` includes optional observer revision 1 on
 `org.unifiedblemanager.LinuxAuthority1`: `GetLeAvailability` reads the current
 advertisement sequence, and `LeAdvertisement` identifies a fresh connectable LE
 report. The client subscribes under the pinned unique owner before reading its
@@ -223,7 +225,7 @@ remain separately scoped operator actions.
 
 ```sh
 node /absolute/ubm/vendor/bluez/deployment/activate.mjs rollback \
-  /opt/unified-ble-manager/bluez/5.87-ubm.5-PATCH_HASH_PREFIX/deployment-receipt.json \
+  /opt/unified-ble-manager/bluez/5.87-ubm.8-PATCH_HASH_PREFIX/deployment-receipt.json \
   --confirm-override-removal
 ```
 

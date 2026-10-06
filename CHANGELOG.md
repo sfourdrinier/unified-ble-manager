@@ -2,6 +2,60 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.21] - 2026-10-05
+
+### Added
+
+- Qualify Bun 1.4.2 as a desktop host for the shared Node-API addon. The sealed
+  prebuild loads, and the synthetic central opens, reports its capability
+  states, and closes. `bun scripts/ci/bun-desktop-host-smoke.js` is that gate.
+  On glibc Linux x64, `--list-adapters` returned both host adapters (`hci0`
+  and `hci1`) with no error. Bun's `process.report` supplies the glibc version,
+  so the existing prebuild loader needs no Bun-specific path.
+- `scripts/ci/bun-desktop-h10-session.js` is an opt-in session against a stock
+  Polar H10 simulator whose local name is exactly `SIM Polar H10 0001`. Other
+  advertisements are recorded and left unconnected. It is not a CI gate.
+  On macOS Apple Silicon, Bun 1.4.2 and the sealed CoreBluetooth prebuild
+  scanned, connected, read battery level 90 and manufacturer Polar Electro Oy,
+  wrote the PMD get-settings command and received its success indication,
+  took one 72 bpm heart-rate notification, ran `setEventWaker` (19 wakes, no
+  wake failures), disconnected, and closed. On glibc Linux x64 the same BlueZ
+  session on `hci0` completed that GATT exchange and ran `setEventWaker` (3
+  wakes, no wake failures). Against the installed `5.87-ubm.4` daemon,
+  disconnect after discovery returned
+  `lease-released-protected`, close reported `release-failed`, and the link
+  stayed up. Node 22 on the same addon does that too. A Bun connect that never
+  discovers services does release the link. No platform evidence label changes.
+
+### Fixed
+
+- Source daemon `5.87-ubm.6` no longer treats another process's finished GATT
+  read or write as a link holder. A hold remains only while that read or write
+  is in flight, or until the sender's bus connection dies after an explicit
+  Connect, Pair, StartNotify, or Acquire. Replacing the installed
+  `5.87-ubm.4` daemon with `5.87-ubm.6` and repeating the glibc Linux H10
+  session changed disconnect from `lease-released-protected` to
+  `lease-released-indeterminate`. The GATT exchange still completed and the
+  link stayed up. Profile probing arms auto-connect, and that bookkeeping
+  called admit with no sender, which set an unknown holder on an exclusive
+  link.
+- Source daemon `5.87-ubm.7` does not treat that auto-connect bookkeeping as
+  another application's hold on an exclusive link this process created. When
+  that exclusive release disconnects the link, an untrusted device also stops
+  kernel auto-connect, the same gate `Device1.Disconnect` uses. Installing
+  that daemon and repeating the glibc Linux H10 session returned
+  `lease-released-protected` and left the link up. The lease had no
+  application interest. The controller had already initiated the bonded link
+  and armed auto-connect, so the lease adopted it as borrowed.
+- Source daemon `5.87-ubm.8` releases that locally initiated link when no
+  other lease or application hold remains. A link this controller did not
+  initiate stays protected. An unknown holder stays indeterminate. An
+  in-flight read or write, StartNotify, Acquire, or another sender's Connect
+  or Pair still protects the link. The authority contract stays `(1, 2, 1)`.
+  Installing `5.87-ubm.8` and repeating that H10 session reported disconnect
+  `released` and close `released`, and the link was down. No platform evidence
+  label changes.
+
 ## [5.0.0-rc.20] - 2026-10-05
 
 ### Corrected

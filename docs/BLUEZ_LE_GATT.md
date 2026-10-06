@@ -88,14 +88,21 @@ Release replies retain version, exact token, physical LE generation and scope:
 `lease-released-indeterminate`. Only positive physical termination retires an
 established UBM connection under the current public cleanup contract. Protected
 and indeterminate scopes remain explicit release failures with retry ownership;
-they are not silently converted into successful disconnects. A zero-generation
+they are not silently converted into successful disconnects. A finished
+characteristic or descriptor read or write is not a protected external
+interest. A zero-generation
 reservation receipt proves no accepted physical work, not that a link closed.
 Fresh ATT discovery identity is separate from physical LE generation.
 
 A confirmed token retirement answers a scoped lease question, not necessarily
 a physical ACL question. A positively exclusive UBM-created attachment is
-eligible for last-owner physical teardown. A preexisting connection, protected
-external interest, or indeterminate external interest is not. The native
+eligible for last-owner physical teardown. A preexisting connection, an
+in-flight characteristic or descriptor read or write, an active StartNotify
+or Acquire, an explicit Connect or Pair, or an indeterminate external
+interest is not. A finished read or write is not an external interest: that
+hold ends when the method returns or its ATT operation completes. StartNotify
+and Acquire last until the sender's bus connection dies; StopNotify does not
+clear that hold. The native
 receipt must retain that distinction; a retained link is never reported as a
 physically closed ACL. Permanent retention of every UBM-created link is not a
 substitute for implementing exclusive teardown.
@@ -107,6 +114,7 @@ The official 5.87 source hook inventory for this implementation is:
 | `src/bearer.c::bearer_connect`                                           | Distinguish private token-bound creation from stock LE/BREDR requests.                    |
 | `src/bearer.c::bearer_disconnect`                                        | No physical release without a current, positive exclusive-attachment proof.               |
 | `src/device.c::dev_connect` and `connect_profile`                        | Accepted stock-client interest must protect an existing UBM-created LE attachment.        |
+| `src/gatt-client.c` ReadValue and WriteValue                             | A one-shot read or write protects only while its ATT operation is in flight.              |
 | `src/device.c::pair_device` and `device_connect_le`                      | Pairing/internal/autoconnect initiation is not automatically a UBM-exclusive acquisition. |
 | `src/device.c::device_add_connection` and `device_remove_connection`     | Fence restored/incoming connections and genuine physical loss by attachment generation.   |
 | `src/adapter.c::adapter_add_connection` and its connection-event callers | Kernel-restored and incoming peers cannot acquire optimistic UBM-exclusive status.        |

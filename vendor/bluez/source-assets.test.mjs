@@ -56,10 +56,15 @@ test('BlueZ derivative source assets retain exact upstream provenance and licens
     deployment: 'external-explicit-host-action',
     automaticInstallOrLaunch: false,
     linuxAuthorityContract: [1, 2, 1],
-    release: '5.87-ubm.5'
+    release: '5.87-ubm.8'
   })
   const patch = readFileSync(new URL(manifest.patch.file, directory), 'utf8')
-  for (const path of ['src/ubm-le-lease.c', 'src/ubm-le-lease.h', 'unit/test-ubm-le-lease.c', 'unit/test-ubm-scan-filter.c']) {
+  for (const path of [
+    'src/ubm-le-lease.c',
+    'src/ubm-le-lease.h',
+    'unit/test-ubm-le-lease.c',
+    'unit/test-ubm-scan-filter.c'
+  ]) {
     assert.ok(patch.includes(`+++ b/${path}`), `missing production authority source: ${path}`)
   }
   assert.match(patch, /protocol = 1, lease = 2, gatt = 1/)
@@ -69,4 +74,9 @@ test('BlueZ derivative source assets retain exact upstream provenance and licens
   assert.match(patch, /GDBUS_METHOD\("GetLeAvailability"/)
   assert.match(patch, /GDBUS_SIGNAL\("LeAdvertisement"/)
   assert.match(patch, /if \(!scan_rsp\)\n\+\t\tbtd_ubm_le_advertisement/)
+  assert.match(patch, /btd_ubm_le_operation_begin/)
+  assert.match(patch, /A finished external read does not protect the link/)
+  assert.match(patch, /Arming auto-connect while probing profiles is daemon bookkeeping/)
+  assert.match(patch, /btd_device_quiesce_untrusted_auto_connect/)
+  assert.match(patch, /Daemon auto-connect is/)
 })

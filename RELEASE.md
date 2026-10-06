@@ -131,7 +131,7 @@ once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
 history. `4.0.28` is immutable tagged history. The unpublished
 `v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
-The next prepared candidate is `5.0.0-rc.20`; rc.19, rc.18, rc.17, rc.16 and rc.14 are immutable published history.
+The next prepared candidate is `5.0.0-rc.21`. `5.0.0-rc.20` is the parent release branch and is not published history. rc.19, rc.18, rc.17, rc.16 and rc.14 are immutable published history.
 The immutable `v5.0.0-rc.15` tag remains unpublished: its publisher was cancelled
 before npm publication when the Apple architecture policy changed.
 
@@ -160,6 +160,30 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 ```sh
 git tag -a v4.0.0 -m "v4.0.0"
 ```
+
+## Releasing 5.0.0-rc.21
+
+This candidate keeps the rc.20 tree and qualifies Bun 1.4.2 as a desktop host
+for the existing Node-API addon. `bun scripts/ci/bun-desktop-host-smoke.js`
+loads the sealed prebuild and runs the synthetic central. Source daemon
+`5.87-ubm.6` ends a finished GATT read or write hold when the call completes.
+Installing that daemon changed the glibc Linux H10 disconnect from
+`lease-released-protected` to `lease-released-indeterminate` and left the
+link up, because profile-probe auto-connect bookkeeping was recorded as an
+unknown holder. `5.87-ubm.7` does not treat that bookkeeping as a hold on an
+exclusive link this process created, and that exclusive release stops kernel
+auto-connect for an untrusted device. Installing it changed the glibc Linux
+H10 disconnect to `lease-released-protected` and left the link up, because
+the controller had already initiated the bonded link and the lease adopted
+it as borrowed. `5.87-ubm.8` releases a locally initiated link when no other
+application hold remains. The authority contract stays `(1, 2, 1)`.
+Installing `5.87-ubm.8`, the glibc Linux H10 session reported disconnect
+`released` and close `released`, and the link was down. It does not promote
+backend qualification labels and it does not make a physical radio receipt.
+Verify exact current `main`, all `5.0.0-rc.21` identities, required CI and
+release gates, and absence of the registry version and annotated tag before
+creating `v5.0.0-rc.21`. Use the trusted tag publisher only; `next` advances to
+rc.21 and `latest` remains 4.0.28.
 
 ## Releasing 5.0.0-rc.20
 
@@ -944,7 +968,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.0-rc.20
+version=5.0.0-rc.21
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -955,7 +979,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `next` resolves to `5.0.0-rc.20`, while `latest` remains on the 4.0 stable
+- npm `next` resolves to `5.0.0-rc.21`, while `latest` remains on the 4.0 stable
   line; a stable release moves `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
@@ -963,7 +987,7 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.0-rc.20` explicitly and import the documented host
+  `unified-ble-manager@5.0.0-rc.21` explicitly and import the documented host
   entrypoints. A bare install still selects `latest` (the 4.0 line). This
   catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a

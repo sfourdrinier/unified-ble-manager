@@ -4,7 +4,7 @@
   "schemaVersion": "1.0.0",
   "package": {
     "name": "unified-ble-manager",
-    "version": "5.0.0-rc.20"
+    "version": "5.0.0-rc.21"
   },
   "source": {
     "method": "pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence) + reviewed bundled source-asset manifests (not linked runtime dependencies)",
@@ -1790,7 +1790,7 @@
         },
         "patch": {
           "file": "ubm-le-gatt-5.87.patch",
-          "sha256": "6853424fdcdd86b0aa6e1f611dbbeaa8e0703f9a656f26a71af5d51d8df31954"
+          "sha256": "fca84e86be27f5865a6b974c6f7e90e503818442792ac105b3b4cde3e420cf57"
         },
         "licenseFiles": [
           {
@@ -1818,7 +1818,7 @@
           2,
           1
         ],
-        "release": "5.87-ubm.5"
+        "release": "5.87-ubm.8"
       }
     }
   ]
