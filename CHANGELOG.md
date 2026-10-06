@@ -101,6 +101,12 @@ All notable changes to `unified-ble-manager` are documented here.
   completely, ahead of the transition. The sustained two-peer test again
   waits for those control drains before acknowledging setup. The desktop
   Node-API digest is unchanged.
+- The packed TV consumer staged outside the checkout keeps the repository
+  `packageManager` pin (`pnpm@10.14.0`). Without that pin, Corepack selected
+  pnpm 12.9.1. Its one-day release-age check rejected fifteen Expo packages
+  published the same day, and it ignored the staged manifest's
+  `pnpm.overrides`, so the Expo Android TV ARM32 compile stopped during
+  install.
 
 ## [5.0.0-rc.20] - 2026-10-05
 
