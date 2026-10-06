@@ -506,6 +506,10 @@ pub(crate) struct HostInner {
     next_session: AtomicU64,
     #[cfg(test)]
     before_session_admission: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Consumers `drain_route` polled, in order. Debug tests read it.
+    /// Release builds omit it.
+    #[cfg(debug_assertions)]
+    route_turns: Mutex<Vec<String>>,
     pub scan: tokio::sync::Mutex<ScanShare>,
     pub scan_members: Mutex<BTreeMap<u64, ScanMember>>,
     pub routes: Mutex<HashMap<InstanceKey, Vec<Route>>>,
@@ -1087,7 +1091,15 @@ impl HostInner {
                 return true;
             }
             match self.drain_route(&route, remaining).await {
-                RouteDrain::Live { pending: true, .. } => return true,
+                // A full budget must not pin the next turn to this same
+                // route. Later consumers of the scope would never be polled
+                // while this one still has a backlog, and their core queues
+                // can overflow. The busy route goes to the back; the scope
+                // is requeued so a security or lifecycle signal runs first.
+                RouteDrain::Live { pending: true, .. } => {
+                    self.rotate_route_to_end(scope, &route);
+                    return true;
+                }
                 RouteDrain::Live {
                     taken,
                     pending: false,
@@ -1100,6 +1112,22 @@ impl HostInner {
             }
         }
         false
+    }
+
+    /// Move `route` behind the other routes of `scope`. The next bounded
+    /// flush then starts at a consumer this turn did not finish.
+    fn rotate_route_to_end(&self, scope: &InstanceKey, route: &Route) {
+        let mut routes = lock(&self.routes);
+        let Some(entries) = routes.get_mut(scope) else {
+            return;
+        };
+        let Some(index) = entries.iter().position(|entry| {
+            entry.session_id == route.session_id && entry.consumer == route.consumer
+        }) else {
+            return;
+        };
+        let deferred = entries.remove(index);
+        entries.push(deferred);
     }
 
     fn live_routes(&self, scope: &InstanceKey) -> Vec<Route> {
@@ -1122,6 +1150,13 @@ impl HostInner {
     /// passes `usize::MAX` so values that arrived before the transition
     /// all land first.
     async fn drain_route(&self, route: &Route, limit: usize) -> RouteDrain {
+        #[cfg(debug_assertions)]
+        {
+            let mut turns = lock(&self.route_turns);
+            if turns.len() < 1024 {
+                turns.push(route.consumer.clone());
+            }
+        }
         let mut taken = 0usize;
         loop {
             if taken == limit {
@@ -2049,6 +2084,8 @@ impl MobileHost {
             next_session: AtomicU64::new(1),
             #[cfg(test)]
             before_session_admission: Mutex::new(None),
+            #[cfg(debug_assertions)]
+            route_turns: Mutex::new(Vec::new()),
             scan: tokio::sync::Mutex::new(ScanShare::default()),
             scan_members: Mutex::new(BTreeMap::new()),
             routes: Mutex::new(HashMap::new()),
@@ -2236,6 +2273,12 @@ impl MobileHost {
 
     /// Open one session lease (one RN manager) that is its own background
     /// scope: `session.dispose` releases its background leases.
+    /// Consumers polled by the pump, in order. Debug tests use it.
+    #[cfg(debug_assertions)]
+    pub fn route_turns(&self) -> Vec<String> {
+        lock(&self.inner.route_turns).clone()
+    }
+
     pub fn open_session(&self, owner: &str) -> Result<MobileSession, DesktopError> {
         self.open_session_in(owner, None, Arc::clone(&self.inner.wake))
     }

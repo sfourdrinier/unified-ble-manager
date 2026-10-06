@@ -188,6 +188,83 @@ async fn failed_ingress_worker_closes_admission_and_retains_its_cleanup_result()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_busy_consumer_does_not_keep_the_other_unpolled() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let first = host.open_session("first").expect("first session");
+    let second = host.open_session("second").expect("second session");
+    connect(&first, "connect-first").await;
+    ok(&call(
+        &first,
+        "gatt.discover",
+        &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "discover-first"}).to_string(),
+    )
+    .await);
+    connect(&second, "connect-second").await;
+    ok(&call(
+        &second,
+        "gatt.discover",
+        &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "discover-second"}).to_string(),
+    )
+    .await);
+    for (session, consumer, operation) in [
+        (&first, "first", "sub-first"),
+        (&second, "second", "sub-second"),
+    ] {
+        ok(&call(
+            session,
+            "gatt.subscribe",
+            &json!({"peerId": POLAR, "selector": selector(), "consumer": consumer,
+                "deliveryMode": "require-notification", "operationId": operation})
+            .to_string(),
+        )
+        .await);
+    }
+    let epoch = enable_epoch(&radio);
+    const BURST: u8 = 8;
+    for sequence in 0..BURST {
+        host.ingest(hr_value(&[sequence], epoch));
+    }
+    let first_records = drain_until(&first, |records| {
+        of_type(records, "value").len() == BURST as usize
+    })
+    .await;
+    let second_records = drain_until(&second, |records| {
+        of_type(records, "value").len() == BURST as usize
+    })
+    .await;
+    let values = |records: &[Value]| -> Vec<String> {
+        of_type(records, "value")
+            .into_iter()
+            .map(|record| record["valueB64"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(values(&first_records), values(&second_records));
+    assert!(
+        of_type(&first_records, "stream-end").is_empty()
+            && of_type(&second_records, "stream-end").is_empty(),
+        "neither consumer overflows while the other is drained"
+    );
+    let turns = host.route_turns();
+    let mut first_polls = 0usize;
+    let mut second_polled_during_backlog = false;
+    for consumer in &turns {
+        match consumer.as_str() {
+            "first" => first_polls += 1,
+            "second" if first_polls < BURST as usize => second_polled_during_backlog = true,
+            _ => {}
+        }
+    }
+    assert!(
+        second_polled_during_backlog,
+        "second consumer was not polled until the first backlog finished: {turns:?}"
+    );
+    ok(&call(&first, "session.dispose", "{}").await);
+    ok(&call(&second, "session.dispose", "{}").await);
+    host.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continuation_quiesce_seals_real_notification_intake_for_handoff() {
     let radio = Scripted::polar();
     let (host, wakes) = open(&radio, MobilePlatform::Android).await;

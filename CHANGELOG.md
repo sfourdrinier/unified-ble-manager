@@ -95,10 +95,12 @@ All notable changes to `unified-ble-manager` are documented here.
   SQLite commit, so writing the whole queued scope first held the other
   peer's control events for the entire backlog. On the Windows CI runner
   that drain took 13.6s and the recording setup, whose deadline is 20s,
-  timed out. Values that arrived before a lifecycle transition are still
-  drained completely, ahead of the transition. The sustained two-peer
-  test again waits for those control drains before acknowledging setup.
-  The desktop Node-API digest is unchanged.
+  timed out. A scope with several consumers rotates the route that filled
+  the budget, so one consumer's backlog cannot keep the others unpolled.
+  Values that arrived before a lifecycle transition are still drained
+  completely, ahead of the transition. The sustained two-peer test again
+  waits for those control drains before acknowledging setup. The desktop
+  Node-API digest is unchanged.
 
 ## [5.0.0-rc.20] - 2026-10-05
 

@@ -371,16 +371,22 @@ async function main() {
     } catch (error) {
       disconnectError = error && error.message ? error.message : String(error)
     }
-    state.peerId = null
+    const disconnectState = released && released.state ? released.state : null
+    // Cleanup retries whatever did not release. Clearing the handle first
+    // leaves the link or the central up for the next session.
+    if (disconnectState === 'released') state.peerId = null
     let closed
     let closeError = null
-    try {
-      closed = await state.central.close()
-    } catch (error) {
-      closeError = error && error.message ? error.message : String(error)
+    if (disconnectState !== 'released') {
+      closeError = 'not attempted until disconnect releases'
+    } else {
+      try {
+        closed = await state.central.close()
+      } catch (error) {
+        closeError = error && error.message ? error.message : String(error)
+      }
+      if (closed && closed.state === 'released') state.central = null
     }
-    state.central = null
-    const disconnectState = released && released.state ? released.state : null
     const closeState = closed && closed.state ? closed.state : null
     const ok = disconnectState === 'released' && closeState === 'released'
 
