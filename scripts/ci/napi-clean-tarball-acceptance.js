@@ -63,10 +63,14 @@ function fail(message) {
 }
 
 function parseArguments(argv) {
-  const options = { pm: 'npm', probe: 'identity', negative: false, tarball: null, receipt: null }
+  const options = { pm: 'npm', probe: 'identity', negative: false, prepareCache: false, tarball: null, receipt: null }
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     const value = argv[index + 1]
+    if (argument === '--prepare-cache') {
+      options.prepareCache = true
+      continue
+    }
     if (argument === '--negative') {
       options.negative = true
       continue
@@ -118,7 +122,7 @@ function cleanConsumerPackageJson() {
   return { name: 'ubm-napi-acceptance-consumer', private: true, version: '0.0.0', packageManager }
 }
 
-function install(tarball, pm) {
+function install(tarball, pm, offline = true) {
   const consumer = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-napi-acceptance-consumer-')))
   fs.writeFileSync(path.join(consumer, 'package.json'), JSON.stringify(cleanConsumerPackageJson(), null, 2))
   const args =
@@ -130,15 +134,15 @@ function install(tarball, pm) {
           '--omit=peer',
           '--no-audit',
           '--no-fund',
-          '--offline',
+          ...(offline ? ['--offline'] : []),
           tarball
         ]
-      : ['add', '--ignore-scripts', '--offline', tarball]
+      : ['add', '--ignore-scripts', ...(offline ? ['--offline'] : []), tarball]
   const binary = process.platform === 'win32' ? `${pm}.cmd` : pm
   const result = run(binary, args, { cwd: consumer, env: cleanEnvironment(), shell: process.platform === 'win32' })
   if (result.status !== 0) {
     fail(
-      `${pm} ${args.join(' ')} exited ${result.status} (offline install from the local cache)\n${result.stderr.slice(-3000)}`
+      `${pm} ${args.join(' ')} exited ${result.status} (${offline ? 'offline acceptance' : 'cache preparation'})\nstdout:\n${result.stdout.slice(-3000)}\nstderr:\n${result.stderr.slice(-3000)}`
     )
   }
   const packageRoot = path.join(consumer, 'node_modules', 'unified-ble-manager')
@@ -292,6 +296,13 @@ function main(argv) {
   const facts = hostFacts()
   const tarballSha256 = sha256File(tarball)
   console.error(`napi-clean-tarball-acceptance: tarball ${tarball} sha256 ${tarballSha256}`)
+  if (options.prepareCache) {
+    // A frozen root install downloads contents but need not cache semver metadata.
+    // Resolve the exact candidate in a disposable consumer; no scripts or probes.
+    const { consumer } = install(tarball, options.pm, false)
+    fs.rmSync(consumer, { recursive: true, force: true })
+    return
+  }
   const { consumer, packageRoot } = install(tarball, options.pm)
   const { addon, sidecar } = prebuildPaths(packageRoot)
   if (!fs.existsSync(addon)) fail(`installed package has no prebuild for ${process.platform}-${process.arch}: ${addon}`)
@@ -418,4 +429,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { cleanConsumerPackageJson, parseArguments, pathWithoutRust }
+module.exports = { cleanConsumerPackageJson, parseArguments, pathWithoutRust, install }

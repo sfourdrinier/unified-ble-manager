@@ -742,6 +742,14 @@ jobs:
           echo "PUBLISH_TARBALL=.release-package/canonical.tgz" >> "$GITHUB_ENV"
           # Stage generated artifacts only; do not overwrite checked-out sources.
           tar -xzf "$UBM_PACKED_TARBALL" --strip-components=1 package/lib package/ios/RustCore package/native/desktop-core/prebuilds
+      - name: Install pinned Rust
+        run: cargo --version
+      - name: Install Tauri Linux system dependencies for packed consumer
+        run: bash scripts/ci/install-linux-native-system-dependencies.sh tauri
+      - name: Build NAPI dispatch addon (R03 converged path)
+        run: node scripts/ci/build-napi-addon.js
+      - name: Prepare offline desktop consumer cache
+        run: node scripts/ci/napi-clean-tarball-acceptance.js --tarball "${PUBLISH_TARBALL}" --pm pnpm --prepare-cache
       - name: Clean-tarball desktop-core acceptance (linux-x64, identity + negative legs)
         run: node scripts/ci/napi-clean-tarball-acceptance.js --tarball "${PUBLISH_TARBALL}" --pm pnpm --negative --receipt .release-package/napi-acceptance-linux-x64.json
       - name: Record passing source and artifact receipt

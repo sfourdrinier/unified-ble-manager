@@ -182,6 +182,13 @@ function buildDraft(production) {
     step('Compile exact packed Expo TV ARM32 consumer')
   ])
   draft.jobs['packed-desktop'] = packedJob('Exact candidate desktop negative acceptance', [
+    step('Install pinned Rust'),
+    step('Install Tauri Linux system dependencies for packed consumer'),
+    step('Build NAPI dispatch addon (R03 converged path)'),
+    {
+      name: 'Prepare offline desktop consumer cache',
+      run: 'node scripts/ci/napi-clean-tarball-acceptance.js --tarball "${PUBLISH_TARBALL}" --pm pnpm --prepare-cache'
+    },
     step('Clean-tarball desktop-core acceptance (linux-x64, identity + negative legs)')
   ])
   draft.jobs.results = {

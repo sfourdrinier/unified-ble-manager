@@ -60,6 +60,16 @@ binaries, build `target` trees or credentials. Keys include runner OS/CPU,
 lockfiles, pinned Rust and Gradle configuration. The default `cold_cache=true`
 skips caching entirely in the manual draft. Production enables download caches;
 warm cache is not evidence reuse.
+The isolated desktop acceptance lane prepares dependency contents **and semver
+registry metadata** by installing the sealed candidate online with scripts
+disabled, without loading its addon. All actual identity/negative probes then
+install fresh consumers offline with Rust removed from their PATH. The lane
+also builds its checkout-only debug addon fixture; artifacts from the separate
+source-test runner are not implicitly shared. Failed installs report both
+stdout and stderr. The initial rc.20 publisher failed before addon loading with
+missing offline `@babel/runtime` resolution metadata; that failed run is not
+publication evidence. The owner's one-time replacement authorization for its
+unpublished tag is recorded in `RELEASE.md`; other tags remain immutable.
 Gradle compilation-result caching and trusted main-CI artifact reuse are future
 work; neither is claimed implemented here.
 
