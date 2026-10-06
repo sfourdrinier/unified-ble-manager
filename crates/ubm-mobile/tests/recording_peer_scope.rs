@@ -391,6 +391,18 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
     });
+    // The setup acknowledgement has a 20s ceiling, the contract maximum.
+    // It must follow the source telemetry and must not also wait out the
+    // other peer's drain. A loaded Windows runner spent 13.6s on one of
+    // those drains, and gating the acknowledgement on all of them made
+    // setup step 0 time out. The other peer still has to make progress
+    // while the telemetry is being ingested.
+    let completion_host = host.clone();
+    let completion = tokio::spawn(async move {
+        producer.await.unwrap();
+        commit_response(&completion_host, epoch);
+        execution.await.unwrap().unwrap()
+    });
     let mut worst = std::time::Duration::ZERO;
     for _ in 0..5 {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -425,9 +437,7 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
     })
     .await;
     worst = worst.max(started.elapsed());
-    producer.await.unwrap();
-    commit_response(&host, epoch);
-    execution.await.unwrap().unwrap();
+    completion.await.unwrap();
     let status = engine.recording_status("fairness").unwrap();
     let counters = ok(&call(&other, "counters.describe", "{}").await);
     assert_eq!(status["lostRecords"], 0);
