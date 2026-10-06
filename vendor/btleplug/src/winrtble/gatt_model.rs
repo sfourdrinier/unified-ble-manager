@@ -188,9 +188,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        att_error_metadata, characteristic_discovery, descriptor_uuid_query, gatt_status_code,
-        gatt_status_name, hresult_code, index_unique, require_gatt_success, service_data_section,
-        windows_reserves_service, CharacteristicDiscovery, DescriptorQuery,
+        CharacteristicDiscovery, DescriptorQuery, att_error_metadata, characteristic_discovery,
+        descriptor_uuid_query, gatt_status_code, gatt_status_name, hresult_code, index_unique,
+        require_gatt_success, service_data_section, windows_reserves_service,
     };
 
     #[test]
@@ -244,7 +244,9 @@ mod tests {
         assert!(!windows_reserves_service(short(0x180D)));
         assert!(!windows_reserves_service(short(0x180F)));
         assert!(!windows_reserves_service(short(0x180A)));
-        assert!(!windows_reserves_service(0xfb005c80_02e7_f387_1cad_8acd2d8df0c8));
+        assert!(!windows_reserves_service(
+            0xfb005c80_02e7_f387_1cad_8acd2d8df0c8
+        ));
     }
 
     /// Windows keeps some services (Microphone Control, and the same class

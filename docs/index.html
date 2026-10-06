@@ -1837,8 +1837,22 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
               This is not automatic post-loss reconnect. Linux implements initial acquisition with maintained daemon
               <code>5.87-ubm.5</code>'s optional observer: a fresh connectable LE advertisement is required before
               token-bound connection admission. Older daemons report <code>capability.unsupported</code>; merged stock
-              discovery signals and cached records do not replace that mechanism. See
-              <a href="NODE.md"><code>NODE.md</code></a> for deployment prerequisites and exact host boundaries.
+              discovery signals and cached records do not replace that mechanism. On source <code>5.87-ubm.6</code>,
+              another process's finished GATT read or write does not keep the ACL when this process is the only
+              application owner. An in-flight read or write, StartNotify, Acquire, or an explicit Connect or Pair still
+              does. Replacing the running <code>5.87-ubm.4</code> daemon with <code>5.87-ubm.6</code> changed the glibc
+              Linux H10 disconnect from <code>lease-released-protected</code> to
+              <code>lease-released-indeterminate</code> and left the link up: profile probing arms auto-connect, and
+              that bookkeeping was recorded as an unknown holder. Source <code>5.87-ubm.7</code> does not treat that
+              bookkeeping as a hold on an exclusive link this process created, and that exclusive release stops kernel
+              auto-connect for an untrusted device, the same gate <code>Device1.Disconnect</code> uses. Installing it
+              changed the glibc Linux H10 disconnect to <code>lease-released-protected</code> and left the link up: the
+              controller had already initiated the bonded link, and the lease adopted it as borrowed. Source
+              <code>5.87-ubm.8</code> releases a locally initiated link when no other application hold remains. A link
+              this controller did not initiate stays protected. The same in-flight and explicit holds still do.
+              Installing <code>5.87-ubm.8</code>, the glibc Linux H10 session reported <code>released</code> and the
+              link was down. See <a href="NODE.md"><code>NODE.md</code></a> for deployment prerequisites and exact host
+              boundaries.
             </p>
             <p>
               CoreBluetooth does not expose unrestricted system bond inventory. Web Bluetooth exposes origin-authorized
