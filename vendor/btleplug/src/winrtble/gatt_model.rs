@@ -20,6 +20,85 @@ pub fn gatt_status_name(raw: i32) -> Option<&'static str> {
     }
 }
 
+/// What one characteristic-discovery status does to the rest of discovery.
+///
+/// `AccessDenied` (3) with no ATT error byte is Windows refusing the
+/// service locally. The peer is not asked. Microphone Control and the
+/// other services Windows keeps for itself answer this way, after the
+/// services around them were read on the wire. That service is left out
+/// and discovery continues. A peer refusal is a `ProtocolError`, or an
+/// `AccessDenied` that still carries an ATT byte, and that still fails
+/// discovery. `Unreachable` and every other non-success fail it too.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CharacteristicDiscovery {
+    Continue,
+    OperatingSystemDenied,
+    Failed,
+}
+
+/// Windows keeps these 16-bit services for the system (HID, LE Audio, and
+/// the Ranging service on this host). Asking `GetCharacteristics` for one
+/// of them returns `AccessDenied` with no ATT request. Discovery leaves
+/// them out before that call. Heart Rate, Battery, Device Information, and
+/// vendor 128-bit services are not in this set.
+pub fn windows_reserves_service(uuid: u128) -> bool {
+    const BASE_LOW_96: u128 = 0x0000_1000_8000_0080_5f9b_34fb;
+    if uuid & ((1_u128 << 96) - 1) != BASE_LOW_96 || (uuid >> 112) != 0 {
+        return false;
+    }
+    matches!(
+        ((uuid >> 96) & 0xffff) as u16,
+        0x1812 | // Human Interface Device
+        0x1843 | 0x1844 | 0x1845 | 0x1846 | // Audio Input, Volume, Volume Offset, Coordinated Set
+        0x1848 | 0x1849 | // Media Control, Generic Media Control
+        0x184D | 0x184E | 0x184F | // Microphone, Audio Stream, Broadcast Audio Scan
+        0x1850 | 0x1851 | 0x1852 | 0x1853 | 0x1854 | 0x1855 | // Published Audio through Telephony and Media Audio
+        0x1858 | // Gaming Audio
+        0x185B | // Ranging
+        0x185C // HID over ISO
+    )
+}
+
+/// Decide one characteristic query. `status` is the raw
+/// `GattCommunicationStatus`. `att_error` is the result's protocol byte,
+/// when the result had one.
+pub fn characteristic_discovery(status: i32, att_error: Option<u8>) -> CharacteristicDiscovery {
+    match (status, att_error) {
+        (0, _) => CharacteristicDiscovery::Continue,
+        (3, None) => CharacteristicDiscovery::OperatingSystemDenied,
+        _ => CharacteristicDiscovery::Failed,
+    }
+}
+
+/// What a query for one descriptor UUID does.
+///
+/// `GetDescriptors` on Windows also reads Characteristic User Description.
+/// When that read returns Insufficient Encryption, the next connection's
+/// `GetDescriptors` waits inside the OS and sends no ATT. Discovery asks
+/// only for the Client Characteristic Configuration descriptor, which is
+/// the descriptor subscribe writes. Success uses the returned list, which
+/// may be empty. `ProtocolError` with ATT Attribute Not Found (`0x0A`)
+/// means this characteristic has no descriptor of that UUID. Any other
+/// non-success fails discovery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DescriptorQuery {
+    Listed,
+    Absent,
+    Failed,
+}
+
+/// Client Characteristic Configuration, the only descriptor discovery asks
+/// Windows for. `0x2901` (Characteristic User Description) is not queried.
+pub const CLIENT_CHARACTERISTIC_CONFIGURATION: u128 = 0x0000_2902_0000_1000_8000_0080_5f9b_34fb;
+
+pub fn descriptor_uuid_query(status: i32, att_error: Option<u8>) -> DescriptorQuery {
+    match (status, att_error) {
+        (0, _) => DescriptorQuery::Listed,
+        (2, Some(0x0a)) => DescriptorQuery::Absent,
+        _ => DescriptorQuery::Failed,
+    }
+}
+
 /// `Ok` for `Success`. Any other status is the failure of `stage`, with the
 /// status named: WinRT discovery never turns a failed query into an empty
 /// list.
@@ -109,8 +188,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        att_error_metadata, gatt_status_code, gatt_status_name, hresult_code, index_unique,
-        require_gatt_success, service_data_section,
+        att_error_metadata, characteristic_discovery, descriptor_uuid_query, gatt_status_code,
+        gatt_status_name, hresult_code, index_unique, require_gatt_success, service_data_section,
+        windows_reserves_service, CharacteristicDiscovery, DescriptorQuery,
     };
 
     #[test]
@@ -149,6 +229,76 @@ mod tests {
     fn a_repeated_handle_is_refused_not_overwritten() {
         let repeated = index_unique([((0x2a37_u16, 0x000e_u64), 1), ((0x2a37_u16, 0x000e_u64), 2)]);
         assert_eq!(repeated, Err((0x2a37, 0x000e)));
+    }
+
+    /// Windows keeps HID and the LE Audio services. Heart Rate, Battery,
+    /// and a 128-bit vendor service stay in discovery.
+    #[test]
+    fn windows_reserved_services_are_the_os_audio_and_hid_set() {
+        let base = 0x0000_1000_8000_0080_5f9b_34fb_u128;
+        let short = |id: u16| -> u128 { (u128::from(id) << 96) | base };
+        assert!(windows_reserves_service(short(0x184D)));
+        assert!(windows_reserves_service(short(0x1844)));
+        assert!(windows_reserves_service(short(0x1812)));
+        assert!(windows_reserves_service(short(0x185B)));
+        assert!(!windows_reserves_service(short(0x180D)));
+        assert!(!windows_reserves_service(short(0x180F)));
+        assert!(!windows_reserves_service(short(0x180A)));
+        assert!(!windows_reserves_service(0xfb005c80_02e7_f387_1cad_8acd2d8df0c8));
+    }
+
+    /// Windows keeps some services (Microphone Control, and the same class
+    /// as HID) and answers `AccessDenied` without an ATT byte. Discovery
+    /// leaves those out. A protocol error, or an access denial that still
+    /// carries an ATT byte, still fails the whole discovery.
+    #[test]
+    fn an_os_denied_service_is_left_out_and_a_peer_error_still_fails() {
+        assert_eq!(
+            characteristic_discovery(0, None),
+            CharacteristicDiscovery::Continue
+        );
+        assert_eq!(
+            characteristic_discovery(3, None),
+            CharacteristicDiscovery::OperatingSystemDenied
+        );
+        assert_eq!(
+            characteristic_discovery(3, Some(5)),
+            CharacteristicDiscovery::Failed
+        );
+        assert_eq!(
+            characteristic_discovery(2, Some(5)),
+            CharacteristicDiscovery::Failed
+        );
+        assert_eq!(
+            characteristic_discovery(2, None),
+            CharacteristicDiscovery::Failed
+        );
+        assert_eq!(
+            characteristic_discovery(1, None),
+            CharacteristicDiscovery::Failed
+        );
+    }
+
+    /// A missing Client Characteristic Configuration descriptor is an empty
+    /// list. Insufficient Encryption and every other refusal still fail.
+    #[test]
+    fn a_missing_descriptor_uuid_is_empty_and_a_refusal_still_fails() {
+        assert_eq!(
+            super::CLIENT_CHARACTERISTIC_CONFIGURATION,
+            0x0000_2902_0000_1000_8000_0080_5f9b_34fb
+        );
+        assert_eq!(descriptor_uuid_query(0, None), DescriptorQuery::Listed);
+        assert_eq!(
+            descriptor_uuid_query(2, Some(0x0a)),
+            DescriptorQuery::Absent
+        );
+        assert_eq!(
+            descriptor_uuid_query(2, Some(0x0f)),
+            DescriptorQuery::Failed
+        );
+        assert_eq!(descriptor_uuid_query(2, None), DescriptorQuery::Failed);
+        assert_eq!(descriptor_uuid_query(1, None), DescriptorQuery::Failed);
+        assert_eq!(descriptor_uuid_query(3, None), DescriptorQuery::Failed);
     }
 
     /// UBM patch #20: the ATT error byte rides the platform detail as

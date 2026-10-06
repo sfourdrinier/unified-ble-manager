@@ -11,6 +11,9 @@
 //
 // Copyright (c) 2014 The Rust Project Developers
 
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
 use crate::{Error, Result, api::ScanFilter, winrtble::utils};
 use windows::{Devices::Bluetooth::Advertisement::*, Foundation::TypedEventHandler, core::Ref};
 
@@ -98,28 +101,25 @@ impl BLEWatcher {
 
     /// Prepare the watcher for one scan.
     ///
-    /// UBM patch (UBM_PATCHES.md #11): passive scanning without extended
-    /// advertisements, the watcher defaults the legacy WinRT addon scanned
-    /// with (`winrt-boundary.inc`). Upstream forced `Active` (a scan request
-    /// to every advertiser: more radio traffic and power) and
-    /// `AllowExtendedAdvertisements(true)` (its failure ignored). Extended
-    /// advertisements stay at the watcher default (off); nothing sets them.
+    /// UBM patch (UBM_PATCHES.md #11): active scanning, without extended
+    /// advertisements. BlueZ and CoreBluetooth both return the complete
+    /// local name from the scan response. A passive WinRT watcher never
+    /// sends `SCAN_REQ`, so that name is absent and a name-selected peer
+    /// cannot be chosen. Extended advertisements stay at the watcher
+    /// default (off); nothing sets them.
     ///
-    /// UBM patch (UBM_PATCHES.md #16): the caller's service UUIDs go on the
-    /// OS advertisement filter, as the legacy addon appended them
-    /// (`winrt-boundary.inc`: `AdvertisementFilter().Advertisement()
-    /// .ServiceUuids().Append`), so Windows filters in the controller path.
-    /// Upstream cleared the OS filter and filtered only in software; the
-    /// software predicate in the handler stays the final gate.
-    fn configure_for_scan(&self, services: &[windows::core::GUID]) -> Result<()> {
+    /// UBM patch (UBM_PATCHES.md #16): the OS service-UUID filter stays
+    /// empty. A scan response carries the complete local name and does not
+    /// repeat the service UUIDs. Windows delivers that packet to `Received`
+    /// only when `ServiceUuids` is empty; a non-empty filter keeps the
+    /// advertising packet (empty name) and drops the scan response. BlueZ
+    /// and CoreBluetooth both surface the name, so the OS filter cannot be
+    /// used here. The caller's services are matched in software instead.
+    fn configure_for_scan(&self, _services: &[windows::core::GUID]) -> Result<()> {
         let ad = self.watcher.AdvertisementFilter()?.Advertisement()?;
-        let uuids = ad.ServiceUuids()?;
-        uuids.Clear()?;
-        for service in services {
-            uuids.Append(*service)?;
-        }
+        ad.ServiceUuids()?.Clear()?;
         self.watcher
-            .SetScanningMode(BluetoothLEScanningMode::Passive)?;
+            .SetScanningMode(BluetoothLEScanningMode::Active)?;
         Ok(())
     }
 
@@ -128,6 +128,10 @@ impl BLEWatcher {
         // Pre-convert the filter UUIDs once so the handler closure is cheap.
         let filter_guids: Vec<windows::core::GUID> = services.iter().map(utils::to_guid).collect();
         self.configure_for_scan(&filter_guids)?;
+        // Addresses whose advertising packet carried the service filter.
+        // A scan response does not repeat those UUIDs; it still belongs to
+        // that peer and is where the complete local name usually lives.
+        let admitted: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
 
         let handler: TypedEventHandler<
             BluetoothLEAdvertisementWatcher,
@@ -135,20 +139,10 @@ impl BLEWatcher {
         > = TypedEventHandler::new(
             move |_sender, args: Ref<BluetoothLEAdvertisementReceivedEventArgs>| {
                 if let Ok(args) = args.ok() {
-                    // Software service-UUID filter.
-                    if !filter_guids.is_empty() {
-                        if let Ok(ad) = args.Advertisement() {
-                            if let Ok(ad_uuids) = ad.ServiceUuids() {
-                                let count = ad_uuids.Size().unwrap_or(0);
-                                let advertised: Vec<windows::core::GUID> =
-                                    (0..count).filter_map(|i| ad_uuids.GetAt(i).ok()).collect();
-                                let all_present =
-                                    filter_guids.iter().all(|g| advertised.contains(g));
-                                if !all_present {
-                                    return Ok(());
-                                }
-                            }
-                        }
+                    if !filter_guids.is_empty()
+                        && !service_filter_keeps(&args, &filter_guids, &admitted)
+                    {
+                        return Ok(());
                     }
                     on_received(args)?;
                 }
@@ -172,19 +166,84 @@ impl BLEWatcher {
     }
 }
 
+/// Software service filter for one received event.
+///
+/// An advertising packet that carries every requested service admits its
+/// address. A later scan response from that address is kept even though it
+/// has no service UUIDs, because that is the packet that carries the local
+/// name. Anything else that lacks the services is dropped. An event whose
+/// service list cannot be read is kept, as the previous predicate did.
+fn service_filter_keeps(
+    args: &BluetoothLEAdvertisementReceivedEventArgs,
+    required: &[windows::core::GUID],
+    admitted: &Mutex<HashSet<u64>>,
+) -> bool {
+    match advertised_services(args, required) {
+        ServiceMatch::Present => {
+            if let Ok(address) = args.BluetoothAddress()
+                && let Ok(mut admitted) = admitted.lock()
+            {
+                admitted.insert(address);
+            }
+            true
+        }
+        ServiceMatch::Unreadable => true,
+        ServiceMatch::Absent => {
+            let scan_response = args.AdvertisementType().ok()
+                == Some(BluetoothLEAdvertisementType::ScanResponse);
+            if !scan_response {
+                return false;
+            }
+            let Ok(address) = args.BluetoothAddress() else {
+                return false;
+            };
+            admitted
+                .lock()
+                .map(|admitted| admitted.contains(&address))
+                .unwrap_or(false)
+        }
+    }
+}
+
+enum ServiceMatch {
+    Present,
+    Absent,
+    Unreadable,
+}
+
+fn advertised_services(
+    args: &BluetoothLEAdvertisementReceivedEventArgs,
+    required: &[windows::core::GUID],
+) -> ServiceMatch {
+    let Ok(advertisement) = args.Advertisement() else {
+        return ServiceMatch::Unreadable;
+    };
+    let Ok(uuids) = advertisement.ServiceUuids() else {
+        return ServiceMatch::Unreadable;
+    };
+    let count = uuids.Size().unwrap_or(0);
+    let advertised: Vec<windows::core::GUID> = (0..count).filter_map(|index| uuids.GetAt(index).ok()).collect();
+    if required.iter().all(|service| advertised.contains(service)) {
+        ServiceMatch::Present
+    } else {
+        ServiceMatch::Absent
+    }
+}
+
 #[cfg(test)]
 mod ubm_scan_mode_tests {
     use super::*;
 
-    /// UBM patch #11: every scan runs passive without extended
-    /// advertisements, as the legacy WinRT addon did.
+    /// UBM patch #11: every scan requests scan responses, and extended
+    /// advertisements stay off. The complete local name of a legacy
+    /// advertiser arrives in the scan response.
     #[test]
-    fn a_scan_is_passive_without_extended_advertisements() {
+    fn a_scan_is_active_without_extended_advertisements() {
         let watcher = BLEWatcher::new().expect("watcher");
         watcher.configure_for_scan(&[]).expect("configure");
         assert_eq!(
             watcher.watcher.ScanningMode().expect("mode"),
-            BluetoothLEScanningMode::Passive
+            BluetoothLEScanningMode::Active
         );
         assert!(
             !watcher
@@ -194,10 +253,11 @@ mod ubm_scan_mode_tests {
         );
     }
 
-    /// UBM patch #16: the caller's service UUIDs reach the OS filter, as the
-    /// legacy addon set them, and a later scan replaces them.
+    /// UBM patch #16: requested service UUIDs stay off the OS filter. A
+    /// non-empty OS filter drops scan responses, and that is the packet
+    /// that carries the local name.
     #[test]
-    fn the_service_filter_reaches_the_os_watcher() {
+    fn the_service_filter_stays_off_the_os_watcher() {
         let heart_rate = utils::to_guid(&uuid::Uuid::from_u128(
             0x0000180d_0000_1000_8000_00805f9b34fb,
         ));
@@ -219,11 +279,14 @@ mod ubm_scan_mode_tests {
         watcher
             .configure_for_scan(&[heart_rate, battery])
             .expect("configure");
-        assert_eq!(read_back(&watcher), vec![heart_rate, battery]);
+        assert!(
+            read_back(&watcher).is_empty(),
+            "a service UUID filter drops scan responses, so it stays off the OS watcher"
+        );
         watcher.configure_for_scan(&[]).expect("configure");
         assert!(
             read_back(&watcher).is_empty(),
-            "a later scan replaces the filter"
+            "a later scan leaves the OS filter empty"
         );
     }
 }

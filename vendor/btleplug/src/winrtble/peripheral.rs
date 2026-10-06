@@ -15,7 +15,7 @@ use super::{
     advertisement_data_type,
     ble::characteristic::{BLECharacteristic, NotifyEventHandler},
     ble::descriptor::{AttributeKey, BLEDescriptor},
-    ble::device::BLEDevice,
+    ble::device::{BLEDevice, CharacteristicList},
     ble::service::BLEService,
     gatt_model::{self, index_unique},
     utils,
@@ -727,9 +727,11 @@ impl ApiPeripheral for Peripheral {
     /// every service, characteristic and descriptor is queried `Uncached`
     /// and kept as its own instance keyed by (UUID, `AttributeHandle`). The
     /// discovered database REPLACES the previous one, so a discovery after
-    /// `GattServicesChanged` drops removed and changed attributes. Any
-    /// failed query fails the discovery (naming the attribute and the
-    /// status) and leaves the previous table in place.
+    /// `GattServicesChanged` drops removed and changed attributes. A query
+    /// the peer or the link refuses fails the discovery (naming the
+    /// attribute and the status) and leaves the previous table in place.
+    /// A service Windows itself will not open is left out, and discovery
+    /// of the other services continues.
     async fn discover_services(&self) -> Result<()> {
         let mut device = self.shared.device.lock().await;
         let Some(device) = device.as_mut() else {
@@ -738,7 +740,9 @@ impl ApiPeripheral for Peripheral {
         let gatt_services = device.discover_services().await?;
         let mut discovered = Vec::with_capacity(gatt_services.len());
         for service in gatt_services {
-            discovered.push(discover_service(service).await?);
+            if let Some(service) = discover_service(service).await? {
+                discovered.push(service);
+            }
         }
         let table = index_unique(
             discovered
@@ -887,14 +891,28 @@ fn not_found(kind: &str, uuid: Uuid, instance: u64, operation: &str) -> Error {
 /// UBM patch (`winrt-attribute-instances`, `winrt-uncached-discovery`): one
 /// service with every characteristic and descriptor it lists, each kept as
 /// its own instance. A failed query names the service it belongs to.
-async fn discover_service(service: GattDeviceService) -> Result<BLEService> {
+/// `None` is a service Windows refused locally; it is not part of the table.
+async fn discover_service(service: GattDeviceService) -> Result<Option<BLEService>> {
     let uuid = utils::to_uuid(&service.Uuid()?);
     let instance = u64::from(service.AttributeHandle()?);
     let context =
         |error: Error| Error::Other(format!("service {uuid} (handle {instance}): {error}").into());
-    let characteristics = BLEDevice::get_characteristics(&service)
+    // Ask nothing of a service Windows keeps. The call returns AccessDenied
+    // and sends no ATT request.
+    if gatt_model::windows_reserves_service(uuid.as_u128()) {
+        trace!("service {uuid} (handle {instance}) is reserved by Windows");
+        return Ok(None);
+    }
+    let characteristics = match BLEDevice::get_characteristics(&service)
         .await
-        .map_err(context)?;
+        .map_err(context)?
+    {
+        CharacteristicList::OperatingSystemDenied => {
+            trace!("service {uuid} (handle {instance}) is reserved by Windows");
+            return Ok(None);
+        }
+        CharacteristicList::Ready(characteristics) => characteristics,
+    };
     let characteristics =
         futures::future::try_join_all(characteristics.into_iter().map(discover_characteristic))
             .await
@@ -909,11 +927,11 @@ async fn discover_service(service: GattDeviceService) -> Result<BLEService> {
             format!("characteristic {characteristic} at handle {handle} was listed twice").into(),
         ))
     })?;
-    Ok(BLEService {
+    Ok(Some(BLEService {
         uuid,
         instance,
         characteristics,
-    })
+    }))
 }
 
 async fn discover_characteristic(characteristic: GattCharacteristic) -> Result<BLECharacteristic> {

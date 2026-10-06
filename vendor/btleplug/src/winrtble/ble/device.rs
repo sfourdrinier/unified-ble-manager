@@ -14,7 +14,10 @@
 use crate::{
     Error, Result,
     api::BDAddr,
-    winrtble::{gatt_model::require_gatt_success, utils},
+    winrtble::{
+        gatt_model::{self, require_gatt_success},
+        utils,
+    },
 };
 use log::{debug, trace};
 use windows::{
@@ -52,6 +55,15 @@ pub struct BLEDevice {
     connection_token: i64,
     pdu_change_token: i64,
     services: Vec<GattDeviceService>,
+}
+
+/// Outcome of one service's characteristic query.
+pub enum CharacteristicList {
+    /// The service listed its characteristics.
+    Ready(Vec<GattCharacteristic>),
+    /// Windows refused the service and did not ask the peer. The service
+    /// stays out of the discovered table.
+    OperatingSystemDenied,
 }
 
 impl BLEDevice {
@@ -141,8 +153,26 @@ impl BLEDevice {
             return Ok(());
         }
 
-        let service_result = self.get_gatt_services(BluetoothCacheMode::Uncached).await?;
-        let status = service_result.Status().map_err(|_| Error::DeviceNotFound)?;
+        // WinRT tears down a link that no GattSession has asked to keep.
+        // GetGattServicesAsync is what brings the link up, and without a
+        // hold it answers Unreachable while the peripheral link flaps.
+        // BlueZ and CoreBluetooth keep the connection their connect call
+        // established. Hold this session first. Drop clears the hold, so a
+        // failed connect does not leave the radio connected.
+        self.gatt_session
+            .SetMaintainConnection(true)
+            .map_err(Error::from)?;
+        let mut service_result = self.get_gatt_services(BluetoothCacheMode::Uncached).await?;
+        let mut status = service_result.Status().map_err(|_| Error::DeviceNotFound)?;
+        // The first query can answer Unreachable while the link is already
+        // up (the peripheral accepted the connection and a notification).
+        // One more uncached query on the held session sees that link. A
+        // second query while the link is still down can sit there until the
+        // caller gives up, so it runs only when the link is already up.
+        if status == GattCommunicationStatus::Unreachable && self.is_connected().await? {
+            service_result = self.get_gatt_services(BluetoothCacheMode::Uncached).await?;
+            status = service_result.Status().map_err(|_| Error::DeviceNotFound)?;
+        }
         // UBM patch (UBM_PATCHES.md #15): a device the connect could not
         // reach is the platform's answer (`gatt-status` `unreachable`), so
         // the host can tell a link that was not established from a refusal.
@@ -162,32 +192,51 @@ impl BLEDevice {
     /// UBM patch (`winrt-uncached-discovery`): always
     /// `BluetoothCacheMode::Uncached`, as the legacy addon
     /// (`winrt-boundary.inc` `Discover`). No fallback to the OS cache and no
-    /// timeout: a slow query is cancelled by its caller, and a failed one is
-    /// an error naming the status, never an empty list.
+    /// timeout: a slow query is cancelled by its caller. A peer error is
+    /// named and fails discovery. `AccessDenied` with no ATT byte is Windows
+    /// keeping the service (Microphone Control, HID, and the same class);
+    /// that service is left out instead of failing the services around it.
     pub async fn get_characteristics(
         service: &GattDeviceService,
-    ) -> Result<Vec<GattCharacteristic>> {
+    ) -> Result<CharacteristicList> {
         let result = service
             .GetCharacteristicsWithCacheModeAsync(BluetoothCacheMode::Uncached)?
             .await?;
-        discovery_status("characteristic discovery", result.Status())?;
-        let characteristics = result.Characteristics()?;
-        debug!("characteristics {:?}", characteristics.Size());
-        Ok(characteristics.into_iter().collect())
+        let status = result.Status()?;
+        let att_error = utils::protocol_att_error(result.ProtocolError());
+        match gatt_model::characteristic_discovery(status.0, att_error) {
+            gatt_model::CharacteristicDiscovery::Continue => {
+                let characteristics = result.Characteristics()?;
+                debug!("characteristics {:?}", characteristics.Size());
+                Ok(CharacteristicList::Ready(
+                    characteristics.into_iter().collect(),
+                ))
+            }
+            gatt_model::CharacteristicDiscovery::OperatingSystemDenied => {
+                Ok(CharacteristicList::OperatingSystemDenied)
+            }
+            gatt_model::CharacteristicDiscovery::Failed => Err(utils::gatt_status_error(
+                "characteristic discovery",
+                status,
+                att_error,
+            )),
+        }
     }
 
-    /// UBM patch (`winrt-uncached-discovery`): as
-    /// [`BLEDevice::get_characteristics`], for descriptors.
+    /// UBM patch (`winrt-uncached-discovery`): no WinRT descriptor query.
+    /// `GetDescriptors` and `GetDescriptorsForUuid` both read
+    /// Characteristic User Description when the characteristic has one.
+    /// The first read returns ATT Insufficient Encryption at once. Windows
+    /// remembers that and, on the next connection, waits to pair before it
+    /// sends the read. A host with no pairing UI waits there until the
+    /// process exits, so the services after that characteristic are never
+    /// discovered. Subscribe writes the Client Characteristic Configuration
+    /// descriptor through `GattCharacteristic`, which does not read the
+    /// user description. The descriptor list stays empty.
     pub async fn get_characteristic_descriptors(
-        characteristic: &GattCharacteristic,
+        _characteristic: &GattCharacteristic,
     ) -> Result<Vec<GattDescriptor>> {
-        let result = characteristic
-            .GetDescriptorsWithCacheModeAsync(BluetoothCacheMode::Uncached)?
-            .await?;
-        discovery_status("descriptor discovery", result.Status())?;
-        let descriptors = result.Descriptors()?;
-        debug!("descriptors {:?}", descriptors.Size());
-        Ok(descriptors.into_iter().collect())
+        Ok(Vec::new())
     }
 
     pub fn get_connection_parameters(&self) -> Result<crate::api::ConnectionParameters> {
@@ -262,6 +311,13 @@ impl BLEDevice {
 
 impl Drop for BLEDevice {
     fn drop(&mut self) {
+        // Release the hold taken in `connect` before the device is closed.
+        // The desktop session releases its own hold as well; this one must
+        // not keep the link up after disconnect.
+        if let Err(err) = self.gatt_session.SetMaintainConnection(false) {
+            debug!("Drop: clear maintain connection {:?}", err);
+        }
+
         let result = self
             .gatt_session
             .RemoveMaxPduSizeChanged(self.pdu_change_token);

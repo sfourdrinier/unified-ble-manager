@@ -55,6 +55,21 @@ All notable changes to `unified-ble-manager` are documented here.
   Installing `5.87-ubm.8` and repeating that H10 session reported disconnect
   `released` and close `released`, and the link was down. No platform evidence
   label changes.
+- WinRT discovery leaves the services Windows keeps for itself (HID, LE Audio,
+  Microphone Control, Ranging) out before `GetCharacteristics`, and it does not
+  call `GetDescriptors`. That call reads Characteristic User Description. When
+  the read returns Insufficient Encryption, the next connection waits to pair
+  before sending another read. With no pairing UI the wait does not finish, so
+  a following session never reaches battery, PMD, or heart rate. Subscribe
+  writes the Client Characteristic Configuration descriptor on the
+  characteristic. The OS advertisement service-UUID filter stays empty, and the
+  software filter still admits Heart Rate. Two back-to-back Bun 1.4.2 sessions
+  on the passed-through TP-Link adapter each connected only to local name
+  `SIM Polar H10 0001`, read battery 90 and manufacturer Polar Electro Oy,
+  completed the PMD get-settings indication and one 72 bpm notification
+  (flags `0x10`), ran `setEventWaker` with no wake failures, reported disconnect
+  `released` and close `released`, and left the link down. No platform evidence
+  label changes.
 
 ## [5.0.0-rc.20] - 2026-10-05
 

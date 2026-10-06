@@ -582,10 +582,27 @@ and connect confirmation ~898) queried every level `Uncached`, required
   time. Any non-success status is `Err("<stage> failed with
   GattCommunicationStatus <Name> (<raw>)")`; a status that cannot be read is
   an error too. `discover_services` returns the fresh service list.
+  One exception: services Windows keeps for itself (HID, the LE Audio
+  services, Microphone Control `0x184D`, Ranging) are left out before
+  `GetCharacteristics`. Asking that call returns `AccessDenied` with no
+  ATT Read By Type. An `AccessDenied` with no ATT protocol byte from any
+  other service is left out the same way.
+  Descriptor discovery does not call `GetDescriptors` or
+  `GetDescriptorsForUuid`. Both read Characteristic User Description
+  (`0x2901`) when the characteristic has one. On this simulator that read
+  returns ATT Insufficient Encryption (`0x0F`) at once and Windows does
+  not pair. The next connection then waits to pair before it sends the
+  read, and sends nothing until the process exits, so discovery never
+  reaches the characteristics after it. Subscribe writes the Client
+  Characteristic Configuration descriptor through `GattCharacteristic`,
+  which does not read the user description. The descriptor list is empty.
+  `ProtocolError`, `AccessDenied` that still carries an ATT byte, and
+  `Unreachable` still fail the whole discovery.
 - `peripheral.rs` `discover_services`: builds the complete table first
-  (any failed service/characteristic/descriptor query fails the whole
-  discovery, with the service and characteristic UUID and handle in the
-  message, leaving the previous table untouched), then REPLACES the table:
+  (a query the peer or the link refuses fails the whole discovery, with
+  the service and characteristic UUID and handle in the message, leaving
+  the previous table untouched; a service Windows itself will not open is
+  omitted and the other services continue), then REPLACES the table:
   services absent from the new database are removed, changed ones replaced.
   A live subscription whose (service, characteristic) UUID and handle
   survive is moved to the new GATT object (new registration made before the
@@ -597,9 +614,11 @@ and connect confirmation ~898) queried every level `Uncached`, required
 WinRT objects: type-check-only.
 
 **Windows host check still to run.** (1) A peripheral that answers a GATT
-query with an error (e.g. an encrypted service while unpaired):
-`discover_services` fails naming `AccessDenied`/`ProtocolError`, never
-succeeds with a missing service. (2) With a device whose firmware can change
+query with a protocol error (an encrypted service while unpaired reports
+`ProtocolError` and the ATT byte): `discover_services` fails naming that
+status, never succeeds with the service missing. A service Windows
+reserves (`AccessDenied`, no ATT byte) is absent from the table and the
+other services are still discovered. (2) With a device whose firmware can change
 its GATT table: discover, change the table, observe `ServicesChanged`,
 discover again: removed services are gone and new/changed ones appear with
 their new handles. (3) Discover twice while subscribed: notifications keep
@@ -714,18 +733,26 @@ watcher's defaults: passive, no extended advertisements
 advertiser, which costs radio traffic and power (finding 86, N7). No public
 scan option chooses active or passive, so the legacy default applies.
 
-**Change.** `BLEWatcher::configure_for_scan` (called by `start`) clears the
-OS service filter as before and sets `Passive`. Nothing sets extended
-advertisements, so they stay at the watcher default (off). As with the
-legacy addon, a peer's scan-response data (often its name) is not
-requested.
+**Change.** `BLEWatcher::configure_for_scan` (called by `start`) sets
+`Active` and does not enable extended advertisements, so those stay at the
+watcher default (off). Active scanning is required for the same discovery
+result as BlueZ and CoreBluetooth: a legacy advertiser puts its complete
+local name in the scan response (the Polar H10 simulator's advertisement
+is 9 bytes of flags plus service UUIDs, and the name is only in the scan
+response). A passive watcher never sends `SCAN_REQ`, so that name is
+absent and a scan that selects the peer by name cannot see it. The
+software service filter still requires every requested UUID on the
+advertising packet. A later scan response from an address that already
+matched is delivered too, because that packet does not repeat the UUIDs
+and it is the one that carries the name. The OS service-UUID filter stays
+empty so Windows delivers that scan response (patch 16).
 
 **Tests.** `winrtble::ble::watcher::ubm_scan_mode_tests`
 (`cargo test -p btleplug --lib` on Windows): a configured watcher reads back
-`Passive` and extended advertisements off. On macOS and Linux this is only
-compile-checked for the Windows targets. Physical check, not yet run: on
-Windows, a scan of a peer that answers scan requests shows no
-`SCAN_REQ` in an air trace.
+`Active` and extended advertisements off. On macOS and Linux this is only
+compile-checked for the Windows targets. Physical check: the Bun Polar H10
+session on Windows, which connects only when the local name is exactly
+`SIM Polar H10 0001`.
 
 ## Patch 12: `bluez-name-pattern`
 
@@ -858,7 +885,16 @@ on them (finding 113):
   - a connect whose `GetGattServicesAsync` answers `Unreachable` fails with
     that answer (`gatt-status` `unreachable`) instead of
     `Error::NotConnected`; the other connect statuses keep upstream's
-    mapping;
+    mapping. Before that query, `connect` sets this device's
+    `GattSession.MaintainConnection` so Windows keeps the link the query
+    establishes, the same as a BlueZ or CoreBluetooth connect. If that
+    query answers `Unreachable` while `ConnectionStatus` is already
+    `Connected`, one more uncached query runs on the held session. A
+    second query while the link is still down is not started: that call
+    can sit until the caller gives up. `Drop`
+    clears that hold before it closes the device, including when the query
+    fails. A query that is still `Unreachable` after the hold is the
+    failure above;
   - a `windows::core::Error` is `code:"hresult"` with `hresult` as
     `0xXXXXXXXX`;
   - the helpers `gatt_status_code` and `hresult_code` live in the pure
@@ -892,22 +928,30 @@ on them (finding 113):
 watcher's OS filter (`winrt-boundary.inc`:
 `AdvertisementFilter().Advertisement().ServiceUuids().Append`). Upstream
 btleplug cleared that filter and matched service UUIDs in software only
-(finding 117). That meant more radio and CPU work. It also changed behaviour
-for advertisements that carry the UUID only in a scan response.
+(finding 117). Putting the UUIDs on the OS filter drops scan responses:
+those packets carry the complete local name and do not repeat the service
+UUIDs. An active watcher then reports the advertising packet, whose local
+name is empty, and the peer cannot be selected by name. BlueZ and
+CoreBluetooth both return that name. A live WinRT watcher with the
+heart-rate UUID on the OS filter received the simulator address and a real
+Polar H10 with an empty name, and received no scan responses; the same
+watcher with an empty OS filter received `SIM Polar H10 0001` on the scan
+response.
 
-**Change.** `BLEWatcher::configure_for_scan(services)` clears the OS filter
-from the previous scan, then appends each requested service UUID, as the
-legacy addon did. The software predicate in the `Received` handler stays as
-the final gate. Upstream's reason for dropping the OS filter was that some
-Windows drivers drop matching 128-bit advertisements. That is legacy WinRT
-behaviour too, so the 4.x behaviour is kept.
+**Change.** `BLEWatcher::configure_for_scan` clears the OS service-UUID
+filter and leaves it empty. The software predicate in the `Received`
+handler is the filter. An advertising packet must contain every requested
+UUID, which admits its address. A later scan response from that address is
+kept even though it has no service UUIDs. Anything else that lacks the
+services is dropped. An event whose service list cannot be read is kept.
 
-**Tests.** `winrtble::ble::watcher::ubm_scan_mode_tests::the_service_filter_reaches_the_os_watcher`
-(Windows, `cargo test -p btleplug --lib`) reads the watcher's filter back:
-the requested UUIDs, in order, and an empty filter after a later scan
-without services. On macOS and Linux this is compile-checked for the
-Windows targets only. Physical check, not yet run: on Windows, a filtered
-scan reports only advertisers of the requested services.
+**Tests.** `winrtble::ble::watcher::ubm_scan_mode_tests::the_service_filter_stays_off_the_os_watcher`
+(Windows, `cargo test -p btleplug --lib`) reads the watcher's filter back
+after a scan that requested the heart-rate and battery UUIDs, and after a
+later scan with no services: the OS filter is empty both times. On macOS
+and Linux this is compile-checked for the Windows targets only. Physical
+check: the Bun Polar H10 session on Windows, which connects only when the
+local name is exactly `SIM Polar H10 0001`.
 
 ## Patch 17: `advertisement-reports`
 
