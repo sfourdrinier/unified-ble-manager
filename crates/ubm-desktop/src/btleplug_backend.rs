@@ -31,11 +31,34 @@ use std::sync::{
 use std::time::Duration;
 
 #[cfg(any(test, target_os = "linux"))]
-async fn release_linux_link(
-    discovery: Result<(), DesktopError>,
+pub(crate) async fn release_linux_link(
+    discovery: impl Future<Output = Result<(), DesktopError>>,
     link: impl Future<Output = Result<crate::boundary::DisconnectObservation, DesktopError>>,
 ) -> Result<crate::boundary::DisconnectObservation, DesktopError> {
-    let link = link.await;
+    // Poll both independent owners before waiting on either. The physical
+    // link's authoritative answer must not wait for a held discovery reply.
+    tokio::pin!(discovery, link);
+    let mut discovery_result = None;
+    let link = tokio::select! {
+        biased;
+        result = &mut discovery => {
+            discovery_result = Some(result);
+            link.await
+        }
+        result = &mut link => result,
+    };
+    let discovery = discovery_result.unwrap_or_else(|| {
+        discovery.as_mut().now_or_never().unwrap_or_else(|| {
+            Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Cleanup,
+                "connection.connect.when-available",
+            )
+            .with_detail(
+                "Discovery cleanup remains independently owned and pending; retry manager teardown",
+            ))
+        })
+    });
     let mut failures: Vec<_> = discovery.err().into_iter().collect();
     match link {
         Ok(mut observation) => {
@@ -3725,9 +3748,11 @@ impl RadioBoundary for BtleplugRadio {
         #[cfg(target_os = "windows")]
         let maintained = self.winrt.release(peer_id);
         #[cfg(target_os = "linux")]
-        let discovery = match self.bluez() {
-            Ok(bluez) => bluez.finish_availability(peer_id).await,
-            Err(error) => Err(error),
+        let discovery = async {
+            match self.bluez() {
+                Ok(bluez) => bluez.finish_availability(peer_id).await,
+                Err(error) => Err(error),
+            }
         };
         // T-R2: straight to the radio, as legacy went straight to
         // `peripheral.disconnect()` — no pre-disconnect `is_connected()`
@@ -5082,6 +5107,29 @@ pub fn core_property_bits(flags: PropertyFlags) -> u8 {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    async fn pending_discovery_cleanup_does_not_delay_a_confirmed_link_release() {
+        let observation = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            super::release_linux_link(std::future::pending(), async {
+                Ok(crate::boundary::DisconnectObservation {
+                    physical_generation: Some(42),
+                    platform: Some(crate::boundary::bluez_disconnect_observation(19)),
+                    cleanup_failure: None,
+                })
+            }),
+        )
+        .await
+        .expect("independent cleanup cannot withhold the link's physical answer")
+        .unwrap();
+        assert_eq!(observation.physical_generation, Some(42));
+        assert_eq!(
+            observation.platform,
+            Some(crate::boundary::bluez_disconnect_observation(19))
+        );
+        assert!(observation.cleanup_failure.is_some());
+    }
+
+    #[tokio::test]
     async fn linux_disconnect_reports_released_fact_and_independent_cleanup_refusal() {
         let link_owned = std::cell::Cell::new(true);
         let release_count = std::cell::Cell::new(0);
@@ -5090,7 +5138,7 @@ mod tests {
             ubm_core::contracts::BleErrorDomain::Cleanup,
             "connection.when-available",
         );
-        let result = super::release_linux_link(Err(refused), async {
+        let result = super::release_linux_link(async { Err(refused) }, async {
             release_count.set(release_count.get() + 1);
             link_owned.set(false);
             Ok(crate::boundary::DisconnectObservation {
@@ -5124,10 +5172,12 @@ mod tests {
             .with_platform(PlatformDetail::new("bluez-dbus", code))
         };
         let error = super::release_linux_link(
-            Err(failure(
-                "connection.when-available",
-                "StopDiscovery.Refused",
-            )),
+            async {
+                Err(failure(
+                    "connection.when-available",
+                    "StopDiscovery.Refused",
+                ))
+            },
             async { Err(failure("connection.disconnect", "ReleaseLease.Refused")) },
         )
         .await
@@ -5147,7 +5197,7 @@ mod tests {
     #[tokio::test]
     async fn linux_disconnect_preserves_successful_release_observation() {
         assert_eq!(
-            super::release_linux_link(Ok(()), async {
+            super::release_linux_link(async { Ok(()) }, async {
                 Ok(crate::boundary::DisconnectObservation {
                     physical_generation: Some(7),
                     platform: Some(crate::boundary::bluez_disconnect_observation(19)),

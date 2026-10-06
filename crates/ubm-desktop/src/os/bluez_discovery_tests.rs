@@ -781,17 +781,51 @@ async fn private_bus_le_availability_malformed_signal_preserves_primary_and_clea
         .unwrap()
         .unwrap_err();
     assert_eq!(error.code_str(), "platform.failure");
+    let retained = error.platform().unwrap().metadata.clone();
+    for index in 0..2 {
+        for (field, expected) in [
+            ("code", "platform.failure"),
+            ("domain", "platform"),
+            ("operation", "connection.connect.when-available"),
+            ("platform.domain", "bluez-dbus"),
+            ("platform.code", "org.bluez.Error.Failed"),
+        ] {
+            assert_eq!(
+                retained.get(&format!("failure.{index}.{field}")),
+                Some(&crate::errors::PlatformValue::Text(expected.to_owned()))
+            );
+        }
+        assert!(
+            matches!(retained.get(&format!("failure.{index}.detail")), Some(crate::errors::PlatformValue::Text(detail)) if !detail.is_empty())
+        );
+        assert!(
+            matches!(retained.get(&format!("failure.{index}.platform.message")), Some(crate::errors::PlatformValue::Text(message)) if !message.is_empty())
+        );
+    }
+    assert_eq!(
+        retained.get("failure.1.platform.message"),
+        Some(&crate::errors::PlatformValue::Text(
+            "owned stop refused".into()
+        ))
+    );
     assert!(
-        error
-            .platform()
-            .unwrap()
-            .metadata
-            .contains_key("cleanupDetail")
+        matches!(retained.get("failure.1.detail"), Some(crate::errors::PlatformValue::Text(detail)) if detail.contains("owned stop refused"))
+    );
+    assert_eq!(
+        retained.get("failure.0.detail"),
+        Some(&crate::errors::PlatformValue::Text(
+            error.detail().unwrap().to_owned()
+        ))
     );
     bluez
         .finish_availability("hci0/dev_AA_BB_CC_DD_EE_FF")
         .await
         .unwrap();
+    assert_eq!(
+        error.platform().unwrap().metadata,
+        retained,
+        "both causes survive successful cleanup retry"
+    );
     worker.abort();
 }
 

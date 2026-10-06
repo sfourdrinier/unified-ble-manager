@@ -1045,29 +1045,7 @@ impl Bluez {
             return match result {
                 Ok(()) => Err(cleanup_error),
                 Err(primary) => {
-                    let detail = format!(
-                        "{}; owned LE discovery cleanup also failed: {}",
-                        primary.detail().unwrap_or(primary.code_str()),
-                        cleanup_error
-                    );
-                    let platform = primary
-                        .platform()
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            crate::errors::PlatformDetail::new(
-                                "ubm-linux-availability",
-                                "observation-failed",
-                            )
-                        })
-                        .with_metadata(
-                            "cleanupCode",
-                            crate::errors::PlatformValue::Text(cleanup_error.code_str().to_owned()),
-                        )
-                        .with_metadata(
-                            "cleanupDetail",
-                            crate::errors::PlatformValue::Text(cleanup_error.to_string()),
-                        );
-                    Err(primary.with_detail(detail).with_platform(platform))
+                    crate::errors::cleanup_result("bluez-dbus", vec![primary, cleanup_error])
                 }
             };
         }

@@ -916,6 +916,88 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "btleplug")]
+    async fn pending_discovery_cleanup_cannot_starve_owned_release_or_its_retained_receipt() {
+        let ledger = Ledger::default();
+        let client = Client::new();
+        client.reserve.add_permits(1);
+        client.connect.add_permits(1);
+        ledger
+            .clone()
+            .connect("peer".into(), client.clone())
+            .await
+            .unwrap();
+        client.receipts.lock().unwrap().push_back(Ok(Receipt {
+            token: 41,
+            generation: 73,
+            scope: Scope::Physical,
+            disconnect_reason: Some(2),
+        }));
+        let gate = Arc::new(Semaphore::new(0));
+        *client.release_gate.lock().unwrap() = Some(gate.clone());
+        let owner = ledger.clone();
+        let waiter = tokio::spawn(async move {
+            crate::btleplug_backend::release_linux_link(std::future::pending(), async move {
+                let receipt = owner.release_with_observation("peer").await?;
+                Ok(crate::boundary::DisconnectObservation {
+                    physical_generation: receipt.physical_generation,
+                    platform: receipt
+                        .disconnect_reason
+                        .map(crate::boundary::bluez_disconnect_observation),
+                    cleanup_failure: None,
+                })
+            })
+            .await
+        });
+        settled().await;
+        // Cancelling the caller must not cancel the already-admitted native
+        // release, even though the independent discovery answer is still held.
+        waiter.abort();
+        gate.add_permits(1);
+        settled().await;
+        assert_eq!(
+            ledger.len(),
+            0,
+            "pending discovery did not starve ReleaseLease"
+        );
+        assert_eq!(ledger.terminal_facts_len(), 1);
+        assert_eq!(client.calls.lock().unwrap().len(), 1);
+        let owner_queries = client.owner_queries.load(Ordering::Relaxed);
+        client.owner_query_failed.store(true, Ordering::Release);
+        let observation = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            crate::btleplug_backend::release_linux_link(std::future::pending(), async {
+                let receipt = ledger.clone().release_with_observation("peer").await?;
+                Ok(crate::boundary::DisconnectObservation {
+                    physical_generation: receipt.physical_generation,
+                    platform: receipt
+                        .disconnect_reason
+                        .map(crate::boundary::bluez_disconnect_observation),
+                    cleanup_failure: None,
+                })
+            }),
+        )
+        .await
+        .expect("pending discovery cannot delay the retained physical answer")
+        .unwrap();
+        assert_eq!(observation.physical_generation, Some(73));
+        assert_eq!(
+            observation.platform,
+            Some(crate::boundary::bluez_disconnect_observation(2))
+        );
+        assert!(
+            observation.cleanup_failure.is_some(),
+            "pending independent cleanup remains visible"
+        );
+        assert_eq!(
+            client.calls.lock().unwrap().len(),
+            1,
+            "retry consumed the real retained receipt, not a new release"
+        );
+        assert_eq!(client.owner_queries.load(Ordering::Relaxed), owner_queries);
+    }
+
+    #[tokio::test]
     async fn cancelled_release_waiter_preserves_late_terminal_fact_not_native_debt() {
         let ledger = Ledger::default();
         let client = Client::new();

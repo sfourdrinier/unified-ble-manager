@@ -6,6 +6,11 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Corrected
 
+- Release Linux physical links independently of pending discovery cleanup and
+  deliver confirmed release observations without losing retained cleanup debt.
+- Keep indexed structured observation and discovery-cleanup causes, including
+  native D-Bus names and messages, after a later cleanup retry succeeds.
+
 - Apply deferred-connect capability admission to IPC managers before dispatch,
   preserving unavailable versus unsupported refusals across public host routes.
 - Attempt independent Linux discovery cleanup concurrently so a pending peer

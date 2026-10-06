@@ -2,7 +2,7 @@
   "schema": "ubm-android-jnilibs-identity/1",
   "binding": "jni",
   "contractRevision": "C-UBM.0.1.2-DRAFT",
-  "sourceDigest": "02c560f433d66b3ba11b48cd22fe98420faf5107d68b03b45881812eb40f52ac",
+  "sourceDigest": "3a8481059e84173fb4b3811619062a41e21023808284b447d7133bd9a50d82f1",
   "bindingSchema": "7677b9c65b0e8779fa1ac63c55403c53e535ed5cb7ae10794379d2d0d1513487",
   "profile": "release",
   "toolchain": "1.98.1 (rustc 1.98.1 (48a229cea 2026-09-01))",
@@ -12,21 +12,21 @@
       "abi": "armeabi-v7a",
       "target": "armv7-linux-androideabi",
       "file": "libubm5_jni_echo.so",
-      "sha256": "ea6e439880709d2aa3ded5219003bf8e6ecd86c743cca07acfe5a35d206a0fac",
-      "bytes": 7574644
+      "sha256": "3b8b41ad9cdea841af8dd406b96d2b6694531ac4264e8abbea7c0034dfa379ab",
+      "bytes": 7574652
     },
     {
       "abi": "arm64-v8a",
       "target": "aarch64-linux-android",
       "file": "libubm5_jni_echo.so",
-      "sha256": "bd2c6465288cd27e1a88b6318f9dd280519e8e571762937467dc98650d806949",
+      "sha256": "e927298be5febf407cabdb7f84019513ce0693e6176bc7e57c368d8401c1a341",
       "bytes": 9556168
     },
     {
       "abi": "x86_64",
       "target": "x86_64-linux-android",
       "file": "libubm5_jni_echo.so",
-      "sha256": "56032a6296bf953c9cd0b92f23a8ff19033ae8e125f9df716c6d258fe8595bc5",
+      "sha256": "0f7a55ea67da7208edef779516a7d73d97a7950c4e1e2a51fcb36fef38f12084",
       "bytes": 9618824
     }
   ]

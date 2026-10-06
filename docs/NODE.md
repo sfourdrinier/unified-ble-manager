@@ -472,6 +472,8 @@ Failed cleanup does not reopen admission or discard native ownership. Retain the
 
 A confirmed Linux link release is still published even when disconnect reports a separate discovery-cleanup error. The released link permits a fresh connection; discovery cleanup remains independently owned and manager teardown retains that debt until its release is confirmed. A cleanup refusal never turns a confirmed physical release back into an unconfirmed link.
 
+Discovery cleanup and token-bound link release are driven independently. A held discovery reply cannot prevent the native link release from starting or withhold its confirmed physical answer. When that answer arrives before discovery cleanup completes, disconnect reports the still-pending cleanup separately without inventing an OS refusal; manager teardown retains and retries the original discovery owner.
+
 Shutdown reports the final owned cleanup state: when its final transport retry confirms discovery cleanup, that confirmation supersedes the earlier refusal instead of leaving a stale release failure. Persistent or indeterminate debt remains reported; if final transport accounting times out, the earlier cleanup causes remain visible alongside the timeout.
 
 Failed or cancelled Linux initial availability requests retire their dedicated discovery sender once cleanup confirms it is idle, including failures before discovery starts. Queued requests and unconfirmed cleanup debt keep their owner registered for later teardown.
