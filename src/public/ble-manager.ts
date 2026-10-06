@@ -123,6 +123,7 @@ export interface PeerAddress {
   readonly addressType?: 'public' | 'random'
 }
 export interface ConnectOptions extends OperationOptions {
+  /** Both intents preserve unavailable versus unsupported capability refusals before dispatch. */
   readonly intent?: ConnectionIntent
   readonly transport?: 'le' | 'auto'
   readonly preferredPhy?: readonly BlePhy[]
@@ -232,6 +233,11 @@ export interface BleConnectionControls {
   parameters(): Promise<ConnectionParametersObservation>
   parameterEvents(): AsyncIterable<ConnectionParametersObservation>
   requestSubrate(mode: SubrateMode, options?: OperationOptions): Promise<SubrateResult>
+  /**
+   * Owns one source acquisition per iterator. Return waits for late acquisition;
+   * failed cleanup is retryable. Source failure rejects with its public cause,
+   * distinct from ordinary completion and any independent cleanup failure.
+   */
   writeReadiness(mode: 'without-response'): AsyncIterable<WriteReadinessEvent>
 }
 
@@ -1165,40 +1171,77 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
       let iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<Attachment>> | null = null
       let closed = false
       let iteratorDone = false
-      let teardownAttempted = false
+      let opening: Promise<void> | null = null
+      let closing: Promise<void> | null = null
 
-      const open = async (): Promise<void> => {
-        if (watch !== null) return
-        if (connection.writeWithoutResponseReadiness === undefined) {
-          throw contractError('capability.unsupported', 'connection', 'public-connection.controls.write-readiness')
+      const open = (): Promise<void> => {
+        if (opening === null) {
+          opening = Promise.resolve().then(async () => {
+            if (connection.writeWithoutResponseReadiness === undefined) {
+              throw contractError('capability.unsupported', 'connection', 'public-connection.controls.write-readiness')
+            }
+            watch = await connection.writeWithoutResponseReadiness()
+          })
         }
-        watch = await connection.writeWithoutResponseReadiness()
-        iterator = watch.events[Symbol.asyncIterator]()
+        return opening
       }
 
-      const close = async (): Promise<void> => {
-        if (teardownAttempted) return
-        teardownAttempted = true
-        if (watch === null || iterator === null) return
-        await closePublicReadinessWatch(iterator, watch.close, iteratorDone)
+      const close = (): Promise<void> => {
+        if (closing !== null) return closing
+        const operation = Promise.resolve().then(async () => {
+          if (opening !== null) {
+            // next() owns the acquisition answer; failed admission created no
+            // watch to release and must not become a second cleanup failure.
+            const acquired = await opening.then(
+              () => true,
+              () => false
+            )
+            if (!acquired) return
+          }
+          if (watch === null) return
+          if (iterator === null) {
+            const cleanup = await watch.close()
+            if (cleanup.state === 'release-failed') throw new BleCleanupError(cleanup)
+            return
+          }
+          const ownedWatch = watch
+          await closePublicReadinessWatch(iterator, () => ownedWatch.close(), iteratorDone)
+        })
+        closing = operation.catch(error => {
+          closing = null
+          throw error
+        })
+        return closing
       }
 
       return {
         async next(): Promise<IteratorResult<WriteReadinessEvent, undefined>> {
           if (closed) return { done: true, value: undefined }
+          let teardownAttempted = false
           try {
             await open()
-            if (iterator === null) {
+            if (closed) {
+              teardownAttempted = true
+              await close()
+              return { done: true, value: undefined }
+            }
+            if (watch === null)
               throw contractError(
                 'lifecycle.invariant-violation',
                 'connection',
                 'public-connection.controls.write-readiness'
               )
-            }
+            if (iterator === null) iterator = watch.events[Symbol.asyncIterator]()
             const item = await iterator.next()
+            if (closed) {
+              teardownAttempted = true
+              await close()
+              return { done: true, value: undefined }
+            }
             if (item.done) {
               iteratorDone = true
               closed = true
+              teardownAttempted = true
               await close()
               return { done: true, value: undefined }
             }
@@ -1227,12 +1270,18 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
             if (streamItem.kind === 'overflow') {
               throw contractError('stream.overflow', 'connection', 'public-connection.controls.write-readiness')
             }
+            if (streamItem.reason === 'source-failed') {
+              throw streamItem.error == null
+                ? contractError('platform.failure', 'stream', 'public-connection.controls.write-readiness')
+                : new BackendContractError(streamItem.error)
+            }
             closed = true
+            teardownAttempted = true
             await close()
             return { done: true, value: undefined }
           } catch (error) {
             const sourceError = rehydratePublicError(error)
-            if (closed) throw sourceError
+            if (teardownAttempted) throw sourceError
             closed = true
             try {
               await close()
@@ -1886,8 +1935,11 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         this.internal.capability('connection:direct'),
         'public-ble-manager.connect.direct'
       )
-      if (intent === 'when-available' && !this.internal.supports('connection:when-available')) {
-        throw contractError('capability.unsupported', 'connection', 'public-ble-manager.connect.when-available')
+      if (intent === 'when-available') {
+        assertDirectConnectionCapability(
+          this.internal.capability('connection:when-available'),
+          'public-ble-manager.connect.when-available'
+        )
       }
       if (options.preferredPhy !== undefined && !this.internal.supports('connection:phy')) {
         throw contractError('capability.unsupported', 'connection', 'public-ble-manager.connect.preferred-phy')

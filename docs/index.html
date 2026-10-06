@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 5.0.0-rc.19 | Documentation</title>
+    <title>unified-ble-manager 5.0.0-rc.20 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>5.0.0-rc.19</code></div>
+          <div class="mb1"><code>5.0.0-rc.20</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -64,7 +64,7 @@
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
-            <p>This source targets <code>5.0.0-rc.19</code>; verify the published version in the npm registry.</p>
+            <p>This source targets <code>5.0.0-rc.20</code>; verify the published version in the npm registry.</p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -136,7 +136,7 @@
               The 5.0 candidate is on npm <code>next</code>; npm <code>latest</code> remains the stable 4.0 line.
               Install the exact candidate and commit the resolved lockfile for a known native rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.19
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.20
 </code></pre>
             <p>
               Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
@@ -144,11 +144,10 @@
             </p>
             <h4>Expo / CNG v2</h4>
             <p>
-              The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. After the npm
-              registry lists <code>5.0.0-rc.19</code>, install that exact version and keep it in your lockfile while
-              validating the native build:
+              The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. Install
+              <code>5.0.0-rc.20</code> and keep that exact version in your lockfile while validating the native build:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.19
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.20
 </code></pre>
             <p>The package does not run in Expo Go.</p>
             <p>Expo also needs a native build and development client:</p>
@@ -421,11 +420,13 @@ try {
               then read <code>ble.peers.restored()</code> and <code>connect</code> with intent
               <code>'when-available'</code>; on iOS configure <code>background.ios.restoration</code> and adopt with
               <code>restoration.claim()</code>. iOS reconnects directly through a durable restored
-              <code>PeerReference</code>, never through Android-only <code>'when-available'</code>; the shared driver
-              now accepts that reference, but its physical direct-reconnect qualification is still open. The full
-              task-ordered chain, and what API&#x3C;31, tvOS, desktop and Web answer instead, is in
+              <code>PeerReference</code>, never through <code>'when-available'</code> (refused on iOS and tvOS); the
+              shared driver now accepts that reference, but its physical direct-reconnect qualification is still open.
+              The full task-ordered chain, and what API&#x3C;31, tvOS, desktop and Web answer instead, is in
               <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
-              >.
+              >. Desktop initial acquisition implements <code>when-available</code> on macOS and Windows, and on Linux
+              with the optional maintained-daemon LE observer. This does not provide process restoration or automatic
+              post-loss reconnect.
             </p>
             <h2>Coming from react-native-ble-plx</h2>
             <p>
@@ -575,14 +576,16 @@ if (known === undefined) {
 const connection = await ble.connect(known.id, { intent: 'when-available', timeoutMs: 15_000 })
 </code></pre>
             <p>
-              On iOS, <code>restoration.claim()</code> adopts the OS journal after the system relaunches the app.
-              <code>when-available</code> is Android-only: use a durable restored <code>PeerReference</code> with
+              On iOS, <code>restoration.claim()</code> adopts the OS journal after the system relaunches the app. iOS
+              and tvOS refuse <code>when-available</code>: use a durable restored <code>PeerReference</code> with
               <code>intent: 'direct'</code> when reconnecting from a fresh iOS manager. The shared restoration driver
               accepts the reference, but has not yet physically qualified that fresh-manager iOS path; its current
-              receipt proves wake/adoption only. Below API 31, and on tvOS, desktop and Web, presence observation
-              reports <code>capability.unsupported</code> with a reason instead of waking anything. The task-ordered
-              Android chain, iOS counterpart, and platform refusals are in
-              <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
+              receipt proves wake/adoption only. Desktop initial acquisition also implements <code>when-available</code>
+              on macOS, Windows and Linux (Linux requires the optional maintained-daemon LE observer); it is not process
+              restoration or automatic post-loss reconnect. Below API 31, and on tvOS, desktop and Web, presence
+              observation reports
+              <code>capability.unsupported</code> with a reason instead of waking anything. The task-ordered Android
+              chain, iOS counterpart, and platform refusals are in <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a
               >.
             </p>
             <h2>MTU and read provenance (per-platform limits)</h2>
@@ -1002,7 +1005,7 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in this <code>5.0.0-rc.19</code> source. Those options match the schema
+              Use the v2 plugin options in this <code>5.0.0-rc.20</code> source. Those options match the schema
               introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
@@ -1010,7 +1013,7 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.19
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.20
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
@@ -1331,7 +1334,7 @@ await manager.background.updateNotification({
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              This source targets <code>5.0.0-rc.19</code>. Main executes the shared Rust core
+              This source targets <code>5.0.0-rc.20</code>. Main executes the shared Rust core
               (<code>DesktopCentral</code>) through one N-API addon. Tagged releases ship it prebuilt for macOS Apple
               Silicon (<code>arm64</code>) and Windows/Linux <code>arm64</code>/<code>x64</code>. The addon is Node-API,
               so one binary serves Node and modern Electron alike.
@@ -1698,10 +1701,12 @@ node scripts/ci/pack-install-smoke.js
 UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + process.arch').node" your-electron-command
 </code></pre>
             <p>
-              With Node-API v8, an Electron-targeted rebuild is never required because Electron's module ABI differs
-              from Node's. The Electron load smoke verifies identity and runs a synthetic central; it does not start a
-              real scan, observe an advertisement, or establish live-radio support. Published evidence records state the
-              exact backend, package digest, OS/runtime/ABI, hardware, scenario, limitations, and proof level. See
+              The shared Rust binding requires Node-API v4 (<code>napi4</code>), not Electron's runtime-specific module
+              ABI. A different Node/Electron module ABI alone does not require rebuilding; OS/architecture, platform
+              dependencies, Node-API compatibility and the sealed UBM build identity still must match. The Electron load
+              smoke verifies identity and runs a synthetic central; it does not start a real scan, observe an
+              advertisement, or establish live-radio support. Published evidence records state the exact backend,
+              package digest, OS/runtime/ABI, hardware, scenario, limitations, and proof level. See
               <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a> and the controlling
               <a href="README.md#current-50-authority">Current 5.0 authority</a>.
             </p>
@@ -1829,9 +1834,11 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
             <p>
               For desktop connection intent, macOS and Windows support initial <code>when-available</code> acquisition
               through native pending connection mechanisms, with the original deadline, cancellation and scoped cleanup.
-              This is not automatic post-loss reconnect. Linux LE-specific deferred acquisition remains unsupported by
-              the maintained daemon contract; merged stock discovery signals do not replace that mechanism. See
-              <a href="NODE.md"><code>NODE.md</code></a> for the exact host boundaries.
+              This is not automatic post-loss reconnect. Linux implements initial acquisition with maintained daemon
+              <code>5.87-ubm.5</code>'s optional observer: a fresh connectable LE advertisement is required before
+              token-bound connection admission. Older daemons report <code>capability.unsupported</code>; merged stock
+              discovery signals and cached records do not replace that mechanism. See
+              <a href="NODE.md"><code>NODE.md</code></a> for deployment prerequisites and exact host boundaries.
             </p>
             <p>
               CoreBluetooth does not expose unrestricted system bond inventory. Web Bluetooth exposes origin-authorized

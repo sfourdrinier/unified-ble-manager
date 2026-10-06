@@ -23,6 +23,15 @@ The application façade provides `state(peer)`, `watch(peer)`, `pair(peer)`,
 claim. Pairing resolves only after a terminal backend result and reports
 `paired`, `already-paired`, `repaired`, `rejected`, or `cancelled`.
 
+`watch()` acquires its source when iteration starts. A failed peer resolution or
+source acquisition rejects `next()`; it does not create a second unowned
+rejection. Returning the iterator waits for any pending acquisition and releases
+what was actually acquired. Failed release remains owned and retryable via
+`return()`; confirmed cleanup is retained. A `source-failed` terminal rejects
+with its structured public cause, while ordinary source closure completes.
+If source failure and cleanup both fail, the iterator reports both errors rather
+than replacing either with successful completion.
+
 Applications must inspect the attached backend's registered feature and its
 limitations before presenting a pairing flow. If no supported feature
 registration exists, pairing is unavailable; applications must not infer

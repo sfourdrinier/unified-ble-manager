@@ -9,7 +9,7 @@ The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The w
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.19 @tauri-apps/api
+pnpm add unified-ble-manager@5.0.0-rc.20 @tauri-apps/api
 ```
 
 Use the Rust plugin source shipped in the same npm package. In the normal
@@ -173,19 +173,21 @@ Planning is separate from observation: notification values preserve the native
 host's reported `delivery`, including `unknown` where the platform cannot report
 the mode.
 
-The maximum write length (`connection.maximum-write-length`, per `mode`) is the core's answer for that write mode, the same limit a write of that mode is admitted against: a reported maximum is never refused. With an OS long write (Windows, Linux) a with-response write reaches 512 bytes; a write without response, and every write on macOS, is bounded by what the OS reports for the link (one ATT payload where the OS has no per-mode readout). An unmeasured limit fails `capability.unavailable`, never a guess. Tauri 4.x reported `mtu - 3` for every mode.
+The maximum write length (`connection.maximum-write-length`, per `mode`) is the core's answer for that write mode, the same limit a write of that mode is admitted against: a reported maximum is never refused. Windows admits ordinary OS-managed with-response writes up to 512 bytes; commands use `GattSession.MaxPduSize` − 3. Linux admits with-response values up to 512 bytes and, with a reported MTU, commands up to MTU − 3. When BlueZ withholds the MTU, it admits both write modes up to 512 bytes and lets the OS answer the write; that is an admission limit, not an invented MTU measurement. macOS uses the OS-reported per-mode maximum. Tauri 4.x reported `mtu - 3` for every mode.
 
-Ordinary `with-response` writes within the measured maximum use the OS-managed
+Ordinary `with-response` writes within the admitted maximum use the OS-managed
 write procedure; Windows and Linux can therefore accept a value larger than one
 ATT payload. This is distinct from caller-controlled prepared/reliable transactions:
 the explicit `long-write` mode has no prepared-write radio path and is refused
-with `no-prepared-write-path`, never silently converted to an ordinary write.
+with `capability.limited`, never silently converted to an ordinary write.
+`no-prepared-write-path` is the capability limitation id, not the public error code.
 `gatt:maximum-write-length` and `gatt:long-write` retain the instantiated desktop
 core's capability reasons and limits; a limited descriptor does not promise every
 transaction mode. The effective MTU (`connection:effective-mtu`) is the core's
 measurement of the live link through the desktop central, like the desktop and
-Electron hosts; a withheld measurement answers `capability.unsupported` verbatim,
-never a guessed 23.
+Electron hosts. If BlueZ omits the live MTU, the query answers
+`capability.unavailable`; a backend without an effective-MTU mechanism answers
+`capability.unsupported`. Neither case invents a measurement of 23.
 
 Connected RSSI (`connection.rssi`) is the OS measurement of the live link, read through the core; a radio that cannot measure it answers `capability.unsupported`.
 

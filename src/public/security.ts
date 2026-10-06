@@ -114,6 +114,11 @@ export type SecurityPeer = BlePeer | PeerReference
 
 export interface BleSecurity {
   state(peer: SecurityPeer, options?: OperationOptions): Promise<PeerSecurityState>
+  /**
+   * Each iterator lazily acquires its own source. Source failure rejects iteration with its
+   * public cause; ordinary closure completes. Return awaits late acquisition,
+   * and failed cleanup remains retryable through the same iterator's return().
+   */
   watch(peer: SecurityPeer): AsyncIterable<PeerSecurityEvent>
   pair(peer: SecurityPeer, options?: PairOptions): Promise<PairResult>
   cancelPairing(peer: SecurityPeer, options?: OperationOptions): Promise<PairCancelResult>
@@ -218,11 +223,10 @@ export function createPublicSecurity(
     watch: peer => {
       try {
         const security = requireBackend('security:state', 'public-security.watch')
-        const resolved = resolvePeer(peer, {})
-        return mapSecurityEvents(
-          resolved.then(value => security.watch(value.id)),
-          resolved.then(value => value.id)
-        )
+        return mapSecurityEvents(async () => {
+          const resolved = await resolvePeer(peer, {})
+          return { source: await security.watch(resolved.id), peerId: resolved.id }
+        })
       } catch (error) {
         throw rehydratePublicError(error)
       }
@@ -456,60 +460,106 @@ function snapshotUnpairResult(value: InternalSecurityUnpairResult, operation: st
 }
 
 function mapSecurityEvents(
-  source: BoundedAsyncStream<InternalPeerSecurityEvent> | Promise<BoundedAsyncStream<InternalPeerSecurityEvent>>,
-  expectedPeerId: string | Promise<string>
+  openSource: () => Promise<{ source: BoundedAsyncStream<InternalPeerSecurityEvent>; peerId: string }>
 ): AsyncIterable<PeerSecurityEvent> {
-  let sourceResolved = false
-  const sourcePromise = Promise.resolve(source).then(value => {
-    sourceResolved = true
-    return value
-  })
-  let closePromise: Promise<void> | null = null
-  const closeSource = (): Promise<void> => {
-    if (closePromise === null) {
-      closePromise = sourcePromise.then(async stream => {
-        const cleanup = await stream.close()
-        assertSecurityStreamCleanup(cleanup)
-      })
-    }
-    return closePromise
-  }
   return {
     [Symbol.asyncIterator]() {
-      const iteratorPromise = sourcePromise.then(value => value[Symbol.asyncIterator]())
-      let teardownAttempted = false
+      let sourcePromise: ReturnType<typeof openSource> | null = null
+      let sourceResolved = false
+      const source = () => {
+        if (sourcePromise === null) {
+          sourcePromise = Promise.resolve()
+            .then(openSource)
+            .then(value => {
+              sourceResolved = true
+              return value
+            })
+        }
+        return sourcePromise
+      }
+      let closePromise: Promise<void> | null = null
+      const closeSource = (): Promise<void> => {
+        if (closePromise !== null) return closePromise
+        closePromise = source()
+          .then(async value => {
+            assertSecurityStreamCleanup(await value.source.close())
+          })
+          .catch(error => {
+            closePromise = null
+            throw error
+          })
+        return closePromise
+      }
+      let iteratorPromise: Promise<BoundedAsyncStreamIterator<InternalPeerSecurityEvent>> | null = null
+      let acquiredIterator: BoundedAsyncStreamIterator<InternalPeerSecurityEvent> | null = null
+      const iterator = () => {
+        if (iteratorPromise === null) {
+          iteratorPromise = source().then(value => {
+            acquiredIterator = value.source[Symbol.asyncIterator]()
+            return acquiredIterator
+          })
+        }
+        return iteratorPromise
+      }
+      let closed = false
+      let teardownPromise: Promise<void> | null = null
+      const teardown = (): Promise<void> => {
+        closed = true
+        if (teardownPromise !== null) return teardownPromise
+        const operation = Promise.resolve().then(async () => {
+          if (sourcePromise === null) return
+          // The pending next() owns acquisition failure. Without a source there
+          // is no cleanup obligation, and return() must not report it a second time.
+          const acquired = await source().then(
+            () => true,
+            () => false
+          )
+          if (!acquired) return
+          if (acquiredIterator === null) {
+            await closeSource()
+            return
+          }
+          await closeSecurityIterator(acquiredIterator, closeSource)
+        })
+        teardownPromise = operation.catch(error => {
+          teardownPromise = null
+          throw error
+        })
+        return teardownPromise
+      }
       let lastSequence = 0
       return {
         async next(): Promise<IteratorResult<PeerSecurityEvent, undefined>> {
-          let iterator: BoundedAsyncStreamIterator<InternalPeerSecurityEvent> | null = null
+          if (closed) return { done: true, value: undefined }
+          let teardownAttempted = false
           try {
-            iterator = await iteratorPromise
-            const item = await iterator.next()
-            if (item.done) {
+            const ownedIterator = await iterator()
+            if (closed) {
               teardownAttempted = true
-              await closeSource()
+              await teardown()
               return { done: true, value: undefined }
             }
-            if (item.value.kind === 'terminal') {
+            const item = await ownedIterator.next()
+            if (closed) {
               teardownAttempted = true
-              await closeSecurityIterator(iterator, closeSource)
+              await teardown()
+              return { done: true, value: undefined }
+            }
+            if (item.done || item.value.kind === 'terminal') {
+              if (!item.done && item.value.kind === 'terminal' && item.value.reason === 'source-failed') {
+                throw item.value.error == null
+                  ? contractError('platform.failure', 'stream', 'public-security.watch')
+                  : new BackendContractError(item.value.error)
+              }
+              teardownAttempted = true
+              await teardown()
               return { done: true, value: undefined }
             }
             if (item.value.kind === 'overflow') {
-              teardownAttempted = true
-              const overflowError = contractError('stream.overflow', 'stream', 'public-security.watch')
-              try {
-                await closeSource()
-              } catch (cleanupError) {
-                throw new AggregateError(
-                  [rehydratePublicError(overflowError), rehydratePublicError(cleanupError)],
-                  'BLE security watch overflow and cleanup both failed'
-                )
-              }
-              throw overflowError
+              throw contractError('stream.overflow', 'stream', 'public-security.watch')
             }
             const event = item.value.value
-            const expectedId = await expectedPeerId
+            const expectedId = (await source()).peerId
             if (
               event.kind !== 'state' ||
               event.peerId !== expectedId ||
@@ -530,19 +580,11 @@ function mapSecurityEvents(
               })
             }
           } catch (error) {
-            if (!teardownAttempted) {
-              teardownAttempted = true
-              let cleanupError: unknown
+            closed = true
+            if (!teardownAttempted && sourceResolved) {
               try {
-                if (iterator === null) {
-                  if (sourceResolved) await closeSource()
-                } else {
-                  await closeSecurityIterator(iterator, closeSource)
-                }
-              } catch (errorValue) {
-                cleanupError = errorValue
-              }
-              if (cleanupError !== undefined) {
+                await teardown()
+              } catch (cleanupError) {
                 throw new AggregateError(
                   [rehydratePublicError(error), rehydratePublicError(cleanupError)],
                   'BLE security watch operation and cleanup both failed'
@@ -554,22 +596,9 @@ function mapSecurityEvents(
         },
         return: async () => {
           try {
-            const iterator = await iteratorPromise
-            teardownAttempted = true
-            await closeSecurityIterator(iterator, closeSource)
+            await teardown()
             return { done: true, value: undefined }
           } catch (error) {
-            if (!teardownAttempted) {
-              teardownAttempted = true
-              try {
-                if (sourceResolved) await closeSource()
-              } catch (cleanupError) {
-                throw new AggregateError(
-                  [rehydratePublicError(error), rehydratePublicError(cleanupError)],
-                  'BLE security watch return and cleanup both failed'
-                )
-              }
-            }
             throw rehydratePublicError(error)
           }
         },
@@ -580,7 +609,6 @@ function mapSecurityEvents(
     }
   }
 }
-
 async function closeSecurityIterator(
   iterator: BoundedAsyncStreamIterator<InternalPeerSecurityEvent>,
   closeSource: () => Promise<void>

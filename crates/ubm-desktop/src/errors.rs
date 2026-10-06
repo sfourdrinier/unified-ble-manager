@@ -10,6 +10,68 @@ use std::collections::BTreeMap;
 
 use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CommitState, CoreError};
 
+/// Preserve every independent native cleanup refusal in a singular result.
+/// One failure retains its exact identity and native answer unchanged.
+#[cfg(any(
+    test,
+    all(feature = "btleplug", any(target_os = "linux", target_os = "windows"))
+))]
+pub(crate) fn cleanup_result(
+    domain: &str,
+    mut failures: Vec<DesktopError>,
+) -> Result<(), DesktopError> {
+    if failures.is_empty() {
+        return Ok(());
+    }
+    if failures.len() == 1 {
+        return Err(failures.remove(0));
+    }
+    let mut platform = PlatformDetail::new(domain, "cleanup-failures");
+    for (index, failure) in failures.iter().enumerate() {
+        let prefix = format!("failure.{index}");
+        platform.metadata.insert(
+            format!("{prefix}.code"),
+            PlatformValue::Text(failure.code_str().into()),
+        );
+        platform.metadata.insert(
+            format!("{prefix}.domain"),
+            PlatformValue::Text(failure.domain().as_str().into()),
+        );
+        platform.metadata.insert(
+            format!("{prefix}.operation"),
+            PlatformValue::Text(failure.operation().into()),
+        );
+        if let Some(detail) = failure.detail() {
+            platform.metadata.insert(
+                format!("{prefix}.detail"),
+                PlatformValue::Text(detail.into()),
+            );
+        }
+        if let Some(native) = failure.platform() {
+            platform.metadata.insert(
+                format!("{prefix}.platform.domain"),
+                PlatformValue::Text(native.domain.clone()),
+            );
+            platform.metadata.insert(
+                format!("{prefix}.platform.code"),
+                PlatformValue::Text(native.code.clone()),
+            );
+            if let Some(message) = &native.message {
+                platform.metadata.insert(
+                    format!("{prefix}.platform.message"),
+                    PlatformValue::Text(message.clone()),
+                );
+            }
+            for (key, value) in &native.metadata {
+                platform
+                    .metadata
+                    .insert(format!("{prefix}.platform.metadata.{key}"), value.clone());
+            }
+        }
+    }
+    Err(failures.remove(0).with_platform(platform))
+}
+
 /// One typed platform metadata value (finding 113).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlatformValue {

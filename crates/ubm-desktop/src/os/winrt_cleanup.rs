@@ -1,6 +1,8 @@
 //! Stage ownership shared by the WinRT adapter and deterministic tests.
 
-use crate::errors::{DesktopError, PlatformDetail, PlatformValue};
+use crate::errors::DesktopError;
+#[cfg(test)]
+use crate::errors::{PlatformDetail, PlatformValue};
 use std::sync::{Mutex, PoisonError, TryLockError};
 
 /// A transient native read never adopts connection ownership. Close is
@@ -259,57 +261,8 @@ impl CallbackGate {
 
 /// Singular operation boundaries carry all individual errors under indexed
 /// platform metadata. Shutdown reports retain the individual typed values.
-pub(crate) fn cleanup_result(mut failures: Vec<DesktopError>) -> Result<(), DesktopError> {
-    if failures.is_empty() {
-        return Ok(());
-    }
-    if failures.len() == 1 {
-        return Err(failures.remove(0));
-    }
-    let mut platform = PlatformDetail::new("winrt", "cleanup-failures");
-    for (index, failure) in failures.iter().enumerate() {
-        let prefix = format!("failure.{index}");
-        platform.metadata.insert(
-            format!("{prefix}.code"),
-            PlatformValue::Text(failure.code_str().into()),
-        );
-        platform.metadata.insert(
-            format!("{prefix}.domain"),
-            PlatformValue::Text(failure.domain().as_str().into()),
-        );
-        platform.metadata.insert(
-            format!("{prefix}.operation"),
-            PlatformValue::Text(failure.operation().into()),
-        );
-        if let Some(detail) = failure.detail() {
-            platform.metadata.insert(
-                format!("{prefix}.detail"),
-                PlatformValue::Text(detail.into()),
-            );
-        }
-        if let Some(native) = failure.platform() {
-            platform.metadata.insert(
-                format!("{prefix}.platform.domain"),
-                PlatformValue::Text(native.domain.clone()),
-            );
-            platform.metadata.insert(
-                format!("{prefix}.platform.code"),
-                PlatformValue::Text(native.code.clone()),
-            );
-            if let Some(message) = &native.message {
-                platform.metadata.insert(
-                    format!("{prefix}.platform.message"),
-                    PlatformValue::Text(message.clone()),
-                );
-            }
-            for (key, value) in &native.metadata {
-                platform
-                    .metadata
-                    .insert(format!("{prefix}.platform.metadata.{key}"), value.clone());
-            }
-        }
-    }
-    Err(failures.remove(0).with_platform(platform))
+pub(crate) fn cleanup_result(failures: Vec<DesktopError>) -> Result<(), DesktopError> {
+    crate::errors::cleanup_result("winrt", failures)
 }
 
 #[derive(Clone)]

@@ -60,6 +60,82 @@ const MATERIALIZE_POLL: Duration = Duration::from_millis(100);
 
 type Managed = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>;
 
+struct AvailabilityDiscovery {
+    conn: zbus::Connection,
+    owner: Arc<discovery::DiscoveryOwner>,
+}
+
+type AvailabilityDiscoveries = Arc<Mutex<HashMap<String, Arc<AvailabilityDiscovery>>>>;
+
+async fn release_idle_availability_entry(
+    entries: &AvailabilityDiscoveries,
+    peer: &str,
+    entry: &Arc<AvailabilityDiscovery>,
+) {
+    let mut entries = entries.lock().await;
+    // Map plus this caller only: queued requests must retain registration.
+    if Arc::strong_count(entry) == 2
+        && entries
+            .get(peer)
+            .is_some_and(|current| Arc::ptr_eq(current, entry))
+    {
+        entries.remove(peer);
+    }
+}
+
+/// Own retirement from entry creation, including failure/cancellation before
+/// StartDiscovery. Weak entry ownership does not change queue admission counts.
+struct AvailabilityCleanupGuard {
+    entries: AvailabilityDiscoveries,
+    entry: std::sync::Weak<AvailabilityDiscovery>,
+    peer: String,
+    adapter: String,
+    armed: bool,
+}
+
+impl AvailabilityCleanupGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for AvailabilityCleanupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Some(entry) = self.entry.upgrade() else {
+            return;
+        };
+        let entries = self.entries.clone();
+        let peer = self.peer.clone();
+        let adapter = self.adapter.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn(async move {
+                    let _gate = entry.owner.gate.lock().await;
+                    match entry.owner.cleanup_locked(&entry.conn, &adapter).await {
+                        Ok(()) => release_idle_availability_entry(&entries, &peer, &entry).await,
+                        Err(error) => {
+                            WATCH_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            eprintln!(
+                                "ubm-desktop: LE availability cleanup retained: {}",
+                                error.detail().unwrap_or(error.code_str())
+                            );
+                        }
+                    }
+                });
+            }
+            Err(error) => {
+                WATCH_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                eprintln!(
+                    "ubm-desktop: LE availability cleanup has no executor; retained: {error}"
+                );
+            }
+        }
+    }
+}
+
 /// The just-works pairing agent (legacy `UbmJustWorksAgent`): confirms
 /// just-works and authorization requests, refuses anything that needs
 /// input it cannot supply.
@@ -191,6 +267,8 @@ pub(crate) struct Bluez {
     le_owner: Option<String>,
     gatt_watch: StdMutex<Result<(), DesktopError>>,
     address_discovery: Arc<discovery::DiscoveryOwner>,
+    bus: crate::boundary::BluezBus,
+    availability_discoveries: AvailabilityDiscoveries,
 }
 
 impl Bluez {
@@ -253,7 +331,11 @@ impl Bluez {
                 "gatt.watch",
             )
             .with_detail("LE GATT observation has not been registered"))),
-            address_discovery: Arc::new(discovery::DiscoveryOwner::default()),
+            address_discovery: Arc::new(discovery::DiscoveryOwner::new(
+                discovery::DiscoveryOperation::AddressTargeting,
+            )),
+            bus,
+            availability_discoveries: Arc::new(Mutex::new(HashMap::new())),
         };
         if resolve_owner {
             let owner = authority.current_daemon_owner().await?;
@@ -666,13 +748,29 @@ impl Bluez {
     }
 
     async fn verify_daemon_owner(&self, owner: &str) -> Result<(), DesktopError> {
-        if self.current_daemon_owner().await? != owner {
+        self.verify_discovery_owner(owner, discovery::DiscoveryOperation::AddressTargeting)
+            .await
+    }
+
+    async fn verify_discovery_owner(
+        &self,
+        owner: &str,
+        operation: discovery::DiscoveryOperation,
+    ) -> Result<(), DesktopError> {
+        if self.current_daemon_owner_for(operation.name()).await? != owner {
             return Err(DesktopError::new(
                 BleErrorCode::CapabilityUnsupported,
                 BleErrorDomain::Capability,
-                "peer.address-targeting",
+                operation.name(),
             )
-            .with_detail("the BlueZ daemon owner changed during address resolution"));
+            .with_detail(match operation {
+                discovery::DiscoveryOperation::AddressTargeting => {
+                    "the BlueZ daemon owner changed during address resolution"
+                }
+                discovery::DiscoveryOperation::WhenAvailable => {
+                    "the BlueZ daemon owner changed during LE availability acquisition"
+                }
+            }));
         }
         Ok(())
     }
@@ -731,9 +829,229 @@ impl Bluez {
     }
 
     pub(crate) async fn finish_discovery(&self) -> Result<(), DesktopError> {
-        self.address_discovery
-            .cleanup(&self.conn, &self.adapter_path)
+        let mut peers: Vec<_> = self
+            .availability_discoveries
+            .lock()
             .await
+            .keys()
+            .cloned()
+            .collect();
+        peers.sort();
+        // Every independent sender must be polled before waiting for any one
+        // Stop reply. A stalled owner cannot spend the close budget starving
+        // siblings; canceled pending replies remain retained by their owners.
+        let (availability, address) = futures_util::future::join(
+            futures_util::future::join_all(peers.iter().map(|peer| self.finish_availability(peer))),
+            self.address_discovery
+                .cleanup(&self.conn, &self.adapter_path),
+        )
+        .await;
+        let failures = availability
+            .into_iter()
+            .chain(std::iter::once(address))
+            .filter_map(Result::err)
+            .collect();
+        crate::errors::cleanup_result("bluez-dbus", failures)
+    }
+
+    pub(crate) async fn finish_availability(&self, peer: &str) -> Result<(), DesktopError> {
+        let entry = self
+            .availability_discoveries
+            .lock()
+            .await
+            .get(peer)
+            .cloned();
+        if let Some(entry) = entry {
+            entry.owner.cleanup(&entry.conn, &self.adapter_path).await?;
+            self.release_idle_availability(peer, &entry).await;
+        }
+        Ok(())
+    }
+
+    async fn release_idle_availability(&self, peer: &str, entry: &Arc<AvailabilityDiscovery>) {
+        release_idle_availability_entry(&self.availability_discoveries, peer, entry).await;
+    }
+
+    async fn availability_discovery(
+        &self,
+        peer: &str,
+    ) -> Result<Arc<AvailabilityDiscovery>, DesktopError> {
+        let mut entries = self.availability_discoveries.lock().await;
+        if let Some(entry) = entries.get(peer) {
+            return Ok(entry.clone());
+        }
+        // BlueZ discovery is sender-owned. Each peer gets a dedicated sender,
+        // so cancellation cannot stop another peer's or the public scan's work.
+        let conn = match self.bus {
+            crate::boundary::BluezBus::System => zbus::Connection::system().await,
+            crate::boundary::BluezBus::Session => zbus::Connection::session().await,
+        }
+        .map_err(|error| platform("connection.connect.when-available", error))?;
+        let entry = Arc::new(AvailabilityDiscovery {
+            conn,
+            owner: Arc::new(discovery::DiscoveryOwner::new(
+                discovery::DiscoveryOperation::WhenAvailable,
+            )),
+        });
+        entries.insert(peer.to_owned(), entry.clone());
+        Ok(entry)
+    }
+
+    /// Optional revision-1 native LE availability observer. Older maintained
+    /// daemons retain direct connection support but cannot offer this mechanism.
+    pub(crate) async fn le_availability(&self) -> Result<u64, DesktopError> {
+        const OP: &str = "connection.connect.when-available";
+        let owner = self.current_daemon_owner_for(OP).await?;
+        let reply = self
+            .conn
+            .call_method(
+                Some(owner.as_str()),
+                self.adapter_path.as_str(),
+                Some("org.unifiedblemanager.LinuxAuthority1"),
+                "GetLeAvailability",
+                &(),
+            )
+            .await
+            .map_err(|error| {
+                let missing = dbus_error_name(&error).is_some_and(|(name, _)| {
+                    matches!(
+                        name.as_str(),
+                        "org.freedesktop.DBus.Error.UnknownMethod"
+                            | "org.freedesktop.DBus.Error.UnknownInterface"
+                    )
+                });
+                if missing {
+                    DesktopError::new(
+                        BleErrorCode::CapabilityUnsupported,
+                        BleErrorDomain::Capability,
+                        OP,
+                    )
+                    .with_detail("the bound daemon lacks the native LE availability observer")
+                    .with_platform(bluez_dbus_detail(&error))
+                } else {
+                    platform(OP, error)
+                }
+            })?;
+        let (version, sequence): (u32, u64) = reply
+            .body()
+            .deserialize()
+            .map_err(|error| platform(OP, error))?;
+        if version != 1 || sequence == u64::MAX {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                OP,
+            )
+            .with_detail("unknown or exhausted native LE availability observer"));
+        }
+        Ok(sequence)
+    }
+
+    /// Scan-triggered *initial* acquisition: wait for a connectable LE MGMT
+    /// report newer than the baseline. Device1 cache/RSSI and Classic reports
+    /// cannot settle this wait. Caller budget/cancellation surrounds this future;
+    /// accepted discovery effects remain owned by the cleanup guard.
+    pub(crate) async fn wait_le_available(&self, peer_id: &str) -> Result<(), DesktopError> {
+        const OP: &str = "connection.connect.when-available";
+        let path = device_path(peer_id);
+        if !path.starts_with(&format!("{}/dev_", self.adapter_path)) {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                OP,
+            )
+            .with_detail("LE availability peer belongs to a different adapter"));
+        }
+        // Declare the weak guard first so cancellation drops the caller's
+        // entry before its guard schedules retirement; no transient caller Arc
+        // can prevent removal once the deferred cleanup confirms idle.
+        let mut cleanup;
+        let entry = self.availability_discovery(peer_id).await?;
+        cleanup = AvailabilityCleanupGuard {
+            entries: self.availability_discoveries.clone(),
+            entry: Arc::downgrade(&entry),
+            peer: peer_id.to_owned(),
+            adapter: self.adapter_path.clone(),
+            armed: true,
+        };
+        let _gate = entry.owner.gate.lock().await;
+        entry
+            .owner
+            .cleanup_locked(&entry.conn, &self.adapter_path)
+            .await?;
+        let owner = self.current_daemon_owner_for(OP).await?;
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender(owner.as_str())
+            .map_err(|error| platform(OP, error))?
+            .path(self.adapter_path.as_str())
+            .map_err(|error| platform(OP, error))?
+            .interface("org.unifiedblemanager.LinuxAuthority1")
+            .map_err(|error| platform(OP, error))?
+            .member("LeAdvertisement")
+            .map_err(|error| platform(OP, error))?
+            .build();
+        let mut stream = zbus::MessageStream::for_match_rule(rule, &entry.conn, Some(64))
+            .await
+            .map_err(|error| platform(OP, error))?;
+        // Registration precedes the authoritative baseline, excluding queued
+        // old reports while retaining reports racing StartDiscovery's reply.
+        let baseline = self.le_availability().await?;
+        let mut filter: HashMap<&str, Value<'_>> = HashMap::new();
+        filter.insert("Transport", Value::from("le"));
+        filter.insert("DuplicateData", Value::from(true));
+        entry
+            .conn
+            .call_method(
+                Some(owner.as_str()),
+                self.adapter_path.as_str(),
+                Some(ADAPTER),
+                "SetDiscoveryFilter",
+                &(filter,),
+            )
+            .await
+            .map_err(|error| platform(OP, error))?;
+        entry
+            .owner
+            .start(&entry.conn, &self.adapter_path, owner.clone())
+            .await?;
+        let result = loop {
+            tokio::select! {
+                message = stream.next() => {
+                    let Some(message) = message else {
+                        break Err(DesktopError::new(BleErrorCode::PlatformFailure, BleErrorDomain::Connection, OP)
+                            .with_detail("native LE availability stream closed"));
+                    };
+                    let message = match message { Ok(message) => message, Err(error) => break Err(platform(OP, error)) };
+                    let report: (OwnedObjectPath, u64) = match message.body().deserialize() {
+                        Ok(report) => report, Err(error) => break Err(platform(OP, error)),
+                    };
+                    if report.0.as_str() == path && report.1 > baseline {
+                        break self.verify_discovery_owner(&owner, discovery::DiscoveryOperation::WhenAvailable).await;
+                    }
+                }
+                () = tokio::time::sleep(MATERIALIZE_POLL) => {
+                    if let Err(error) = self.verify_discovery_owner(&owner, discovery::DiscoveryOperation::WhenAvailable).await { break Err(error); }
+                }
+            }
+        };
+        // Success is not published until this wait's own discovery session
+        // is positively released. Refused cleanup remains retryable at close.
+        if let Err(cleanup_error) = entry
+            .owner
+            .cleanup_locked(&entry.conn, &self.adapter_path)
+            .await
+        {
+            return match result {
+                Ok(()) => Err(cleanup_error),
+                Err(primary) => {
+                    crate::errors::cleanup_result("bluez-dbus", vec![primary, cleanup_error])
+                }
+            };
+        }
+        self.release_idle_availability(peer_id, &entry).await;
+        cleanup.disarm();
+        result
     }
 
     async fn managed_objects(&self, operation: &str) -> Result<Managed, DesktopError> {

@@ -5,6 +5,7 @@
  */
 const fs = require('fs')
 const path = require('path')
+const YAML = require('yaml')
 
 const root = path.join(__dirname, '..')
 const read = p => fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n')
@@ -66,7 +67,7 @@ describe('ci-release canonical package (4.0)', () => {
     expect(w).toContain('test "${TARBALL_NAME}" = "${EXPECTED_TARBALL}"')
     expect(w).toContain('test "${#TARBALLS[@]}" -eq 1')
     expect(w).toContain('npm publish "${PUBLISH_TARBALL}" --provenance --access public --tag "${NPM_DIST_TAG}"')
-    expect(w).toContain('4.0.0-rc.*')
+    expect(w).toContain('Classify and guard canonical package release channel')
     expect(w).toContain('Fetch main for initial tag verification')
     expect(w).toContain('Verify release tag points at current main')
     expect(w).toContain('run: node scripts/release/release-version-policy.js')
@@ -263,18 +264,15 @@ describe('ci-release canonical package (4.0)', () => {
       /- name: Canonical npm pack \+ install export smoke[\s\S]+?run: node scripts\/ci\/pack-install-smoke\.js[\s\S]+?- name: G6A packed consumer proof\n\s+if: runner\.os == 'Linux' && matrix\.node == '22'\n\s+run: node scripts\/ci\/g6a-packed-consumer-proof\.js/
     )
 
-    const publishJob = publish.slice(publish.indexOf('\n  publish:'))
-    expect(publishJob).toContain('runs-on: ubuntu-latest')
-    expect(publishJob).toMatch(/name: Setup Node\.js[\s\S]+?node-version: 24/)
-    expect(publishJob.match(g6aCommandPattern)).toHaveLength(1)
-    const publishSmokeIndex = publishJob.indexOf('- name: Canonical pack+install export smoke')
-    const publishG6AIndex = publishJob.indexOf('- name: G6A packed consumer proof')
-    expect(publishSmokeIndex).toBeGreaterThan(-1)
-    expect(publishG6AIndex).toBeGreaterThan(publishSmokeIndex)
-    expect(publishJob.slice(publishSmokeIndex, publishG6AIndex)).toContain('run: node scripts/ci/pack-install-smoke.js')
-    expect(publishJob.slice(publishG6AIndex)).toMatch(
-      /- name: G6A packed consumer proof\n\s+run: node scripts\/ci\/g6a-packed-consumer-proof\.js/
-    )
+    const jobs = YAML.parse(publish).jobs
+    for (const id of ['packed-smoke', 'packed-g6a']) {
+      expect(jobs[id].needs).toContain('canonical-package')
+      expect(jobs[id].env.UBM_PACKED_TARBALL_SHA256).toBe('${{ needs.canonical-package.outputs.sha256 }}')
+      expect(jobs.results.needs).toContain(id)
+    }
+    expect(jobs['packed-smoke'].steps.some(step => step.run === 'node scripts/ci/pack-install-smoke.js')).toBe(true)
+    expect(jobs['packed-g6a'].steps.some(step => step.run === g6aCommand)).toBe(true)
+    expect(publish.match(g6aCommandPattern)).toHaveLength(1)
 
     expect(release).toMatch(
       /node scripts\/ci\/pack-install-smoke\.js\nnode scripts\/ci\/g6a-packed-consumer-proof\.js\nnpm pack --dry-run/

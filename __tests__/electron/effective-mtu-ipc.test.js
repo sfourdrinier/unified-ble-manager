@@ -59,6 +59,7 @@ function capabilityDescriptors() {
   }
   const limited = new Set([
     'connection:direct',
+    'connection:when-available',
     'connection:rssi',
     'connection:effective-mtu',
     'security:state',

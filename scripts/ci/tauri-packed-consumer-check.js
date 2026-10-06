@@ -7,6 +7,7 @@ const crypto = require('crypto')
 const os = require('os')
 const path = require('path')
 const { spawnSync } = require('child_process')
+const { suppliedPackedTarball } = require('./supplied-packed-tarball')
 
 const root = path.resolve(__dirname, '../..')
 const packageManifest = require(path.join(root, 'package.json'))
@@ -59,8 +60,9 @@ try {
   fs.mkdirSync(path.join(consumer, 'frontend'))
   fs.writeFileSync(path.join(consumer, 'frontend', 'index.html'), '<!doctype html><title>UBM packed Tauri proof</title>\n')
 
-  run('npm', ['pack', '--ignore-scripts', '--pack-destination', artifacts])
-  const tarball = path.join(
+  const suppliedTarball = suppliedPackedTarball()
+  if (!suppliedTarball) run('npm', ['pack', '--ignore-scripts', '--pack-destination', artifacts])
+  const tarball = suppliedTarball || path.join(
     artifacts,
     `${packageManifest.name.replace(/^@/, '').replace('/', '-')}-${packageManifest.version}.tgz`
   )

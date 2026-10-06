@@ -70,6 +70,7 @@ function capabilitySnapshot(
   const entries = [
     ['discovery:continuous-scan', 'scan.owner-join-authority-and-signature'],
     ['connection:direct', 'connection.lease-joins-borrowing-transfer-and-revocation'],
+    ['connection:when-available', 'connection.when-available'],
     ['connection:rssi', 'connection.rssi-and-att-mtu-capability-contract'],
     ['gatt:descriptors', 'gatt.descriptor-discovery-read-write'],
     ['gatt:indications', 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation'],
@@ -323,13 +324,16 @@ describe('Tauri v2 public manager', () => {
     expect(manager.capabilities.supports('gatt:maximum-write-length')).toBe(true)
     expect(manager.capabilities.supports('gatt:long-write')).toBe(true)
     await expect(manager.connect('peer-1', { intent: 'when-available' })).rejects.toMatchObject({
-      code: 'capability.unsupported'
+      code: 'capability.unsupported',
+      operation: 'native.connection.options'
     })
     await expect(manager.connect('peer-1', { preferredPhy: ['le-2m'] })).rejects.toMatchObject({
-      code: 'capability.unsupported'
+      code: 'capability.unsupported',
+      operation: 'native.connection.options'
     })
     await expect(manager.connect('peer-1', { transport: 'le' })).rejects.toMatchObject({
-      code: 'capability.unsupported'
+      code: 'capability.unsupported',
+      operation: 'native.connection.options'
     })
     const routed = invoke.mock.calls.filter(([, args]) => args.request.envelope?.command === 'connection.connect')
     expect(routed.map(([, args]) => args.request.envelope.payload)).toEqual([

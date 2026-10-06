@@ -1174,6 +1174,11 @@ pub trait RadioBoundary: Send + Sync + 'static {
     fn close(&self) -> impl Future<Output = ()> + Send + '_;
     /// Release transport event resources after the central's event consumer
     /// has joined. Refused cleanup remains owned and this hook is retryable.
+    /// The completed result accounts for every remaining transport obligation,
+    /// including independent cleanup reported by a prior disconnect observation.
+    /// A confirmed retry supersedes that obligation's earlier refusal; an owner
+    /// that produces `DisconnectObservation::cleanup_failure` must account for
+    /// its retained debt here rather than use the default empty implementation.
     fn finish_close(&self) -> impl Future<Output = Vec<DesktopError>> + Send + '_ {
         async { Vec::new() }
     }
@@ -1355,6 +1360,11 @@ pub trait RadioBoundary: Send + Sync + 'static {
     fn connection_capability_limitation(&self) -> Option<&'static str> {
         None
     }
+    fn when_available_capability_limitation(
+        &self,
+    ) -> Option<(ubm_core::central::CapabilityState, &'static str)> {
+        None
+    }
     /// Whether an adapter loss tears down live work on this radio (finding
     /// 57): the desktop OS radios do, as their legacy backends did. Default:
     /// the loss is reported as a state change only.
@@ -1430,6 +1440,8 @@ pub struct DisconnectObservation {
     pub platform: Option<crate::errors::PlatformDetail>,
     /// Native physical generation; distinct from public connection/ATT generations.
     pub physical_generation: Option<u64>,
+    /// A separately owned cleanup refusal does not negate confirmed link release.
+    pub cleanup_failure: Option<crate::errors::DesktopError>,
 }
 
 pub(crate) fn bluez_disconnect_observation(reason: u8) -> crate::errors::PlatformDetail {
@@ -1461,6 +1473,8 @@ impl RadioCloseFailure {
 
 struct FakeInner {
     disconnect_observations: HashMap<String, crate::errors::PlatformDetail>,
+    disconnect_cleanup_failures: HashMap<String, DesktopError>,
+    disconnect_cleanup_retire_on_finish: std::collections::HashSet<String>,
     #[cfg(target_os = "linux")]
     physical_generations: HashMap<String, u64>,
     directory_peers: Option<Vec<DirectoryPeer>>,
@@ -1569,6 +1583,30 @@ impl Default for FakeRadio {
 }
 
 impl FakeRadio {
+    /// Retain a separately owned cleanup refusal after confirmed link release.
+    pub fn set_disconnect_cleanup_failure(&self, peer: &str, error: DesktopError) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .disconnect_cleanup_failures
+            .insert(peer.to_owned(), error);
+    }
+    /// Confirm retirement of the independently owned cleanup debt.
+    pub fn clear_disconnect_cleanup_failure(&self, peer: &str) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .disconnect_cleanup_failures
+            .remove(peer);
+    }
+    /// Script a cleanup retry confirmed during final transport accounting.
+    pub fn retire_disconnect_cleanup_at_finish_close(&self, peer: &str) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .disconnect_cleanup_retire_on_finish
+            .insert(peer.to_owned());
+    }
     /// Script the authoritative detail returned by a synthetic release.
     pub fn set_disconnect_observation(&self, peer: &str, detail: crate::errors::PlatformDetail) {
         self.state
@@ -1618,6 +1656,8 @@ impl FakeRadio {
         Self {
             state: StdMutex::new(FakeInner {
                 disconnect_observations: HashMap::new(),
+                disconnect_cleanup_failures: HashMap::new(),
+                disconnect_cleanup_retire_on_finish: std::collections::HashSet::new(),
                 directory_peers: None,
                 bonded_directory_peers: None,
                 directory_unblocked_reads: 0,
@@ -2403,6 +2443,13 @@ impl RadioBoundary for FakeRadio {
         Ok(DisconnectObservation {
             platform,
             physical_generation: None,
+            cleanup_failure: self
+                .state
+                .lock()
+                .expect("fake radio state")
+                .disconnect_cleanup_failures
+                .get(peer_id)
+                .cloned(),
         })
     }
     fn consume_disconnect_observation(&self, peer: &str, observation: &DisconnectObservation) {
@@ -2712,7 +2759,16 @@ impl RadioBoundary for FakeRadio {
             )];
         }
         self.gate(FaultOp::FinishClose).await;
-        Vec::new()
+        let mut state = self.state.lock().expect("fake radio state");
+        let retired: Vec<_> = state.disconnect_cleanup_retire_on_finish.drain().collect();
+        for peer in retired {
+            state.disconnect_cleanup_failures.remove(&peer);
+        }
+        state
+            .disconnect_cleanup_failures
+            .values()
+            .cloned()
+            .collect()
     }
 
     async fn read_rssi(&self, peer_id: &str) -> Result<i16, DesktopError> {

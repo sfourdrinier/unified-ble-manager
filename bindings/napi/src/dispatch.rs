@@ -347,6 +347,15 @@ impl RadioBoundary for DispatchRadio {
         }
     }
 
+    fn when_available_capability_limitation(
+        &self,
+    ) -> Option<(ubm_core::central::CapabilityState, &'static str)> {
+        match self {
+            Self::Radio(radio) => radio.when_available_capability_limitation(),
+            Self::Synthetic(radio) => radio.when_available_capability_limitation(),
+        }
+    }
+
     fn tears_down_on_adapter_loss(&self) -> bool {
         match self {
             Self::Radio(radio) => radio.tears_down_on_adapter_loss(),

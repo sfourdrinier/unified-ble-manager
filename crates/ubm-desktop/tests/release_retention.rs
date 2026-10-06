@@ -70,6 +70,165 @@ async fn open() -> DesktopCentral<FakeRadio> {
         .expect("open")
 }
 
+fn indeterminate_discovery_failure() -> ubm_desktop::DesktopError {
+    ubm_desktop::DesktopError::new(
+        ubm_core::contracts::BleErrorCode::PlatformFailure,
+        ubm_core::contracts::BleErrorDomain::Cleanup,
+        "connection.when-available",
+    )
+    .with_platform(ubm_desktop::PlatformDetail::new(
+        "bluez-dbus",
+        "org.freedesktop.DBus.Error.NoReply",
+    ))
+}
+
+#[tokio::test]
+async fn confirmed_release_with_indeterminate_discovery_debt_is_terminal_and_reconnectable() {
+    let central = open().await;
+    ready_peer(&central, "peer-debt").await;
+    let reason = ubm_desktop::PlatformDetail::new("bluez-mgmt", "19");
+    central
+        .boundary()
+        .set_disconnect_observation("peer-debt", reason.clone());
+    let mut events = central.lifecycle_events();
+    central
+        .boundary()
+        .set_disconnect_cleanup_failure("peer-debt", indeterminate_discovery_failure());
+    let error = central
+        .disconnect("peer-debt", "lease-a", OpControl::budget_ms(5000))
+        .await
+        .expect_err("independent cleanup remains visible");
+    assert_eq!(
+        error.platform().unwrap().code,
+        "org.freedesktop.DBus.Error.NoReply"
+    );
+    assert_eq!(
+        state_of(&central.peer_records().await, "peer-debt"),
+        Some(ConnectionState::Disconnected)
+    );
+    assert!(!central.boundary().link_connected("peer-debt"));
+    let event = events
+        .try_recv()
+        .expect("released fact is published despite cleanup refusal");
+    assert_eq!(
+        event.kind,
+        ubm_desktop::LifecycleKind::Released { requested: true }
+    );
+    assert_eq!(event.platform, Some(reason));
+    assert!(events.try_recv().is_err(), "one terminal event");
+    central
+        .connect("peer-debt", "lease-new", OpControl::budget_ms(5000))
+        .await
+        .expect("cleanup debt cannot erase confirmed release or fence new connection");
+    assert_eq!(
+        state_of(&central.peer_records().await, "peer-debt"),
+        Some(ConnectionState::Connected)
+    );
+}
+
+#[tokio::test]
+async fn shutdown_reconciles_discovery_cleanup_confirmed_by_final_transport_retry() {
+    let central = open().await;
+    ready_peer(&central, "peer-final-cleanup").await;
+    central.boundary().set_disconnect_cleanup_failure(
+        "peer-final-cleanup",
+        ubm_desktop::DesktopError::new(
+            ubm_core::contracts::BleErrorCode::PlatformFailure,
+            ubm_core::contracts::BleErrorDomain::Cleanup,
+            "connection.when-available",
+        )
+        .with_platform(ubm_desktop::PlatformDetail::new(
+            "bluez-dbus",
+            "org.bluez.Error.Failed",
+        )),
+    );
+    central
+        .boundary()
+        .retire_disconnect_cleanup_at_finish_close("peer-final-cleanup");
+    let mut events = central.lifecycle_events();
+    let report = central.shutdown().await;
+    assert!(
+        report.is_released(),
+        "final confirmed cleanup supersedes its provisional refusal"
+    );
+    assert!(report.transport_close_failures.is_empty());
+    assert!(!central.boundary().link_connected("peer-final-cleanup"));
+    assert_eq!(
+        events
+            .try_recv()
+            .expect("physical release remains published")
+            .kind,
+        ubm_desktop::LifecycleKind::Released { requested: true },
+    );
+    assert!(
+        events.try_recv().is_err(),
+        "cleanup retry cannot duplicate physical release"
+    );
+    assert_eq!(count(&central, "disconnect"), 1);
+    assert_eq!(count(&central, "finish_close"), 1);
+}
+
+#[tokio::test]
+async fn shutdown_keeps_provisional_discovery_cause_when_final_accounting_times_out() {
+    let central = open().await;
+    ready_peer(&central, "peer-accounting-timeout").await;
+    central.boundary().set_disconnect_cleanup_failure(
+        "peer-accounting-timeout",
+        indeterminate_discovery_failure(),
+    );
+    central.boundary().block_op(FaultOp::FinishClose);
+    let report = central.shutdown().await;
+    assert!(!report.is_released());
+    assert!(report.transport_close_failures.iter().any(|error| {
+        error
+            .platform()
+            .is_some_and(|platform| platform.code == "org.freedesktop.DBus.Error.NoReply")
+    }));
+    assert!(report.transport_close_failures.iter().any(|error| {
+        error.code_str() == "operation.timed-out" && error.operation() == "radio.close.transport"
+    }));
+    assert!(!central.boundary().link_connected("peer-accounting-timeout"));
+    central.boundary().unblock_op(FaultOp::FinishClose);
+}
+
+#[tokio::test]
+async fn shutdown_confirms_link_release_but_reports_independent_discovery_debt() {
+    let central = open().await;
+    ready_peer(&central, "peer-close-debt").await;
+    central
+        .boundary()
+        .set_disconnect_cleanup_failure("peer-close-debt", indeterminate_discovery_failure());
+    let report = central.shutdown().await;
+    assert_eq!(
+        report.transport_close_failures.len(),
+        1,
+        "report final debt once, not the same provisional refusal twice"
+    );
+    assert!(
+        report.transport_close_failures.iter().any(|error| error
+            .platform()
+            .is_some_and(|platform| platform.code == "org.freedesktop.DBus.Error.NoReply")),
+        "retained discovery cleanup must be reported separately from link release"
+    );
+    assert!(!central.boundary().link_connected("peer-close-debt"));
+    assert_eq!(
+        central.resource_counters().await.core.disconnect_failures,
+        0,
+        "confirmed physical release is not an outstanding disconnect"
+    );
+    assert!(
+        !central.shutdown().await.is_released(),
+        "persistent independent debt remains visible on manager retry"
+    );
+    central
+        .boundary()
+        .clear_disconnect_cleanup_failure("peer-close-debt");
+    assert!(
+        central.shutdown().await.is_released(),
+        "only confirmed cleanup clears the retained failure"
+    );
+}
+
 async fn wait_peer(central: &DesktopCentral<FakeRadio>, peer_id: &str) {
     for _ in 0..2000 {
         if central.peer_key_for(peer_id).await.is_some() {

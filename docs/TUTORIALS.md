@@ -132,11 +132,14 @@ const connection = await ble.connect(known.id, { intent: 'when-available', timeo
 ```
 
 On iOS, `restoration.claim()` adopts the OS journal after the system
-relaunches the app. `when-available` is Android-only: use a durable restored
+relaunches the app. iOS and tvOS refuse `when-available`: use a durable restored
 `PeerReference` with `intent: 'direct'` when reconnecting from a fresh iOS
 manager. The shared restoration driver accepts the reference, but has not yet
 physically qualified that fresh-manager iOS path; its current receipt proves
-wake/adoption only. Below API 31,
+wake/adoption only. Desktop initial acquisition also implements `when-available`
+on macOS, Windows and Linux (Linux requires the optional maintained-daemon LE
+observer); it is not process restoration or automatic post-loss reconnect.
+Below API 31,
 and on tvOS, desktop and Web, presence observation reports
 `capability.unsupported` with a reason instead of waking anything. The
 task-ordered Android chain, iOS counterpart, and platform refusals are in

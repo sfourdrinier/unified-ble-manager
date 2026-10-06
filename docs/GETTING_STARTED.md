@@ -4,7 +4,7 @@
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 
-This source targets `5.0.0-rc.19`; verify the published version in the npm registry.
+This source targets `5.0.0-rc.20`; verify the published version in the npm registry.
 
 ## Pick a host
 
@@ -29,7 +29,7 @@ Install the exact candidate and commit the resolved lockfile for a known native
 rebuild:
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.19
+pnpm add unified-ble-manager@5.0.0-rc.20
 ```
 
 Declare Android Bluetooth permissions and the BLE hardware feature yourself,
@@ -39,11 +39,11 @@ request runtime permissions on Android 12+, add
 #### Expo / CNG v2
 
 The Expo v2 schema and `unified-ble-manager/expo` factory are in this source.
-After the npm registry lists `5.0.0-rc.19`, install that exact version and keep it in
+Install `5.0.0-rc.20` and keep that exact version in
 your lockfile while validating the native build:
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.19
+pnpm add unified-ble-manager@5.0.0-rc.20
 ```
 
 The package does not run in Expo Go.
@@ -320,9 +320,12 @@ platform: on Android associate (`ble.association.associate`), arm presence
 `connect` with intent `'when-available'`; on iOS configure
 `background.ios.restoration` and adopt with `restoration.claim()`. iOS
 reconnects directly through a durable restored `PeerReference`, never through
-Android-only `'when-available'`; the shared driver now accepts that reference,
+`'when-available'` (refused on iOS and tvOS); the shared driver now accepts that reference,
 but its physical direct-reconnect qualification is still open. The full task-ordered chain, and what API<31,
 tvOS, desktop and Web answer instead, is in [`BACKGROUND.md`](BACKGROUND.md).
+Desktop initial acquisition implements `when-available` on macOS and Windows,
+and on Linux with the optional maintained-daemon LE observer. This does not
+provide process restoration or automatic post-loss reconnect.
 
 ## Coming from react-native-ble-plx
 

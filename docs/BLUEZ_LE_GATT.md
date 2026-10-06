@@ -20,6 +20,15 @@ admission and keep their native failure details. The maintained source extension
 supplies the lease producer and fresh GATT observer together. Installing UBM
 alone does not install that derivative daemon.
 
+Initial `when-available` additionally probes the optional revision-1
+`LinuxAuthority1.GetLeAvailability` / `LeAdvertisement` observer introduced in
+maintained `5.87-ubm.5`. It proves fresh connectable LE advertisement availability,
+not GATT readiness, and does not change the `(1, 2, 1)` lease/GATT tuple. Older
+daemons retain direct acquisition but report deferred acquisition unsupported.
+See [deployment prerequisites](BLUEZ_DEPLOYMENT.md#optional-authoritative-deferred-le-availability)
+and [client ownership](NODE.md#linux-initial-deferred-acquisition). Installing or
+testing this source is not physical-radio qualification.
+
 Lease revision 2's exact `ReleaseLease` reply is `uttsby` (version, original
 token, physical generation, scope, observed-reason presence, raw MGMT byte).
 The reason is captured only from the exact generation's native physical-loss

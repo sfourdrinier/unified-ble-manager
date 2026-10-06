@@ -25,11 +25,26 @@ struct State {
     stop: Option<Reply>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy)]
+pub(super) enum DiscoveryOperation {
+    AddressTargeting,
+    WhenAvailable,
+}
+
+impl DiscoveryOperation {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::AddressTargeting => "peer.address-targeting",
+            Self::WhenAvailable => "connection.connect.when-available",
+        }
+    }
+}
+
 pub(super) struct DiscoveryOwner {
     pub(super) gate: Mutex<()>,
     state: StdMutex<Option<State>>,
     scheduled: AtomicBool,
+    operation: DiscoveryOperation,
 }
 
 fn call(
@@ -37,6 +52,7 @@ fn call(
     adapter: String,
     owner: String,
     method: &'static str,
+    operation: DiscoveryOperation,
 ) -> Reply {
     async move {
         connection
@@ -67,7 +83,7 @@ fn call(
                             | "org.bluez.Error.NotAuthorized"
                             | "org.bluez.Error.NotReady"
                     ),
-                    error: platform("peer.address-targeting", error),
+                    error: platform(operation.name(), error),
                 }
             })
     }
@@ -76,6 +92,65 @@ fn call(
 }
 
 impl DiscoveryOwner {
+    async fn owner_retired(
+        &self,
+        connection: &zbus::Connection,
+        owner: &str,
+    ) -> Result<bool, DesktopError> {
+        // Ask the bus about the original unique sender, never org.bluez's
+        // replacement. An error name from a live daemon is not retirement.
+        zbus::names::UniqueName::try_from(owner).map_err(|error| {
+            DesktopError::new(
+                ubm_core::contracts::BleErrorCode::PlatformFailure,
+                ubm_core::contracts::BleErrorDomain::Cleanup,
+                self.operation.name(),
+            )
+            .with_detail(format!(
+                "discovery retirement requires its captured unique owner: {error}"
+            ))
+        })?;
+        let present: bool = connection
+            .call_method(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"),
+                "NameHasOwner",
+                &(owner,),
+            )
+            .await
+            .map_err(|error| platform(self.operation.name(), error))?
+            .body()
+            .deserialize()
+            .map_err(|error| platform(self.operation.name(), error))?;
+        Ok(!present)
+    }
+
+    async fn settle_failed_cleanup(
+        &self,
+        connection: &zbus::Connection,
+        owner: &str,
+        failure: DesktopError,
+    ) -> Result<(), DesktopError> {
+        match self.owner_retired(connection, owner).await {
+            Ok(true) => {
+                *self.state.lock().unwrap() = None;
+                Ok(())
+            }
+            Ok(false) => Err(failure),
+            Err(observation) => {
+                crate::errors::cleanup_result("bluez-dbus", vec![failure, observation])
+            }
+        }
+    }
+
+    pub(super) fn new(operation: DiscoveryOperation) -> Self {
+        Self {
+            gate: Mutex::new(()),
+            state: StdMutex::new(None),
+            scheduled: AtomicBool::new(false),
+            operation,
+        }
+    }
     /// Caller holds gate for its whole resolution; accepted Start is stored
     /// before polling its reply, so cancellation cannot erase admission.
     pub(super) async fn start(
@@ -89,6 +164,7 @@ impl DiscoveryOwner {
             adapter.to_owned(),
             owner.clone(),
             "StartDiscovery",
+            self.operation,
         );
         *self.state.lock().unwrap() = Some(State {
             owner,
@@ -99,7 +175,9 @@ impl DiscoveryOwner {
     }
 
     /// Caller holds gate. A refused Stop stays addressable and a pending Stop
-    /// keeps its original reply instead of issuing a concurrent request.
+    /// keeps its original reply instead of issuing a concurrent request. Only
+    /// bus-confirmed disappearance of its captured unique owner retires debt
+    /// without a Stop; no request is redirected to a replacement daemon.
     pub(super) async fn cleanup_locked(
         &self,
         connection: &zbus::Connection,
@@ -114,13 +192,19 @@ impl DiscoveryOwner {
         else {
             return Ok(());
         };
+        if self.owner_retired(connection, &owner).await? {
+            *self.state.lock().unwrap() = None;
+            return Ok(());
+        }
         if let Err(failure) = start.await {
             if failure.no_start {
                 *self.state.lock().unwrap() = None;
                 return Ok(());
             }
             if failure.indeterminate {
-                return Err(failure.error);
+                return self
+                    .settle_failed_cleanup(connection, &owner, failure.error)
+                    .await;
             }
         }
         let stop = match previous_stop {
@@ -130,14 +214,17 @@ impl DiscoveryOwner {
                     reply.as_ref().is_err_and(|failure| failure.indeterminate)
                 }) =>
             {
-                return Err(stop.await.unwrap_err().error);
+                return self
+                    .settle_failed_cleanup(connection, &owner, stop.await.unwrap_err().error)
+                    .await;
             }
             _ => {
                 let stop = call(
                     connection.clone(),
                     adapter.to_owned(),
-                    owner,
+                    owner.clone(),
                     "StopDiscovery",
+                    self.operation,
                 );
                 self.state
                     .lock()
@@ -148,7 +235,11 @@ impl DiscoveryOwner {
                 stop
             }
         };
-        stop.await.map_err(|failure| failure.error)?;
+        if let Err(failure) = stop.await {
+            return self
+                .settle_failed_cleanup(connection, &owner, failure.error)
+                .await;
+        }
         *self.state.lock().unwrap() = None;
         Ok(())
     }

@@ -23,6 +23,24 @@ Historical immutable tags retain their original publisher source and behavior.
 
 Releases are tag-driven and published by GitHub Actions through npm trusted publishing/OIDC. Do not use a long-lived `NPM_TOKEN` or publish a normal release from a developer laptop.
 
+### Parallel publisher and preserved serial reference
+
+The production `publish.yml` uses parallel gates and one sealed candidate
+tarball. The previous serial workflow is preserved at
+`.github/publish-serial-reference.yml`, outside executable workflows.
+The separate manual-only
+`publish-parallel-draft.yml` exercises its prepublication gates concurrently,
+without the npm environment, publishing permissions, tag writes or GitHub
+release creation. It is not a replacement publisher and its green result is
+not publication authorization. See [the draft testing procedure](docs/PARALLEL_PUBLISHER_DRAFT.md)
+for cold/warm comparisons and exact-tarball binding. rc.20 is the first
+user-authorized production test; no measured speedup is claimed yet.
+Same-tag runs queue without cancelling an in-flight publish. Production
+artifacts request 90-day retention; an expired/deleted candidate fails closed.
+Recovery requires an entire immutable-tag workflow rerun and all gates again,
+not a protected-job repack or manual publish. See the linked procedure for
+approval holds and existing-version recovery boundaries.
+
 ## Trusted publisher configuration
 
 The npm package's trusted publisher must identify this repository, not the legacy `react-native-ble-plx` repository:
@@ -113,7 +131,7 @@ once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
 history. `4.0.28` is immutable tagged history. The unpublished
 `v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
-The prepared candidate is `5.0.0-rc.19`; rc.18, rc.17, rc.16 and rc.14 are immutable published history.
+The next prepared candidate is `5.0.0-rc.20`; rc.19, rc.18, rc.17, rc.16 and rc.14 are immutable published history.
 The immutable `v5.0.0-rc.15` tag remains unpublished: its publisher was cancelled
 before npm publication when the Apple architecture policy changed.
 
@@ -143,7 +161,27 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
-## Releasing 5.0.0-rc.19
+## Releasing 5.0.0-rc.20
+
+This corrective release aligns installation guidance, historical release status,
+Tauri MTU errors and Windows write-limit descriptions with the implementation.
+It also corrects public stream initialization, retryable cleanup and terminal
+failure reporting, and adds Linux initial deferred acquisition through the
+optional LE observer in maintained daemon `5.87-ubm.5`. It does not promote
+backend qualification labels. Existing daemon installations are not replaced
+implicitly; private-bus and producer tests are not physical qualification.
+Verify exact current `main`, all `5.0.0-rc.20` identities, required CI and release
+gates, and absence of the registry version and annotated tag before creating
+`v5.0.0-rc.20`. Use the trusted tag publisher only; `next` advances to rc.20 and
+`latest` remains 4.0.28. No unrelated physical-device rerun is required.
+
+## Releasing 5.0.0-rc.19 (historical)
+
+`v5.0.0-rc.19` was published on 2026-10-05 from
+`f2e98f41e0d416e6abc6a33594b9d445e8c722b6`. Its npm provenance, registry
+tarball, native identities, GitHub prerelease assets and outside-repository
+installed consumer were verified. The procedure below is historical: do not
+repeat its absent-tag check or recreate the immutable tag.
 
 Integrate all release PRs through `release/5.0.0-rc.19`, then merge that
 qualified combination into `main`. Release only from exact current `main`
@@ -867,7 +905,11 @@ may be bypassed to make a release pass.
 
 ## What the publish workflow does
 
-For a valid version tag, `.github/workflows/publish.yml`:
+For a valid version tag, `.github/workflows/publish.yml` performs the following
+gates and publication operations. This list describes responsibilities, not a
+serial schedule: Android/example lanes run independently, while the
+packed Tauri consumer depends on the sealed canonical package. The aggregate
+requires that every required lane succeeds before publication.
 
 1. checks out the tagged commit and builds Node-API v8 prebuilds for macOS `arm64` and Windows/Linux `arm64`/`x64` native runners;
 2. loads each prebuild under Node and the same file under Electron through the shared `scripts/ci/run-electron-main-smoke.sh` launcher (Linux uses Xvfb and `--no-sandbox`; other hosts retain normal Electron launch). Missing addons and smoke failures remain fatal; this synthetic check makes no physical-radio claim;
@@ -887,10 +929,11 @@ For a valid version tag, `.github/workflows/publish.yml`:
 Linux native system-package profiles have one source of truth:
 `scripts/ci/install-linux-native-system-dependencies.sh`. CI and publish jobs
 call its `bluez`, `tauri`, or `desktop-prebuild` profile and must not duplicate
-`apt-get install` package lists in workflow YAML. The packed external Tauri
-Cargo consumer runs immediately after `prepack`, before examples, Android
-builds and later packaging gates, so an inconsistent runner or consumer fails
-early.
+`apt-get install` package lists in workflow YAML. Native producers feed the
+canonical package assembly; the packed external Tauri Cargo consumer verifies
+that sealed candidate in its own lane. It has no ordering guarantee relative
+to the independent Android/example lanes; any required lane failure prevents
+publication.
 
 Stable versions publish to `latest`. Active `4.0.0-rc.*` candidates also publish to `latest`; other hyphenated SemVer prereleases publish to `next` and create GitHub prereleases.
 
@@ -901,7 +944,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.0-rc.19
+version=5.0.0-rc.20
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -912,7 +955,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `next` resolves to `5.0.0-rc.19`, while `latest` remains on the 4.0 stable
+- npm `next` resolves to `5.0.0-rc.20`, while `latest` remains on the 4.0 stable
   line; a stable release moves `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
@@ -920,7 +963,7 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.0-rc.19` explicitly and import the documented host
+  `unified-ble-manager@5.0.0-rc.20` explicitly and import the documented host
   entrypoints. A bare install still selects `latest` (the 4.0 line). This
   catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a

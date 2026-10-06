@@ -7,10 +7,11 @@ Linux-radio qualification or permission to replace a system service. The
 authority contract and retained source are described in
 [strict BlueZ LE GATT](BLUEZ_LE_GATT.md).
 
-The current source revision corrects a reproduced ready-callback lifetime crash
-in the prior deployed bytes. Earlier receipts remain tied to those older bytes,
-including their failure; they do not qualify this revision. The fix retains the
-same authority contract and does not automatically upgrade or restart a host.
+The current source revision adds an optional authoritative LE advertisement
+observer after the `.4` ready-callback lifetime correction. Earlier receipts
+remain tied to their original bytes, including failures; they do not qualify
+this revision. The authority tuple is unchanged, and the package does not
+automatically upgrade or restart a host.
 
 ## One explicit deployment owner
 
@@ -26,7 +27,7 @@ fresh, disjoint directories outside the repository:
 ```sh
 node /absolute/ubm/vendor/bluez/deployment/bundle.mjs \
   /absolute/bluez-5.87.tar.xz /absolute/new-bluez-bundle \
-  /absolute/new-bluez-build-work 5.87-ubm.4
+  /absolute/new-bluez-build-work 5.87-ubm.5
 node --test /absolute/ubm/vendor/bluez/deployment/deployment.test.mjs
 ```
 
@@ -182,17 +183,23 @@ An unresponsive but still-live owner, a refused owner query, or a method error
 alone leaves cleanup owned and retryable. Retain original diagnostics;
 recovery is not a claim that previous physical resources were released.
 
-### Deferred LE availability remains an explicit mechanism gap
+### Optional authoritative deferred LE availability
 
-The maintained `5.87-ubm.4` contract supports direct scoped LE connection and
-current LE-specific GATT discovery. It does **not** establish fresh LE-specific
-advertisement availability for deferred acquisition. The instantiated Linux
-`connection:when-available` capability remains unsupported; a request with
-`intent: 'when-available'` fails closed as `capability.unsupported` at
-`connection.connect.when-available`, retaining the native reason
-`fresh native LE advertisement availability is not implemented`.
+Maintained `5.87-ubm.5` adds optional observer revision 1 on
+`org.unifiedblemanager.LinuxAuthority1`: `GetLeAvailability` reads the current
+advertisement sequence, and `LeAdvertisement` identifies a fresh connectable LE
+report. The client subscribes under the pinned unique owner before reading its
+baseline, owns a dedicated sender-scoped LE discovery session, then admits the
+existing token-bound connection only after a matching fresh report. Cancellation,
+deadline and cleanup failure retain that discovery ownership without stopping
+public scanning or another peer's session.
 
-This is an implementation boundary, not a claim that Linux cannot provide the mechanism.
+The instantiated Linux backend probes this optional mechanism. `.4` and older
+daemons still support direct scoped connection and GATT discovery, but report
+`capability.unsupported` for initial `when-available`. Installing the addon does
+not update that daemon. The tuple `(1,2,1)` remains necessary for lease authority;
+it alone is not proof that the optional observer is implemented.
+
 BlueZ's ordinary `Device1` RSSI, manufacturer-data and service-data changes do
 not identify the discovery bearer. With merged discovery filters from other
 clients, those observations can represent Classic inquiry as well as LE
@@ -204,17 +211,19 @@ observations without its normal delta threshold, and `DuplicateData` can report
 unchanged manufacturer/service data. These mechanisms still do not establish
 the event's bearer. See the upstream [Adapter discovery-filter contract](https://github.com/bluez/bluez/blob/5.87/doc/org.bluez.Adapter.rst)
 and [device-found event handling](https://github.com/bluez/bluez/blob/5.87/src/adapter.c).
-No cache shortcut, polling loop or hidden retry substitutes for the unresolved
-native LE-specific availability mechanism. Direct acquisition and an explicitly
+No cache shortcut, polling loop or hidden retry substitutes for the native
+LE-specific availability observer. Direct acquisition and an explicitly
 chosen application reconnect policy remain separate supported paths; neither
-should be relabeled as native deferred acquisition. Deployment, existing direct
-connection receipts and successful package gates do not close this mechanism gap.
+should be relabeled as native deferred acquisition. Existing `.4` direct
+connection receipts do not qualify the new observer; producer/private-bus tests
+are not physical-radio proof. A privileged daemon cutover and physical scenario
+remain separately scoped operator actions.
 
 ## Scoped rollback
 
 ```sh
 node /absolute/ubm/vendor/bluez/deployment/activate.mjs rollback \
-  /opt/unified-ble-manager/bluez/5.87-ubm.4-PATCH_HASH_PREFIX/deployment-receipt.json \
+  /opt/unified-ble-manager/bluez/5.87-ubm.5-PATCH_HASH_PREFIX/deployment-receipt.json \
   --confirm-override-removal
 ```
 

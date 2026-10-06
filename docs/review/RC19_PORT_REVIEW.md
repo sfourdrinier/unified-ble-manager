@@ -1,6 +1,11 @@
 # rc.19 — UBM port-review corrections
 
-Status: Current release-branch tracker. Baseline: published rc.18 at
+Status: Historical. Shipped as immutable `v5.0.0-rc.19` on 2026-10-05 from
+`f2e98f41e0d416e6abc6a33594b9d445e8c722b6`. The body below is the retained
+pre-publication record, not current release instructions. Open physical
+qualification and downstream handoff items are not claimed complete.
+
+Original baseline: published rc.18 at
 `bcb490a2cc96e5b1696a12db607caeaef1a95517`. This is one input review, not
 the final release scope; later reviews join `release/5.0.0-rc.19`.
 

@@ -360,7 +360,7 @@ describe('first-party backend standard TCK registrations', () => {
       // so the connection-controls suite applies to them as it does on macOS.
       expect(report.standard.featureSuiteIds).toEqual([
         'tck.feature.peer.bonded',
-        ...(platform === 'winrt' ? ['tck.feature.connection.when-available'] : []),
+        ...(['winrt', 'bluez'].includes(platform) ? ['tck.feature.connection.when-available'] : []),
         'connection-controls',
         securitySuite,
         'tck.feature.gatt.maximum-write-length'
@@ -368,7 +368,7 @@ describe('first-party backend standard TCK registrations', () => {
       expectEveryReceiptHolds(report)
       expect(inventoryRead).toHaveBeenCalledTimes(1)
       expect(harness.calls.filter(([name]) => name === 'connectWhenAvailable')).toHaveLength(
-        platform === 'winrt' ? 1 : 0
+        ['winrt', 'bluez'].includes(platform) ? 1 : 0
       )
       expect(
         report.standard.featureBindings.find(binding => binding.featureId === BUILT_IN_FEATURE_IDS.peerBonded)

@@ -6,8 +6,13 @@ reconfigures the system daemon. Application integration and deployment require
 separate review and explicit host action. Do not silently apply it, enable
 experimental APIs, grant privileges or upgrade a host.
 
-The current deployment identity is `5.87-ubm.4`, with unchanged Linux authority
-contract `(1,2,1)`. It also corrects the pinned upstream 5.87 UUID discovery
+The current source deployment identity is `5.87-ubm.5`, with unchanged Linux
+authority contract `(1,2,1)`. Its optional revision-1 LE availability observer
+implements scan-triggered initial `when-available` acquisition. Installing the
+npm package does not deploy this daemon; older `.4` deployments retain direct
+LE lease support but explicitly lack the optional availability observer.
+
+The `.4` corrections are retained: it corrects the pinned upstream 5.87 UUID discovery
 filter: the upstream call reversed `queue_find`'s callback and match-data
 arguments, causing service-filtered discovery to execute an advertised UUID
 string as a function. The typed equality callback is covered by an executable
@@ -22,7 +27,8 @@ and device owners retain the watch independently, retirement detaches its device
 and reentrant callback cleanup cannot destroy currently executing user data.
 The older `.3` physical receipt retains that crash and is not a pass for `.4`.
 Native executable tests prove these boundaries; deploying and qualifying `.4`
-remains an explicit, separate host action.
+or `.5` remains an explicit, separate host action. A receipt for `.4` is not
+physical qualification of `.5` or its new initial-acquisition mechanism.
 
 ## Provenance and license
 
@@ -109,6 +115,36 @@ native Include declarations, whose exported unique targets follow stock BlueZ
 Includes semantics, as well as missing and stale targets.
 
 ## Private authority contract 1, lease revision 2, GATT revision 1
+
+### Optional LE availability observer revision 1
+
+On the selected adapter, `LinuxAuthority1.GetLeAvailability()` returns exactly
+`ut`: observer revision `1` and a daemon-epoch monotonic native report sequence.
+`LinuxAuthority1.LeAdvertisement(ot)` carries the device object path and its
+sequence. The producer emits only actual connectable LE MGMT reports, never
+Classic discovery, cached Device1 properties, nonconnectable advertisements or
+standalone scan responses. A report does not promise a successful connection.
+Signal emission failure is logged rather than silently discarded.
+
+Consumers authenticate the pinned unique sender, adapter path, interface and
+signature; register their stream before reading the baseline; and wait for an
+exact peer report whose sequence exceeds that baseline. Each pending peer owns
+a dedicated D-Bus discovery sender with a `Transport=le` filter, independent of
+public scans and other peers. After positive discovery cleanup, the existing
+token-bound `LELease1.ConnectLease` owns the actual LE acquisition. Cancellation
+and the original caller deadline retire only that sender's discovery work;
+accepted start/stop replies and refused cleanup remain owned until reconciled.
+No generic Device1 Connect or automatic reconnect is substituted. Missing or
+unknown observer versions report unsupported; failed observation reports its
+actual platform refusal. Owner replacement invalidates the wait instead of
+adopting the replacement daemon's reports.
+
+Executable production-table and private-bus consumer tests cover native report
+classification, fresh versus queued/cached reports, owner replacement, absent
+observer, cancellation, deadline, concurrent peers/public scan isolation and
+cleanup refusal. These are source/protocol tests, not physical-radio receipts.
+
+### Existing lease and GATT authority
 
 The adapter's `LinuxAuthority1.GetContract` verifies the `(1,2,1)` lease and
 GATT-observer contract before native lifecycle capability admission. `LELease1`

@@ -34,8 +34,7 @@ it, and a rule that stops being true is removed rather than left standing.
 Documentation that lags behind the code is a defect of the same kind as a
 swallowed failure: it reports something that is not so.
 
-Extreme DRY and test-first. Write the test before the behaviour, for logic,
-metadata, build configuration and contract guards alike.
+Extreme DRY: write tests first; finish all fixes and docs, freeze the batch, then verify once—never per fix.
 
 Keep required release gates, but make verification change-scoped: metadata,
 documentation and version-only edits do not require physical-device reruns.
@@ -180,8 +179,10 @@ emulate background scanning or restoration that Web Bluetooth does not provide.
 Renderer reload/rebind is an ownership and security boundary.
 
 **Node desktop**: first-party CoreBluetooth, WinRT and BlueZ backends.
-CoreBluetooth/WinRT addons are built for the exact Node/Electron ABI and
-architecture that loads them. BlueZ is isolated behind its explicit entrypoint
+CoreBluetooth/WinRT addons use ABI-stable Node-API, not the runtime-specific
+Node/Electron module ABI. Match OS/architecture, platform dependencies, the
+required Node-API version and UBM build identity; see `docs/NATIVE_ARTIFACTS.md`.
+BlueZ is isolated behind its explicit entrypoint
 and needs no `dbus-next` on the production path.
 
 ## Evidence and support

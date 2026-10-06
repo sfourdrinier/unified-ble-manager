@@ -1,15 +1,12 @@
 # Migrating UBM 4.0.28 to 5.x
 
 Status: Current. This page is for apps already using UBM, not the historical
-ble-plx rewrite. The published baseline is `5.0.0-rc.18`; release-branch fixes
-are not published until a new tag ships.
-
-This source prepares `5.0.0-rc.19`. After the registry serves that release,
-install the exact candidate below; until then the published baseline above
-remains the installable version.
+ble-plx rewrite. Install the exact candidate documented below and retain it in
+your lockfile. Published release history and immutable source identities are
+recorded in [`RELEASE.md`](RELEASE.md); source preparation is not publication.
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.19
+pnpm add unified-ble-manager@5.0.0-rc.20
 ```
 
 Pin the exact candidate and rebuild native projects. Never mix a 4.0.28 binary

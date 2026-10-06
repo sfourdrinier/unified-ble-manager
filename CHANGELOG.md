@@ -2,6 +2,85 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.20] - 2026-10-05
+
+### Corrected
+
+- Retire discovery obligations only when the bus confirms the session's captured
+  unique daemon owner disappeared; live or indeterminate debt remains retryable,
+  and cleanup never targets a replacement daemon.
+
+- Release Linux physical links independently of pending discovery cleanup and
+  deliver confirmed release observations without losing retained cleanup debt.
+- Keep indexed structured observation and discovery-cleanup causes, including
+  native D-Bus names and messages, after a later cleanup retry succeeds.
+
+- Apply deferred-connect capability admission to IPC managers before dispatch,
+  preserving unavailable versus unsupported refusals across public host routes.
+- Attempt independent Linux discovery cleanup concurrently so a pending peer
+  cannot starve other peers or address discovery; pending debt stays retryable.
+
+- Preserve unavailable deferred-connect capability refusals and report only
+  transport cleanup debt still present after shutdown's final retry; if final
+  accounting times out, retain the provisional failures with the timeout.
+- Explicitly disarm the Linux availability retirement guard after confirmed
+  retirement, preserving cancellation cleanup under strict compiler warnings.
+
+- Remove stale pre-publication installation conditions and record rc.19 as
+  immutable published history; preserve its review tracker as a historical record.
+- Describe missing BlueZ effective MTU as `capability.unavailable`, distinct from
+  a backend that does not implement the mechanism (`capability.unsupported`).
+- Correct the Windows capability description: measured ordinary with-response
+  writes use the OS-managed procedure up to 512 bytes; without-response writes
+  remain limited to one ATT payload. Explicit prepared transactions remain refused.
+- Align current package, implementation, Tauri compatibility and consumer pins
+  with rc.20. Backend qualification labels are not promoted.
+- Own security-watch initialization as one result, preserving peer-resolution
+  failures without detached rejecting promises. Security and write-readiness
+  streams retain late acquisitions, coalesce cleanup and keep failed cleanup
+  retryable; `source-failed` terminals preserve their public cause and any
+  independent cleanup failure instead of silently completing.
+- Correct addon guidance: Node-API stability is distinct from Node/Electron
+  module ABI. OS, architecture, dependencies, Node-API floor and sealed UBM
+  build identity remain required.
+- Preserve Linux discovery failure operation identity: deferred acquisition
+  reports `connection.connect.when-available`, while address resolution keeps
+  `peer.address-targeting`, including retained discovery cleanup failures.
+- Keep same-peer discovery ownership registered while overlapping requests
+  still hold it, so refused cleanup remains reachable at manager teardown.
+- Retire idle Linux availability senders after failed or cancelled requests,
+  including failures before discovery starts; queued owners and unconfirmed
+  cleanup debts remain registered rather than being discarded.
+- Give each security-watch iterator its own lazy source and retryable cleanup;
+  closing one iterator cannot consume or close a sibling's stream.
+- Attempt Linux link release despite an independent discovery-cleanup refusal,
+  and attempt every retained peer and address discovery during shutdown. Preserve
+  all structured cleanup failures and keep refused obligations retryable.
+- Preserve confirmed Linux disconnect observations even when discovery cleanup
+  fails, publishing the release and permitting fresh connection admission while
+  independently retaining cleanup debt. Deferred owner-fence failures also keep
+  the deferred-connect operation name rather than address-resolution labels.
+- Reconcile current guides and capability ledgers with desktop initial deferred
+  acquisition, BlueZ unmeasured write admission and ordinary OS-managed Windows
+  writes; retain historical snapshots and explicit hardware qualification gaps.
+- Harden publisher gate-preservation checks against disabled or nonblocking
+  steps. Retain the sealed candidate through delayed approval and avoid
+  cancelling an in-flight same-tag publication; expired artifacts fail closed.
+
+### Added
+
+- Parallel tag-driven publication gates share one sealed package tarball;
+  only the final protected OIDC job can publish after every lane succeeds.
+  The serial workflow is preserved outside executable workflows. rc.20 is
+  the first production test; performance improvement is not yet measured.
+- Linux initial `when-available` acquisition through the optional LE observer
+  in maintained daemon `5.87-ubm.5`: a fresh, owner-fenced connectable LE
+  advertisement precedes token-bound connection acquisition. Dedicated discovery
+  ownership preserves cancellation, deadline and cleanup isolation. Older
+  daemons report unsupported; cached device records and bearer-ambiguous stock
+  discovery signals are not substitutes. This is not automatic post-loss reconnect
+  or physical qualification, and installation remains an explicit host decision.
+
 ## [5.0.0-rc.19] - 2026-10-05
 
 ### Before upgrading

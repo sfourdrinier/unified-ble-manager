@@ -6,8 +6,9 @@ capability maps to exactly one verdict:
 - `btleplug-provides` — implemented through a supported btleplug 0.12 path
   in `crates/ubm-desktop`; reported `limited` (deterministic-only) until
   physical-radio evidence qualifies it.
-- `narrow-OS-adapter-needed` — open work: a narrow per-OS adapter on top of
-  btleplug. The row stays unsupported; nothing is re-described away.
+- `narrow-OS-adapter-needed` — the base btleplug path needs a narrow per-OS
+  adapter. The base verdict is unsupported; implemented per-OS overrides below
+  replace it for that OS only, without promoting evidence labels.
 - `preapproved-limitation-candidate` — explicitly bounded behavior with a
   named limitation, never silent downgrade. The gap stays open until the
   limitation is approved.
@@ -38,7 +39,7 @@ host-neutral code but have no build or radio receipt from this host.
 The same table ships as code in
 `crates/ubm-desktop/src/capabilities.rs` (`DESKTOP_CAPABILITIES`) and is
 projected into the live core by `register_desktop_capabilities`, so runtime
-capability truth matches this report row for row.
+capability truth matches the base rows plus the applicable per-OS overrides.
 
 ## btleplug-provides (6)
 
@@ -53,16 +54,16 @@ capability truth matches this report row for row.
 
 ## narrow-OS-adapter-needed (22)
 
-| Capability | Scenario | Missing adapter |
+| Capability | Scenario | Base adapter requirement / per-OS override |
 |---|---|---|
 | `scan:platform-options` | scan.platform-options | Active/passive/PHY scan knobs are not exposed; every OS scans with the legacy defaults (WinRT passive without extended advertisements, vendored patch 11, and the caller's service UUIDs on the OS watcher filter, patch 16). BlueZ receives the caller's name prefix as `Pattern` (patch 12). |
 | `peer:restored` | peer.restored | Adopting OS-restored peers across process restarts; desktop processes start without restored handles. |
 | `peer:address-targeting` | peer.address-targeting | OS peer identity (CoreBluetooth hides addresses entirely). |
 | `peer:known` | peer.known-peers | Unrestricted OS-known peer enumeration remains unavailable; explicit CoreBluetooth identifier lookup has the override below. |
 | `peer:system-connected` | peer.system-connected | Adopting OS-connected peripherals. |
-| `peer:bonded` | peer.bonded | OS bond-store readout. |
-| `connection:when-available` | connection.when-available | Deferred auto-connect / reconnect daemon path. |
-| `connection:effective-mtu` | connection.rssi-and-att-mtu-capability-contract | The OS-measured MTU already feeds every write through the core maximum-write-length (fail-closed when unmeasured); the negotiated value is exposed per OS as `DesktopCentral::read_effective_mtu` (lease holder, connected link, bounded by the budget; see Per-OS verdicts). |
+| `peer:bonded` | peer.bonded | No portable btleplug bond-store readout. Windows and Linux overrides below implement this read-only inventory; macOS has no bonded-peer enumeration override. |
+| `connection:when-available` | connection.when-available | No portable btleplug deferred-connect path. Initial acquisition is implemented by the per-OS overrides below: pending CoreBluetooth connect, WinRT MaintainConnection, and the optional maintained Linux LE observer. No automatic post-loss reconnect; no physical evidence promotion. |
+| `connection:effective-mtu` | connection.rssi-and-att-mtu-capability-contract | The measured negotiated value is exposed per OS as `DesktopCentral::read_effective_mtu` (lease holder, connected link, bounded by the budget; see Per-OS verdicts). A missing BlueZ measurement answers unavailable; its write-admission bound does not invent a measurement. |
 | `connection:request-mtu` | connection.mtu-request | OS MTU-request control path. |
 | `connection:priority` | connection.priority | OS connection-priority control. |
 | `connection:parameters` | connection.parameters | OS connection-parameter update. |
@@ -75,7 +76,7 @@ capability truth matches this report row for row.
 | `security:custom-ceremony` | security.custom-ceremony | Reviewed profile plus adapter; no handshake is invented here. |
 | `security:pairing-generation` | security.pairing-generation | Bond-generation tracking on the pairing adapter. |
 | `gatt:service-changed` | gatt.service-changed | Service-changed arrives only where the OS surfaces it (CoreBluetooth); Windows/Linux need an adapter. |
-| `gatt:maximum-write-length` | gatt.maximum-write-length | Measured MTU is wired into the core maximum-write-length on every characteristic/descriptor write (fail-closed when unmeasured); a dedicated maximumWriteLength host query needs an adapter. |
+| `gatt:maximum-write-length` | gatt.maximum-write-length | Per-mode limits feed every characteristic/descriptor write; BlueZ admits up to 512 bytes when MTU is withheld and lets the OS answer. A dedicated maximumWriteLength host query needs an adapter. |
 | `discovery:system-chooser` | chooser.system | Desktop has no system chooser; explicit selection needs an OS picker. |
 
 ## preapproved-limitation-candidate (8)
@@ -125,8 +126,8 @@ available here (provenance per row).
 | `peer:address-targeting` | linux | os-adapter-provides | os-adapter-compile-verified | Existing device object, otherwise an owned LE discovery session until the object exists; address resolution never establishes a link. |
 | `peer:known` | macos | os-adapter-provides | os-adapter-compile-verified | Explicit UUID retrieval on the existing CoreBluetooth manager; no connection lease or unrestricted enumeration. |
 | `peer:system-connected` | macos | os-adapter-provides | os-adapter-compile-verified | Service-filtered system-connected lookup; local peripheral state does not imply global disconnection. No connection ownership is acquired. |
-| `gatt:maximum-write-length` | windows | btleplug-provides | deterministic-only | Commands: btleplug's MTU (`GattSession.MaxPduSize`, 23 until the first change) - 3; requests and descriptor writes: a whole attribute value (512), because `WriteValueAsync` performs the long write, as the legacy addon and Tauri 4.x relied on (finding 81, `WriteLimits::os_long_write`). |
-| `gatt:maximum-write-length` | linux | os-adapter-provides | os-adapter-compile-verified | Commands: `GattCharacteristic1.MTU` - 3; when BlueZ withholds the MTU, no gate below the 512-byte attribute value (the legacy BlueZ backend let BlueZ answer, finding 97); requests: a whole attribute value (BlueZ performs the long write). |
+| `gatt:maximum-write-length` | windows | btleplug-provides | deterministic-only | Commands: btleplug's MTU (`GattSession.MaxPduSize`, 23 until the first change) - 3; ordinary OS-managed requests and descriptor writes: a whole attribute value (512), through `WriteValueAsync` (finding 81, internal `WriteLimits::os_long_write`). This does not expose a caller-controlled prepared transaction. |
+| `gatt:maximum-write-length` | linux | os-adapter-provides | os-adapter-compile-verified | Commands: `GattCharacteristic1.MTU` - 3; when BlueZ withholds the MTU, both write modes admit up to 512 bytes and let the OS answer (finding 97). Requests are ordinary OS-managed with-response writes up to 512 bytes; explicit prepared `long-write` remains refused with `capability.limited` (`no-prepared-write-path` limitation id). |
 | `gatt:maximum-write-length` | macos | os-adapter-provides | deterministic-only | Vendored btleplug patch 1 (`vendor/btleplug/UBM_PATCHES.md`): `maximumWriteValueLengthForType:` per write type. Unsupported in a workspace linking crates.io btleplug. |
 | `gatt:service-changed` | macos | btleplug-provides | deterministic-only | btleplug reports `didModifyServices`. |
 | `gatt:service-changed` | linux | os-adapter-provides | os-adapter-compile-verified | `Device1.ServicesResolved` dropping under a live link. |
@@ -138,12 +139,15 @@ available here (provenance per row).
 | `peer:bonded` | linux | os-adapter-provides | os-adapter-compile-verified | Selected-adapter Device1 Paired/Bonded facts from a pinned BlueZ daemon epoch; no scan or link lease. |
 | `connection:when-available` | macos | os-adapter-provides | os-adapter-compile-verified | Initial pending CoreBluetooth connection settled by native callback, bounded only by caller budget/cancellation; no automatic post-loss reconnect. |
 | `connection:when-available` | windows | os-adapter-provides | os-adapter-compile-verified | MaintainConnection before GATT discovery, waiting for native ConnectionStatusChanged with owned callback cleanup; no automatic post-loss reconnect. |
+| `connection:when-available` | linux | os-adapter-provides | os-adapter-compile-verified | Optional maintained `.5` LE observer: fresh owner-fenced connectable LE report before token-bound acquisition, with separate discovery sender and retained cancellation/deadline cleanup. Older `.4` daemons remain unsupported for this optional mechanism; no automatic post-loss reconnect. |
 
-Linux `connection:when-available` remains open: the deployed LE authority has
-no deferred acquisition route, and shared stock discovery signals cannot
-identify an LE advertisement reliably. Peer-presence observations are not an
-LE-availability substitute. Existing direct owner-scoped LE acquisition remains
-available.
+Linux initial deferred acquisition requires optional observer revision 1
+(`GetLeAvailability` / `LeAdvertisement`) in `5.87-ubm.5`. Shared stock
+discovery signals and cached peer-presence observations are not substitutes.
+The runtime capability distinguishes missing/unknown observer (unsupported)
+from a failed native probe (unavailable); direct owner-scoped acquisition
+remains available on older `.4`. Private-bus and producer checks do not promote
+physical-radio evidence or reassign earlier direct-connection receipts.
 
 Not capability rows, also closed here: adapter power read as a fact on
 Linux (`Adapter1.Powered`; btleplug reports `PoweredOff` when its read

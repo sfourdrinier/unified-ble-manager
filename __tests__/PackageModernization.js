@@ -2,6 +2,7 @@
 
 const fs = require('fs')
 const path = require('path')
+const YAML = require('yaml')
 
 const root = path.join(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
@@ -12,7 +13,7 @@ const exampleExpoPackage = require('../example-expo/package.json')
 describe('canonical package modernization', () => {
   test('publishes the strict unified-ble-manager package boundary', () => {
     expect(rootPackage.name).toBe('unified-ble-manager')
-    expect(rootPackage.version).toBe('5.0.0-rc.19')
+    expect(rootPackage.version).toBe('5.0.0-rc.20')
     expect(Object.keys(rootPackage.exports).sort()).toEqual([
       '.',
       './advanced',
@@ -61,7 +62,7 @@ describe('canonical package modernization', () => {
   test('runs canonical-only OIDC publication with provenance and release notes', () => {
     const workflow = read('.github/workflows/publish.yml')
 
-    expect(workflow).toContain("tags:\n      - 'v*.*.*'")
+    expect(YAML.parse(workflow).on).toEqual({ push: { tags: ['v*.*.*'] } })
     expect(workflow).toContain('id-token: write')
     expect(workflow).toContain('environment: npm')
     expect(workflow).toContain('node-version: 24')

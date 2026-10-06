@@ -171,18 +171,18 @@
  #include "profile.h"
  #include "dbus-common.h"
  #include "error.h"
-@@ -7182,6 +7183,11 @@
- 								msd->data_len);
- 		}
+@@ -7184,6 +7185,11 @@
  	}
-+}
-+
+ }
+ 
 +static bool match_discovery_uuid(const void *service, const void *uuid)
 +{
 +	return !strcmp(service, uuid);
- }
- 
++}
++
  static bool is_filter_match(GSList *discovery_filter, struct eir_data *eir_data,
+ 								int8_t rssi)
+ {
 @@ -7216,8 +7222,7 @@
  				 * uuid.
  				 */
@@ -193,7 +193,18 @@
  					got_match = true;
  			}
  		}
-@@ -8615,6 +8620,7 @@
+@@ -7402,6 +7407,10 @@
+ 	}
+ 
+ 	device_update_last_seen(dev, bdaddr_type, !not_connectable);
++	/* A fresh native LE report, not merged Device1 properties or cache.
++	 * Scan responses alone cannot prove a connectable advertising event. */
++	if (!scan_rsp)
++		btd_ubm_le_advertisement(adapter, dev, bdaddr_type, !not_connectable);
+ 
+ 	/*
+ 	 * FIXME: We need to check for non-zero flags first because
+@@ -8615,6 +8624,7 @@
  	ba2str(&addr->bdaddr, dst);
  
  	DBG("Device %s disconnected, reason %u", dst, reason);
@@ -201,12 +212,10 @@
  
  	device = btd_adapter_find_device(adapter, &addr->bdaddr, addr->type);
  	if (device) {
-@@ -8636,19 +8642,37 @@
- void btd_remove_disconnect_cb(btd_disconnect_cb func)
- {
+@@ -8638,17 +8648,35 @@
  	disconnect_list = g_slist_remove(disconnect_list, func);
-+}
-+
+ }
+ 
 +struct ubm_disconnect_request {
 +	struct btd_adapter *adapter;
 +	struct mgmt_addr_info address;
@@ -218,8 +227,8 @@
 +	struct ubm_disconnect_request *request = data;
 +	btd_adapter_unref(request->adapter);
 +	g_free(request);
- }
- 
++}
++
  static void disconnect_complete(uint8_t status, uint16_t length,
  					const void *param, void *user_data)
  {
@@ -240,7 +249,7 @@
  		btd_error(adapter->dev_id,
  				"Failed to disconnect device: %s (0x%02x)",
  						mgmt_errstr(status), status);
-@@ -8656,6 +8680,9 @@
+@@ -8656,6 +8684,9 @@
  	}
  
  	if (length < sizeof(*rp)) {
@@ -250,7 +259,7 @@
  		btd_error(adapter->dev_id,
  				"Too small device disconnect response");
  		return;
-@@ -8670,16 +8697,22 @@
+@@ -8670,16 +8701,22 @@
  
  {
  	struct mgmt_cp_disconnect cp;
@@ -274,7 +283,7 @@
  	return -EIO;
  }
  
-@@ -9395,6 +9428,12 @@
+@@ -9395,6 +9432,12 @@
  		adapter->is_default = true;
  
  	adapters = g_slist_append(adapters, adapter);
@@ -287,7 +296,7 @@
  
  	agent = agent_get(NULL);
  	if (agent) {
-@@ -9485,6 +9524,8 @@
+@@ -9485,6 +9528,8 @@
  static int adapter_unregister(struct btd_adapter *adapter)
  {
  	DBG("Unregister path: %s", adapter->path);
@@ -2077,7 +2086,7 @@
 +#endif
 --- a/src/ubm-le-lease.c
 +++ b/src/ubm-le-lease.c
-@@ -0,0 +1,895 @@
+@@ -0,0 +1,931 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/* Versioned sender-scoped LE authority. Not a general Device1 disconnect. */
 +#ifdef HAVE_CONFIG_H
@@ -2095,10 +2104,40 @@
 +#include "device.h"
 +#include "dbus-common.h"
 +#include "error.h"
++#include "log.h"
 +#include "ubm-le-lease.h"
 +
 +#define AUTHORITY "org.unifiedblemanager.LinuxAuthority1"
 +#define LEASE "org.unifiedblemanager.LELease1"
++/* Native MGMT report order within this daemon epoch, not device cache age. */
++static uint64_t availability_sequence;
++
++void btd_ubm_le_advertisement(struct btd_adapter *adapter,
++		struct btd_device *device, uint8_t type, bool connectable)
++{
++	const char *path;
++	if (type == BDADDR_BREDR || !connectable ||
++			availability_sequence == UINT64_MAX)
++		return;
++	path = device_get_path(device);
++	availability_sequence++;
++	if (!g_dbus_emit_signal(btd_get_dbus_connection(), adapter_get_path(adapter),
++		AUTHORITY, "LeAdvertisement", DBUS_TYPE_OBJECT_PATH, &path,
++		DBUS_TYPE_UINT64, &availability_sequence, DBUS_TYPE_INVALID))
++		error("UBM LE availability report could not be emitted for %s", path);
++}
++
++static DBusMessage *get_le_availability(DBusConnection *conn,
++				DBusMessage *message, void *data)
++{
++	uint32_t version = 1;
++	(void) conn;
++	(void) data;
++	if (availability_sequence == UINT64_MAX)
++		return btd_error_failed(message, "LE availability sequence exhausted");
++	return g_dbus_create_reply(message, DBUS_TYPE_UINT32, &version,
++		DBUS_TYPE_UINT64, &availability_sequence, DBUS_TYPE_INVALID);
++}
 +/* Never evict a retained cleanup identity to admit a newer resource. */
 +#define MAX_TOKENS 1024
 +#define MAX_INTERESTS 128
@@ -2912,9 +2951,15 @@
 +}
 +
 +static const GDBusMethodTable contract_methods[] = {
++	{ GDBUS_METHOD("GetLeAvailability", NULL,
++		GDBUS_ARGS({"version", "u"}, {"sequence", "t"}), get_le_availability) },
 +	{ GDBUS_METHOD("GetContract", NULL,
 +		GDBUS_ARGS({"protocol", "u"}, {"lease", "u"}, {"gatt", "u"}),
 +		get_contract) },
++	{}
++};
++static const GDBusSignalTable availability_signals[] = {
++	{ GDBUS_SIGNAL("LeAdvertisement", GDBUS_ARGS({"device", "o"}, {"sequence", "t"})) },
 +	{}
 +};
 +static const GDBusMethodTable lease_methods[] = {
@@ -2944,7 +2989,7 @@
 +					lease_signals, NULL, adapter, NULL))
 +		return false;
 +	if (!g_dbus_register_interface(conn, path, AUTHORITY, contract_methods,
-+					NULL, NULL, adapter, NULL)) {
++					availability_signals, NULL, adapter, NULL)) {
 +		g_dbus_unregister_interface(conn, path, LEASE);
 +		return false;
 +	}
@@ -2975,7 +3020,7 @@
 +}
 --- a/src/ubm-le-lease.h
 +++ b/src/ubm-le-lease.h
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,27 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#ifndef UBM_LE_LEASE_H
 +#define UBM_LE_LEASE_H
@@ -2984,6 +3029,8 @@
 +struct btd_device;
 +
 +bool btd_ubm_le_register(struct btd_adapter *adapter);
++void btd_ubm_le_advertisement(struct btd_adapter *adapter,
++		struct btd_device *device, uint8_t type, bool connectable);
 +void btd_ubm_le_unregister(struct btd_adapter *adapter);
 +/* Admissions run on bluetoothd's single GLib context, before native effects. */
 +bool btd_ubm_le_admit(struct btd_device *device, DBusMessage *message);
@@ -4091,7 +4138,7 @@
 +}
 --- a/unit/test-ubm-le-lease.c
 +++ b/unit/test-ubm-le-lease.c
-@@ -0,0 +1,424 @@
+@@ -0,0 +1,463 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/* Real daemon tables/handlers on private D-Bus; kernel/device boundary doubles. */
 +#include "src/ubm-le-lease.c"
@@ -4109,8 +4156,27 @@
 +static uint64_t settle_generation = 9;
 +static unsigned int expected_disconnects = 1;
 +static GMainLoop *loop;
++static unsigned int availability_reports;
++static DBusHandlerResult availability_report(DBusConnection *conn,
++					DBusMessage *message, void *data)
++{
++	const char *path;
++	uint64_t sequence;
++	(void) conn;
++	(void) data;
++	if (!dbus_message_is_signal(message, AUTHORITY, "LeAdvertisement"))
++		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
++	assert(dbus_message_get_args(message, NULL, DBUS_TYPE_OBJECT_PATH, &path,
++		DBUS_TYPE_UINT64, &sequence, DBUS_TYPE_INVALID));
++	assert(!strcmp(path, "/org/bluez/hci0/dev_01_02_03_04_05_06"));
++	assert(sequence == availability_reports + 1);
++	availability_reports++;
++	return DBUS_HANDLER_RESULT_HANDLED;
++}
 +
 +DBusConnection *btd_get_dbus_connection(void) { return server; }
++void btd_error(uint16_t index, const char *format, ...)
++{ (void) index; (void) format; assert(!"unexpected native report emission failure"); }
 +struct btd_device *btd_device_ref(struct btd_device *dev) { dev->refs++; return dev; }
 +void btd_device_unref(struct btd_device *dev) { dev->refs--; }
 +struct btd_adapter *device_get_adapter(struct btd_device *dev)
@@ -4160,13 +4226,13 @@
 +{
 +	DBusMessage *request = dbus_message_new_method_call("org.ubm.Test",
 +				adapter_get_path(&adapter),
-+				!strcmp(method, "GetContract") ? AUTHORITY : LEASE, method);
++				(!strcmp(method, "GetContract") || !strcmp(method, "GetLeAvailability")) ? AUTHORITY : LEASE, method);
 +	const char *path = device_get_path(&device);
 +	if (!strcmp(method, "ReserveLease"))
 +		dbus_message_append_args(request, DBUS_TYPE_OBJECT_PATH, &path,
 +					DBUS_TYPE_UINT64, &token,
 +							DBUS_TYPE_INVALID);
-+	else if (strcmp(method, "GetContract"))
++	else if (strcmp(method, "GetContract") && strcmp(method, "GetLeAvailability"))
 +		dbus_message_append_args(request, DBUS_TYPE_UINT64, &token,
 +							DBUS_TYPE_INVALID);
 +	assert(dbus_connection_send_with_reply(client, request, &call->pending, 5000));
@@ -4260,6 +4326,9 @@
 +	assert(client);
 +	loop = g_main_loop_new(NULL, FALSE);
 +	assert(btd_ubm_le_register(&adapter));
++	dbus_bus_add_match(client, "type='signal',interface='org.unifiedblemanager.LinuxAuthority1',member='LeAdvertisement'", &error);
++	assert(!dbus_error_is_set(&error));
++	assert(dbus_connection_add_filter(client, availability_report, NULL, NULL));
 +	send_call(client, "GetContract", 0, &replay);
 +	await_call(&replay);
 +	uint32_t contract, lease_version, gatt_version;
@@ -4267,6 +4336,23 @@
 +		DBUS_TYPE_UINT32, &contract, DBUS_TYPE_UINT32, &lease_version,
 +		DBUS_TYPE_UINT32, &gatt_version, DBUS_TYPE_INVALID));
 +	assert(contract == 1 && lease_version == 2 && gatt_version == 1);
++	clear_call(&replay);
++	/* Initial acquisition requires a fresh connectable LE kernel report,
++	 * never a Classic report or a cached Device1 object. */
++	uint64_t availability_before = availability_sequence;
++	btd_ubm_le_advertisement(&adapter, &device, BDADDR_BREDR, true);
++	btd_ubm_le_advertisement(&adapter, &device, BDADDR_LE_PUBLIC, false);
++	assert(availability_sequence == availability_before);
++	btd_ubm_le_advertisement(&adapter, &device, BDADDR_LE_PUBLIC, true);
++	assert(availability_sequence == availability_before + 1);
++	send_call(client, "GetLeAvailability", 0, &replay);
++	await_call(&replay);
++	uint32_t observer_version;
++	uint64_t observed_sequence;
++	assert(dbus_message_get_args(replay.reply, NULL, DBUS_TYPE_UINT32, &observer_version,
++		DBUS_TYPE_UINT64, &observed_sequence, DBUS_TYPE_INVALID));
++	assert(observer_version == 1 && observed_sequence == availability_before + 1);
++	assert(availability_reports == 1);
 +	clear_call(&replay);
 +	/* Reserve -> release is no physical effect; late Connect cannot re-admit. */
 +	token = reserve_token(client);

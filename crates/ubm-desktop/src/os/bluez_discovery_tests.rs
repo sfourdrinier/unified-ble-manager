@@ -16,12 +16,22 @@ struct Fixture {
     discovered: bool,
     refuse_stop: bool,
     hold_stop: bool,
+    hold_stop_sender: Option<String>,
     stop_reply: Option<dbus::Message>,
     refuse_start: bool,
+    refuse_filter: bool,
     timeout_stop: bool,
+    missing_owner_stop: bool,
     hold_found: bool,
     found_reply: Option<dbus::Message>,
     found: Arc<tokio::sync::Notify>,
+    availability_missing: bool,
+    availability_version: Option<u32>,
+    hold_availability: bool,
+    availability_reply: Option<dbus::Message>,
+    availability_read: Arc<tokio::sync::Notify>,
+    discovery_starters: Vec<String>,
+    discovery_stoppers: Vec<String>,
 }
 
 async fn fixture() -> (
@@ -53,6 +63,17 @@ async fn fixture() -> (
                 )
             };
             let response = match message.member().as_deref() {
+                Some("GetLeAvailability") if state.availability_missing => {
+                    error("org.freedesktop.DBus.Error.UnknownMethod", "old daemon")
+                }
+                Some("GetLeAvailability") if state.hold_availability => {
+                    state.availability_read.notify_one();
+                    state.availability_reply = Some(message);
+                    return true;
+                }
+                Some("GetLeAvailability") => message
+                    .method_return()
+                    .append2(state.availability_version.unwrap_or(1), 40u64),
                 Some("GetAll") if state.discovered && state.hold_found => {
                     state.found.notify_one();
                     state.found_reply = Some(message);
@@ -70,7 +91,16 @@ async fn fixture() -> (
                         std::collections::HashMap<String, PropMap>,
                     >::new())
                 }
-                Some("SetDiscoveryFilter") => message.method_return(),
+                Some("SetDiscoveryFilter") => {
+                    if state.refuse_filter {
+                        return connection
+                            .send(error("org.bluez.Error.Failed", "filter refused"))
+                            .is_ok();
+                    }
+                    let filter: PropMap = message.read1().unwrap();
+                    assert_eq!(filter.get("Transport").unwrap().0.as_str(), Some("le"));
+                    message.method_return()
+                }
                 Some("ConnectDevice") => {
                     state.generic_connects += 1;
                     error(
@@ -80,6 +110,9 @@ async fn fixture() -> (
                 }
                 Some("StartDiscovery") => {
                     state.starts += 1;
+                    state
+                        .discovery_starters
+                        .push(message.sender().unwrap().to_string());
                     state.started.notify_one();
                     if state.refuse_start {
                         return connection
@@ -95,8 +128,25 @@ async fn fixture() -> (
                 }
                 Some("StopDiscovery") => {
                     state.stops += 1;
+                    state
+                        .discovery_stoppers
+                        .push(message.sender().unwrap().to_string());
                     state.stopped.notify_one();
-                    if state.hold_stop {
+                    if state.missing_owner_stop {
+                        return connection
+                            .send(error(
+                                "org.freedesktop.DBus.Error.NameHasNoOwner",
+                                "still-live owner refusal",
+                            ))
+                            .is_ok();
+                    }
+                    if state.hold_stop
+                        || state.hold_stop_sender.as_ref().is_some_and(|sender| {
+                            message
+                                .sender()
+                                .is_some_and(|actual| actual.to_string() == *sender)
+                        })
+                    {
                         state.stop_reply = Some(message);
                         return true;
                     }
@@ -125,6 +175,967 @@ async fn fixture() -> (
         .await
         .unwrap();
     (bluez, state, server, worker)
+}
+
+async fn await_no_availability_entries(bluez: &super::super::Bluez) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !bluez.availability_discoveries.lock().await.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("confirmed idle discovery owners retire without shutdown");
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_prestart_failures_retire_dedicated_senders() {
+    for failure in ["baseline", "filter", "start"] {
+        let (bluez, state, _server, worker) = fixture().await;
+        {
+            let mut state = state.lock().unwrap();
+            state.availability_missing = failure == "baseline";
+            state.refuse_filter = failure == "filter";
+            state.refuse_start = failure == "start";
+        }
+        bluez
+            .wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF")
+            .await
+            .unwrap_err();
+        await_no_availability_entries(&bluez).await;
+        assert_eq!(
+            state.lock().unwrap().stops,
+            0,
+            "unaccepted discovery needs no Stop"
+        );
+        worker.abort();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_cancellation_retires_confirmed_idle_sender() {
+    let (bluez, state, _server, worker) = fixture().await;
+    let started = state.lock().unwrap().started.clone();
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    waiting.abort();
+    assert!(waiting.await.unwrap_err().is_cancelled());
+    await_no_availability_entries(&bluez).await;
+    assert_eq!(state.lock().unwrap().stops, 1);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_prestart_cancellation_retires_sender_without_stop() {
+    let (bluez, state, _server, worker) = fixture().await;
+    let baseline = {
+        let mut state = state.lock().unwrap();
+        state.hold_availability = true;
+        state.availability_read.clone()
+    };
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), baseline.notified())
+        .await
+        .unwrap();
+    waiting.abort();
+    assert!(waiting.await.unwrap_err().is_cancelled());
+    await_no_availability_entries(&bluez).await;
+    assert_eq!(state.lock().unwrap().starts, 0);
+    assert_eq!(state.lock().unwrap().stops, 0);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_never_accepts_cached_or_stale_or_other_peer() {
+    let (bluez, state, server, worker) = fixture().await;
+    let started = state.lock().unwrap().started.clone();
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    let signal = |peer: &str, sequence| {
+        dbus::Message::new_signal(
+            "/org/bluez/hci0",
+            "org.unifiedblemanager.LinuxAuthority1",
+            "LeAdvertisement",
+        )
+        .unwrap()
+        .append2(dbus::Path::new(peer).unwrap(), sequence)
+    };
+    server
+        .send(signal("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", 40u64))
+        .unwrap();
+    server
+        .send(signal("/org/bluez/hci0/dev_11_22_33_44_55_66", 41u64))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!waiting.is_finished());
+    server
+        .send(signal("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", 42u64))
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.lock().unwrap().stops, 1);
+    assert_eq!(state.lock().unwrap().generic_connects, 0);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_old_daemon_refuses_le_availability_before_scanning() {
+    let (bluez, state, _server, worker) = fixture().await;
+    state.lock().unwrap().availability_missing = true;
+    let error = bluez
+        .wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap_err();
+    assert_eq!(error.code_str(), "capability.unsupported");
+    assert_eq!(state.lock().unwrap().starts, 0);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_cancellation_settles_original_start() {
+    let (bluez, state, server, worker) = fixture().await;
+    let started = {
+        let mut state = state.lock().unwrap();
+        state.hold_start = true;
+        state.started.clone()
+    };
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    waiting.abort();
+    assert!(waiting.await.unwrap_err().is_cancelled());
+    let finishing = tokio::spawn({
+        let bluez = bluez.clone();
+        async move {
+            bluez
+                .finish_availability("hci0/dev_AA_BB_CC_DD_EE_FF")
+                .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!finishing.is_finished());
+    let reply = state
+        .lock()
+        .unwrap()
+        .start_reply
+        .take()
+        .unwrap()
+        .method_return();
+    server.send(reply).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), finishing)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.lock().unwrap().stops, 1);
+    assert_eq!(state.lock().unwrap().generic_connects, 0);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_other_peer_does_not_wait_for_absent_peer() {
+    let (bluez, state, server, worker) = fixture().await;
+    let started = state.lock().unwrap().started.clone();
+    let absent = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    let available = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_11_22_33_44_55_66").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    server
+        .send(
+            dbus::Message::new_signal(
+                "/org/bluez/hci0",
+                "org.unifiedblemanager.LinuxAuthority1",
+                "LeAdvertisement",
+            )
+            .unwrap()
+            .append2(
+                dbus::Path::new("/org/bluez/hci0/dev_11_22_33_44_55_66").unwrap(),
+                41u64,
+            ),
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), available)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(!absent.is_finished());
+    assert_eq!(state.lock().unwrap().stops, 1);
+    absent.abort();
+    assert!(absent.await.unwrap_err().is_cancelled());
+    bluez
+        .finish_availability("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap();
+    assert_eq!(state.lock().unwrap().stops, 2);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_queued_same_peer_retains_cleanup_debt_at_close() {
+    const PEER: &str = "hci0/dev_AA_BB_CC_DD_EE_FF";
+    let (bluez, state, server, worker) = fixture().await;
+    let started = state.lock().unwrap().started.clone();
+    let first = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available(PEER).await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    let entry = bluez.availability_discovery(PEER).await.unwrap();
+    let second = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available(PEER).await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while Arc::strong_count(&entry) < 4 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(entry);
+    let report = || {
+        dbus::Message::new_signal(
+            "/org/bluez/hci0",
+            "org.unifiedblemanager.LinuxAuthority1",
+            "LeAdvertisement",
+        )
+        .unwrap()
+        .append2(
+            dbus::Path::new("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF").unwrap(),
+            41u64,
+        )
+    };
+    server.send(report()).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), first)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    state.lock().unwrap().timeout_stop = true;
+    server.send(report()).unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(3), second)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        error.platform().unwrap().code,
+        "org.freedesktop.DBus.Error.NoReply"
+    );
+    let retained = bluez.finish_discovery().await.unwrap_err();
+    assert_eq!(retained.platform(), error.platform());
+    assert_eq!(retained.operation(), "connection.connect.when-available");
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_discovery_close_attempts_every_owner_and_retains_all_failures() {
+    let (bluez, state, _server, worker) = fixture().await;
+    let daemon = bluez.current_daemon_owner().await.unwrap();
+    for peer in ["hci0/dev_AA_BB_CC_DD_EE_FF", "hci0/dev_11_22_33_44_55_66"] {
+        let entry = bluez.availability_discovery(peer).await.unwrap();
+        entry
+            .owner
+            .start(&entry.conn, &bluez.adapter_path, daemon.clone())
+            .await
+            .unwrap();
+    }
+    bluez
+        .address_discovery
+        .start(&bluez.conn, &bluez.adapter_path, daemon)
+        .await
+        .unwrap();
+    state.lock().unwrap().timeout_stop = true;
+    let error = bluez.finish_discovery().await.unwrap_err();
+    assert_eq!(
+        state.lock().unwrap().stops,
+        3,
+        "every retained sender must be stopped despite earlier failures"
+    );
+    let metadata = &error.platform().unwrap().metadata;
+    assert_eq!(
+        metadata.get("failure.2.operation"),
+        Some(&crate::errors::PlatformValue::Text(
+            "peer.address-targeting".into()
+        ))
+    );
+    for index in 0..3 {
+        assert_eq!(
+            metadata.get(&format!("failure.{index}.platform.code")),
+            Some(&crate::errors::PlatformValue::Text(
+                "org.freedesktop.DBus.Error.NoReply".into()
+            ))
+        );
+    }
+    let retained = bluez.finish_discovery().await.unwrap_err();
+    assert_eq!(retained, error);
+    assert_eq!(
+        state.lock().unwrap().stops,
+        3,
+        "unknown stop outcomes retain their original replies without resend"
+    );
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_discovery_close_pending_first_owner_does_not_starve_siblings() {
+    const FIRST: &str = "hci0/dev_11_22_33_44_55_66";
+    let (bluez, state, server, worker) = fixture().await;
+    let daemon = bluez.current_daemon_owner().await.unwrap();
+    for peer in [FIRST, "hci0/dev_AA_BB_CC_DD_EE_FF"] {
+        let entry = bluez.availability_discovery(peer).await.unwrap();
+        entry
+            .owner
+            .start(&entry.conn, &bluez.adapter_path, daemon.clone())
+            .await
+            .unwrap();
+        if peer == FIRST {
+            state.lock().unwrap().hold_stop_sender =
+                Some(entry.conn.unique_name().unwrap().to_string());
+        }
+    }
+    bluez
+        .address_discovery
+        .start(&bluez.conn, &bluez.adapter_path, daemon)
+        .await
+        .unwrap();
+    let closing = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.finish_discovery().await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let stops = state.lock().unwrap().stops;
+            if stops == 3 && bluez.availability_discoveries.lock().await.len() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("pending first Stop must not postpone independent peer/address cleanup");
+    assert!(!closing.is_finished());
+    assert!(
+        bluez
+            .availability_discoveries
+            .lock()
+            .await
+            .contains_key(FIRST)
+    );
+    closing.abort();
+    assert!(closing.await.unwrap_err().is_cancelled());
+    server
+        .send(
+            state
+                .lock()
+                .unwrap()
+                .stop_reply
+                .take()
+                .unwrap()
+                .method_return(),
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), bluez.finish_discovery())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(bluez.availability_discoveries.lock().await.is_empty());
+    assert_eq!(
+        state.lock().unwrap().stops,
+        3,
+        "retry consumes original pending reply, never another Stop"
+    );
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_discovery_close_refusal_does_not_starve_successful_other_owners() {
+    let (bluez, state, _server, worker) = fixture().await;
+    let daemon = bluez.current_daemon_owner().await.unwrap();
+    for peer in ["hci0/dev_AA_BB_CC_DD_EE_FF", "hci0/dev_11_22_33_44_55_66"] {
+        let entry = bluez.availability_discovery(peer).await.unwrap();
+        entry
+            .owner
+            .start(&entry.conn, &bluez.adapter_path, daemon.clone())
+            .await
+            .unwrap();
+    }
+    bluez
+        .address_discovery
+        .start(&bluez.conn, &bluez.adapter_path, daemon)
+        .await
+        .unwrap();
+    state.lock().unwrap().refuse_stop = true;
+    bluez.finish_discovery().await.unwrap_err();
+    assert_eq!(state.lock().unwrap().stops, 3);
+    assert_eq!(
+        bluez.availability_discoveries.lock().await.len(),
+        1,
+        "only failed debt remains registered"
+    );
+    bluez.finish_discovery().await.unwrap();
+    assert_eq!(
+        state.lock().unwrap().stops,
+        4,
+        "retry only the failed owner"
+    );
+    assert!(bluez.availability_discoveries.lock().await.is_empty());
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_start_refusal_reports_own_operation() {
+    let (bluez, state, _server, worker) = fixture().await;
+    state.lock().unwrap().refuse_start = true;
+    let error = bluez
+        .wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap_err();
+    assert_eq!(error.operation(), "connection.connect.when-available");
+    assert_eq!(error.platform().unwrap().code, "org.bluez.Error.NotReady");
+    bluez
+        .finish_availability("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap();
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_retained_cancel_cleanup_and_prestart_report_own_operation() {
+    let (bluez, state, _server, worker) = fixture().await;
+    let started = {
+        let mut state = state.lock().unwrap();
+        state.timeout_stop = true;
+        state.started.clone()
+    };
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    waiting.abort();
+    assert!(waiting.await.unwrap_err().is_cancelled());
+    let cleanup = bluez
+        .finish_availability("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap_err();
+    assert_eq!(cleanup.operation(), "connection.connect.when-available");
+    assert_eq!(
+        cleanup.platform().unwrap().code,
+        "org.freedesktop.DBus.Error.NoReply"
+    );
+    let retry = bluez
+        .wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap_err();
+    assert_eq!(retry.operation(), "connection.connect.when-available");
+    assert_eq!(retry.platform(), cleanup.platform());
+    let observed = state.lock().unwrap();
+    assert_eq!((observed.starts, observed.stops), (1, 1));
+    drop(observed);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_discovery_departed_unique_owner_retires_without_contacting_replacement() {
+    const PEER: &str = "hci0/dev_AA_BB_CC_DD_EE_FF";
+    let (bluez, state, server, worker) = fixture().await;
+    let daemon = bluez.current_daemon_owner().await.unwrap();
+    let entry = bluez.availability_discovery(PEER).await.unwrap();
+    entry
+        .owner
+        .start(&entry.conn, &bluez.adapter_path, daemon.clone())
+        .await
+        .unwrap();
+    bluez
+        .address_discovery
+        .start(&bluez.conn, &bluez.adapter_path, daemon.clone())
+        .await
+        .unwrap();
+    let retired_entry = Arc::downgrade(&entry);
+    drop(entry);
+    state.lock().unwrap().timeout_stop = true;
+    bluez.finish_discovery().await.unwrap_err();
+    assert!(
+        bluez
+            .availability_discoveries
+            .lock()
+            .await
+            .contains_key(PEER),
+        "NoReply while owner lives remains unresolved debt"
+    );
+    worker.abort();
+    assert!(worker.await.unwrap_err().is_cancelled());
+    drop(server);
+    let (resource, replacement) = dbus_tokio::connection::new_session_sync().unwrap();
+    let replacement_worker = tokio::spawn(resource);
+    replacement
+        .request_name("org.bluez", false, false, false)
+        .await
+        .unwrap();
+    let new_owner_stops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = new_owner_stops.clone();
+    replacement.start_receive(
+        MatchRule::new_method_call(),
+        Box::new(move |message, connection| {
+            assert_eq!(message.member().as_deref(), Some("StopDiscovery"));
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            connection.send(message.method_return()).unwrap();
+            true
+        }),
+    );
+    tokio::time::timeout(Duration::from_secs(3), bluez.finish_discovery())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(bluez.availability_discoveries.lock().await.is_empty());
+    assert!(
+        retired_entry.upgrade().is_none(),
+        "confirmed retirement releases the dedicated sender"
+    );
+    assert_eq!(new_owner_stops.load(std::sync::atomic::Ordering::SeqCst), 0);
+    bluez.finish_discovery().await.unwrap();
+    replacement_worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_discovery_live_owner_missing_name_error_keeps_cleanup_debt() {
+    const PEER: &str = "hci0/dev_AA_BB_CC_DD_EE_FF";
+    let (bluez, state, _server, worker) = fixture().await;
+    let daemon = bluez.current_daemon_owner().await.unwrap();
+    let entry = bluez.availability_discovery(PEER).await.unwrap();
+    entry
+        .owner
+        .start(&entry.conn, &bluez.adapter_path, daemon)
+        .await
+        .unwrap();
+    drop(entry);
+    state.lock().unwrap().missing_owner_stop = true;
+    let error = bluez.finish_availability(PEER).await.unwrap_err();
+    assert_eq!(
+        error.platform().unwrap().code,
+        "org.freedesktop.DBus.Error.NameHasNoOwner"
+    );
+    assert!(
+        bluez
+            .availability_discoveries
+            .lock()
+            .await
+            .contains_key(PEER)
+    );
+    assert_eq!(bluez.finish_availability(PEER).await.unwrap_err(), error);
+    assert!(
+        bluez
+            .availability_discoveries
+            .lock()
+            .await
+            .contains_key(PEER)
+    );
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_cleanup_refusal_remains_owned() {
+    let (bluez, state, server, worker) = fixture().await;
+    let started = {
+        let mut state = state.lock().unwrap();
+        state.refuse_stop = true;
+        state.started.clone()
+    };
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    server
+        .send(
+            dbus::Message::new_signal(
+                "/org/bluez/hci0",
+                "org.unifiedblemanager.LinuxAuthority1",
+                "LeAdvertisement",
+            )
+            .unwrap()
+            .append2(
+                dbus::Path::new("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF").unwrap(),
+                41u64,
+            ),
+        )
+        .unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(3), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.platform().unwrap().code, "org.bluez.Error.Failed");
+    assert_eq!(error.operation(), "connection.connect.when-available");
+    bluez
+        .finish_availability("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap();
+    assert!(state.lock().unwrap().stops >= 2);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_budget_ends_without_connect_or_unowned_stop() {
+    let (bluez, state, _server, worker) = fixture().await;
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(40),
+            bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF")
+        )
+        .await
+        .is_err()
+    );
+    bluez
+        .finish_availability("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap();
+    // The caller's real budget may expire before dispatch under load. In
+    // that case there is no accepted discovery effect to compensate.
+    let observed = state.lock().unwrap();
+    assert!(observed.starts <= 1);
+    assert_eq!(observed.stops, observed.starts);
+    drop(observed);
+    assert_eq!(state.lock().unwrap().generic_connects, 0);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_malformed_signal_preserves_primary_and_cleanup_failures() {
+    let (bluez, state, server, worker) = fixture().await;
+    let started = {
+        let mut state = state.lock().unwrap();
+        state.refuse_stop = true;
+        state.started.clone()
+    };
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    server
+        .send(
+            dbus::Message::new_signal(
+                "/org/bluez/hci0",
+                "org.unifiedblemanager.LinuxAuthority1",
+                "LeAdvertisement",
+            )
+            .unwrap()
+            .append1("not-the-versioned-native-body"),
+        )
+        .unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(3), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code_str(), "platform.failure");
+    let retained = error.platform().unwrap().metadata.clone();
+    for index in 0..2 {
+        for (field, expected) in [
+            ("code", "platform.failure"),
+            ("domain", "platform"),
+            ("operation", "connection.connect.when-available"),
+            ("platform.domain", "bluez-dbus"),
+            ("platform.code", "org.bluez.Error.Failed"),
+        ] {
+            assert_eq!(
+                retained.get(&format!("failure.{index}.{field}")),
+                Some(&crate::errors::PlatformValue::Text(expected.to_owned()))
+            );
+        }
+        assert!(
+            matches!(retained.get(&format!("failure.{index}.detail")), Some(crate::errors::PlatformValue::Text(detail)) if !detail.is_empty())
+        );
+        assert!(
+            matches!(retained.get(&format!("failure.{index}.platform.message")), Some(crate::errors::PlatformValue::Text(message)) if !message.is_empty())
+        );
+    }
+    assert_eq!(
+        retained.get("failure.1.platform.message"),
+        Some(&crate::errors::PlatformValue::Text(
+            "owned stop refused".into()
+        ))
+    );
+    assert!(
+        matches!(retained.get("failure.1.detail"), Some(crate::errors::PlatformValue::Text(detail)) if detail.contains("owned stop refused"))
+    );
+    assert_eq!(
+        retained.get("failure.0.detail"),
+        Some(&crate::errors::PlatformValue::Text(
+            error.detail().unwrap().to_owned()
+        ))
+    );
+    bluez
+        .finish_availability("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap();
+    assert_eq!(
+        error.platform().unwrap().metadata,
+        retained,
+        "both causes survive successful cleanup retry"
+    );
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_daemon_replacement_does_not_retarget_wait() {
+    let (bluez, state, server, worker) = fixture().await;
+    let started = state.lock().unwrap().started.clone();
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    server.release_name("org.bluez").await.unwrap();
+    let replacement = zbus::Connection::session().await.unwrap();
+    replacement.request_name("org.bluez").await.unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(3), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code_str(), "capability.unsupported");
+    assert_eq!(error.operation(), "connection.connect.when-available");
+    assert!(!error.detail().unwrap().contains("address resolution"));
+    assert_eq!(state.lock().unwrap().stops, 1);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_missing_owner_preserves_wait_operation_and_platform() {
+    let (bluez, state, server, worker) = fixture().await;
+    let started = state.lock().unwrap().started.clone();
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    server.release_name("org.bluez").await.unwrap();
+    server
+        .send(
+            dbus::Message::new_signal(
+                "/org/bluez/hci0",
+                "org.unifiedblemanager.LinuxAuthority1",
+                "LeAdvertisement",
+            )
+            .unwrap()
+            .append2(
+                dbus::Path::new("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF").unwrap(),
+                41u64,
+            ),
+        )
+        .unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(3), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.operation(), "connection.connect.when-available");
+    assert_eq!(
+        error.platform().unwrap().code,
+        "org.freedesktop.DBus.Error.NameHasNoOwner"
+    );
+    assert_eq!(state.lock().unwrap().stops, 1);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_event_queued_before_baseline_is_not_fresh() {
+    let (bluez, state, server, worker) = fixture().await;
+    let (baseline_read, started) = {
+        let mut state = state.lock().unwrap();
+        state.hold_availability = true;
+        (state.availability_read.clone(), state.started.clone())
+    };
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), baseline_read.notified())
+        .await
+        .unwrap();
+    let signal = |sequence| {
+        dbus::Message::new_signal(
+            "/org/bluez/hci0",
+            "org.unifiedblemanager.LinuxAuthority1",
+            "LeAdvertisement",
+        )
+        .unwrap()
+        .append2(
+            dbus::Path::new("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF").unwrap(),
+            sequence,
+        )
+    };
+    server.send(signal(41u64)).unwrap();
+    let reply = state
+        .lock()
+        .unwrap()
+        .availability_reply
+        .take()
+        .unwrap()
+        .method_return()
+        .append2(1u32, 41u64);
+    server.send(reply).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(!waiting.is_finished());
+    server.send(signal(42u64)).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_unknown_revision_refuses_before_effect() {
+    let (bluez, state, _server, worker) = fixture().await;
+    state.lock().unwrap().availability_version = Some(2);
+    let error = bluez
+        .wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF")
+        .await
+        .unwrap_err();
+    assert_eq!(error.code_str(), "capability.unsupported");
+    assert_eq!(state.lock().unwrap().starts, 0);
+    assert_eq!(state.lock().unwrap().stops, 0);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_releases_only_its_sender_not_public_scan() {
+    let (bluez, state, server, worker) = fixture().await;
+    let owner = server.unique_name().to_string();
+    let public_scan = zbus::Connection::session().await.unwrap();
+    public_scan
+        .call_method(
+            Some(owner.as_str()),
+            "/org/bluez/hci0",
+            Some("org.bluez.Adapter1"),
+            "StartDiscovery",
+            &(),
+        )
+        .await
+        .unwrap();
+    let started = state.lock().unwrap().started.clone();
+    started.notified().await;
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    server
+        .send(
+            dbus::Message::new_signal(
+                "/org/bluez/hci0",
+                "org.unifiedblemanager.LinuxAuthority1",
+                "LeAdvertisement",
+            )
+            .unwrap()
+            .append2(
+                dbus::Path::new("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF").unwrap(),
+                41u64,
+            ),
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    {
+        let state = state.lock().unwrap();
+        assert_ne!(state.discovery_starters[0], state.discovery_starters[1]);
+        assert_eq!(
+            state.discovery_stoppers,
+            vec![state.discovery_starters[1].clone()]
+        );
+    }
+    public_scan
+        .call_method(
+            Some(owner.as_str()),
+            "/org/bluez/hci0",
+            Some("org.bluez.Adapter1"),
+            "StopDiscovery",
+            &(),
+        )
+        .await
+        .unwrap();
+    worker.abort();
 }
 
 #[tokio::test]
@@ -173,13 +1184,9 @@ async fn private_bus_address_resolution_reports_stop_refusal_not_success() {
     let result = bluez
         .resolve_address("AA:BB:CC:DD:EE:FF", crate::boundary::AddressType::Public)
         .await;
-    assert!(
-        result
-            .unwrap_err()
-            .detail()
-            .unwrap()
-            .contains("owned stop refused")
-    );
+    let error = result.unwrap_err();
+    assert_eq!(error.operation(), "peer.address-targeting");
+    assert!(error.detail().unwrap().contains("owned stop refused"));
     worker.abort();
 }
 
@@ -329,6 +1336,7 @@ async fn private_bus_address_resolution_rejects_old_owner_result_but_releases_it
         )
         .unwrap();
     let error = resolving.await.unwrap().unwrap_err();
+    assert_eq!(error.operation(), "peer.address-targeting");
     assert!(error.detail().unwrap().contains("owner changed"));
     bluez.finish_discovery().await.unwrap();
     assert_eq!(state.lock().unwrap().stops, 1);
