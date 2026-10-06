@@ -3733,21 +3733,17 @@ impl BtleplugDispatcher {
         // The core consumer is internal: it takes no number from the 4.x counter.
         let consumer = self.internal_id("consumer");
         let selector = target.characteristic.selector.clone();
-        // Mac and Linux write one platform CCCD mode and cannot honor a
-        // caller's indication-versus-notification choice. The property check
-        // above still applies. Windows can write the requested mode, matching
-        // the Electron desktop profile.
-        let core_requirement = if cfg!(target_os = "windows") {
-            requirement
-        } else {
-            None
-        };
+        // The requirement reaches the core on every host. Mac and Linux write
+        // notification when both properties exist, so a hard indication
+        // requirement is `capability.limited` before any radio effect. Windows
+        // can write the requested mode. Dropping the requirement would let
+        // that indication subscribe as a notification.
         let delivery = authority
             .subscribe(
                 &target.peer_id,
                 &selector,
                 &consumer,
-                core_requirement,
+                requirement,
                 ctl.with_connection_lease(target.lease),
             )
             .await

@@ -4201,6 +4201,37 @@ async fn pr210_13t_a_requirement_is_refused_only_where_the_property_is_missing()
     assert_eq!(items[0]["value"]["delivery"], "notification");
 }
 
+/// A hard indication requirement is carried through. The scripted radio
+/// records that request; it does not apply the platform CCCD rule. The
+/// real backend refuses it on macOS and Linux in `plan_delivery` before
+/// any effect when the characteristic also notifies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pr210_13t_a_dual_property_indication_requirement_is_not_dropped() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    let mut service = hrm_service();
+    service.characteristics.push(characteristic(
+        "00002a5d-0000-1000-8000-00805f9b34fb",
+        flags(false, false, true, true),
+    ));
+    harness.radio().set_services(&link.peer_id, vec![service]);
+    let database = harness.discover(&link).await;
+    harness
+        .subscribe(
+            &link,
+            &database,
+            "00002a5d-0000-1000-8000-00805f9b34fb",
+            Some("require-indication"),
+        )
+        .await
+        .expect("the scripted radio accepts the carried requirement");
+    assert_eq!(
+        harness.radio().delivery_requests(),
+        vec![Some(DeliveryMode::Indication)],
+        "require-indication is not replaced with the platform default"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pr210_13t_a_preference_reports_unknown_delivery_when_the_radio_says_nothing() {
     let harness = Harness::new().await;
