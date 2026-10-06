@@ -476,6 +476,8 @@ Shutdown reports the final owned cleanup state: when its final transport retry c
 
 Failed or cancelled Linux initial availability requests retire their dedicated discovery sender once cleanup confirms it is idle, including failures before discovery starts. Queued requests and unconfirmed cleanup debt keep their owner registered for later teardown.
 
+Linux final discovery teardown attempts independent peer and address owners concurrently: one pending Stop reply cannot prevent the others from being attempted. Cancellation retains pending replies and unresolved ownership for a later teardown retry.
+
 WinRT retries only unconfirmed handler, watcher and maintained-session cleanup stages. Additional leases reuse a healthy maintained session. If opening a watcher fails and compensating cleanup is also refused, a process-owned cleanup vault retains that partial watcher for the next native radio open or explicit close on the same adapter. An unrelated adapter does not inherit that cleanup debt. There is no background retry loop; without either trigger, the retained owner lasts until process exit. These ownership rules do not constitute Windows physical-radio qualification.
 
 ## Verification

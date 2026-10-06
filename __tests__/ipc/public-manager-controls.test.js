@@ -4,7 +4,7 @@ function descriptor(id, state, limitations = []) {
   return { id, state, limitations }
 }
 
-function capabilities(readinessState = 'unsupported') {
+function capabilities(readinessState = 'unsupported', deferredState) {
   const descriptors = new Map([
     ['connection:direct', descriptor('connection:direct', 'supported')],
     [
@@ -26,6 +26,9 @@ function capabilities(readinessState = 'unsupported') {
     ['connection:subrate', descriptor('connection:subrate', 'unsupported')],
     ['gatt:write-without-response-readiness', descriptor('gatt:write-without-response-readiness', readinessState)]
   ])
+  if (deferredState !== undefined) {
+    descriptors.set('connection:when-available', descriptor('connection:when-available', deferredState))
+  }
   return {
     supports: id => descriptors.get(id)?.state === 'supported',
     get: id => descriptors.get(id),
@@ -87,8 +90,8 @@ function database(generation) {
   }
 }
 
-function setup(readinessState) {
-  const capabilitySnapshot = capabilities(readinessState)
+function setup(readinessState, deferredState) {
+  const capabilitySnapshot = capabilities(readinessState, deferredState)
   let discoveryCount = 0
   const calls = []
   const base = {
@@ -130,10 +133,36 @@ function setup(readinessState) {
     capabilities: capabilitySnapshot,
     adapter: { id: 'adapter-1', state: async () => ({}), waitUntilReady: async () => ({}) }
   })
-  return { manager, calls }
+  return { manager, calls, ipc }
 }
 
 describe('IPC public connection controls', () => {
+  test.each([
+    ['unavailable', 'capability.unavailable'],
+    ['unsupported', 'capability.unsupported'],
+    [undefined, 'capability.unsupported']
+  ])('deferred IPC connect preserves the %s descriptor refusal before dispatch', async (state, code) => {
+    const { manager, ipc } = setup('unsupported', state)
+    const connect = jest.spyOn(ipc, 'connect')
+    await expect(manager.connect('peer-1', { intent: 'when-available' })).rejects.toMatchObject({
+      code,
+      operation: 'ipc-public-manager.connect.when-available'
+    })
+    expect(connect).not.toHaveBeenCalled()
+  })
+
+  test.each(['supported', 'limited'])(
+    'deferred IPC connect admits a %s descriptor and preserves the intent',
+    async state => {
+      const { manager, ipc } = setup('unsupported', state)
+      const connect = jest.spyOn(ipc, 'connect')
+      const connection = await manager.connect('peer-1', { intent: 'when-available' })
+      expect(connect).toHaveBeenCalledTimes(1)
+      expect(connect).toHaveBeenCalledWith('peer-1', expect.objectContaining({ intent: 'when-available' }))
+      await connection.release()
+    }
+  )
+
   describe('withDiscoveredConnection shares one deadline across connect and discover', () => {
     let now
 
@@ -186,7 +215,9 @@ describe('IPC public connection controls', () => {
     }
 
     test('passes only the remaining budget to discover after a partial connect', async () => {
-      const { manager, calls, action } = fixture(() => { now = 1_400 })
+      const { manager, calls, action } = fixture(() => {
+        now = 1_400
+      })
       await expect(manager.withDiscoveredConnection('peer-1', { timeoutMs: 1_000 }, action)).resolves.toBe('done')
       expect(calls.connect[0].deadline).toBe(2_000)
       expect(calls.discover[0].deadline).toBe(2_000)
@@ -195,7 +226,9 @@ describe('IPC public connection controls', () => {
     })
 
     test('does not start discovery when connection consumes the budget', async () => {
-      const { manager, calls, action } = fixture(() => { now = 2_000 })
+      const { manager, calls, action } = fixture(() => {
+        now = 2_000
+      })
       await expect(manager.withDiscoveredConnection('peer-1', { timeoutMs: 1_000 }, action)).rejects.toMatchObject({
         code: 'operation.timed-out'
       })
@@ -207,15 +240,18 @@ describe('IPC public connection controls', () => {
     test('preserves cancellation through discovery and releases once', async () => {
       const controller = new AbortController()
       const { manager, calls, action } = fixture(
-        () => { now = 1_200 },
+        () => {
+          now = 1_200
+        },
         options => {
           expect(options.signal).toBe(controller.signal)
           controller.abort()
           throw new Error('discovery cancelled')
         }
       )
-      await expect(manager.withDiscoveredConnection('peer-1', { timeoutMs: 1_000, signal: controller.signal }, action))
-        .rejects.toThrow('discovery cancelled')
+      await expect(
+        manager.withDiscoveredConnection('peer-1', { timeoutMs: 1_000, signal: controller.signal }, action)
+      ).rejects.toThrow('discovery cancelled')
       expect(calls.discover[0].deadline).toBe(2_000)
       expect(calls.release).toBe(1)
       expect(calls.action).toBe(0)

@@ -6,6 +6,11 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Corrected
 
+- Apply deferred-connect capability admission to IPC managers before dispatch,
+  preserving unavailable versus unsupported refusals across public host routes.
+- Attempt independent Linux discovery cleanup concurrently so a pending peer
+  cannot starve other peers or address discovery; pending debt stays retryable.
+
 - Preserve unavailable deferred-connect capability refusals and report only
   transport cleanup debt still present after shutdown's final retry; if final
   accounting times out, retain the provisional failures with the timeout.

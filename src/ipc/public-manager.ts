@@ -263,6 +263,12 @@ export class IpcPublicManagerAdapter implements BleManager {
       assertPublicConnectOptions(options)
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       assertDirectConnectionCapability(this.capabilities.get('connection:direct'), 'ipc-public-manager.connect.direct')
+      if (options.intent === 'when-available') {
+        assertDirectConnectionCapability(
+          this.capabilities.get('connection:when-available'),
+          'ipc-public-manager.connect.when-available'
+        )
+      }
       if (isPeerAddressTarget(peer) && !capabilityUsable(this.capabilities.get('peer:address-targeting'))) {
         throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.connect.address')
       }

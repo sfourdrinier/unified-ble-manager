@@ -16,6 +16,7 @@ struct Fixture {
     discovered: bool,
     refuse_stop: bool,
     hold_stop: bool,
+    hold_stop_sender: Option<String>,
     stop_reply: Option<dbus::Message>,
     refuse_start: bool,
     refuse_filter: bool,
@@ -130,7 +131,13 @@ async fn fixture() -> (
                         .discovery_stoppers
                         .push(message.sender().unwrap().to_string());
                     state.stopped.notify_one();
-                    if state.hold_stop {
+                    if state.hold_stop
+                        || state.hold_stop_sender.as_ref().is_some_and(|sender| {
+                            message
+                                .sender()
+                                .is_some_and(|actual| actual.to_string() == *sender)
+                        })
+                    {
                         state.stop_reply = Some(message);
                         return true;
                     }
@@ -501,6 +508,78 @@ async fn private_bus_discovery_close_attempts_every_owner_and_retains_all_failur
         state.lock().unwrap().stops,
         3,
         "unknown stop outcomes retain their original replies without resend"
+    );
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_discovery_close_pending_first_owner_does_not_starve_siblings() {
+    const FIRST: &str = "hci0/dev_11_22_33_44_55_66";
+    let (bluez, state, server, worker) = fixture().await;
+    let daemon = bluez.current_daemon_owner().await.unwrap();
+    for peer in [FIRST, "hci0/dev_AA_BB_CC_DD_EE_FF"] {
+        let entry = bluez.availability_discovery(peer).await.unwrap();
+        entry
+            .owner
+            .start(&entry.conn, &bluez.adapter_path, daemon.clone())
+            .await
+            .unwrap();
+        if peer == FIRST {
+            state.lock().unwrap().hold_stop_sender =
+                Some(entry.conn.unique_name().unwrap().to_string());
+        }
+    }
+    bluez
+        .address_discovery
+        .start(&bluez.conn, &bluez.adapter_path, daemon)
+        .await
+        .unwrap();
+    let closing = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.finish_discovery().await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let stops = state.lock().unwrap().stops;
+            if stops == 3 && bluez.availability_discoveries.lock().await.len() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("pending first Stop must not postpone independent peer/address cleanup");
+    assert!(!closing.is_finished());
+    assert!(
+        bluez
+            .availability_discoveries
+            .lock()
+            .await
+            .contains_key(FIRST)
+    );
+    closing.abort();
+    assert!(closing.await.unwrap_err().is_cancelled());
+    server
+        .send(
+            state
+                .lock()
+                .unwrap()
+                .stop_reply
+                .take()
+                .unwrap()
+                .method_return(),
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), bluez.finish_discovery())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(bluez.availability_discoveries.lock().await.is_empty());
+    assert_eq!(
+        state.lock().unwrap().stops,
+        3,
+        "retry consumes original pending reply, never another Stop"
     );
     worker.abort();
 }

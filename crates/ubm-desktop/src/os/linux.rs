@@ -837,19 +837,20 @@ impl Bluez {
             .cloned()
             .collect();
         peers.sort();
-        let mut failures = Vec::new();
-        for peer in peers {
-            if let Err(error) = self.finish_availability(&peer).await {
-                failures.push(error);
-            }
-        }
-        if let Err(error) = self
-            .address_discovery
-            .cleanup(&self.conn, &self.adapter_path)
-            .await
-        {
-            failures.push(error);
-        }
+        // Every independent sender must be polled before waiting for any one
+        // Stop reply. A stalled owner cannot spend the close budget starving
+        // siblings; canceled pending replies remain retained by their owners.
+        let (availability, address) = futures_util::future::join(
+            futures_util::future::join_all(peers.iter().map(|peer| self.finish_availability(peer))),
+            self.address_discovery
+                .cleanup(&self.conn, &self.adapter_path),
+        )
+        .await;
+        let failures = availability
+            .into_iter()
+            .chain(std::iter::once(address))
+            .filter_map(Result::err)
+            .collect();
         crate::errors::cleanup_result("bluez-dbus", failures)
     }
 
