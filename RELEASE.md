@@ -905,7 +905,11 @@ may be bypassed to make a release pass.
 
 ## What the publish workflow does
 
-For a valid version tag, `.github/workflows/publish.yml`:
+For a valid version tag, `.github/workflows/publish.yml` performs the following
+gates and publication operations. This list describes responsibilities, not a
+serial schedule: Android/example lanes run independently, while the
+packed Tauri consumer depends on the sealed canonical package. The aggregate
+requires that every required lane succeeds before publication.
 
 1. checks out the tagged commit and builds Node-API v8 prebuilds for macOS `arm64` and Windows/Linux `arm64`/`x64` native runners;
 2. loads each prebuild under Node and the same file under Electron through the shared `scripts/ci/run-electron-main-smoke.sh` launcher (Linux uses Xvfb and `--no-sandbox`; other hosts retain normal Electron launch). Missing addons and smoke failures remain fatal; this synthetic check makes no physical-radio claim;
@@ -925,10 +929,11 @@ For a valid version tag, `.github/workflows/publish.yml`:
 Linux native system-package profiles have one source of truth:
 `scripts/ci/install-linux-native-system-dependencies.sh`. CI and publish jobs
 call its `bluez`, `tauri`, or `desktop-prebuild` profile and must not duplicate
-`apt-get install` package lists in workflow YAML. The packed external Tauri
-Cargo consumer runs immediately after `prepack`, before examples, Android
-builds and later packaging gates, so an inconsistent runner or consumer fails
-early.
+`apt-get install` package lists in workflow YAML. Native producers feed the
+canonical package assembly; the packed external Tauri Cargo consumer verifies
+that sealed candidate in its own lane. It has no ordering guarantee relative
+to the independent Android/example lanes; any required lane failure prevents
+publication.
 
 Stable versions publish to `latest`. Active `4.0.0-rc.*` candidates also publish to `latest`; other hyphenated SemVer prereleases publish to `next` and create GitHub prereleases.
 

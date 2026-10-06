@@ -30,6 +30,24 @@ test('historical migration and baseline retain snapshots with current-guide poin
   expect(read('MIGRATION_4.0.md')).toContain('Versions and install commands below belong to that historical snapshot')
   expect(read('docs/5.0.0-U0-BASELINE.md')).toContain('Historical snapshot; not current installation guidance')
   expect(read('docs/5.0.0-U0-BASELINE.md')).toContain('[`NODE.md`](NODE.md)')
+  const baselineRow = read('docs/README.md')
+    .split('\n')
+    .find(line => line.includes('](5.0.0-U0-BASELINE.md)'))
+  expect(baselineRow).toMatch(/\| Historical\s*\|$/)
+})
+
+test('desktop parity distinguishes base adapter requirements from implemented OS overrides', () => {
+  const parity = read('crates/ubm-desktop/PARITY_GAPS.md')
+  const portable = parity.split('## btleplug-provides')[1].split('## narrow-OS-adapter-needed')[0]
+  const baseAdapters = parity.split('## narrow-OS-adapter-needed')[1].split('## preapproved-limitation-candidate')[0]
+  expect(portable).not.toContain('`connection:when-available`')
+  expect(baseAdapters).toContain('`connection:when-available`')
+  expect(baseAdapters).toContain('Initial acquisition is implemented by the per-OS overrides below')
+  expect(baseAdapters).toContain('Windows and Linux overrides below implement this read-only inventory')
+  expect(parity).not.toMatch(/\| `connection:when-available` \| windows[^\n]*\n\s*\n\|/)
+  expect(parity).not.toContain('BlueZ performs the long write')
+  expect(parity).toContain('ordinary OS-managed with-response writes up to 512 bytes')
+  expect(parity).toContain('explicit prepared `long-write` remains refused with `capability.limited`')
 })
 
 test('agent addon guidance preserves Node-API compatibility rather than runtime module-ABI rebuilds', () => {
@@ -188,6 +206,8 @@ test('Tauri distinguishes OS-managed ordinary writes from explicit prepared tran
   expect(guide).toContain('caller-controlled prepared/reliable transactions')
   expect(guide).not.toContain('so long writes are rejected')
   expect(guide).toContain('`no-prepared-write-path`')
+  expect(guide).toContain('refused\nwith `capability.limited`')
+  expect(guide).toContain('`no-prepared-write-path` is the capability limitation id')
 })
 
 test('Tauri crate peer-directory guidance includes native bonded routes and truthful filters', () => {
@@ -203,4 +223,9 @@ test('Tauri crate peer-directory guidance includes native bonded routes and trut
   expect(guide).toContain('an empty or excluding source list returns no records')
   expect(guide).not.toContain('Other\ncategories and adapters without these native mechanisms report unsupported')
   expect(guide).not.toContain('including empty or source-filtered queries')
+})
+test('Linux teardown distinguishes confirmed link release from retained discovery debt', () => {
+  const guide = read('docs/NODE.md')
+  expect(guide).toContain('A confirmed Linux link release is still published')
+  expect(guide).toContain('discovery cleanup remains independently owned')
 })

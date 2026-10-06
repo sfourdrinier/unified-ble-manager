@@ -3962,11 +3962,21 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                             LifecycleKind::Released { requested: true },
                             observation.platform,
                         );
-                        (Ok(LinkRelease::Released), Some(event))
+                        (
+                            observation
+                                .cleanup_failure
+                                .map_or(Ok(LinkRelease::Released), Err),
+                            Some(event),
+                        )
                     } else {
                         // The event loop recorded the release (or a loss)
                         // first and already published it.
-                        (Ok(LinkRelease::Released), None)
+                        (
+                            observation
+                                .cleanup_failure
+                                .map_or(Ok(LinkRelease::Released), Err),
+                            None,
+                        )
                     }
                 }
                 Wait::Done(Err(error)) => {
@@ -5954,7 +5964,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
         // F14: release owned OS links with per-link receipts before the
         // owner is destroyed.
-        self.release_owned_links().await;
+        let mut link_cleanup_failures = self.release_owned_links().await;
         // F03: cancel remaining in-flight ops so late radio work cannot
         // resurrect after teardown — queued releases now, dispatched
         // observes the abort as the winning outcome when its radio finishes.
@@ -6007,7 +6017,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 })
             })
             .collect();
-        let transport_close_failures =
+        let mut transport_close_failures =
             match tokio::time::timeout(Duration::from_secs(5), self.inner.boundary.finish_close())
                 .await
             {
@@ -6023,6 +6033,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     ),
                 ],
             };
+        transport_close_failures.append(&mut link_cleanup_failures);
         let radio_close_failures = self.inner.boundary.take_close_failures();
         // F15: the final record is taken only after every destroy pass
         // executed, every dispatched remainder was answered, and every
@@ -6083,7 +6094,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// records a disconnect failure, so the final destroy record names it
     /// (receipt) instead of claiming a clean release. Skips peers that
     /// already released, so repeat shutdowns stay quiet and idempotent.
-    async fn release_owned_links(&self) {
+    async fn release_owned_links(&self) -> Vec<DesktopError> {
+        let mut cleanup_failures = Vec::new();
         let peers: Vec<(String, String)> = {
             let peers = self.inner.peers.lock().await;
             peers
@@ -6121,6 +6133,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 let mut core = self.inner.core.lock().await;
                 match outcome {
                     Ok(Ok(observation)) => {
+                        cleanup_failures.extend(observation.cleanup_failure.clone());
                         let generation = Generations::of(&core, &peer_key);
                         core.shutdown_release_link(&peer_key).ok().map(|()| {
                             self.inner
@@ -6152,6 +6165,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 self.inner.signal(CentralSignal::Lifecycle(event));
             }
         }
+        cleanup_failures
     }
 
     /// Drive incremental destruction to acknowledged completion (F15): one

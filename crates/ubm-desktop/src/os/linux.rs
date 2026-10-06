@@ -677,13 +677,29 @@ impl Bluez {
     }
 
     async fn verify_daemon_owner(&self, owner: &str) -> Result<(), DesktopError> {
-        if self.current_daemon_owner().await? != owner {
+        self.verify_discovery_owner(owner, discovery::DiscoveryOperation::AddressTargeting)
+            .await
+    }
+
+    async fn verify_discovery_owner(
+        &self,
+        owner: &str,
+        operation: discovery::DiscoveryOperation,
+    ) -> Result<(), DesktopError> {
+        if self.current_daemon_owner_for(operation.name()).await? != owner {
             return Err(DesktopError::new(
                 BleErrorCode::CapabilityUnsupported,
                 BleErrorDomain::Capability,
-                "peer.address-targeting",
+                operation.name(),
             )
-            .with_detail("the BlueZ daemon owner changed during address resolution"));
+            .with_detail(match operation {
+                discovery::DiscoveryOperation::AddressTargeting => {
+                    "the BlueZ daemon owner changed during address resolution"
+                }
+                discovery::DiscoveryOperation::WhenAvailable => {
+                    "the BlueZ daemon owner changed during LE availability acquisition"
+                }
+            }));
         }
         Ok(())
     }
@@ -941,11 +957,11 @@ impl Bluez {
                         Ok(report) => report, Err(error) => break Err(platform(OP, error)),
                     };
                     if report.0.as_str() == path && report.1 > baseline {
-                        break self.verify_daemon_owner(&owner).await;
+                        break self.verify_discovery_owner(&owner, discovery::DiscoveryOperation::WhenAvailable).await;
                     }
                 }
                 () = tokio::time::sleep(MATERIALIZE_POLL) => {
-                    if let Err(error) = self.verify_daemon_owner(&owner).await { break Err(error); }
+                    if let Err(error) = self.verify_discovery_owner(&owner, discovery::DiscoveryOperation::WhenAvailable).await { break Err(error); }
                 }
             }
         };

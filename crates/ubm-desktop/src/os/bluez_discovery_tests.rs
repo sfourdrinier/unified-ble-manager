@@ -653,6 +653,49 @@ async fn private_bus_le_availability_daemon_replacement_does_not_retarget_wait()
         .unwrap()
         .unwrap_err();
     assert_eq!(error.code_str(), "capability.unsupported");
+    assert_eq!(error.operation(), "connection.connect.when-available");
+    assert!(!error.detail().unwrap().contains("address resolution"));
+    assert_eq!(state.lock().unwrap().stops, 1);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_missing_owner_preserves_wait_operation_and_platform() {
+    let (bluez, state, server, worker) = fixture().await;
+    let started = state.lock().unwrap().started.clone();
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    server.release_name("org.bluez").await.unwrap();
+    server
+        .send(
+            dbus::Message::new_signal(
+                "/org/bluez/hci0",
+                "org.unifiedblemanager.LinuxAuthority1",
+                "LeAdvertisement",
+            )
+            .unwrap()
+            .append2(
+                dbus::Path::new("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF").unwrap(),
+                41u64,
+            ),
+        )
+        .unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(3), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.operation(), "connection.connect.when-available");
+    assert_eq!(
+        error.platform().unwrap().code,
+        "org.freedesktop.DBus.Error.NameHasNoOwner"
+    );
     assert_eq!(state.lock().unwrap().stops, 1);
     worker.abort();
 }
@@ -987,6 +1030,7 @@ async fn private_bus_address_resolution_rejects_old_owner_result_but_releases_it
         )
         .unwrap();
     let error = resolving.await.unwrap().unwrap_err();
+    assert_eq!(error.operation(), "peer.address-targeting");
     assert!(error.detail().unwrap().contains("owner changed"));
     bluez.finish_discovery().await.unwrap();
     assert_eq!(state.lock().unwrap().stops, 1);

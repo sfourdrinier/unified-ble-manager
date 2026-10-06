@@ -32,7 +32,7 @@ pub(super) enum DiscoveryOperation {
 }
 
 impl DiscoveryOperation {
-    fn name(self) -> &'static str {
+    pub(super) fn name(self) -> &'static str {
         match self {
             Self::AddressTargeting => "peer.address-targeting",
             Self::WhenAvailable => "connection.connect.when-available",

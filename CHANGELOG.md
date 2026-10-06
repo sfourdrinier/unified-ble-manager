@@ -33,6 +33,10 @@ All notable changes to `unified-ble-manager` are documented here.
 - Attempt Linux link release despite an independent discovery-cleanup refusal,
   and attempt every retained peer and address discovery during shutdown. Preserve
   all structured cleanup failures and keep refused obligations retryable.
+- Preserve confirmed Linux disconnect observations even when discovery cleanup
+  fails, publishing the release and permitting fresh connection admission while
+  independently retaining cleanup debt. Deferred owner-fence failures also keep
+  the deferred-connect operation name rather than address-resolution labels.
 - Reconcile current guides and capability ledgers with desktop initial deferred
   acquisition, BlueZ unmeasured write admission and ordinary OS-managed Windows
   writes; retain historical snapshots and explicit hardware qualification gaps.

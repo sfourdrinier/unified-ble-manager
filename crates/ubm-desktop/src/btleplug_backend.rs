@@ -31,15 +31,17 @@ use std::sync::{
 use std::time::Duration;
 
 #[cfg(any(test, target_os = "linux"))]
-async fn release_linux_link<T>(
+async fn release_linux_link(
     discovery: Result<(), DesktopError>,
-    link: impl Future<Output = Result<T, DesktopError>>,
-) -> Result<T, DesktopError> {
+    link: impl Future<Output = Result<crate::boundary::DisconnectObservation, DesktopError>>,
+) -> Result<crate::boundary::DisconnectObservation, DesktopError> {
     let link = link.await;
     let mut failures: Vec<_> = discovery.err().into_iter().collect();
     match link {
-        Ok(observation) => {
-            crate::errors::cleanup_result("bluez-dbus", failures)?;
+        Ok(mut observation) => {
+            failures.extend(observation.cleanup_failure.take());
+            observation.cleanup_failure =
+                crate::errors::cleanup_result("bluez-dbus", failures).err();
             Ok(observation)
         }
         Err(error) => {
@@ -3708,7 +3710,9 @@ impl RadioBoundary for BtleplugRadio {
     }
 
     async fn disconnect(&self, peer_id: &str) -> Result<(), DesktopError> {
-        self.disconnect_with_observation(peer_id).await.map(|_| ())
+        self.disconnect_with_observation(peer_id)
+            .await
+            .and_then(|observation| observation.cleanup_failure.map_or(Ok(()), Err))
     }
 
     async fn disconnect_with_observation(
@@ -3737,11 +3741,12 @@ impl RadioBoundary for BtleplugRadio {
                 .clone()
                 .release_with_observation(peer_id)
                 .await?;
-            let observation = crate::boundary::DisconnectObservation {
+            let mut observation = crate::boundary::DisconnectObservation {
                 platform: receipt
                     .disconnect_reason
                     .map(crate::boundary::bluez_disconnect_observation),
                 physical_generation: receipt.physical_generation,
+                cleanup_failure: None,
             };
             if let Some(result) = self.linux_leases.with_release_scope(
                 peer_id,
@@ -3751,7 +3756,7 @@ impl RadioBoundary for BtleplugRadio {
                     self.release_link_state(peer_id)
                 },
             ) {
-                result?;
+                observation.cleanup_failure = result.err();
             }
             Ok(observation)
         })
@@ -5077,8 +5082,7 @@ pub fn core_property_bits(flags: PropertyFlags) -> u8 {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
-    async fn linux_disconnect_attempts_link_after_discovery_refusal_and_retries_only_debt() {
-        let discovery_debt = std::cell::Cell::new(true);
+    async fn linux_disconnect_reports_released_fact_and_independent_cleanup_refusal() {
         let link_owned = std::cell::Cell::new(true);
         let release_count = std::cell::Cell::new(0);
         let refused = crate::errors::DesktopError::new(
@@ -5089,29 +5093,22 @@ mod tests {
         let result = super::release_linux_link(Err(refused), async {
             release_count.set(release_count.get() + 1);
             link_owned.set(false);
-            Ok(42u64)
+            Ok(crate::boundary::DisconnectObservation {
+                physical_generation: Some(42),
+                ..Default::default()
+            })
         })
         .await;
-        assert_eq!(result.unwrap_err().operation(), "connection.when-available");
+        let observation = result.expect("confirmed release must reach the central");
+        assert_eq!(observation.physical_generation, Some(42));
+        assert_eq!(
+            observation.cleanup_failure.unwrap().operation(),
+            "connection.when-available"
+        );
         assert!(
             !link_owned.get(),
             "discovery refusal must not leave the link owned"
         );
-        assert!(
-            discovery_debt.get(),
-            "the failed independent stage remains retryable"
-        );
-        discovery_debt.set(false);
-        let observation = super::release_linux_link(Ok(()), async {
-            assert!(
-                !link_owned.get(),
-                "the retained release observation is reused"
-            );
-            Ok(42u64)
-        })
-        .await
-        .unwrap();
-        assert_eq!(observation, 42);
         assert_eq!(release_count.get(), 1);
     }
 
@@ -5131,7 +5128,7 @@ mod tests {
                 "connection.when-available",
                 "StopDiscovery.Refused",
             )),
-            async { Err::<u64, _>(failure("connection.disconnect", "ReleaseLease.Refused")) },
+            async { Err(failure("connection.disconnect", "ReleaseLease.Refused")) },
         )
         .await
         .unwrap_err();
@@ -5151,11 +5148,19 @@ mod tests {
     async fn linux_disconnect_preserves_successful_release_observation() {
         assert_eq!(
             super::release_linux_link(Ok(()), async {
-                Ok::<_, crate::errors::DesktopError>((7u64, 19u8))
+                Ok(crate::boundary::DisconnectObservation {
+                    physical_generation: Some(7),
+                    platform: Some(crate::boundary::bluez_disconnect_observation(19)),
+                    cleanup_failure: None,
+                })
             })
             .await
             .unwrap(),
-            (7, 19)
+            crate::boundary::DisconnectObservation {
+                physical_generation: Some(7),
+                platform: Some(crate::boundary::bluez_disconnect_observation(19)),
+                cleanup_failure: None
+            }
         );
     }
     #[test]

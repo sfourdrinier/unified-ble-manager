@@ -11,6 +11,14 @@ const root = path.resolve(__dirname, '..')
 const baselineText = fs.readFileSync(path.join(root, '.github/publish-serial-reference.yml'), 'utf8')
 const baseline = YAML.parse(baselineText)
 
+test('release guide describes the parallel graph without serial Tauri-before-Android promises', () => {
+  const guide = fs.readFileSync(path.join(root, 'RELEASE.md'), 'utf8')
+  expect(guide).not.toContain('Cargo consumer runs immediately after `prepack`, before examples, Android')
+  expect(guide).toContain('Android/example lanes run independently')
+  expect(guide).toContain('packed Tauri consumer depends on the sealed canonical package')
+  expect(guide).toContain('every required lane succeeds before publication')
+})
+
 test('parallel production retains tag-only trust and gates publication on every lane', () => {
   const workflow = buildProduction(baseline)
   expect(workflow.on).toEqual(baseline.on)

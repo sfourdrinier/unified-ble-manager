@@ -179,7 +179,8 @@ Ordinary `with-response` writes within the admitted maximum use the OS-managed
 write procedure; Windows and Linux can therefore accept a value larger than one
 ATT payload. This is distinct from caller-controlled prepared/reliable transactions:
 the explicit `long-write` mode has no prepared-write radio path and is refused
-with `no-prepared-write-path`, never silently converted to an ordinary write.
+with `capability.limited`, never silently converted to an ordinary write.
+`no-prepared-write-path` is the capability limitation id, not the public error code.
 `gatt:maximum-write-length` and `gatt:long-write` retain the instantiated desktop
 core's capability reasons and limits; a limited descriptor does not promise every
 transaction mode. The effective MTU (`connection:effective-mtu`) is the core's

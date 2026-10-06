@@ -470,6 +470,8 @@ Then scan and GATT through the same `BleManager` as React Native. Await `manager
 
 Failed cleanup does not reopen admission or discard native ownership. Retain the owner and retry teardown when its receipt reports incomplete release. Desktop shutdown retains unresolved scan, subscription and event-transport obligations; a later confirmed release clears current cleanup debt without erasing earlier diagnostics.
 
+A confirmed Linux link release is still published even when disconnect reports a separate discovery-cleanup error. The released link permits a fresh connection; discovery cleanup remains independently owned and manager teardown retains that debt until its release is confirmed. A cleanup refusal never turns a confirmed physical release back into an unconfirmed link.
+
 WinRT retries only unconfirmed handler, watcher and maintained-session cleanup stages. Additional leases reuse a healthy maintained session. If opening a watcher fails and compensating cleanup is also refused, a process-owned cleanup vault retains that partial watcher for the next native radio open or explicit close on the same adapter. An unrelated adapter does not inherit that cleanup debt. There is no background retry loop; without either trigger, the retained owner lasts until process exit. These ownership rules do not constitute Windows physical-radio qualification.
 
 ## Verification

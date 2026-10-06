@@ -1435,6 +1435,8 @@ pub struct DisconnectObservation {
     pub platform: Option<crate::errors::PlatformDetail>,
     /// Native physical generation; distinct from public connection/ATT generations.
     pub physical_generation: Option<u64>,
+    /// A separately owned cleanup refusal does not negate confirmed link release.
+    pub cleanup_failure: Option<crate::errors::DesktopError>,
 }
 
 pub(crate) fn bluez_disconnect_observation(reason: u8) -> crate::errors::PlatformDetail {
@@ -1466,6 +1468,7 @@ impl RadioCloseFailure {
 
 struct FakeInner {
     disconnect_observations: HashMap<String, crate::errors::PlatformDetail>,
+    disconnect_cleanup_failures: HashMap<String, DesktopError>,
     #[cfg(target_os = "linux")]
     physical_generations: HashMap<String, u64>,
     directory_peers: Option<Vec<DirectoryPeer>>,
@@ -1574,6 +1577,22 @@ impl Default for FakeRadio {
 }
 
 impl FakeRadio {
+    /// Retain a separately owned cleanup refusal after confirmed link release.
+    pub fn set_disconnect_cleanup_failure(&self, peer: &str, error: DesktopError) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .disconnect_cleanup_failures
+            .insert(peer.to_owned(), error);
+    }
+    /// Confirm retirement of the independently owned cleanup debt.
+    pub fn clear_disconnect_cleanup_failure(&self, peer: &str) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .disconnect_cleanup_failures
+            .remove(peer);
+    }
     /// Script the authoritative detail returned by a synthetic release.
     pub fn set_disconnect_observation(&self, peer: &str, detail: crate::errors::PlatformDetail) {
         self.state
@@ -1623,6 +1642,7 @@ impl FakeRadio {
         Self {
             state: StdMutex::new(FakeInner {
                 disconnect_observations: HashMap::new(),
+                disconnect_cleanup_failures: HashMap::new(),
                 directory_peers: None,
                 bonded_directory_peers: None,
                 directory_unblocked_reads: 0,
@@ -2408,6 +2428,13 @@ impl RadioBoundary for FakeRadio {
         Ok(DisconnectObservation {
             platform,
             physical_generation: None,
+            cleanup_failure: self
+                .state
+                .lock()
+                .expect("fake radio state")
+                .disconnect_cleanup_failures
+                .get(peer_id)
+                .cloned(),
         })
     }
     fn consume_disconnect_observation(&self, peer: &str, observation: &DisconnectObservation) {
@@ -2717,7 +2744,13 @@ impl RadioBoundary for FakeRadio {
             )];
         }
         self.gate(FaultOp::FinishClose).await;
-        Vec::new()
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .disconnect_cleanup_failures
+            .values()
+            .cloned()
+            .collect()
     }
 
     async fn read_rssi(&self, peer_id: &str) -> Result<i16, DesktopError> {
