@@ -6,6 +6,54 @@ function testManagerHostOptions() {
 }
 
 describe('public BleCapabilities', () => {
+  test.each([
+    ['unavailable', 'capability.unavailable'],
+    ['unsupported', 'capability.unsupported'],
+    [null, 'capability.unsupported']
+  ])('deferred connect preserves the %s capability verdict before dispatch', async (state, code) => {
+    const connect = jest.fn()
+    const direct = { id: 'connection:direct', state: 'supported' }
+    const deferred = state === null ? null : { id: 'connection:when-available', state }
+    const internal = {
+      supports: () => false,
+      capability: id => (id === direct.id ? direct : id === deferred?.id ? deferred : null),
+      capabilities: () => (deferred === null ? [direct] : [direct, deferred]),
+      destroy: jest.fn(),
+      scan: jest.fn(),
+      connect
+    }
+    const manager = await createPublicBleManager(internal, () => 0, testManagerHostOptions())
+    await expect(manager.connect('peer-deferred', { intent: 'when-available' })).rejects.toMatchObject({
+      code,
+      operation: 'public-ble-manager.connect.when-available'
+    })
+    expect(connect).not.toHaveBeenCalled()
+  })
+
+  test.each(['supported', 'limited'])(
+    'deferred connect admits the %s descriptor without a boolean second opinion',
+    async state => {
+      const connect = jest.fn(async () => ({
+        disconnect: async () => ({ state: 'released', failures: [] }),
+        release: async () => ({ state: 'released', failures: [] })
+      }))
+      const direct = { id: 'connection:direct', state: 'supported' }
+      const deferred = { id: 'connection:when-available', state }
+      const internal = {
+        supports: () => false,
+        capability: id => (id === direct.id ? direct : id === deferred.id ? deferred : null),
+        capabilities: () => [direct, deferred],
+        destroy: jest.fn(),
+        scan: jest.fn(),
+        connect
+      }
+      const manager = await createPublicBleManager(internal, () => 0, testManagerHostOptions())
+      const connection = await manager.connect('peer-deferred', { intent: 'when-available' })
+      expect(connect).toHaveBeenCalledTimes(1)
+      await connection.release()
+    }
+  )
+
   test('rejects direct connections when the backend omits the direct capability descriptor', async () => {
     const connect = jest.fn()
     const internal = {

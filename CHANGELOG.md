@@ -6,6 +6,12 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Corrected
 
+- Preserve unavailable deferred-connect capability refusals and report only
+  transport cleanup debt still present after shutdown's final retry; if final
+  accounting times out, retain the provisional failures with the timeout.
+- Explicitly disarm the Linux availability retirement guard after confirmed
+  retirement, preserving cancellation cleanup under strict compiler warnings.
+
 - Remove stale pre-publication installation conditions and record rc.19 as
   immutable published history; preserve its review tracker as a historical record.
 - Describe missing BlueZ effective MTU as `capability.unavailable`, distinct from

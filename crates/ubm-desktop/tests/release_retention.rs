@@ -127,6 +127,71 @@ async fn confirmed_release_with_indeterminate_discovery_debt_is_terminal_and_rec
 }
 
 #[tokio::test]
+async fn shutdown_reconciles_discovery_cleanup_confirmed_by_final_transport_retry() {
+    let central = open().await;
+    ready_peer(&central, "peer-final-cleanup").await;
+    central.boundary().set_disconnect_cleanup_failure(
+        "peer-final-cleanup",
+        ubm_desktop::DesktopError::new(
+            ubm_core::contracts::BleErrorCode::PlatformFailure,
+            ubm_core::contracts::BleErrorDomain::Cleanup,
+            "connection.when-available",
+        )
+        .with_platform(ubm_desktop::PlatformDetail::new(
+            "bluez-dbus",
+            "org.bluez.Error.Failed",
+        )),
+    );
+    central
+        .boundary()
+        .retire_disconnect_cleanup_at_finish_close("peer-final-cleanup");
+    let mut events = central.lifecycle_events();
+    let report = central.shutdown().await;
+    assert!(
+        report.is_released(),
+        "final confirmed cleanup supersedes its provisional refusal"
+    );
+    assert!(report.transport_close_failures.is_empty());
+    assert!(!central.boundary().link_connected("peer-final-cleanup"));
+    assert_eq!(
+        events
+            .try_recv()
+            .expect("physical release remains published")
+            .kind,
+        ubm_desktop::LifecycleKind::Released { requested: true },
+    );
+    assert!(
+        events.try_recv().is_err(),
+        "cleanup retry cannot duplicate physical release"
+    );
+    assert_eq!(count(&central, "disconnect"), 1);
+    assert_eq!(count(&central, "finish_close"), 1);
+}
+
+#[tokio::test]
+async fn shutdown_keeps_provisional_discovery_cause_when_final_accounting_times_out() {
+    let central = open().await;
+    ready_peer(&central, "peer-accounting-timeout").await;
+    central.boundary().set_disconnect_cleanup_failure(
+        "peer-accounting-timeout",
+        indeterminate_discovery_failure(),
+    );
+    central.boundary().block_op(FaultOp::FinishClose);
+    let report = central.shutdown().await;
+    assert!(!report.is_released());
+    assert!(report.transport_close_failures.iter().any(|error| {
+        error
+            .platform()
+            .is_some_and(|platform| platform.code == "org.freedesktop.DBus.Error.NoReply")
+    }));
+    assert!(report.transport_close_failures.iter().any(|error| {
+        error.code_str() == "operation.timed-out" && error.operation() == "radio.close.transport"
+    }));
+    assert!(!central.boundary().link_connected("peer-accounting-timeout"));
+    central.boundary().unblock_op(FaultOp::FinishClose);
+}
+
+#[tokio::test]
 async fn shutdown_confirms_link_release_but_reports_independent_discovery_debt() {
     let central = open().await;
     ready_peer(&central, "peer-close-debt").await;
@@ -134,6 +199,11 @@ async fn shutdown_confirms_link_release_but_reports_independent_discovery_debt()
         .boundary()
         .set_disconnect_cleanup_failure("peer-close-debt", indeterminate_discovery_failure());
     let report = central.shutdown().await;
+    assert_eq!(
+        report.transport_close_failures.len(),
+        1,
+        "report final debt once, not the same provisional refusal twice"
+    );
     assert!(
         report.transport_close_failures.iter().any(|error| error
             .platform()

@@ -123,6 +123,7 @@ export interface PeerAddress {
   readonly addressType?: 'public' | 'random'
 }
 export interface ConnectOptions extends OperationOptions {
+  /** Both intents preserve unavailable versus unsupported capability refusals before dispatch. */
   readonly intent?: ConnectionIntent
   readonly transport?: 'le' | 'auto'
   readonly preferredPhy?: readonly BlePhy[]
@@ -1934,8 +1935,11 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         this.internal.capability('connection:direct'),
         'public-ble-manager.connect.direct'
       )
-      if (intent === 'when-available' && !this.internal.supports('connection:when-available')) {
-        throw contractError('capability.unsupported', 'connection', 'public-ble-manager.connect.when-available')
+      if (intent === 'when-available') {
+        assertDirectConnectionCapability(
+          this.internal.capability('connection:when-available'),
+          'public-ble-manager.connect.when-available'
+        )
       }
       if (options.preferredPhy !== undefined && !this.internal.supports('connection:phy')) {
         throw contractError('capability.unsupported', 'connection', 'public-ble-manager.connect.preferred-phy')

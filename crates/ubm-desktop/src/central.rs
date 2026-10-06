@@ -6017,23 +6017,29 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 })
             })
             .collect();
-        let mut transport_close_failures =
+        let transport_close_failures =
             match tokio::time::timeout(Duration::from_secs(5), self.inner.boundary.finish_close())
                 .await
             {
+                // The native owner has retried and accounted for every remaining
+                // obligation. Do not append an earlier refusal it just retired.
                 Ok(result) => result,
-                Err(_) => vec![
-                    DesktopError::new(
-                        BleErrorCode::OperationTimedOut,
-                        BleErrorDomain::Cleanup,
-                        "radio.close.transport",
-                    )
-                    .with_detail(
-                        "Transport cleanup remains owned after the five-second close bound",
-                    ),
-                ],
+                Err(_) => {
+                    // Without final accounting, retain the provisional causes
+                    // as well as the timeout; cleanup remains independently owned.
+                    link_cleanup_failures.push(
+                        DesktopError::new(
+                            BleErrorCode::OperationTimedOut,
+                            BleErrorDomain::Cleanup,
+                            "radio.close.transport",
+                        )
+                        .with_detail(
+                            "Transport cleanup remains owned after the five-second close bound",
+                        ),
+                    );
+                    link_cleanup_failures
+                }
             };
-        transport_close_failures.append(&mut link_cleanup_failures);
         let radio_close_failures = self.inner.boundary.take_close_failures();
         // F15: the final record is taken only after every destroy pass
         // executed, every dispatched remainder was answered, and every

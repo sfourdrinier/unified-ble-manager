@@ -1174,6 +1174,11 @@ pub trait RadioBoundary: Send + Sync + 'static {
     fn close(&self) -> impl Future<Output = ()> + Send + '_;
     /// Release transport event resources after the central's event consumer
     /// has joined. Refused cleanup remains owned and this hook is retryable.
+    /// The completed result accounts for every remaining transport obligation,
+    /// including independent cleanup reported by a prior disconnect observation.
+    /// A confirmed retry supersedes that obligation's earlier refusal; an owner
+    /// that produces `DisconnectObservation::cleanup_failure` must account for
+    /// its retained debt here rather than use the default empty implementation.
     fn finish_close(&self) -> impl Future<Output = Vec<DesktopError>> + Send + '_ {
         async { Vec::new() }
     }
@@ -1469,6 +1474,7 @@ impl RadioCloseFailure {
 struct FakeInner {
     disconnect_observations: HashMap<String, crate::errors::PlatformDetail>,
     disconnect_cleanup_failures: HashMap<String, DesktopError>,
+    disconnect_cleanup_retire_on_finish: std::collections::HashSet<String>,
     #[cfg(target_os = "linux")]
     physical_generations: HashMap<String, u64>,
     directory_peers: Option<Vec<DirectoryPeer>>,
@@ -1593,6 +1599,14 @@ impl FakeRadio {
             .disconnect_cleanup_failures
             .remove(peer);
     }
+    /// Script a cleanup retry confirmed during final transport accounting.
+    pub fn retire_disconnect_cleanup_at_finish_close(&self, peer: &str) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .disconnect_cleanup_retire_on_finish
+            .insert(peer.to_owned());
+    }
     /// Script the authoritative detail returned by a synthetic release.
     pub fn set_disconnect_observation(&self, peer: &str, detail: crate::errors::PlatformDetail) {
         self.state
@@ -1643,6 +1657,7 @@ impl FakeRadio {
             state: StdMutex::new(FakeInner {
                 disconnect_observations: HashMap::new(),
                 disconnect_cleanup_failures: HashMap::new(),
+                disconnect_cleanup_retire_on_finish: std::collections::HashSet::new(),
                 directory_peers: None,
                 bonded_directory_peers: None,
                 directory_unblocked_reads: 0,
@@ -2744,9 +2759,12 @@ impl RadioBoundary for FakeRadio {
             )];
         }
         self.gate(FaultOp::FinishClose).await;
-        self.state
-            .lock()
-            .expect("fake radio state")
+        let mut state = self.state.lock().expect("fake radio state");
+        let retired: Vec<_> = state.disconnect_cleanup_retire_on_finish.drain().collect();
+        for peer in retired {
+            state.disconnect_cleanup_failures.remove(&peer);
+        }
+        state
             .disconnect_cleanup_failures
             .values()
             .cloned()

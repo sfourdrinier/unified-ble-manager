@@ -93,6 +93,12 @@ struct AvailabilityCleanupGuard {
     armed: bool,
 }
 
+impl AvailabilityCleanupGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
 impl Drop for AvailabilityCleanupGuard {
     fn drop(&mut self) {
         if !self.armed {
@@ -1065,7 +1071,7 @@ impl Bluez {
             };
         }
         self.release_idle_availability(peer_id, &entry).await;
-        cleanup.armed = false;
+        cleanup.disarm();
         result
     }
 
