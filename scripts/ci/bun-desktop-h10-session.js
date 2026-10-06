@@ -121,6 +121,20 @@ async function pollValue(central, options, budgetMs, label) {
   fail(`${label} produced no value within ${budgetMs}ms`)
 }
 
+function closeFailureLines(report) {
+  // close() resolves with the cleanup report. release-failed is not a rejection.
+  const failures = report && Array.isArray(report.failures) ? report.failures : []
+  if (report && report.state === 'released' && failures.length === 0) return []
+  if (failures.length === 0) {
+    return [`close: ${report && report.state ? report.state : 'no report'}`]
+  }
+  return failures.map(failure => {
+    const kind = failure && failure.resourceKind ? failure.resourceKind : 'close'
+    const detail = failure && failure.error != null ? failure.error : 'release-failed'
+    return `close ${kind}: ${detail}`
+  })
+}
+
 async function cleanup(state) {
   const errors = []
   if (state.central && state.peerId) {
@@ -151,7 +165,8 @@ async function cleanup(state) {
   }
   if (state.central) {
     try {
-      await state.central.close()
+      const closed = await state.central.close()
+      errors.push(...closeFailureLines(closed))
     } catch (error) {
       errors.push(`close: ${error.message}`)
     }
@@ -382,13 +397,15 @@ async function main() {
     } else {
       try {
         closed = await state.central.close()
+        const closeFailures = closeFailureLines(closed)
+        if (closeFailures.length === 0) state.central = null
+        else closeError = closeFailures.join('; ')
       } catch (error) {
         closeError = error && error.message ? error.message : String(error)
       }
-      if (closed && closed.state === 'released') state.central = null
     }
     const closeState = closed && closed.state ? closed.state : null
-    const ok = disconnectState === 'released' && closeState === 'released'
+    const ok = disconnectState === 'released' && closeState === 'released' && closeError == null
 
     clearTimeout(watchdog)
     process.stdout.write(
@@ -439,7 +456,7 @@ async function main() {
     )
     if (!ok) {
       fail(
-        `session evidence is above; disconnect ${disconnectState ?? disconnectError}; close ${closeState ?? closeError}`
+        `session evidence is above; disconnect ${disconnectState ?? disconnectError}; close ${closeError && closeState ? `${closeState} (${closeError})` : (closeState ?? closeError)}`
       )
     }
   } catch (error) {

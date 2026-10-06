@@ -107,6 +107,10 @@ All notable changes to `unified-ble-manager` are documented here.
   published the same day, and it ignored the staged manifest's
   `pnpm.overrides`, so the Expo Android TV ARM32 compile stopped during
   install.
+- The opt-in Bun H10 session keeps a `close()` report of `release-failed`
+  and its failures. That method resolves with the report instead of
+  rejecting, so a failed session's cleanup used to print no retained
+  release debt.
 
 ## [5.0.0-rc.20] - 2026-10-05
 
