@@ -65,6 +65,71 @@ struct AvailabilityDiscovery {
     owner: Arc<discovery::DiscoveryOwner>,
 }
 
+type AvailabilityDiscoveries = Arc<Mutex<HashMap<String, Arc<AvailabilityDiscovery>>>>;
+
+async fn release_idle_availability_entry(
+    entries: &AvailabilityDiscoveries,
+    peer: &str,
+    entry: &Arc<AvailabilityDiscovery>,
+) {
+    let mut entries = entries.lock().await;
+    // Map plus this caller only: queued requests must retain registration.
+    if Arc::strong_count(entry) == 2
+        && entries
+            .get(peer)
+            .is_some_and(|current| Arc::ptr_eq(current, entry))
+    {
+        entries.remove(peer);
+    }
+}
+
+/// Own retirement from entry creation, including failure/cancellation before
+/// StartDiscovery. Weak entry ownership does not change queue admission counts.
+struct AvailabilityCleanupGuard {
+    entries: AvailabilityDiscoveries,
+    entry: std::sync::Weak<AvailabilityDiscovery>,
+    peer: String,
+    adapter: String,
+    armed: bool,
+}
+
+impl Drop for AvailabilityCleanupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Some(entry) = self.entry.upgrade() else {
+            return;
+        };
+        let entries = self.entries.clone();
+        let peer = self.peer.clone();
+        let adapter = self.adapter.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn(async move {
+                    let _gate = entry.owner.gate.lock().await;
+                    match entry.owner.cleanup_locked(&entry.conn, &adapter).await {
+                        Ok(()) => release_idle_availability_entry(&entries, &peer, &entry).await,
+                        Err(error) => {
+                            WATCH_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            eprintln!(
+                                "ubm-desktop: LE availability cleanup retained: {}",
+                                error.detail().unwrap_or(error.code_str())
+                            );
+                        }
+                    }
+                });
+            }
+            Err(error) => {
+                WATCH_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                eprintln!(
+                    "ubm-desktop: LE availability cleanup has no executor; retained: {error}"
+                );
+            }
+        }
+    }
+}
+
 /// The just-works pairing agent (legacy `UbmJustWorksAgent`): confirms
 /// just-works and authorization requests, refuses anything that needs
 /// input it cannot supply.
@@ -197,7 +262,7 @@ pub(crate) struct Bluez {
     gatt_watch: StdMutex<Result<(), DesktopError>>,
     address_discovery: Arc<discovery::DiscoveryOwner>,
     bus: crate::boundary::BluezBus,
-    availability_discoveries: Mutex<HashMap<String, Arc<AvailabilityDiscovery>>>,
+    availability_discoveries: AvailabilityDiscoveries,
 }
 
 impl Bluez {
@@ -264,7 +329,7 @@ impl Bluez {
                 discovery::DiscoveryOperation::AddressTargeting,
             )),
             bus,
-            availability_discoveries: Mutex::new(HashMap::new()),
+            availability_discoveries: Arc::new(Mutex::new(HashMap::new())),
         };
         if resolve_owner {
             let owner = authority.current_daemon_owner().await?;
@@ -797,17 +862,7 @@ impl Bluez {
     }
 
     async fn release_idle_availability(&self, peer: &str, entry: &Arc<AvailabilityDiscovery>) {
-        let mut entries = self.availability_discoveries.lock().await;
-        // The map and this caller are the only owners when no request has
-        // cloned the entry while waiting for its gate. Keep queued requests
-        // registered so any later refused Stop remains reachable at close.
-        if Arc::strong_count(entry) == 2
-            && entries
-                .get(peer)
-                .is_some_and(|current| Arc::ptr_eq(current, entry))
-        {
-            entries.remove(peer);
-        }
+        release_idle_availability_entry(&self.availability_discoveries, peer, entry).await;
     }
 
     async fn availability_discovery(
@@ -900,7 +955,18 @@ impl Bluez {
             )
             .with_detail("LE availability peer belongs to a different adapter"));
         }
+        // Declare the weak guard first so cancellation drops the caller's
+        // entry before its guard schedules retirement; no transient caller Arc
+        // can prevent removal once the deferred cleanup confirms idle.
+        let mut cleanup;
         let entry = self.availability_discovery(peer_id).await?;
+        cleanup = AvailabilityCleanupGuard {
+            entries: self.availability_discoveries.clone(),
+            entry: Arc::downgrade(&entry),
+            peer: peer_id.to_owned(),
+            adapter: self.adapter_path.clone(),
+            armed: true,
+        };
         let _gate = entry.owner.gate.lock().await;
         entry
             .owner
@@ -938,9 +1004,6 @@ impl Bluez {
             )
             .await
             .map_err(|error| platform(OP, error))?;
-        let mut cleanup = entry
-            .owner
-            .guard(entry.conn.clone(), self.adapter_path.clone());
         entry
             .owner
             .start(&entry.conn, &self.adapter_path, owner.clone())
@@ -1001,8 +1064,8 @@ impl Bluez {
                 }
             };
         }
-        cleanup.armed = false;
         self.release_idle_availability(peer_id, &entry).await;
+        cleanup.armed = false;
         result
     }
 

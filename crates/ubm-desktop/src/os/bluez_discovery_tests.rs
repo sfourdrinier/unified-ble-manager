@@ -18,6 +18,7 @@ struct Fixture {
     hold_stop: bool,
     stop_reply: Option<dbus::Message>,
     refuse_start: bool,
+    refuse_filter: bool,
     timeout_stop: bool,
     hold_found: bool,
     found_reply: Option<dbus::Message>,
@@ -89,6 +90,11 @@ async fn fixture() -> (
                     >::new())
                 }
                 Some("SetDiscoveryFilter") => {
+                    if state.refuse_filter {
+                        return connection
+                            .send(error("org.bluez.Error.Failed", "filter refused"))
+                            .is_ok();
+                    }
                     let filter: PropMap = message.read1().unwrap();
                     assert_eq!(filter.get("Transport").unwrap().0.as_str(), Some("le"));
                     message.method_return()
@@ -153,6 +159,84 @@ async fn fixture() -> (
         .await
         .unwrap();
     (bluez, state, server, worker)
+}
+
+async fn await_no_availability_entries(bluez: &super::super::Bluez) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !bluez.availability_discoveries.lock().await.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("confirmed idle discovery owners retire without shutdown");
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_prestart_failures_retire_dedicated_senders() {
+    for failure in ["baseline", "filter", "start"] {
+        let (bluez, state, _server, worker) = fixture().await;
+        {
+            let mut state = state.lock().unwrap();
+            state.availability_missing = failure == "baseline";
+            state.refuse_filter = failure == "filter";
+            state.refuse_start = failure == "start";
+        }
+        bluez
+            .wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF")
+            .await
+            .unwrap_err();
+        await_no_availability_entries(&bluez).await;
+        assert_eq!(
+            state.lock().unwrap().stops,
+            0,
+            "unaccepted discovery needs no Stop"
+        );
+        worker.abort();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_cancellation_retires_confirmed_idle_sender() {
+    let (bluez, state, _server, worker) = fixture().await;
+    let started = state.lock().unwrap().started.clone();
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), started.notified())
+        .await
+        .unwrap();
+    waiting.abort();
+    assert!(waiting.await.unwrap_err().is_cancelled());
+    await_no_availability_entries(&bluez).await;
+    assert_eq!(state.lock().unwrap().stops, 1);
+    worker.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session"]
+async fn private_bus_le_availability_prestart_cancellation_retires_sender_without_stop() {
+    let (bluez, state, _server, worker) = fixture().await;
+    let baseline = {
+        let mut state = state.lock().unwrap();
+        state.hold_availability = true;
+        state.availability_read.clone()
+    };
+    let waiting = tokio::spawn({
+        let bluez = bluez.clone();
+        async move { bluez.wait_le_available("hci0/dev_AA_BB_CC_DD_EE_FF").await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), baseline.notified())
+        .await
+        .unwrap();
+    waiting.abort();
+    assert!(waiting.await.unwrap_err().is_cancelled());
+    await_no_availability_entries(&bluez).await;
+    assert_eq!(state.lock().unwrap().starts, 0);
+    assert_eq!(state.lock().unwrap().stops, 0);
+    worker.abort();
 }
 
 #[tokio::test]

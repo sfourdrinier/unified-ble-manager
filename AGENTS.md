@@ -34,8 +34,7 @@ it, and a rule that stops being true is removed rather than left standing.
 Documentation that lags behind the code is a defect of the same kind as a
 swallowed failure: it reports something that is not so.
 
-Extreme DRY and test-first. Write the test before the behaviour, for logic,
-metadata, build configuration and contract guards alike.
+Extreme DRY: write tests first; finish all fixes and docs, freeze the batch, then verify once—never per fix.
 
 Keep required release gates, but make verification change-scoped: metadata,
 documentation and version-only edits do not require physical-device reruns.
