@@ -111,6 +111,10 @@ All notable changes to `unified-ble-manager` are documented here.
   and its failures. That method resolves with the report instead of
   rejecting, so a failed session's cleanup used to print no retained
   release debt.
+- The opt-in Bun H10 session disarms its 90-second deadline before failure
+  cleanup, and a deadline that already fired waits for that same cleanup.
+  It used to call `process.exit` as soon as the timer saw a cleanup in
+  progress, which cut off unsubscribe, disconnect, or close.
 
 ## [5.0.0-rc.20] - 2026-10-05
 

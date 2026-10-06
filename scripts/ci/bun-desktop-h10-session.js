@@ -28,7 +28,8 @@ const PMD_SERVICE = 'fb005c80-02e7-f387-1cad-8acd2d8df0c8'
 const PMD_CONTROL = 'fb005c81-02e7-f387-1cad-8acd2d8df0c8'
 
 let activeState = null
-let releasing = false
+let watchdog = null
+let releasePromise = null
 
 function fail(message) {
   const error = new Error(message)
@@ -36,15 +37,31 @@ function fail(message) {
   throw error
 }
 
-async function releaseAndExit(message) {
-  console.error(`bun-desktop-h10: FAIL ${message}`)
-  if (!releasing) {
-    releasing = true
-    if (activeState) {
-      const errors = await cleanup(activeState)
-      for (const error of errors) console.error(`bun-desktop-h10: cleanup ${error}`)
-    }
+function disarm() {
+  if (watchdog !== null) {
+    clearTimeout(watchdog)
+    watchdog = null
   }
+}
+
+function settleRelease(state) {
+  // The deadline and a failing operation can overlap. Both wait for this
+  // promise, so the timer cannot exit while unsubscribe, disconnect, or close
+  // is still running.
+  if (releasePromise === null) {
+    const target = state || activeState
+    releasePromise = (target ? cleanup(target) : Promise.resolve([])).catch(error => [
+      `cleanup threw: ${error && error.message ? error.message : String(error)}`
+    ])
+  }
+  return releasePromise
+}
+
+async function releaseAndExit(message) {
+  disarm()
+  console.error(`bun-desktop-h10: FAIL ${message}`)
+  const errors = await settleRelease(activeState)
+  for (const error of errors) console.error(`bun-desktop-h10: cleanup ${error}`)
   process.exit(1)
 }
 
@@ -175,7 +192,7 @@ async function cleanup(state) {
 }
 
 async function main() {
-  const watchdog = setTimeout(() => {
+  watchdog = setTimeout(() => {
     void releaseAndExit(`session exceeded ${SESSION_BUDGET_MS}ms`)
   }, SESSION_BUDGET_MS)
   const bun = assertBun()
@@ -407,7 +424,7 @@ async function main() {
     const closeState = closed && closed.state ? closed.state : null
     const ok = disconnectState === 'released' && closeState === 'released' && closeError == null
 
-    clearTimeout(watchdog)
+    disarm()
     process.stdout.write(
       `${JSON.stringify({
         ok,
@@ -460,13 +477,10 @@ async function main() {
       )
     }
   } catch (error) {
+    disarm()
     const detail = error && error.message ? error.message : String(error)
-    let extra = ''
-    if (!releasing) {
-      releasing = true
-      const cleanupErrors = await cleanup(state)
-      if (cleanupErrors.length > 0) extra = `; cleanup: ${cleanupErrors.join('; ')}`
-    }
+    const cleanupErrors = await settleRelease(state)
+    const extra = cleanupErrors.length > 0 ? `; cleanup: ${cleanupErrors.join('; ')}` : ''
     console.error(`bun-desktop-h10: FAIL ${detail}${extra}`)
     process.exit(1)
   }
