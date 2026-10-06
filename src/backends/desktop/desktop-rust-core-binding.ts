@@ -105,6 +105,8 @@ export interface DesktopRustCorePath {
   readonly descriptorOccurrence?: number | null
   readonly properties: number
   readonly access?: DesktopRustCoreCharacteristicAccess | null
+  /** `os-reserved` or `access-denied` on a service-level path. Absent when the service is open. */
+  readonly serviceAccess?: 'os-reserved' | 'access-denied' | null
 }
 
 /** Link-security facts the OS reports. */
@@ -124,6 +126,25 @@ export interface DesktopRustCoreSecurityEvent {
   readonly sequence?: number | null
   readonly peerId?: string | null
   readonly state?: DesktopRustCoreSecurityState | null
+  readonly missed?: number | null
+}
+
+/** Observed connection parameters. Interval and supervision timeout are microseconds. */
+export interface DesktopRustCoreConnectionParameters {
+  readonly intervalUs: number
+  readonly latency: number
+  readonly supervisionTimeoutUs: number
+}
+
+/** One connection-parameter report, or a gap marker. */
+export interface DesktopRustCoreConnectionParametersEvent {
+  readonly kind: 'state' | 'lagged' | 'closed'
+  readonly sequence?: number | null
+  readonly peerId?: string | null
+  readonly connectionGeneration?: string | null
+  readonly intervalUs?: number | null
+  readonly latency?: number | null
+  readonly supervisionTimeoutUs?: number | null
   readonly missed?: number | null
 }
 
@@ -404,14 +425,20 @@ export interface DesktopRustCoreCentral {
     options: { readonly peerId: string; readonly lease: string } & DesktopRustCoreControl
   ): Promise<DesktopRustCoreConnectionReleaseReport>
   readRssi(options: { readonly peerId: string; readonly lease: string } & DesktopRustCoreControl): Promise<number>
+  /** Observed connection parameters. Interval and supervision timeout are microseconds. */
+  connectionParameters(
+    options: { readonly peerId: string; readonly lease: string } & DesktopRustCoreControl
+  ): Promise<DesktopRustCoreConnectionParameters>
+  takeConnectionParameterEvent(): Promise<DesktopRustCoreConnectionParametersEvent | null>
   /**
-   * Effective ATT MTU of the live link, as the OS reports it (finding 217
-   * follow-up): macOS `maximumWriteValueLength(.withResponse) + 3`, Windows
-   * `GattSession.MaxPduSize`, Linux the BlueZ characteristic MTU.
+   * Effective ATT MTU of the live link when the OS observed one.
+   * Windows reports `GattSession.MaxPduSize`. Linux reports the BlueZ
+   * characteristic MTU. macOS resolves `null`: CoreBluetooth write length
+   * is not an ATT MTU.
    */
   readEffectiveMtu(
     options: { readonly peerId: string; readonly lease: string } & DesktopRustCoreControl
-  ): Promise<number>
+  ): Promise<number | null>
   /**
    * Registers the whole snapshot or rejects with a typed error: a malformed
    * platform UUID is `protocol.malformed` (`discovery.snapshot.uuid`), a

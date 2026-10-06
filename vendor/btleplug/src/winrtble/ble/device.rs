@@ -14,10 +14,7 @@
 use crate::{
     Error, Result,
     api::BDAddr,
-    winrtble::{
-        gatt_model::{self, require_gatt_success},
-        utils,
-    },
+    winrtble::{gatt_model, utils},
 };
 use log::{debug, trace};
 use windows::{
@@ -33,37 +30,78 @@ use windows::{
 };
 
 /// UBM patch (`winrt-uncached-discovery`): a non-success status of one
-/// discovery query, named, as the discovery's error.
-fn discovery_status(
-    stage: &str,
-    status: windows::core::Result<GattCommunicationStatus>,
-) -> Result<()> {
-    let status = status?;
-    // UBM patch (UBM_PATCHES.md #15): the status as the platform's answer.
-    // Discovery queries return no result object, so no ATT error byte is
-    // available here.
-    require_gatt_success(stage, status.0)
-        .map_err(|_| crate::winrtble::utils::gatt_status_error(stage, status, None))
+/// service-discovery query, named, as the discovery's error. The result's
+/// protocol byte is kept when Windows reported one.
+fn discovery_status(stage: &str, service_result: &GattDeviceServicesResult) -> Result<()> {
+    let status = service_result.Status()?;
+    if status == GattCommunicationStatus::Success {
+        return Ok(());
+    }
+    let att_error = utils::protocol_att_error(service_result.ProtocolError());
+    Err(utils::gatt_status_error(stage, status, att_error))
 }
 
 pub type ConnectedEventHandler = Box<dyn Fn(bool) + Send>;
 pub type MaxPduSizeChangedEventHandler = Box<dyn Fn(u16) + Send>;
+pub type ConnectionParametersHandler = Box<dyn Fn(crate::api::ConnectionParameters) + Send>;
 
 pub struct BLEDevice {
     device: BluetoothLEDevice,
     gatt_session: GattSession,
     connection_token: i64,
     pdu_change_token: i64,
+    /// Present only when this OS exposes `ConnectionParametersChanged`.
+    connection_parameters_token: Option<i64>,
     services: Vec<GattDeviceService>,
+}
+
+/// `GetConnectionParameters` exists from Windows 11 build 22000. Older
+/// Windows is a real limitation, not an empty success.
+fn connection_parameters_api_present() -> bool {
+    windows::Foundation::Metadata::ApiInformation::IsMethodPresent(
+        &windows::core::HSTRING::from("Windows.Devices.Bluetooth.BluetoothLEDevice"),
+        &windows::core::HSTRING::from("GetConnectionParameters"),
+    )
+    .unwrap_or(false)
+}
+
+fn connection_parameters_unavailable() -> Error {
+    Error::Platform(
+        crate::PlatformError::new(
+            "winrt",
+            "winrt-connection-parameters-requires-windows-11-22000",
+            "GetConnectionParameters is absent; Windows 11 build 22000 or newer is required",
+        ),
+    )
+}
+
+fn read_connection_parameters(
+    device: &BluetoothLEDevice,
+) -> Result<crate::api::ConnectionParameters> {
+    if !connection_parameters_api_present() {
+        return Err(connection_parameters_unavailable());
+    }
+    let winrt_error = Error::from;
+    let params = device.GetConnectionParameters().map_err(winrt_error)?;
+    // ConnectionInterval is in units of 1.25ms, stored as microseconds.
+    let interval_us = (params.ConnectionInterval().map_err(winrt_error)? as u32) * 1250;
+    let latency = params.ConnectionLatency().map_err(winrt_error)? as u16;
+    // LinkTimeout is in units of 10ms, stored as microseconds.
+    let supervision_timeout_us = (params.LinkTimeout().map_err(winrt_error)? as u32) * 10_000;
+    Ok(crate::api::ConnectionParameters {
+        interval_us,
+        latency,
+        supervision_timeout_us,
+    })
 }
 
 /// Outcome of one service's characteristic query.
 pub enum CharacteristicList {
     /// The service listed its characteristics.
     Ready(Vec<GattCharacteristic>),
-    /// Windows refused the service and did not ask the peer. The service
-    /// stays out of the discovered table.
-    OperatingSystemDenied,
+    /// AccessDenied with no ATT byte. The service stays in the table
+    /// with no characteristics. This is not an OS-reserved omission.
+    AccessDenied,
 }
 
 impl BLEDevice {
@@ -72,6 +110,7 @@ impl BLEDevice {
         address_type: Option<crate::api::AddressType>,
         connection_status_changed: ConnectedEventHandler,
         max_pdu_size_changed: MaxPduSizeChangedEventHandler,
+        connection_parameters_changed: ConnectionParametersHandler,
     ) -> Result<Self> {
         let async_op = match address_type {
             Some(kind) => BluetoothLEDevice::FromBluetoothAddressWithBluetoothAddressTypeAsync(
@@ -122,11 +161,33 @@ impl BLEDevice {
             .MaxPduSizeChanged(&max_pdu_size_changed_handler)
             .map_err(|_| Error::Other("Could not add max pdu size changed handler".into()))?;
 
+        let connection_parameters_token = if connection_parameters_api_present() {
+            let parameters_handler =
+                TypedEventHandler::<BluetoothLEDevice, _>::new(move |sender, _| {
+                    if let Some(sender) = sender.as_ref()
+                        && let Ok(params) = read_connection_parameters(sender)
+                    {
+                        connection_parameters_changed(params);
+                    }
+                    Ok(())
+                });
+            Some(
+                device
+                    .ConnectionParametersChanged(&parameters_handler)
+                    .map_err(|_| {
+                        Error::Other("Could not add connection parameters handler".into())
+                    })?,
+            )
+        } else {
+            None
+        };
+
         Ok(BLEDevice {
             device,
             gatt_session,
             connection_token,
             pdu_change_token,
+            connection_parameters_token,
             services: vec![],
         })
     }
@@ -193,12 +254,10 @@ impl BLEDevice {
     /// `BluetoothCacheMode::Uncached`, as the legacy addon
     /// (`winrt-boundary.inc` `Discover`). No fallback to the OS cache and no
     /// timeout: a slow query is cancelled by its caller. A peer error is
-    /// named and fails discovery. `AccessDenied` with no ATT byte is Windows
-    /// keeping the service (Microphone Control, HID, and the same class);
-    /// that service is left out instead of failing the services around it.
-    pub async fn get_characteristics(
-        service: &GattDeviceService,
-    ) -> Result<CharacteristicList> {
+    /// named and fails discovery. `AccessDenied` with no ATT byte keeps the
+    /// service identity and reports the denial. Known OS-reserved UUIDs are
+    /// not queried.
+    pub async fn get_characteristics(service: &GattDeviceService) -> Result<CharacteristicList> {
         let result = service
             .GetCharacteristicsWithCacheModeAsync(BluetoothCacheMode::Uncached)?
             .await?;
@@ -212,8 +271,8 @@ impl BLEDevice {
                     characteristics.into_iter().collect(),
                 ))
             }
-            gatt_model::CharacteristicDiscovery::OperatingSystemDenied => {
-                Ok(CharacteristicList::OperatingSystemDenied)
+            gatt_model::CharacteristicDiscovery::AccessDenied => {
+                Ok(CharacteristicList::AccessDenied)
             }
             gatt_model::CharacteristicDiscovery::Failed => Err(utils::gatt_status_error(
                 "characteristic discovery",
@@ -223,35 +282,56 @@ impl BLEDevice {
         }
     }
 
-    /// UBM patch (`winrt-uncached-discovery`): no WinRT descriptor query.
-    /// `GetDescriptors` and `GetDescriptorsForUuid` both read
-    /// Characteristic User Description when the characteristic has one.
-    /// The first read returns ATT Insufficient Encryption at once. Windows
-    /// remembers that and, on the next connection, waits to pair before it
-    /// sends the read. A host with no pairing UI waits there until the
-    /// process exits, so the services after that characteristic are never
-    /// discovered. Subscribe writes the Client Characteristic Configuration
-    /// descriptor through `GattCharacteristic`, which does not read the
-    /// user description. The descriptor list stays empty.
+    /// Enumerate this characteristic's descriptors with one owned uncached
+    /// `GetDescriptors` operation. Success returns the list Windows
+    /// returned, which is empty only when the peer listed none. Any other
+    /// status is a platform error carrying the ATT byte when the result
+    /// had one. Dropping this future cancels the WinRT operation, so a
+    /// discovery deadline does not leave the query running into the next
+    /// connection. This does not pair and does not read descriptor values.
+    /// Subscribe still writes the CCCD through `GattCharacteristic`.
     pub async fn get_characteristic_descriptors(
-        _characteristic: &GattCharacteristic,
+        characteristic: &GattCharacteristic,
     ) -> Result<Vec<GattDescriptor>> {
-        Ok(Vec::new())
+        let operation = characteristic
+            .GetDescriptorsWithCacheModeAsync(BluetoothCacheMode::Uncached)
+            .map_err(Error::from)?;
+        // Clone is a second COM reference. Cancelling it cancels the
+        // operation the await is waiting on. A completed await disarms
+        // the guard so Drop does not cancel a finished query.
+        struct CancelOnDrop<T>(windows_future::IAsyncOperation<T>, bool)
+        where
+            T: windows::core::RuntimeType + 'static;
+        impl<T> Drop for CancelOnDrop<T>
+        where
+            T: windows::core::RuntimeType + 'static,
+        {
+            fn drop(&mut self) {
+                if !self.1 {
+                    let _ = self.0.Cancel();
+                }
+            }
+        }
+        let mut guard = CancelOnDrop(operation.clone(), false);
+        let result = operation.await.map_err(Error::from)?;
+        guard.1 = true;
+        let status = result.Status().map_err(Error::from)?;
+        let att_error = utils::protocol_att_error(result.ProtocolError());
+        if gatt_model::descriptor_enumeration(status.0) == gatt_model::DescriptorEnumeration::Listed
+        {
+            let descriptors = result.Descriptors().map_err(Error::from)?;
+            debug!("descriptors {:?}", descriptors.Size());
+            return Ok(descriptors.into_iter().collect());
+        }
+        Err(utils::gatt_status_error(
+            "descriptor discovery",
+            status,
+            att_error,
+        ))
     }
 
     pub fn get_connection_parameters(&self) -> Result<crate::api::ConnectionParameters> {
-        let winrt_error = Error::from;
-        let params = self.device.GetConnectionParameters().map_err(winrt_error)?;
-        // ConnectionInterval is in units of 1.25ms, convert to microseconds
-        let interval_us = (params.ConnectionInterval().map_err(winrt_error)? as u32) * 1250;
-        let latency = params.ConnectionLatency().map_err(winrt_error)? as u16;
-        // LinkTimeout is in units of 10ms, convert to microseconds
-        let supervision_timeout_us = (params.LinkTimeout().map_err(winrt_error)? as u32) * 10_000;
-        Ok(crate::api::ConnectionParameters {
-            interval_us,
-            latency,
-            supervision_timeout_us,
-        })
+        read_connection_parameters(&self.device)
     }
 
     pub fn request_connection_parameters(
@@ -278,20 +358,20 @@ impl BLEDevice {
         let status = result.Status().map_err(winrt_error)?;
         // BluetoothLEPreferredConnectionParametersRequestStatus:
         //   Unspecified = 0, Success = 1, DeviceNotAvailable = 2, AccessDenied = 3
-        match status.0 {
-            1 => Ok(()),
-            2 | 3 => Err(Error::NotSupported(format!(
-                "request_connection_parameters not supported (status {:?})",
-                status
-            ))),
-            _ => Err(Error::Other(
-                format!(
-                    "RequestPreferredConnectionParameters failed with status {:?}",
-                    status
-                )
-                .into(),
-            )),
-        }
+        let code = match status.0 {
+            1 => return Ok(()),
+            2 => "device-not-available",
+            3 => "access-denied",
+            _ => "unspecified",
+        };
+        Err(Error::Platform(
+            crate::PlatformError::new(
+                "winrt",
+                code,
+                format!("RequestPreferredConnectionParameters status {}", status.0),
+            )
+            .with("requestStatus", status.0.to_string()),
+        ))
     }
 
     /// UBM patch (`winrt-uncached-discovery`): the device's primary
@@ -300,7 +380,7 @@ impl BLEDevice {
     /// changed database. A failed query is an error naming the status.
     pub async fn discover_services(&mut self) -> Result<Vec<GattDeviceService>> {
         let service_result = self.get_gatt_services(BluetoothCacheMode::Uncached).await?;
-        discovery_status("service discovery", service_result.Status())?;
+        discovery_status("service discovery", &service_result)?;
         // The IVectorView is not Send, so it is collected before any await.
         let services: Vec<_> = service_result.Services()?.into_iter().collect();
         debug!("services {:?}", services.len());
@@ -323,6 +403,12 @@ impl Drop for BLEDevice {
             .RemoveMaxPduSizeChanged(self.pdu_change_token);
         if let Err(err) = result {
             debug!("Drop: remove_max_pdu_size_changed {:?}", err);
+        }
+
+        if let Some(token) = self.connection_parameters_token {
+            if let Err(err) = self.device.RemoveConnectionParametersChanged(token) {
+                debug!("Drop: remove_connection_parameters_changed {:?}", err);
+            }
         }
 
         let result = self

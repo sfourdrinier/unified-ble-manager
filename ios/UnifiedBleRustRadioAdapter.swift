@@ -368,17 +368,10 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
       disable(instance, operationIdentifier: operationIdentifier) { failure in
         self.finish(id, failure ?? .unit)
       }
-    case let .readMtu(_, peerId):
-      // Apple has no MTU readout: the ATT MTU CoreBluetooth negotiated is
-      // `maximumWriteValueLength(.withResponse) + 3` (frozen wire rule).
-      driver.writeLimits(peerIdentifier: peerId) { limits, error in
-        if let error { return self.finish(id, Self.failure(error, verb: .readMtu)) }
-        guard let withResponse = (limits?["withResponse"] as? NSNumber)?.intValue,
-              let mtu = UInt16(exactly: withResponse + 3) else {
-          return self.finish(id, Self.platformFailure("CoreBluetooth reported no write limit"))
-        }
-        self.finish(id, .mtu(mtu: mtu))
-      }
+    case .readMtu:
+      // CoreBluetooth does not expose the negotiated ATT MTU.
+      // `maximumWriteValueLength` can include a long write, so it is not one ATT PDU.
+      finish(id, .mtu(mtu: nil))
     case let .readWriteLimits(_, peerId):
       // CoreBluetooth's own per-type answer: with response it performs the
       // long write itself; a command must fit one ATT payload.
@@ -391,6 +384,16 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
           return self.finish(id, Self.platformFailure("CoreBluetooth reported no write limit"))
         }
         self.finish(id, .writeLimits(withResponse: withResponseLimit, withoutResponse: withoutResponseLimit))
+      }
+    case let .readWriteReadiness(_, peerId):
+      // The initial observation is CoreBluetooth's current queue flag.
+      // Later edges arrive through peripheralIsReady(toSendWriteWithoutResponse:).
+      driver.writeLimits(peerIdentifier: peerId) { limits, error in
+        if let error { return self.finish(id, Self.failure(error, verb: .readWriteReadiness)) }
+        guard let ready = (limits?["canSendWithoutResponse"] as? NSNumber)?.boolValue else {
+          return self.finish(id, Self.platformFailure("CoreBluetooth reported no write-without-response readiness"))
+        }
+        self.finish(id, .ready(ready: ready))
       }
     case let .readRssi(_, peerId):
       driver.readRssi(peerIdentifier: peerId, operationIdentifier: operationIdentifier) { rssi, error in
@@ -647,6 +650,10 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
     announceRestored(peers.compactMap(Self.restoredPeer))
   }
 
+  func protocolRadioDidBecomeReadyToSendWriteWithoutResponse(_ peerIdentifier: String) {
+    ingest(.writeReadiness(peerId: peerIdentifier, ready: true))
+  }
+
   private func announceRestored(_ peers: [MobileRestoredPeer]) {
     let fresh = peers.filter { !announcedRestoredPeers.contains($0.peerId) }
     guard !fresh.isEmpty else { return }
@@ -667,7 +674,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
 
   enum Verb {
     case startScan, stopScan, connect, disconnect, discover, read, write, readDescriptor, writeDescriptor
-    case enableNotifications, disableNotifications, readMtu, readWriteLimits, readRssi
+    case enableNotifications, disableNotifications, readMtu, readWriteLimits, readWriteReadiness, readRssi
   }
 
   static let ownedDomain = "com.sfourdrinier.unifiedblemanager.corebluetooth"
@@ -880,7 +887,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
     case let .startScan(id, _, _, _, _, _), let .connect(id, _, _, _), let .disconnect(id, _), let .discover(id, _),
       let .read(id, _), let .write(id, _, _, _), let .readDescriptor(id, _, _, _), let .writeDescriptor(id, _, _, _, _),
       let .enableNotifications(id, _, _, _, _), let .disableNotifications(id, _), let .readMtu(id, _),
-      let .readWriteLimits(id, _),
+      let .readWriteLimits(id, _), let .readWriteReadiness(id, _),
       let .requestMtu(id, _, _), let .readRssi(id, _), let .requestConnectionPriority(id, _, _), let .readPhy(id, _),
       let .requestPhy(id, _, _, _), let .securityState(id, _), let .createBond(id, _, _), let .cancelBond(id, _),
       let .acquireBackground(id, _, _), let .releaseBackground(id, _), let .updateBackgroundNotification(id, _, _, _),

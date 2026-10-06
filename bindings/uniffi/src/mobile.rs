@@ -200,6 +200,10 @@ pub enum MobileRadioRequest {
         id: u64,
         peer_id: String,
     },
+    ReadWriteReadiness {
+        id: u64,
+        peer_id: String,
+    },
     RequestMtu {
         id: u64,
         peer_id: String,
@@ -377,6 +381,10 @@ impl From<&RadioRequest> for MobileRadioRequest {
                 peer_id: peer_id.clone(),
             },
             RadioRequest::ReadWriteLimits { id, peer_id } => Self::ReadWriteLimits {
+                id: *id,
+                peer_id: peer_id.clone(),
+            },
+            RadioRequest::ReadWriteReadiness { id, peer_id } => Self::ReadWriteReadiness {
                 id: *id,
                 peer_id: peer_id.clone(),
             },
@@ -585,6 +593,9 @@ pub enum MobileRadioCompletion {
         with_response: u16,
         without_response: u16,
     },
+    Ready {
+        ready: bool,
+    },
     Rssi {
         rssi: i16,
     },
@@ -712,6 +723,7 @@ pub fn completion(value: MobileRadioCompletion) -> Result<RadioCompletion, Strin
                                 .collect(),
                         })
                         .collect(),
+                    access: std::default::Default::default(),
                 })
                 .collect(),
         ),
@@ -736,6 +748,7 @@ pub fn completion(value: MobileRadioCompletion) -> Result<RadioCompletion, Strin
                 without_response,
             })
         }
+        MobileRadioCompletion::Ready { ready } => RadioCompletion::Ready(ready),
         MobileRadioCompletion::Rssi { rssi } => RadioCompletion::Rssi(rssi),
         MobileRadioCompletion::Accepted { accepted } => RadioCompletion::Accepted(accepted),
         MobileRadioCompletion::Phy { tx, rx } => RadioCompletion::Phy(PhyObservation {
@@ -881,6 +894,10 @@ pub enum MobileRadioIngress {
         peer_id: String,
         state: MobileSecurityState,
     },
+    WriteReadiness {
+        peer_id: String,
+        ready: bool,
+    },
     Restored {
         peers: Vec<MobileRestoredPeer>,
     },
@@ -963,6 +980,9 @@ pub fn ingress(value: MobileRadioIngress) -> Result<RadioIngress, String> {
             peer_id,
             state: security(state)?,
         },
+        MobileRadioIngress::WriteReadiness { peer_id, ready } => {
+            RadioIngress::WriteReadiness { peer_id, ready }
+        }
         MobileRadioIngress::Restored { peers } => RadioIngress::Restored {
             peers: peers
                 .into_iter()

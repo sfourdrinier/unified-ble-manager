@@ -72,6 +72,7 @@ async fn live_link(central: &DesktopCentral<FakeRadio>, peer_id: &str, lease: &s
                 },
                 descriptors: Vec::new(),
             }],
+            access: std::default::Default::default(),
         }],
     );
     central

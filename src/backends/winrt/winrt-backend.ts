@@ -74,6 +74,7 @@ import {
   matchesScan,
   releasedCleanup
 } from './winrt-handles'
+import { ScanEvidenceSession } from '../../backend-contract/scan-evidence'
 import { WinRtGattOperations } from './winrt-gatt-operations'
 import { isWinRtSecurityBoundary, WinRtSecurityBackend } from './winrt-security'
 import {
@@ -199,6 +200,7 @@ interface WinRtScanGroup {
   startDispatch: WinRtOperationDispatch<void> | null
   stopResult: Promise<CleanupRecord> | null
   stopSettlement: Promise<CleanupRecord> | null
+  readonly evidence: ScanEvidenceSession
 }
 
 interface WinRtPendingConnect {
@@ -1056,7 +1058,8 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       startInvocationActive: true,
       startDispatch: null,
       stopResult: null,
-      stopSettlement: null
+      stopSettlement: null,
+      evidence: new ScanEvidenceSession()
     }
     this.scanGroup = group
     this.bindScanAdmission(consumer)
@@ -1506,10 +1509,10 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     })
     this.nextIngressOrdinal += 1
     for (const consumer of [...group.consumers.values()]) {
-      if (consumer.released || consumer.stream.isTerminal() || !matchesScan(consumer.options, observation)) {
-        continue
-      }
-      const push = consumer.stream.emit(observation, advertisementByteLength(observation), String(peerId))
+      if (consumer.released || consumer.stream.isTerminal()) continue
+      const matched = group.evidence.matchAdvertisement(observation, candidate => matchesScan(consumer.options, candidate))
+      if (matched === null) continue
+      const push = consumer.stream.emit(matched, advertisementByteLength(matched), String(peerId))
       if (push.terminated) {
         this.stopScanConsumer(consumer)
           .then(result => {

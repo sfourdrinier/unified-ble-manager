@@ -12,8 +12,10 @@ import type {
 import { ReactNativeAndroidProtocolBoundary } from './rn-android-boundary'
 
 /**
- * Apple shares the versioned JSI codec, but CoreBluetooth has no caller-directed ATT MTU request.
- * The explicit capability declaration prevents the core from submitting that impossible command.
+ * Legacy JSI/protocol boundary. It still refuses `intent: 'when-available'`
+ * and `effectiveMtu`. The React Native Rust route keeps a pending connect for
+ * a known peer and reports the ATT MTU unobserved. This class does neither.
+ * Apple shares the versioned JSI codec, but this boundary has no caller-directed ATT MTU request.
  */
 export class ReactNativeAppleProtocolBoundary extends ReactNativeAndroidProtocolBoundary {
   override readonly connectionIntentCapabilities: Readonly<{ whenAvailable: 'unsupported' }> = Object.freeze({

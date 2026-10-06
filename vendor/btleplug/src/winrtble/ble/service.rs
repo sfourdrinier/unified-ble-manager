@@ -1,3 +1,4 @@
+use super::super::gatt_model::ServiceRestriction;
 use super::characteristic::BLECharacteristic;
 use super::descriptor::AttributeKey;
 use crate::api::Service;
@@ -7,11 +8,14 @@ use uuid::Uuid;
 /// One discovered primary service. UBM patch (`winrt-attribute-instances`):
 /// `instance` is the service's `AttributeHandle`, and characteristics are
 /// keyed by (UUID, handle) so repeated UUIDs stay distinct instances.
+/// `access` records an OS reservation or an AccessDenied result. An open
+/// service is [`ServiceRestriction::Open`].
 #[derive(Debug)]
 pub struct BLEService {
     pub uuid: Uuid,
     pub instance: u64,
     pub characteristics: HashMap<AttributeKey, BLECharacteristic>,
+    pub access: ServiceRestriction,
 }
 
 impl BLEService {

@@ -76,6 +76,7 @@ import {
   type ScanFilter,
   type SourceTimestamp
 } from '../../backend-contract/advertisement'
+import { ScanEvidenceSession } from '../../backend-contract/scan-evidence'
 import {
   byteLimit,
   canonicalUuid,
@@ -101,7 +102,7 @@ import {
   type SubscriptionId,
   type Uuid
 } from '../../backend-contract/primitives'
-import { createGattCharacteristicProperties } from '../../backend-contract/gatt'
+import { createGattCharacteristicProperties, serviceAccessRestriction } from '../../backend-contract/gatt'
 import type {
   CharacteristicPath,
   ConnectionPath,
@@ -132,6 +133,10 @@ import type {
 import type {
   ConnectionMaximumWriteLengthMeasurement,
   ConnectionMaximumWriteLengthRequest,
+  ConnectionParametersMeasurement,
+  ConnectionParametersRequest,
+  ConnectionParametersStreamObservation,
+  ConnectionParametersWatch,
   ConnectionWriteReadinessObservation,
   ConnectionWriteReadinessWatch,
   EffectiveMtuMeasurement,
@@ -215,6 +220,7 @@ import {
   type DesktopRustCoreScanTerminalEvent,
   type DesktopRustCoreSecurityState,
   type DesktopRustCoreSelector,
+  type DesktopRustCoreConnectionParametersEvent,
   type DesktopRustCoreWriteReadinessEvent
 } from './desktop-rust-core-binding'
 import { createDesktopPeerDirectory } from './desktop-peer-directory'
@@ -241,12 +247,10 @@ export interface DesktopRustCoreProfile {
   /** Observation fields this platform's radio reports (scan planning context). */
   readonly observationFields: readonly ScanObservationField[]
   /**
-   * Whether a `require-*` delivery mode is carried to the core as a CCCD
-   * requirement (FIX-PLAN decision 3). WinRT: yes — the Windows adapter
-   * writes the CCCD itself and honours it. CoreBluetooth and BlueZ keep
-   * their legacy semantics: the requirement is checked against the
-   * characteristic's properties here and the platform picks the mode, so an
-   * app the legacy backend accepted is never refused.
+   * Every desktop profile sets this true. `coreRequirement` does not read
+   * it: a hard `require-*` is always forwarded, and a preference is never
+   * a requirement. The property check still rejects a mode the
+   * characteristic does not support before any dispatch.
    */
   readonly deliveryRequirementToCore: boolean
 }
@@ -279,7 +283,7 @@ export const DESKTOP_RUST_CORE_PROFILES: Readonly<Record<DesktopRustCorePlatform
       displayName: 'BlueZ adapter (shared Rust core)',
       authorizationReason: BLUEZ_NO_AUTHORIZATION_CONCEPT_REASON,
       observationFields: ADDRESSED_OBSERVATION_FIELDS,
-      deliveryRequirementToCore: false
+      deliveryRequirementToCore: true
     }),
     corebluetooth: Object.freeze({
       platform: 'corebluetooth',
@@ -294,7 +298,7 @@ export const DESKTOP_RUST_CORE_PROFILES: Readonly<Record<DesktopRustCorePlatform
       displayName: 'CoreBluetooth default adapter (shared Rust core)',
       authorizationReason: 'CoreBluetooth reported no authorization for this process; unmeasured, not denied',
       observationFields: COMMON_OBSERVATION_FIELDS,
-      deliveryRequirementToCore: false
+      deliveryRequirementToCore: true
     }),
     winrt: Object.freeze({
       platform: 'winrt',
@@ -930,6 +934,7 @@ interface CoreServiceNode {
   readonly uuid: string
   readonly occurrence: number
   readonly characteristics: readonly CoreCharacteristicNode[]
+  readonly restriction?: ReturnType<typeof serviceAccessRestriction>
 }
 
 interface StoredCoreCharacteristic {
@@ -992,6 +997,12 @@ interface SubscriptionRecord {
 /** A notification stream end a lifecycle event decides. */
 type SubscriptionLifecycleTerminal = 'connection-lost' | 'service-changed' | 'source-failed'
 
+interface ParameterWatch {
+  readonly record: ConnectionRecord
+  readonly stream: CoreBoundedStream<ConnectionParametersStreamObservation<string>>
+  ordinal: number
+}
+
 interface ReadinessWatch {
   readonly record: ConnectionRecord
   readonly stream: CoreBoundedStream<ConnectionWriteReadinessObservation<string>>
@@ -1031,6 +1042,8 @@ interface ScanGroup {
   stopResult: Promise<CleanupRecord> | null
   /** Observations the core queued for another scan, refused (never attributed here). */
   foreignRefused: number
+  /** Advertising packet and scan response of one peer, for this scan only. */
+  readonly evidence: ScanEvidenceSession
 }
 
 const NOTIFICATION_BYTES = 512
@@ -1117,6 +1130,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private readonly pendingAddresses = new Map<string, PeerAddressDescriptor>()
   private readonly addressTypes = new Map<string, 'public' | 'random' | null>()
   private readonly readinessWatches = new Set<ReadinessWatch>()
+  private readonly parameterWatches = new Set<ParameterWatch>()
   /**
    * Connections with one GATT verb in flight (F6, CoreBluetooth only): the
    * legacy dispatcher admitted one verb per connection and failed a second
@@ -1248,6 +1262,18 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
               connection: BackendConnection<string, string>,
               options?: PublicOperationOptions
             ) => this.writeWithoutResponseReadiness(connection, options)
+          }
+        : {}),
+      ...(this.wiring.connectionParameters
+        ? {
+            parameters: <Operation extends string>(
+              connection: BackendConnection<string, string>,
+              request: ConnectionParametersRequest<string, Operation>
+            ) => this.readConnectionParameters(connection, request),
+            parameterEvents: (
+              connection: BackendConnection<string, string>,
+              options?: PublicOperationOptions
+            ) => this.watchConnectionParameters(connection, options)
           }
         : {})
     })
@@ -1506,6 +1532,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     this.adapterTransitions.clear()
     this.security?.close?.()
     for (const watch of [...this.readinessWatches]) this.closeReadinessWatch(watch, 'owner-released')
+    for (const watch of [...this.parameterWatches]) this.closeParameterWatch(watch, 'owner-released')
     // The core's shutdown stops the scan, releases every link and CCCD, and
     // reports each release failure; that report is the cleanup record.
     let report
@@ -1911,6 +1938,15 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         if (readiness.kind === 'lagged') await this.reconcileWriteReadiness(readiness.missed ?? null)
         else this.applyWriteReadiness(readiness)
       }
+      if (this.wiring.connectionParameters && typeof this.central.takeConnectionParameterEvent === 'function') {
+        for (;;) {
+          if (this.destroyed || this.coreEventsClosed) return
+          const parameters = await this.central.takeConnectionParameterEvent()
+          if (parameters === null || parameters === undefined) break
+          if (parameters.kind === 'lagged') await this.reconcileConnectionParameters(parameters.missed ?? null)
+          else this.applyConnectionParameters(parameters)
+        }
+      }
       for (;;) {
         if (this.destroyed || this.coreEventsClosed) return
         const terminal = await this.central.takeScanTerminalEvent()
@@ -1971,6 +2007,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       await this.reconcileLinks('lifecycle', null)
       await this.reconcileSecurity(null)
       await this.reconcileWriteReadiness(null)
+      if (this.wiring.connectionParameters) await this.reconcileConnectionParameters(null)
       this.reconcileScan(null)
       if (!this.destroyed) this.applyAdapterPower(await this.central.adapterState())
     } catch (error) {
@@ -2020,6 +2057,10 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     for (const watch of [...this.readinessWatches]) {
       if (watch.record !== record) continue
       this.closeReadinessWatch(watch, 'connection-lost')
+    }
+    for (const watch of [...this.parameterWatches]) {
+      if (watch.record !== record) continue
+      this.closeParameterWatch(watch, 'connection-lost')
     }
     if (ADAPTER_LOSS_SEQUENCE[this.profile.platform].connectionStateChanged) {
       this.emitEvent({
@@ -2309,6 +2350,12 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     if (reason === 'connection-lost') {
       for (const databaseId of record.databases) this.databases.delete(databaseId)
       record.databases.clear()
+      for (const watch of [...this.parameterWatches]) {
+        if (watch.record === record) this.closeParameterWatch(watch, 'connection-lost')
+      }
+      for (const watch of [...this.readinessWatches]) {
+        if (watch.record === record) this.closeReadinessWatch(watch, 'connection-lost')
+      }
     }
   }
 
@@ -2462,7 +2509,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       consumers: new Map(),
       state: 'active',
       stopResult: null,
-      foreignRefused: 0
+      foreignRefused: 0,
+      evidence: new ScanEvidenceSession()
     }
     this.scanGroup = group
     const consumer = this.addScanConsumer(group, ownerLeaseId, options, options.filter)
@@ -2667,12 +2715,15 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   ): void {
     for (const consumer of [...group.consumers.values()]) {
       if (consumer.stream.isTerminal()) continue
-      if (!advertisementMatchesFilter(consumer.filter, observation)) continue
+      const matched = group.evidence.matchAdvertisement(observation, candidate =>
+        advertisementMatchesFilter(consumer.filter, candidate)
+      )
+      if (matched === null) continue
       if (consumer.options.duplicatePolicy === 'first') {
         if (consumer.seenPeers.has(nativePeerId)) continue
         consumer.seenPeers.add(nativePeerId)
       }
-      const push = consumer.stream.emit(observation, ADVERTISEMENT_BYTES)
+      const push = consumer.stream.emit(matched, ADVERTISEMENT_BYTES)
       if (push.terminated && consumer.leaseId !== group.ownerLeaseId) {
         group.consumers.delete(String(consumer.leaseId))
       }
@@ -2812,6 +2863,161 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     })
   }
 
+  // -- connection parameters ---------------------------------------------------
+
+  private readConnectionParameters<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: ConnectionParametersRequest<string, Operation>
+  ): BackendOperationDispatch<string, ConnectionParametersMeasurement<string, Operation>> {
+    const operation = this.op('connection.parameters')
+    this.assertOperational(operation)
+    const record = this.liveConnection(connection, operation)
+    const correlation = String(request.operation.correlation)
+    const completion = (async (): Promise<ConnectionParametersMeasurement<string, Operation>> => {
+      const measured = await this.withTicket(correlation, request.operation.signal, operation, ticket =>
+        this.central.connectionParameters({
+          peerId: record.nativePeerId,
+          lease: record.lease,
+          ticket,
+          ...this.budget(request.operation)
+        })
+      )
+      return Object.freeze({
+        connectionId: connection.connectionId,
+        connectionGeneration: connection.connectionGeneration,
+        intervalUs: measured.intervalUs,
+        latency: measured.latency,
+        supervisionTimeoutUs: measured.supervisionTimeoutUs,
+        observedAtMonotonicMs: this.now(),
+        terminal: this.succeededTerminal(request.operation.correlation)
+      })
+    })()
+    return this.dispatchFor(correlation, completion)
+  }
+
+  private async watchConnectionParameters(
+    connection: BackendConnection<string, string>,
+    options: PublicOperationOptions = { signal: null, deadline: null }
+  ): Promise<ConnectionParametersWatch<string>> {
+    const operation = this.op('connection.parameters')
+    this.assertOperational(operation)
+    const record = this.liveConnection(connection, operation)
+    const correlation = String(this.mintedCorrelation())
+    const stream = new CoreBoundedStream<ConnectionParametersStreamObservation<string>>(
+      { itemCapacity: capacity(64), byteCapacity: capacity(16 * 1024), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const watch: ParameterWatch = { record, stream, ordinal: 0 }
+    this.parameterWatches.add(watch)
+    let measured: { intervalUs: number; latency: number; supervisionTimeoutUs: number }
+    try {
+      measured = await this.withTicket(correlation, options.signal, operation, ticket =>
+        this.central.connectionParameters({
+          peerId: record.nativePeerId,
+          lease: record.lease,
+          ticket,
+          ...this.budget(options)
+        })
+      )
+    } catch (error) {
+      this.closeParameterWatch(watch, 'source-failed', desktopRustCoreError(error, operation).normalized)
+      throw error
+    }
+    if (!this.parameterWatches.has(watch)) {
+      throw contractError('connection.stale', 'connection', `${operation}.closed`)
+    }
+    this.emitConnectionParameters(watch, measured)
+    return Object.freeze({
+      events: stream,
+      close: async (): Promise<CleanupRecord> => {
+        this.closeParameterWatch(watch, 'owner-released')
+        return Object.freeze({ state: 'released', failures: Object.freeze([]) })
+      }
+    })
+  }
+
+  private closeParameterWatch(
+    watch: ParameterWatch,
+    reason: 'owner-released' | 'connection-lost' | 'source-failed',
+    normalized: NormalizedBleError | null = null
+  ): void {
+    this.parameterWatches.delete(watch)
+    watch.stream.closeWithReason(reason, normalized)
+  }
+
+  private emitConnectionParameters(
+    watch: ParameterWatch,
+    measured: { readonly intervalUs: number; readonly latency: number; readonly supervisionTimeoutUs: number }
+  ): void {
+    watch.ordinal += 1
+    const observation: ConnectionParametersStreamObservation<string> = Object.freeze({
+      connectionId: watch.record.path.connectionId,
+      connectionGeneration: watch.record.path.connectionGeneration,
+      intervalUs: measured.intervalUs,
+      latency: measured.latency,
+      supervisionTimeoutUs: measured.supervisionTimeoutUs,
+      observedAtMonotonicMs: this.now(),
+      ordinal: watch.ordinal
+    })
+    if (watch.stream.emit(observation, 128).terminated) this.parameterWatches.delete(watch)
+  }
+
+  private applyConnectionParameters(event: DesktopRustCoreConnectionParametersEvent): void {
+    if (event.kind === 'closed') {
+      this.failCoreEventSource('connection-parameter-events-closed')
+      return
+    }
+    if (event.kind !== 'state') return
+    if (
+      typeof event.intervalUs !== 'number' ||
+      typeof event.latency !== 'number' ||
+      typeof event.supervisionTimeoutUs !== 'number'
+    ) {
+      return
+    }
+    for (const watch of [...this.parameterWatches]) {
+      if (watch.record.nativePeerId !== event.peerId) continue
+      if (typeof event.connectionGeneration === 'string' && event.connectionGeneration !== watch.record.coreGeneration)
+        continue
+      if (watch.record.state !== 'connected') {
+        this.closeParameterWatch(watch, 'connection-lost')
+        continue
+      }
+      this.emitConnectionParameters(watch, {
+        intervalUs: event.intervalUs,
+        latency: event.latency,
+        supervisionTimeoutUs: event.supervisionTimeoutUs
+      })
+    }
+  }
+
+  private async reconcileConnectionParameters(missed: number | null): Promise<void> {
+    this.noteDiagnostic(
+      'connection-parameter-events-lagged',
+      'connection-parameter reports were missed; re-reading them',
+      { missed }
+    )
+    for (const watch of [...this.parameterWatches]) {
+      if (watch.record.state !== 'connected') {
+        this.closeParameterWatch(watch, 'connection-lost')
+        continue
+      }
+      try {
+        const measured = await this.central.connectionParameters({
+          peerId: watch.record.nativePeerId,
+          lease: watch.record.lease
+        })
+        if (this.parameterWatches.has(watch)) this.emitConnectionParameters(watch, measured)
+      } catch (error) {
+        this.closeParameterWatch(
+          watch,
+          'source-failed',
+          desktopRustCoreError(error, this.op('connection.parameters.reconcile')).normalized
+        )
+      }
+    }
+  }
+
   // -- write-without-response readiness ---------------------------------------
 
   /**
@@ -2872,7 +3078,11 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const pending = watch.buffered
     watch.buffered = null
     // F3: replay the latest pre-probe report for this generation, if any.
-    if (pending !== null && (pending.generation === null || pending.generation === watch.record.coreGeneration)) {
+    if (
+      pending !== null &&
+      typeof pending.generation === 'string' &&
+      pending.generation === watch.record.coreGeneration
+    ) {
       this.emitReadiness(watch, pending.ready)
     }
     if (!watch.ready) this.scheduleReadinessReprobe(watch)
@@ -3009,8 +3219,12 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     for (const watch of [...this.readinessWatches]) {
       if (watch.record.nativePeerId !== event.peerId) continue
-      if (typeof event.connectionGeneration === 'string' && event.connectionGeneration !== watch.record.coreGeneration)
-        continue
+      const generation =
+        typeof event.connectionGeneration === 'string' ? event.connectionGeneration : null
+      const generationMatches = generation !== null && generation === watch.record.coreGeneration
+      // A missing generation must not update every watch of this peer.
+      // Buffer it until the probe settles; replay applies only a matching one.
+      if (watch.probed && !generationMatches) continue
       if (watch.record.state !== 'connected') {
         this.closeReadinessWatch(watch, 'connection-lost')
         continue
@@ -3018,7 +3232,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       // F3: a report arriving before the probe resolves buffers (latest
       // wins) and replays after it — it is never dropped.
       if (!watch.probed) {
-        watch.buffered = Object.freeze({ ready: event.ready === true, generation: event.connectionGeneration ?? null })
+        watch.buffered = Object.freeze({ ready: event.ready === true, generation })
         continue
       }
       this.emitReadiness(watch, event.ready === true)
@@ -3749,7 +3963,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         connectionId: connection.connectionId,
         connectionGeneration: connection.connectionGeneration,
         attMtu: mtu,
-        payloadBytes: mtu - 3,
+        payloadBytes: mtu === null ? null : mtu - 3,
         platformPduBytes: null,
         observedAtMonotonicMs: this.now(),
         terminal: this.succeededTerminal(request.operation.correlation)
@@ -3967,7 +4181,14 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         serviceUuid: uuidFromCore(entry.service.uuid, `${operation}.service`),
         serviceOccurrence: occurrenceId(entry.serviceOccurrence, 'service-occurrence')
       })
-      services.push(Object.freeze({ path: servicePath, primary: true, includedServices: Object.freeze([]) }))
+      services.push(
+        Object.freeze({
+          path: servicePath,
+          primary: true,
+          includedServices: Object.freeze([]),
+          ...(entry.service.restriction === undefined ? {} : { restriction: entry.service.restriction })
+        })
+      )
       for (const characteristicEntry of entry.characteristics) {
         const characteristicPath = Object.freeze({
           ...servicePath,
@@ -4299,12 +4520,11 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   }
 
   /**
-   * The CCCD requirement carried to the core, when this platform carries
-   * one (see `deliveryRequirementToCore`). A preference is never a
-   * requirement: the platform (the Windows adapter prefers notify) decides.
+   * The CCCD requirement carried to the core. Every desktop platform
+   * forwards a hard requirement. A preference is never a requirement:
+   * the platform decides that mode.
    */
   private coreRequirement(mode: SubscriptionOptions['deliveryMode']): 'notification' | 'indication' | null {
-    if (!this.profile.deliveryRequirementToCore) return null
     if (mode === 'require-notification') return 'notification'
     if (mode === 'require-indication') return 'indication'
     return null
@@ -4660,7 +4880,12 @@ function groupCorePaths(paths: readonly DesktopRustCorePath[], operation: string
   }
   const services = new Map<
     string,
-    { uuid: string; occurrence: number; characteristics: Map<string, MutableCharacteristic> }
+    {
+      uuid: string
+      occurrence: number
+      restriction?: ReturnType<typeof serviceAccessRestriction>
+      characteristics: Map<string, MutableCharacteristic>
+    }
   >()
   const key = (uuid: string, occurrence: number): string => `${uuid}#${occurrence}`
   for (const path of paths) {
@@ -4673,7 +4898,11 @@ function groupCorePaths(paths: readonly DesktopRustCorePath[], operation: string
       service = { uuid: serviceUuid, occurrence: path.serviceOccurrence, characteristics: new Map() }
       services.set(key(serviceUuid, path.serviceOccurrence), service)
     }
-    if (path.characteristicUuid === undefined || path.characteristicUuid === null) continue
+    if (path.characteristicUuid === undefined || path.characteristicUuid === null) {
+      const restriction = serviceAccessRestriction(path.serviceAccess)
+      if (restriction !== undefined) service.restriction = restriction
+      continue
+    }
     if (typeof path.characteristicOccurrence !== 'number' || !Number.isSafeInteger(path.characteristicOccurrence)) {
       throw contractError('protocol.malformed', 'core', operation)
     }
@@ -4708,6 +4937,7 @@ function groupCorePaths(paths: readonly DesktopRustCorePath[], operation: string
       Object.freeze({
         uuid: service.uuid,
         occurrence: service.occurrence,
+        ...(service.restriction === undefined ? {} : { restriction: service.restriction }),
         characteristics: Object.freeze(
           [...service.characteristics.values()].map(characteristic =>
             Object.freeze({
@@ -4916,6 +5146,7 @@ export interface DesktopRustCoreWiring {
   readonly maintainConnection: boolean
   readonly pairingGeneration: boolean
   readonly writeReadiness: boolean
+  readonly connectionParameters: boolean
 }
 
 /**
@@ -4949,14 +5180,19 @@ export function desktopRustCoreWiring(states: readonly DesktopRustCoreCapability
     security: CORE_BACKED_FEATURES.security.every(id => usable.has(id)),
     maintainConnection: usable.has(BUILT_IN_FEATURE_IDS.backgroundDesktopMaintainConnection),
     pairingGeneration: usable.has(BUILT_IN_FEATURE_IDS.securityPairingGeneration),
-    // The core registers readiness `limited` everywhere, but only an OS
-    // with a real readiness signal answers the probe; elsewhere the row's
-    // limitation says there is none, and a watch would be a false claim.
+    // Windows and Linux register readiness unsupported with limitation
+    // `no-readiness-signal`. macOS registers it limited when both native
+    // hooks exist. A watch is offered only for that limited row.
     writeReadiness: states.some(
       row =>
         row.id === BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness &&
         (row.state === 'supported' || row.state === 'limited') &&
         row.limitation !== 'no-readiness-signal'
+    ),
+    connectionParameters: states.some(
+      row =>
+        row.id === BUILT_IN_FEATURE_IDS.connectionParameters &&
+        (row.state === 'supported' || row.state === 'limited')
     )
   })
 }
@@ -5078,11 +5314,11 @@ export function createDesktopRustCoreFeatureRegistry(
   if (wiring.addressTargeting) {
     registrations.push(registration(BUILT_IN_FEATURE_IDS.peerAddressTargeting, 'capability.catalog-v2'))
   }
-  // Finding 217 follow-up: every desktop OS answers the effective ATT MTU
-  // it measures (macOS derives maximumWriteValueLength(.withResponse) + 3,
-  // Windows reads GattSession.MaxPduSize, Linux reads the BlueZ
-  // characteristic MTU), so the row is limited wherever the core reports
-  // it limited, with the contract's ATT MTU bounds.
+  // Every desktop OS keeps the effective-MTU route limited wherever the
+  // core reports it limited. Windows reads GattSession.MaxPduSize. Linux
+  // reads the BlueZ characteristic MTU. macOS returns null: CoreBluetooth
+  // write length is not an ATT PDU. The row carries the contract's ATT MTU
+  // bounds.
   if (wiring.effectiveMtu) {
     registrations.push(
       Object.freeze({
@@ -5111,6 +5347,9 @@ export function createDesktopRustCoreFeatureRegistry(
   }
   if (wiring.writeReadiness) {
     registrations.push(registration(BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness, 'connection-controls'))
+  }
+  if (wiring.connectionParameters) {
+    registrations.push(registration(BUILT_IN_FEATURE_IDS.connectionParameters, 'connection-controls'))
   }
   if (profile.platform === 'winrt' && wiring.maintainConnection) {
     // os::windows holds GattSession.MaintainConnection(true) for every

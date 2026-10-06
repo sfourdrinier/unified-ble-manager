@@ -124,6 +124,24 @@ interface RendererResources {
       nativeClose: Promise<CleanupRecord> | null
     }
   >
+  readonly readinessWatches: Map<
+    string,
+    {
+      readonly connectionHandle: string
+      readonly closeWatch: () => Promise<CleanupRecord>
+      readonly stopIterator: () => Promise<void>
+      cleanup: Promise<SerializableRecord> | null
+    }
+  >
+  readonly parameterWatches: Map<
+    string,
+    {
+      readonly connectionHandle: string
+      readonly closeWatch: () => Promise<CleanupRecord>
+      readonly stopIterator: () => Promise<void>
+      cleanup: Promise<SerializableRecord> | null
+    }
+  >
   readonly pairingChallenges: Map<
     string,
     {
@@ -168,6 +186,8 @@ interface ManagedOperation {
 
 interface RendererResourceSnapshot {
   readonly securityWatches: ReadonlySet<string>
+  readonly readinessWatches: ReadonlySet<string>
+  readonly parameterWatches: ReadonlySet<string>
   readonly scans: ReadonlySet<string>
   readonly connections: ReadonlySet<string>
   readonly connectionEventSubscriptions: ReadonlySet<string>
@@ -481,6 +501,19 @@ export class ElectronMainBleRouter {
         response = await this.effectiveMtu(resources, envelope.payload, controller)
       } else if (envelope.command === 'connection.maximum-write-length') {
         response = await this.maximumWriteLength(resources, envelope.payload, controller)
+      } else if (envelope.command === 'connection.write-readiness.subscribe') {
+        response = await this.subscribeWriteReadiness(resources, envelope.payload, controller)
+      } else if (envelope.command === 'connection.write-readiness.unsubscribe') {
+        response = await this.unsubscribeWriteReadiness(resources, requiredString(envelope.payload, 'writeReadinessHandle'))
+      } else if (envelope.command === 'connection.parameters') {
+        response = await this.readConnectionParameters(resources, envelope.payload, controller)
+      } else if (envelope.command === 'connection.parameters.subscribe') {
+        response = await this.subscribeConnectionParameters(resources, envelope.payload, controller)
+      } else if (envelope.command === 'connection.parameters.unsubscribe') {
+        response = await this.unsubscribeConnectionParameters(
+          resources,
+          requiredString(envelope.payload, 'parameterEventsHandle')
+        )
       } else if (envelope.command === 'connection.disconnect') {
         response = await this.disconnect(resources, envelope.payload)
       } else if (envelope.command === 'connection.events.subscribe') {
@@ -824,6 +857,247 @@ export class ElectronMainBleRouter {
     return { handle }
   }
 
+  private async subscribeWriteReadiness(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    const connectionHandle = requiredString(payload, 'connectionHandle')
+    const handle = requiredString(payload, 'writeReadinessHandle')
+    const connection = requiredResource(resources.connections, connectionHandle, 'connection')
+    if (resources.readinessWatches.has(handle) || resources.releasedHandles.has(handle)) {
+      throw contractError('protocol.violation', 'ipc', 'electron.write-readiness.duplicate')
+    }
+    const opened = await connection.writeWithoutResponseReadiness(operationOptions(payload, controller))
+    const iterator = opened.events[Symbol.asyncIterator]()
+    resources.readinessWatches.set(handle, {
+      connectionHandle,
+      closeWatch: () => opened.close(),
+      stopIterator: async () => {
+        if (iterator.return !== undefined) await iterator.return()
+      },
+      cleanup: null
+    })
+    const pump = async (): Promise<void> => {
+      while (resources.readinessWatches.has(handle)) {
+        const item = await iterator.next()
+        if (item.done === true) break
+        const value = item.value
+        const delivery = await this.publish(
+          String(resources.rendererLease.leaseId),
+          this.event(resources.rendererLease, handle, readinessIpcItem(value))
+        )
+        if (delivery === 'terminalized' || value.kind === 'terminal') break
+      }
+    }
+    pump().catch(async error => {
+      console.error('[ElectronMainBleRouter] Write-readiness watch failed:', error)
+      try {
+        await this.publish(
+          String(resources.rendererLease.leaseId),
+          this.event(resources.rendererLease, handle, {
+            kind: 'terminal',
+            reason: 'source-failed',
+            droppedItems: 0,
+            droppedBytes: 0,
+            replacedItems: 0,
+            error: serializeNormalizedError(normalizedCleanupError(error))
+          })
+        )
+      } catch (deliveryError) {
+        console.error('[ElectronMainBleRouter] Write-readiness failure delivery failed:', deliveryError)
+      }
+    })
+    return Object.freeze({ handle, connectionId: String(connection.connectionId) })
+  }
+
+  private async unsubscribeWriteReadiness(resources: RendererResources, handle: string): Promise<SerializableRecord> {
+    const watch = resources.readinessWatches.get(handle)
+    if (watch === undefined) {
+      if (resources.releasedHandles.has(handle)) return alreadyReleasedCleanup()
+      throw contractError('ownership.denied', 'ipc', 'electron.write-readiness.owner')
+    }
+    if (watch.cleanup !== null) return watch.cleanup
+    const tracked = (async () => {
+      const failures: CleanupFailure[] = []
+      try {
+        await watch.stopIterator()
+      } catch (error) {
+        failures.push({ resourceKind: 'gatt.write-readiness', error: normalizedCleanupError(error) })
+      }
+      try {
+        const native = await watch.closeWatch()
+        if (native.state !== 'released') failures.push(...native.failures)
+      } catch (error) {
+        failures.push({ resourceKind: 'gatt.write-readiness', error: normalizedCleanupError(error) })
+      }
+      if (failures.length === 0) {
+        resources.readinessWatches.delete(handle)
+        resources.releasedHandles.add(handle)
+        return Object.freeze({ state: 'released', failures: [] })
+      }
+      watch.cleanup = null
+      return Object.freeze({ state: 'release-failed', failures })
+    })()
+    watch.cleanup = tracked
+    return tracked
+  }
+
+  private async releaseReadinessWatches(
+    resources: RendererResources,
+    connectionHandle?: string
+  ): Promise<CleanupFailure[]> {
+    const failures: CleanupFailure[] = []
+    for (const [handle, watch] of resources.readinessWatches) {
+      if (connectionHandle !== undefined && watch.connectionHandle !== connectionHandle) continue
+      try {
+        const cleanup = await this.unsubscribeWriteReadiness(resources, handle)
+        if (cleanup.state !== 'released') {
+          failures.push({
+            resourceKind: 'gatt.write-readiness',
+            error: contractError('lifecycle.invalid-state', 'cleanup', 'electron.write-readiness.release').normalized
+          })
+        }
+      } catch (error) {
+        failures.push({ resourceKind: 'gatt.write-readiness', error: normalizedCleanupError(error) })
+      }
+    }
+    return failures
+  }
+
+  private async readConnectionParameters(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    const connection = requiredResource(
+      resources.connections,
+      requiredString(payload, 'connectionHandle'),
+      'connection'
+    )
+    const result = await connection.parameters(operationOptions(payload, controller))
+    return Object.freeze({
+      intervalUs: result.intervalUs,
+      latency: result.latency,
+      supervisionTimeoutUs: result.supervisionTimeoutUs,
+      connectionId: String(result.connectionId),
+      connectionGeneration: String(result.connectionGeneration),
+      observedAtMonotonicMs: result.observedAtMonotonicMs
+    })
+  }
+
+  private async subscribeConnectionParameters(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    const connectionHandle = requiredString(payload, 'connectionHandle')
+    const handle = requiredString(payload, 'parameterEventsHandle')
+    const connection = requiredResource(resources.connections, connectionHandle, 'connection')
+    if (resources.parameterWatches.has(handle) || resources.releasedHandles.has(handle)) {
+      throw contractError('protocol.violation', 'ipc', 'electron.connection-parameters.duplicate')
+    }
+    const opened = await connection.parameterEvents(operationOptions(payload, controller))
+    const iterator = opened.events[Symbol.asyncIterator]()
+    resources.parameterWatches.set(handle, {
+      connectionHandle,
+      closeWatch: () => opened.close(),
+      stopIterator: async () => {
+        if (iterator.return !== undefined) await iterator.return()
+      },
+      cleanup: null
+    })
+    const pump = async (): Promise<void> => {
+      while (resources.parameterWatches.has(handle)) {
+        const item = await iterator.next()
+        if (item.done === true) break
+        const value = item.value
+        const delivery = await this.publish(
+          String(resources.rendererLease.leaseId),
+          this.event(resources.rendererLease, handle, parameterIpcItem(value))
+        )
+        if (delivery === 'terminalized' || value.kind === 'terminal') break
+      }
+    }
+    pump().catch(async error => {
+      console.error('[ElectronMainBleRouter] Connection-parameter watch failed:', error)
+      try {
+        await this.publish(
+          String(resources.rendererLease.leaseId),
+          this.event(resources.rendererLease, handle, {
+            kind: 'terminal',
+            reason: 'source-failed',
+            droppedItems: 0,
+            droppedBytes: 0,
+            replacedItems: 0,
+            error: serializeNormalizedError(normalizedCleanupError(error))
+          })
+        )
+      } catch (deliveryError) {
+        console.error('[ElectronMainBleRouter] Connection-parameter failure delivery failed:', deliveryError)
+      }
+    })
+    return Object.freeze({ handle, connectionId: String(connection.connectionId) })
+  }
+
+  private async unsubscribeConnectionParameters(
+    resources: RendererResources,
+    handle: string
+  ): Promise<SerializableRecord> {
+    const watch = resources.parameterWatches.get(handle)
+    if (watch === undefined) {
+      if (resources.releasedHandles.has(handle)) return alreadyReleasedCleanup()
+      throw contractError('ownership.denied', 'ipc', 'electron.connection-parameters.owner')
+    }
+    if (watch.cleanup !== null) return watch.cleanup
+    const tracked = (async () => {
+      const failures: CleanupFailure[] = []
+      try {
+        await watch.stopIterator()
+      } catch (error) {
+        failures.push({ resourceKind: 'connection.parameters', error: normalizedCleanupError(error) })
+      }
+      try {
+        const native = await watch.closeWatch()
+        if (native.state !== 'released') failures.push(...native.failures)
+      } catch (error) {
+        failures.push({ resourceKind: 'connection.parameters', error: normalizedCleanupError(error) })
+      }
+      if (failures.length === 0) {
+        resources.parameterWatches.delete(handle)
+        resources.releasedHandles.add(handle)
+        return Object.freeze({ state: 'released', failures: [] })
+      }
+      watch.cleanup = null
+      return Object.freeze({ state: 'release-failed', failures })
+    })()
+    watch.cleanup = tracked
+    return tracked
+  }
+
+  private async releaseParameterWatches(
+    resources: RendererResources,
+    connectionHandle?: string
+  ): Promise<CleanupFailure[]> {
+    const failures: CleanupFailure[] = []
+    for (const [handle, watch] of resources.parameterWatches) {
+      if (connectionHandle !== undefined && watch.connectionHandle !== connectionHandle) continue
+      try {
+        const cleanup = await this.unsubscribeConnectionParameters(resources, handle)
+        if (cleanup.state !== 'released') {
+          failures.push({
+            resourceKind: 'connection.parameters',
+            error: contractError('lifecycle.invalid-state', 'cleanup', 'electron.connection-parameters.release')
+              .normalized
+          })
+        }
+      } catch (error) {
+        failures.push({ resourceKind: 'connection.parameters', error: normalizedCleanupError(error) })
+      }
+    }
+    return failures
+  }
+
   private async unwatchSecurity(resources: RendererResources, handle: string): Promise<SerializableRecord> {
     const watch = resources.securityWatches.get(handle)
     if (watch === undefined) {
@@ -1017,11 +1291,8 @@ export class ElectronMainBleRouter {
       requiredString(payload, 'connectionHandle'),
       'connection'
     )
-    // The main-side measurement carries the ATT MTU; the renderer builds its
-    // MtuObservation (payloadBytes = mtu - 3) exactly like the Tauri route.
-    // An unmeasured snapshot stays fail-closed upstream with its own reason,
-    // so a null here would be a backend contract violation, surfaced by the
-    // renderer's required-number check rather than a silent null.
+    // Null is an unobserved ATT MTU (CoreBluetooth). A measured host sends
+    // the number. The renderer maps null to state `unavailable`.
     const result = await connection.effectiveMtu(operationOptions(payload, controller))
     return Object.freeze({ mtu: result.attMtu })
   }
@@ -1058,7 +1329,8 @@ export class ElectronMainBleRouter {
         primary: service.primary,
         includedServices: service.includedServices.map(included =>
           Object.freeze({ uuid: String(included.uuid), occurrence: String(included.occurrence) })
-        )
+        ),
+        ...(service.restriction === undefined ? {} : { restriction: service.restriction })
       })
     )
     for (const characteristic of snapshot.characteristics ?? []) {
@@ -1215,6 +1487,14 @@ export class ElectronMainBleRouter {
       if (releasedHandleTombstone(resources, handle)) return alreadyReleasedCleanup()
       throw contractError('ownership.denied', 'ipc', 'electron-main-router.connection-ownership')
     }
+    const readinessCleanup = await this.releaseReadinessWatches(resources, handle)
+    if (readinessCleanup.length > 0) {
+      return Object.freeze({ state: 'release-failed', failures: readinessCleanup })
+    }
+    const parameterCleanup = await this.releaseParameterWatches(resources, handle)
+    if (parameterCleanup.length > 0) {
+      return Object.freeze({ state: 'release-failed', failures: parameterCleanup })
+    }
     const lifecycleCleanup = await this.releaseConnectionEventSubscriptionsForConnection(resources, handle)
     if (lifecycleCleanup.state === 'release-failed') {
       return cleanupRecord(lifecycleCleanup)
@@ -1364,6 +1644,8 @@ export class ElectronMainBleRouter {
       await operation.settled
     }
     const failures: CleanupFailure[] = []
+    failures.push(...(await this.releaseReadinessWatches(resources)))
+    failures.push(...(await this.releaseParameterWatches(resources)))
     for (const handle of resources.securityWatches.keys()) {
       try {
         const cleanup = await this.unwatchSecurity(resources, handle)
@@ -1408,6 +1690,8 @@ export class ElectronMainBleRouter {
     if (
       failures.length === 0 &&
       resources.securityWatches.size === 0 &&
+      resources.readinessWatches.size === 0 &&
+      resources.parameterWatches.size === 0 &&
       resources.pairingChallenges.size === 0 &&
       resources.scans.size === 0 &&
       resources.connectionEventSubscriptions.size === 0 &&
@@ -1432,6 +1716,35 @@ export class ElectronMainBleRouter {
     snapshot: RendererResourceSnapshot
   ): Promise<CleanupRecord> {
     const failures: CleanupFailure[] = []
+    for (const handle of resources.readinessWatches.keys()) {
+      if (snapshot.readinessWatches.has(handle)) continue
+      try {
+        const cleanup = await this.unsubscribeWriteReadiness(resources, handle)
+        if (cleanup.state !== 'released') {
+          failures.push({
+            resourceKind: 'gatt.write-readiness',
+            error: contractError('lifecycle.invalid-state', 'cleanup', 'electron.write-readiness.rollback').normalized
+          })
+        }
+      } catch (error) {
+        failures.push({ resourceKind: 'gatt.write-readiness', error: normalizedCleanupError(error) })
+      }
+    }
+    for (const handle of resources.parameterWatches.keys()) {
+      if (snapshot.parameterWatches.has(handle)) continue
+      try {
+        const cleanup = await this.unsubscribeConnectionParameters(resources, handle)
+        if (cleanup.state !== 'released') {
+          failures.push({
+            resourceKind: 'connection.parameters',
+            error: contractError('lifecycle.invalid-state', 'cleanup', 'electron.connection-parameters.rollback')
+              .normalized
+          })
+        }
+      } catch (error) {
+        failures.push({ resourceKind: 'connection.parameters', error: normalizedCleanupError(error) })
+      }
+    }
     for (const handle of resources.securityWatches.keys()) {
       if (snapshot.securityWatches.has(handle)) continue
       try {
@@ -1655,6 +1968,8 @@ export class ElectronMainBleRouter {
     }
     const resources: RendererResources = {
       securityWatches: new Map(),
+      readinessWatches: new Map(),
+      parameterWatches: new Map(),
       pairingChallenges: new Map(),
       rendererLease,
       scans: new Map(),
@@ -1782,6 +2097,8 @@ function rendererIdentity<Renderer extends string>(
 function snapshotResourceHandles(resources: RendererResources): RendererResourceSnapshot {
   return {
     securityWatches: new Set(resources.securityWatches.keys()),
+    readinessWatches: new Set(resources.readinessWatches.keys()),
+    parameterWatches: new Set(resources.parameterWatches.keys()),
     scans: new Set(resources.scans.keys()),
     connections: new Set(resources.connections.keys()),
     connectionEventSubscriptions: new Set(resources.connectionEventSubscriptions.keys()),
@@ -1922,6 +2239,7 @@ function operationAdmissionFailure(
 function isDestructiveCleanupCommand(command: string): boolean {
   return (
     command === 'security.watch.unsubscribe' ||
+    command === 'connection.write-readiness.unsubscribe' ||
     command === 'scan.stop' ||
     command === 'connection.disconnect' ||
     command === 'connection.events.unsubscribe' ||
@@ -1993,6 +2311,104 @@ function requiredResource<Value>(resources: Map<string, Value>, handle: string, 
  */
 function releasedHandleTombstone(resources: RendererResources, handle: string): boolean {
   return resources.releasedHandles.has(handle)
+}
+
+function parameterIpcItem(value: {
+  readonly kind: string
+  readonly value?: {
+    readonly connectionId: string
+    readonly connectionGeneration: string
+    readonly intervalUs: number
+    readonly latency: number
+    readonly supervisionTimeoutUs: number
+    readonly observedAtMonotonicMs: number
+    readonly ordinal: number
+  }
+  readonly reason?: string
+  readonly error?: unknown
+  readonly policy?: string
+  readonly droppedItems?: number
+  readonly droppedBytes?: number
+  readonly replacedItems?: number
+}): SerializableRecord {
+  if (value.kind === 'value' && value.value !== undefined) {
+    return Object.freeze({
+      kind: 'value',
+      value: Object.freeze({
+        connectionId: String(value.value.connectionId),
+        connectionGeneration: String(value.value.connectionGeneration),
+        intervalUs: value.value.intervalUs,
+        latency: value.value.latency,
+        supervisionTimeoutUs: value.value.supervisionTimeoutUs,
+        observedAtMonotonicMs: value.value.observedAtMonotonicMs,
+        ordinal: value.value.ordinal
+      })
+    })
+  }
+  if (value.kind === 'overflow') {
+    return Object.freeze({
+      kind: 'overflow',
+      policy: value.policy ?? 'drop-oldest',
+      droppedItems: value.droppedItems ?? 0,
+      droppedBytes: value.droppedBytes ?? 0,
+      replacedItems: value.replacedItems ?? 0
+    })
+  }
+  return Object.freeze({
+    kind: 'terminal',
+    reason: value.reason ?? 'source-failed',
+    droppedItems: value.droppedItems ?? 0,
+    droppedBytes: value.droppedBytes ?? 0,
+    replacedItems: value.replacedItems ?? 0,
+    error: value.error == null ? null : serializeNormalizedError(normalizedCleanupError(value.error))
+  })
+}
+
+function readinessIpcItem(value: {
+  readonly kind: string
+  readonly value?: {
+    readonly connectionId: string
+    readonly connectionGeneration: string
+    readonly ready: boolean
+    readonly observedAtMonotonicMs: number
+    readonly ordinal: number
+  }
+  readonly reason?: string
+  readonly error?: unknown
+  readonly policy?: string
+  readonly droppedItems?: number
+  readonly droppedBytes?: number
+  readonly replacedItems?: number
+}): SerializableRecord {
+  if (value.kind === 'value' && value.value !== undefined) {
+    return Object.freeze({
+      kind: 'value',
+      value: Object.freeze({
+        connectionId: String(value.value.connectionId),
+        connectionGeneration: String(value.value.connectionGeneration),
+        ready: value.value.ready,
+        observedAtMonotonicMs: value.value.observedAtMonotonicMs,
+        ordinal: value.value.ordinal
+      })
+    })
+  }
+  if (value.kind === 'overflow') {
+    return Object.freeze({
+      kind: 'overflow',
+      policy: value.policy ?? 'drop-oldest',
+      droppedItems: value.droppedItems ?? 0,
+      droppedBytes: value.droppedBytes ?? 0,
+      replacedItems: value.replacedItems ?? 0
+    })
+  }
+  return Object.freeze({
+    kind: 'terminal',
+    reason: value.reason ?? 'source-failed',
+    droppedItems: value.droppedItems ?? 0,
+    droppedBytes: value.droppedBytes ?? 0,
+    replacedItems: value.replacedItems ?? 0,
+    error: value.error == null ? null : serializeNormalizedError(normalizedCleanupError(value.error))
+  })
 }
 
 function alreadyReleasedCleanup(): SerializableRecord {

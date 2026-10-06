@@ -64,6 +64,7 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
                     occurrence: 0,
                 }],
             }],
+            access: std::default::Default::default(),
         }],
     );
     central

@@ -55,7 +55,7 @@ use std::time::Duration;
 use btleplug::api::{CharPropFlags, Characteristic, ValueNotification};
 use futures_util::Stream;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use ubm_desktop::boundary::{FakeRadio, InstanceKey, RadioBoundary, RadioEvent};
+use ubm_desktop::boundary::{DeliveryMode, FakeRadio, InstanceKey, RadioBoundary, RadioEvent};
 use ubm_desktop::btleplug_backend::{
     EnableStreamError, ForwardTarget, ForwarderEntry, NOTIFICATION_BYTES, NOTIFICATION_CAP,
     NotificationRoute, NotificationStream, NotificationTransport, forwarder_key, ingress_release,
@@ -227,6 +227,7 @@ impl NotificationTransport for StubTransport {
     async fn transport_subscribe(
         &self,
         _characteristic: &Characteristic,
+        _selected: Option<DeliveryMode>,
     ) -> Result<(), btleplug::Error> {
         self.subscribe_calls.fetch_add(1, Ordering::Relaxed);
         self.subscribe
@@ -721,6 +722,7 @@ async fn a_value_sent_right_after_the_enable_is_not_lost() {
         async fn transport_subscribe(
             &self,
             _characteristic: &Characteristic,
+            _selected: Option<DeliveryMode>,
         ) -> Result<(), btleplug::Error> {
             // The peer notifies as soon as its CCCD is written; a
             // broadcast with no receiver drops the value.

@@ -534,6 +534,7 @@ fn every_legacy_feature_has_a_rust_surface() {
         descriptor_occurrence: None,
         properties: 0,
         access: None,
+        service_access: None,
     };
     assert!(path.access.is_none());
 }

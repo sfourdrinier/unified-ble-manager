@@ -78,6 +78,7 @@ import {
   matchesScan,
   releasedCleanup
 } from './corebluetooth-handles'
+import { ScanEvidenceSession } from '../../backend-contract/scan-evidence'
 import { CoreBluetoothGattOperations } from './corebluetooth-gatt-operations'
 import { CoreBluetoothConnectionControls } from './corebluetooth-connection-controls'
 import { coreBluetoothCompatibility } from './corebluetooth-provider'
@@ -108,6 +109,7 @@ export interface ScanGroup {
   readonly consumers: Map<string, ScanConsumer>
   state: 'starting' | 'active' | 'stopping' | 'failed' | 'released'
   nativeStop: Promise<void> | null
+  readonly evidence: ScanEvidenceSession
 }
 export interface ConnectionRecord {
   readonly nativePeerId: string
@@ -641,7 +643,8 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       scanSessionId: consumer.scanSessionId,
       consumers: new Map([[String(consumer.leaseId), consumer]]),
       state: 'starting',
-      nativeStop: null
+      nativeStop: null,
+      evidence: new ScanEvidenceSession()
     }
     this.scanGroup = group
     const abort = (): void => {
@@ -851,10 +854,10 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     )
     this.nextIngressOrdinal += 1
     for (const consumer of [...group.consumers.values()]) {
-      if (!matchesScan(consumer.options, observation) || consumer.stream.isTerminal()) {
-        continue
-      }
-      const push = consumer.stream.emit(observation, advertisementByteLength(observation), String(peerId))
+      if (consumer.stream.isTerminal()) continue
+      const matched = group.evidence.matchAdvertisement(observation, candidate => matchesScan(consumer.options, candidate))
+      if (matched === null) continue
+      const push = consumer.stream.emit(matched, advertisementByteLength(matched), String(peerId))
       if (push.terminated) {
         if (consumer.leaseId === group.ownerLeaseId && group.consumers.size > 1) {
           group.consumers.delete(String(consumer.leaseId))

@@ -9,6 +9,7 @@ import type { BluezScanConsumer, BluezScanGroup } from './bluez-runtime-types'
 import { BLUEZ_ADAPTER_INTERFACE, BLUEZ_DEVICE_INTERFACE } from './bluez-dbus-contract'
 import { BluezScanLease, releasedBluezCleanup } from './bluez-backend-handles'
 import { scanFilterVariant, scanSignature } from './bluez-runtime-models'
+import { ScanEvidenceSession } from '../../backend-contract/scan-evidence'
 import {
   awaitBluezNativePromise,
   awaitSharedBluezTransition,
@@ -87,6 +88,7 @@ export async function startBluezScan(
     stopRequested: false,
     resetRequested: false,
     startupComplete: false,
+    evidence: new ScanEvidenceSession(),
     startupSettled,
     settleStartup
   }

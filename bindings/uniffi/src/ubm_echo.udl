@@ -77,6 +77,7 @@ interface MobileRadioRequest {
     DisableNotifications(u64 id, MobileInstance instance);
     ReadMtu(u64 id, string peer_id);
     ReadWriteLimits(u64 id, string peer_id);
+    ReadWriteReadiness(u64 id, string peer_id);
     RequestMtu(u64 id, string peer_id, u16 mtu);
     ReadRssi(u64 id, string peer_id);
     RequestConnectionPriority(u64 id, string peer_id, string priority);
@@ -167,6 +168,7 @@ interface MobileRadioCompletion {
     NotifyEnabled(string delivery);
     Mtu(u16? mtu);
     WriteLimits(u16 with_response, u16 without_response);
+    Ready(boolean ready);
     Rssi(i16 rssi);
     Accepted(boolean accepted);
     Phy(string tx, string rx);
@@ -221,6 +223,7 @@ interface MobileRadioIngress {
     AdapterState(MobileAdapterSnapshot snapshot);
     ScanFailed(string detail);
     SecurityChanged(string peer_id, MobileSecurityState state);
+    WriteReadiness(string peer_id, boolean ready);
     Restored(sequence<MobileRestoredPeer> peers);
     Dropped(string ingress_class, string detail);
 };

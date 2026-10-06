@@ -123,6 +123,7 @@ async fn advertise(central: &DesktopCentral<FakeRadio>, peer_id: &str) {
                 },
                 descriptors: Vec::new(),
             }],
+            access: std::default::Default::default(),
         }],
     );
     radio.push_event(RadioEvent::Advertisement(PeerSnapshot {

@@ -57,7 +57,10 @@ try {
     response: 'required'
   })
 } catch (error) {
-  if (!(error instanceof BleError) || (error.code !== 'gatt.not-found' && error.code !== 'gatt.property-not-supported')) {
+  if (
+    !(error instanceof BleError) ||
+    (error.code !== 'gatt.not-found' && error.code !== 'gatt.property-not-supported')
+  ) {
     throw error
   }
 }
@@ -150,9 +153,9 @@ task-ordered Android chain, iOS counterpart, and platform refusals are in
 `connection.controls.requestMtu(n)` and `effectiveMtu()` do not behave the
 same everywhere: on Android the effective MTU is unavailable before a
 successful MTU exchange; on Apple there is no caller-directed MTU request
-and the effective MTU is derived per link as
-`maximumWriteValueLength(for: .withResponse) + 3`; on BlueZ a withheld link
-answers `capability.unavailable`. Likewise, an Apple read issued while the
+and the effective ATT MTU stays unavailable because CoreBluetooth does not
+observe one (`maximumWriteValueLength(for:)` is the per-mode write capacity,
+not an ATT MTU); on BlueZ a withheld link answers `capability.unavailable`. Likewise, an Apple read issued while the
 characteristic notifies resolves with provenance `read-or-notification`
 (the value may be a notification); use
 `characteristic.readReceipt()` when it matters. The exact per-host rows are

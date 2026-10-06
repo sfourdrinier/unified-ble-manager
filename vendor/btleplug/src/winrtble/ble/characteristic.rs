@@ -212,30 +212,42 @@ impl BLECharacteristic {
         value: GattClientCharacteristicConfigurationDescriptorValue,
         operation: &str,
     ) -> Result<()> {
-        let status = characteristic
-            .WriteClientCharacteristicConfigurationDescriptorAsync(value)?
+        let result = characteristic
+            .WriteClientCharacteristicConfigurationDescriptorWithResultAsync(value)?
             .into_future()
             .await?;
+        let status = result.Status()?;
         trace!("{operation} {:?}", status);
         if status == GattCommunicationStatus::Success {
             Ok(())
         } else {
-            // The CCCD call returns no result object, so no ATT error byte
-            // is available here; the status alone is reported.
-            Err(utils::gatt_status_error(operation, status, None))
+            Err(utils::gatt_status_error(
+                operation,
+                status,
+                utils::protocol_att_error(result.ProtocolError()),
+            ))
         }
     }
 
-    /// Register `handler` for `ValueChanged`, replacing this object's
-    /// previous registration so handlers never accumulate, and return the
-    /// CCCD value subscribe writes with the new registration's token. A
-    /// characteristic that can neither notify nor indicate is refused
-    /// before anything is registered.
+    /// Register `handler` for `ValueChanged` and return the CCCD value
+    /// `to_descriptor_value` would write (Indicate when that bit is set).
+    /// Other callers keep that path. The desktop enable path uses
+    /// [`register_with`] so the first write is the selected mode.
     pub fn register(
         &mut self,
         handler: NotifyEventHandler,
     ) -> Result<(GattClientCharacteristicConfigurationDescriptorValue, i64)> {
-        let config = to_descriptor_value(self.properties);
+        self.register_with(handler, to_descriptor_value(self.properties))
+    }
+
+    /// Register `handler` and write `config` once. `None` is refused before
+    /// anything is registered. The given value is not replaced with the
+    /// other mode.
+    pub fn register_with(
+        &mut self,
+        handler: NotifyEventHandler,
+        config: GattClientCharacteristicConfigurationDescriptorValue,
+    ) -> Result<(GattClientCharacteristicConfigurationDescriptorValue, i64)> {
         if config == GattClientCharacteristicConfigurationDescriptorValue::None {
             return Err(Error::NotSupported("Can not subscribe to attribute".into()));
         }

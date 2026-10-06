@@ -148,6 +148,7 @@ pub fn polar_services() -> Vec<ServiceSnapshot> {
                 occurrence: 0,
             }],
         }],
+        access: std::default::Default::default(),
     }]
 }
 
@@ -173,6 +174,7 @@ pub fn polar_responder(request: &RadioRequest) -> Reply {
                 without_response: 244,
             })
         }
+        RadioRequest::ReadWriteReadiness { .. } => RadioCompletion::Ready(true),
         RadioRequest::RequestMtu { mtu, .. } => RadioCompletion::Mtu(Some(*mtu)),
         RadioRequest::ReadRssi { .. } => RadioCompletion::Rssi(-61),
         RadioRequest::Close { .. } => RadioCompletion::Closed(Vec::new()),

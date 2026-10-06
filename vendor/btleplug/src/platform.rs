@@ -2,8 +2,6 @@
 //! traits. Refer for the `api` module for how to use them.
 
 #[cfg(target_os = "linux")]
-pub use bluez_async::{LeLeaseReleaseReceipt, LeLeaseReleaseScope};
-#[cfg(target_os = "linux")]
 pub use crate::bluez::peripheral::{
     LE_GATT_OBSERVATION_TIMEOUT, LeGattBearer, LeGattErrorStage, LeGattReadyToken, LeGattSnapshot,
     LeGattStatus,
@@ -26,6 +24,8 @@ pub use crate::winrtble::{
     adapter::Adapter, ble::watcher::ScanStopped, manager::Manager, peripheral::Peripheral,
     peripheral::PeripheralId,
 };
+#[cfg(target_os = "linux")]
+pub use bluez_async::{LeLeaseReleaseReceipt, LeLeaseReleaseScope};
 
 use crate::api::{self, Central};
 use static_assertions::assert_impl_all;

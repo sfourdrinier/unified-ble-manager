@@ -136,8 +136,8 @@ mod tests {
 /// UBM patch (UBM_PATCHES.md #20): the ATT error byte of a
 /// `GattCommunicationStatus::ProtocolError` as reported by
 /// `GattReadResult` / `GattWriteResult` `ProtocolError()`. `None` when the
-/// call returned no result object (writes without response, CCCD writes,
-/// discovery and connect queries) or the platform reported no byte. Never
+/// call returned no result object (writes without response) or the
+/// platform reported no byte. Never
 /// fails: an unreadable byte is no byte.
 pub fn protocol_att_error(result: windows::core::Result<IReference<u8>>) -> Option<u8> {
     result.ok().and_then(|reference| reference.Value().ok())

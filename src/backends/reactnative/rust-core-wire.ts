@@ -69,6 +69,7 @@ export const WIRE_OPS = Object.freeze([
   'connection.read-phy',
   'connection.request-phy',
   'connection.maximum-write-length',
+  'connection.write-readiness',
   'security.state',
   'security.pair',
   'security.cancel-pairing',
@@ -404,6 +405,8 @@ export interface WireOpResults {
   readonly 'connection.request-phy': { readonly accepted: boolean; readonly observation: WirePhyObservation | null }
   /** The platform's largest single write in the requested mode, bounded by the ATT maximum attribute value. */
   readonly 'connection.maximum-write-length': { readonly maximumWriteLength: number }
+  /** CoreBluetooth `canSendWriteWithoutResponse`. Android answers `capability.unsupported`. */
+  readonly 'connection.write-readiness': { readonly ready: boolean }
   readonly 'security.state': WireSecurityState
   readonly 'security.pair': { readonly outcome: (typeof PAIR_OUTCOMES)[number]; readonly state: WireSecurityState }
   readonly 'security.cancel-pairing': { readonly state: 'requested' }
@@ -505,6 +508,13 @@ export type WireDrainRecord =
       readonly count: number
     }
   | { readonly t: 'security'; readonly ordinal: number; readonly peerId: string; readonly state: WireSecurityState }
+  | {
+      readonly t: 'readiness'
+      readonly ordinal: number
+      readonly peerId: string
+      readonly connectionGeneration: string | null
+      readonly ready: boolean
+    }
   | { readonly t: 'restored'; readonly ordinal: number; readonly peers: readonly WireRestoredPeer[] }
 
 export interface WireDrainBatch {
@@ -1504,6 +1514,10 @@ const OP_PARSERS: OpParsers = Object.freeze({
       )
     })
   },
+  'connection.write-readiness': (value: unknown, path: string) => {
+    const fields = exactObject(value, ['ready'], path)
+    return Object.freeze({ ready: booleanOrThrow(fields.get('ready'), `${path}.ready`) })
+  },
   'security.state': securityStateOrThrow,
   'security.pair': (value: unknown, path: string) => {
     const fields = exactObject(value, ['outcome', 'state'], path)
@@ -1646,6 +1660,7 @@ const DRAIN_RECORD_TYPES = Object.freeze([
   'db-changed',
   'ingress-drop',
   'security',
+  'readiness',
   'restored'
 ] as const)
 
@@ -1806,6 +1821,20 @@ function drainRecordOrThrow(value: unknown, path: string): WireDrainRecord {
         ordinal,
         peerId: stringOrThrow(fields.get('peerId'), `${recordPath}.peerId`),
         state: securityStateOrThrow(fields.get('state'), `${recordPath}.state`)
+      })
+    }
+    case 'readiness': {
+      const { fields, ordinal } = read(['peerId', 'connectionGeneration', 'ready'])
+      return Object.freeze({
+        t: type,
+        ordinal,
+        peerId: stringOrThrow(fields.get('peerId'), `${recordPath}.peerId`),
+        connectionGeneration: nullable(
+          fields.get('connectionGeneration'),
+          `${recordPath}.connectionGeneration`,
+          stringOrThrow
+        ),
+        ready: booleanOrThrow(fields.get('ready'), `${recordPath}.ready`)
       })
     }
     case 'restored': {

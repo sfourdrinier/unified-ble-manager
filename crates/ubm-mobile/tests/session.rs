@@ -1164,10 +1164,6 @@ async fn apple_refuses_android_only_controls_before_effects() {
             json!({"peerId": POLAR, "lease": "l", "priority": "balanced", "operationId": "p"}),
         ),
         (
-            "connection.connect",
-            json!({"peerId": POLAR, "lease": "l", "intent": "when-available", "operationId": "c"}),
-        ),
-        (
             "scan.start",
             json!({"serviceUuids": [], "duplicatePolicy": "all", "platform": {"mode": "balanced"}, "operationId": "s"}),
         ),
@@ -1176,6 +1172,35 @@ async fn apple_refuses_android_only_controls_before_effects() {
         assert_eq!(error["code"], "capability.unsupported", "{op}");
     }
     assert_eq!(radio.requests.lock().unwrap().len(), before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apple_when_available_connects_without_android_auto_connect() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Apple).await;
+    let session = host.open_session("rn").unwrap();
+    let connected = ok(&call(
+        &session,
+        "connection.connect",
+        &json!({"peerId": POLAR, "lease": "l", "intent": "when-available", "operationId": "c"})
+            .to_string(),
+    )
+    .await);
+    assert!(connected["connectionGeneration"].is_string());
+    let auto = radio
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|request| match request {
+            ubm_mobile::RadioRequest::Connect { auto_connect, .. } => Some(*auto_connect),
+            _ => None,
+        });
+    assert_eq!(
+        auto,
+        Some(false),
+        "a pending CoreBluetooth connect is not Android autoConnect"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1982,6 +2007,27 @@ async fn apple_maximum_write_length_is_corebluetooth_maximum_write_value_length(
     assert_eq!(with["maximumWriteLength"], 512);
     let without = ok(&maximum_write_length(&session, "lease-1", "without-response", "m2").await);
     assert_eq!(without["maximumWriteLength"], 182);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apple_effective_mtu_is_unobserved_without_a_radio_read() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Apple).await;
+    let session = host.open_session("rn").unwrap();
+    connect(&session, "c").await;
+    let before = radio.count(RequestKind::ReadMtu);
+    let answer = ok(&call(
+        &session,
+        "connection.effective-mtu",
+        &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "mtu"}).to_string(),
+    )
+    .await);
+    assert_eq!(answer["mtu"], Value::Null);
+    assert_eq!(
+        radio.count(RequestKind::ReadMtu),
+        before,
+        "write length is not an ATT MTU"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

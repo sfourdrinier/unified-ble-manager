@@ -188,10 +188,9 @@ impl Peripheral {
 
     /// UBM patch (UBM_PATCHES.md #1): the largest single write CoreBluetooth
     /// accepts on this connection, `(with response, without response)`,
-    /// from `-[CBPeripheral maximumWriteValueLengthForType:]`. Also moves
-    /// [`api::Peripheral::mtu`] to the measured ATT MTU (the
-    /// without-response length plus the 3-byte ATT header), which upstream
-    /// never updates from its initial 23.
+    /// from `-[CBPeripheral maximumWriteValueLengthForType:]`. Those lengths
+    /// are write capacities. They are not stored as an ATT MTU: a
+    /// with-response length can include a long write.
     pub async fn maximum_write_value_lengths(&self) -> Result<(u16, u16)> {
         let fut = CoreBluetoothReplyFuture::default();
         self.shared
@@ -209,10 +208,6 @@ impl Peripheral {
             } => {
                 let with_response = u16::try_from(with_response).unwrap_or(u16::MAX);
                 let without_response = u16::try_from(without_response).unwrap_or(u16::MAX);
-                self.shared.mtu.store(
-                    without_response.saturating_add(3),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
                 Ok((with_response, without_response))
             }
             CoreBluetoothReply::Err(msg) => Err(Error::RuntimeError(msg)),

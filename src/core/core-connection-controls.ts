@@ -8,6 +8,8 @@ import {
   type ConnectionPhyObservation,
   type ConnectionPhyRequest,
   type ConnectionPriorityRequest,
+  type ConnectionParametersMeasurement,
+  type ConnectionParametersWatch,
   type ConnectionWriteReadinessWatch,
   type EffectiveMtuMeasurement,
   type MtuNegotiation,
@@ -60,6 +62,14 @@ export interface CoreConnectionControls<Attachment extends string, Identity exte
     connection: CoreConnection<Attachment, Identity>,
     options?: PublicOperationOptions
   ): Promise<ConnectionWriteReadinessWatch<Attachment>>
+  parameters(
+    connection: CoreConnection<Attachment, Identity>,
+    options: PublicOperationOptions
+  ): Promise<ConnectionParametersMeasurement<Attachment, string>>
+  parameterEvents(
+    connection: CoreConnection<Attachment, Identity>,
+    options?: PublicOperationOptions
+  ): Promise<ConnectionParametersWatch<Attachment>>
 }
 
 export function createCoreConnectionControls<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
@@ -113,6 +123,14 @@ export function createCoreConnectionControls<Attachment extends string, Identity
     ) => {
       assertReady('write-readiness')
       return observeCoreWriteReadiness(backend, connection, options)
+    },
+    parameters: (connection: CoreConnection<Attachment, Identity>, options: PublicOperationOptions) => {
+      assertReady('parameters')
+      return readCoreParameters(backend, operationCoordinator, connection, options)
+    },
+    parameterEvents: (connection: CoreConnection<Attachment, Identity>, options?: PublicOperationOptions) => {
+      assertReady('parameter-events')
+      return observeCoreParameterEvents(backend, connection, options)
     }
   })
 }
@@ -205,6 +223,47 @@ export async function requestCorePhy<Attachment extends string, Identity extends
     }
   })
   return requireOperationValue(result, 'unified-core.request-phy')
+}
+
+export async function readCoreParameters<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  backend: BleCentralBackend<Attachment, Identity>,
+  operationCoordinator: CoreOperationCoordinator<Attachment>,
+  connection: CoreConnection<Attachment, Identity>,
+  options: PublicOperationOptions
+): Promise<ConnectionParametersMeasurement<Attachment, string>> {
+  const read = backend.connections.parameters
+  if (read === undefined) {
+    throw contractError('capability.unsupported', 'connection', 'unified-core.parameters')
+  }
+  connection.assertCurrent()
+  const result = await operationCoordinator.run({
+    queueKey: String(connection.resource.connectionId),
+    fairnessKey: 'control',
+    options,
+    mayCommit: false,
+    dispatch: correlation => {
+      connection.assertCurrent()
+      const dispatch = read(connection.resource, { operation: { ...options, correlation } })
+      return coreDispatch(dispatch, correlation, value => value.terminal)
+    }
+  })
+  return requireOperationValue(result, 'unified-core.parameters')
+}
+
+export async function observeCoreParameterEvents<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>
+>(
+  backend: BleCentralBackend<Attachment, Identity>,
+  connection: CoreConnection<Attachment, Identity>,
+  options?: PublicOperationOptions
+): Promise<ConnectionParametersWatch<Attachment>> {
+  const observe = backend.connections.parameterEvents
+  if (observe === undefined) {
+    throw contractError('capability.unsupported', 'connection', 'unified-core.parameter-events')
+  }
+  connection.assertCurrent()
+  return observe(connection.resource, options)
 }
 
 export async function observeCoreWriteReadiness<

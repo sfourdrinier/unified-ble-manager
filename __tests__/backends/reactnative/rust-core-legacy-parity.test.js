@@ -86,9 +86,10 @@ afterEach(() => {
  * Deliberate 5.0 capability changes, not regressions: legacy React Native
  * reported `gatt:maximum-write-length` unavailable; 5.0 answers it from the
  * platform through the Rust owner (CHANGELOG, docs/MOBILE_RUST_WIRE.md).
- * Finding 217 likewise answers Apple `connection:effective-mtu` per link as
- * `maximumWriteValueLength(.withResponse) + 3` (owner modernize rule); the
- * legacy Apple reference route keeps reporting it unsupported. BGS4 adds one
+ * Finding 217 keeps Apple `connection:effective-mtu` callable and `limited`.
+ * CoreBluetooth does not observe an ATT MTU, so the answer is unavailable
+ * rather than `maximumWriteValueLength(.withResponse) + 3`. The legacy Apple
+ * reference route keeps reporting it unsupported. BGS4 adds one
  * capability per background-continuation strategy
  * (`background:wake-on-appearance`, `background:native-resubscribe`,
  * `background:headless-task`, `background:wake-notification`): additive, and
@@ -108,7 +109,15 @@ const FIVE_ZERO_STATES = Object.freeze({
 
 describe.each([
   ['android', ['discovery:continuous-scan', 'security:cancel-pairing', ...CONTINUATION_IDS]],
-  ['apple', ['discovery:continuous-scan', ...CONTINUATION_IDS]]
+  [
+    'apple',
+    [
+      'discovery:continuous-scan',
+      'connection:when-available',
+      'gatt:write-without-response-readiness',
+      ...CONTINUATION_IDS
+    ]
+  ]
 ])('%s: the Rust route registers every legacy capability in the same state', (platform, extras) => {
   test('feature registry parity', async () => {
     const legacy = await legacyBackend(platform)
@@ -319,14 +328,17 @@ describe('Android: every registered capability executes through its wire op', ()
   })
 })
 
-describe('Apple: RSSI and derived MTU work; controls CoreBluetooth lacks are refused before the owner', () => {
+describe('Apple: RSSI and unobserved MTU work; controls CoreBluetooth lacks are refused before the owner', () => {
   test('RSSI and effectiveMtu execute; request-MTU/PHY/priority are unsupported with no native call', async () => {
     const { native, manager, backend } = await rustManager('apple')
     const connection = await manager.connect(backend.peerIdForNativeId(DEFAULT_PEER), NO_OPTIONS)
     expect((await connection.readRssi(NO_OPTIONS)).rssi).toBe(-47)
-    // Finding 217: the owner derives the ATT MTU per link as
-    // `maximumWriteValueLength(.withResponse) + 3`; request-MTU stays refused.
-    await expect(connection.effectiveMtu()).resolves.toMatchObject({ attMtu: 515, payloadBytes: 512 })
+    // CoreBluetooth does not observe an ATT MTU. Write capacity stays on
+    // maximumWriteLength. request-MTU stays refused.
+    await expect(connection.effectiveMtu()).resolves.toMatchObject({
+      attMtu: null,
+      payloadBytes: null
+    })
     for (const call of [
       () => connection.requestMtu(247, NO_OPTIONS),
       () => connection.readPhy(NO_OPTIONS),
@@ -340,13 +352,12 @@ describe('Apple: RSSI and derived MTU work; controls CoreBluetooth lacks are ref
       expect(native.opsInvoked(op)).toHaveLength(0)
     }
     expect(backend.connections.peerFromAddress).toBeUndefined()
-    expect(
-      (
-        await failure(
-          manager.connect(backend.peerIdForNativeId(DEFAULT_PEER), { ...NO_OPTIONS, intent: 'when-available' })
-        )
-      ).code
-    ).toBe('capability.unsupported')
+    const pending = await manager.connect(backend.peerIdForNativeId(DEFAULT_PEER), {
+      ...NO_OPTIONS,
+      intent: 'when-available'
+    })
+    expect(native.opsInvoked('connection.connect').at(-1)).toMatchObject({ intent: 'when-available' })
+    await pending.release()
     expect((await failure(manager.scan(scanOptions({ platform: { kind: 'android', mode: 'balanced' } })))).code).toBe(
       'capability.unsupported'
     )
@@ -670,9 +681,7 @@ describe('resource names have the legacy React Native formats', () => {
     native.emitAdvertisement()
     const observation = (await take(scan.observations)).value.value
     const peerId = observation.device.id
-    expect(String(peerId)).toBe(
-      platform === 'android' ? 'android-peer-1-1' : 'corebluetooth-peer-1-1'
-    )
+    expect(String(peerId)).toBe(platform === 'android' ? 'android-peer-1-1' : 'corebluetooth-peer-1-1')
     expect((await scan.stop()).state).toBe('released')
     expect(backend.identity.registeredBackendId).toContain(platform)
     const connection = await manager.connect(peerId, NO_OPTIONS)

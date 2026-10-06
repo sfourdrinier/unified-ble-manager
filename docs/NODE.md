@@ -134,7 +134,7 @@ All resulting peer identities remain fenced to the original daemon owner.
 
 ### Linux initial deferred acquisition
 
-Maintained daemon `5.87-ubm.9` includes optional observer revision 1, introduced in `5.87-ubm.5`, on
+Source daemon `5.87-ubm.10` includes optional observer revision 1, introduced in `5.87-ubm.5`, on
 `org.unifiedblemanager.LinuxAuthority1`: `GetLeAvailability` reports the current
 monotonic advertisement sequence, and `LeAdvertisement` reports fresh
 connectable LE advertisements with their device and sequence. The client
@@ -266,7 +266,7 @@ Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backend
   - `resetting` / `unsupported` states;
   - `merged` scans that reach the OS duplicate filter, and LE-only BlueZ scans;
   - repeated service, characteristic and descriptor UUIDs that keep their instances;
-  - uncached WinRT service and characteristic discovery; the descriptor list stays empty because discovery does not call `GetDescriptors` or `GetDescriptorsForUuid`;
+  - uncached WinRT service, characteristic, and descriptor discovery. Descriptors use `GetDescriptorsWithCacheModeAsync(Uncached)`. Success returns the list Windows returned, including an empty list when the peer has none. Any other status is an error. Dropping the query cancels it. This path does not pair and does not read descriptor values. It has not been compiled on macOS and has not been run on a Windows radio;
   - maximum write length without discovery;
   - WinRT selection of any listed adapter, with its `deployment`;
   - the 4.x backend and adapter ids;

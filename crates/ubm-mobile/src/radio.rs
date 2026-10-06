@@ -620,6 +620,7 @@ pub enum RequestKind {
     DisableNotifications,
     ReadMtu,
     ReadWriteLimits,
+    ReadWriteReadiness,
     RequestMtu,
     ReadRssi,
     RequestConnectionPriority,
@@ -659,6 +660,7 @@ impl RequestKind {
             Self::DisableNotifications => "gatt.unsubscribe",
             Self::ReadMtu => "connection.effective-mtu",
             Self::ReadWriteLimits => "gatt.write-limits",
+            Self::ReadWriteReadiness => "gatt.write-readiness",
             Self::RequestMtu => "connection.request-mtu",
             Self::ReadRssi => "connection.rssi",
             Self::RequestConnectionPriority => "connection.request-priority",
@@ -695,7 +697,7 @@ impl RequestKind {
             Self::ReadDescriptor => "readDescriptorFailed",
             Self::WriteDescriptor => "writeDescriptorFailed",
             Self::EnableNotifications | Self::DisableNotifications => "subscriptionFailed",
-            Self::ReadMtu | Self::ReadWriteLimits => "readMtuFailed",
+            Self::ReadMtu | Self::ReadWriteLimits | Self::ReadWriteReadiness => "readMtuFailed",
             Self::RequestMtu => "requestMtuFailed",
             Self::ReadRssi => "readRssiFailed",
             Self::RequestConnectionPriority => "requestPriorityFailed",
@@ -737,6 +739,7 @@ impl RequestKind {
             Self::Close => "destroyFailed",
             Self::ReadMtu
             | Self::ReadWriteLimits
+            | Self::ReadWriteReadiness
             | Self::RequestMtu
             | Self::RequestConnectionPriority
             | Self::ReadPhy
@@ -775,6 +778,7 @@ impl RequestKind {
             Self::DisableNotifications => "disable-notifications",
             Self::ReadMtu => "read-mtu",
             Self::ReadWriteLimits => "read-write-limits",
+            Self::ReadWriteReadiness => "read-write-readiness",
             Self::RequestMtu => "request-mtu",
             Self::ReadRssi => "read-rssi",
             Self::RequestConnectionPriority => "request-connection-priority",
@@ -867,8 +871,10 @@ pub enum RadioRequest {
     },
     /// Disable (clear the CCCD). → [`RadioCompletion::Unit`].
     DisableNotifications { id: RequestId, instance: Instance },
-    /// OS-reported ATT MTU (Apple: `maximumWriteValueLength(.withResponse)
-    /// + 3`). → [`RadioCompletion::Mtu`] (`None` when not measured).
+    /// OS-reported ATT MTU. Apple does not observe one: a CoreBluetooth
+    /// write length can include a long write, so the session answers
+    /// `None` without issuing this request. → [`RadioCompletion::Mtu`]
+    /// (`None` when not measured).
     ReadMtu { id: RequestId, peer_id: String },
     /// The largest single write the OS accepts on the link, per mode.
     /// Android: with-response is the ATT maximum attribute value (512; the
@@ -877,6 +883,11 @@ pub enum RadioRequest {
     /// exchange. Apple: `maximumWriteValueLength(for:)` per type.
     /// → [`RadioCompletion::WriteLimits`].
     ReadWriteLimits { id: RequestId, peer_id: String },
+    /// Whether the link can take a write without response now
+    /// (CoreBluetooth `canSendWriteWithoutResponse`). Android has no
+    /// equivalent signal and answers unsupported. Later changes arrive as
+    /// [`RadioIngress::WriteReadiness`]. → [`RadioCompletion::Ready`].
+    ReadWriteReadiness { id: RequestId, peer_id: String },
     /// → [`RadioCompletion::Mtu`] with the negotiated MTU.
     RequestMtu {
         id: RequestId,
@@ -976,6 +987,7 @@ impl RadioRequest {
             | Self::DisableNotifications { id, .. }
             | Self::ReadMtu { id, .. }
             | Self::ReadWriteLimits { id, .. }
+            | Self::ReadWriteReadiness { id, .. }
             | Self::RequestMtu { id, .. }
             | Self::ReadRssi { id, .. }
             | Self::RequestConnectionPriority { id, .. }
@@ -1014,6 +1026,7 @@ impl RadioRequest {
             Self::DisableNotifications { .. } => RequestKind::DisableNotifications,
             Self::ReadMtu { .. } => RequestKind::ReadMtu,
             Self::ReadWriteLimits { .. } => RequestKind::ReadWriteLimits,
+            Self::ReadWriteReadiness { .. } => RequestKind::ReadWriteReadiness,
             Self::RequestMtu { .. } => RequestKind::RequestMtu,
             Self::ReadRssi { .. } => RequestKind::ReadRssi,
             Self::RequestConnectionPriority { .. } => RequestKind::RequestConnectionPriority,
@@ -1056,6 +1069,8 @@ pub enum RadioCompletion {
     Mtu(Option<u16>),
     /// Per-mode single-write limits; both are at least one byte.
     WriteLimits(WriteLimits),
+    /// `canSendWriteWithoutResponse` for [`RequestKind::ReadWriteReadiness`].
+    Ready(bool),
     Rssi(i16),
     Accepted(bool),
     Phy(PhyObservation),
@@ -1128,6 +1143,7 @@ impl RadioCompletion {
                 | (Self::NotifyEnabled(_), K::EnableNotifications)
                 | (Self::Mtu(_), K::ReadMtu)
                 | (Self::WriteLimits(_), K::ReadWriteLimits)
+                | (Self::Ready(_), K::ReadWriteReadiness)
                 | (Self::Mtu(Some(_)), K::RequestMtu)
                 | (Self::Rssi(_), K::ReadRssi)
                 | (Self::Accepted(_), K::RequestConnectionPriority)
@@ -1204,6 +1220,13 @@ pub enum RadioIngress {
     SecurityChanged {
         peer_id: String,
         state: SecurityState,
+    },
+    /// CoreBluetooth `peripheralIsReady(toSendWriteWithoutResponse:)`.
+    /// `ready` is the queue state after that callback, which Apple documents
+    /// as able to accept another write without response.
+    WriteReadiness {
+        peer_id: String,
+        ready: bool,
     },
     /// Peers the OS handed back through state restoration.
     Restored {

@@ -40,6 +40,8 @@ import type { BoundedAsyncStream } from '../backend-contract/streams'
 import type { RestorationAdoptionRequest, RestorationAdoptionResult } from '../backend-contract/restoration'
 import type { SecurityBackend } from '../backend-contract/security'
 import type {
+  ConnectionParametersMeasurement,
+  ConnectionParametersWatch,
   ConnectionPhyObservation,
   ConnectionPhyRequest,
   ConnectionPriority,
@@ -721,6 +723,14 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
     return this.connection.writeWithoutResponseReadiness(
       toPublicOperationOptions(options ?? { signal: null, deadline: null })
     )
+  }
+
+  parameters(options?: PortableOperationOptions): Promise<ConnectionParametersMeasurement<Attachment, string>> {
+    return this.connection.parameters(toPublicOperationOptions(options ?? { signal: null, deadline: null }))
+  }
+
+  parameterEvents(options?: PortableOperationOptions): Promise<ConnectionParametersWatch<Attachment>> {
+    return this.connection.parameterEvents(toPublicOperationOptions(options ?? { signal: null, deadline: null }))
   }
 }
 

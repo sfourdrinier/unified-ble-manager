@@ -39,6 +39,7 @@ async fn fixture() -> (DesktopCentral<FakeRadio>, NativeContinuation) {
                     descriptors: vec![],
                 })
                 .collect(),
+            access: std::default::Default::default(),
         }],
     );
     let central = DesktopCentral::open(radio, "continuation-test")

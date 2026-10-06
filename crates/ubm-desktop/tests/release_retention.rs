@@ -49,6 +49,7 @@ fn hrm_service() -> ServiceSnapshot {
             },
             descriptors: Vec::new(),
         }],
+        access: std::default::Default::default(),
     }
 }
 

@@ -64,6 +64,7 @@ const ARG_SCHEMAS = Object.freeze({
   'connection.rssi': [['peerId', 'lease', 'operationId'], ['budgetMs']],
   'connection.read-phy': [['peerId', 'lease', 'operationId'], ['budgetMs']],
   'connection.maximum-write-length': [['peerId', 'lease', 'mode', 'operationId'], ['budgetMs']],
+  'connection.write-readiness': [['peerId', 'lease', 'operationId'], ['budgetMs']],
   'security.state': [['peerId'], ['budgetMs', 'operationId']],
   'security.cancel-pairing': [['peerId'], ['budgetMs', 'operationId']],
   'security.pair': [['peerId', 'transport', 'operationId'], ['budgetMs']],
@@ -97,9 +98,11 @@ const ARG_SCHEMAS = Object.freeze({
 /** crates/ubm-mobile `ADMISSION_WINDOW`. */
 const ADMISSION_WINDOW = 65536
 
-// `connection.effective-mtu` is answered on Apple (finding 217): the Swift
-// adapter reports `maximumWriteValueLength(.withResponse) + 3` per link.
-// `connection.request-mtu` stays refused: CoreBluetooth has no request API.
+// `connection.effective-mtu` is answered on Apple as unobserved: CoreBluetooth
+// does not expose an ATT MTU, and `maximumWriteValueLength` can include a
+// long write. `connection.request-mtu` stays refused: CoreBluetooth has no
+// request API. `connection.connect` with `when-available` is the ordinary
+// pending connect for a known peer, not an Android autoConnect flag.
 const APPLE_UNSUPPORTED = new Set([
   'connection.request-mtu',
   'connection.request-priority',
@@ -253,6 +256,8 @@ class DeterministicRustCoreNative {
     this.connects = []
     /** Peer id → the ATT MTU the last `connection.request-mtu` negotiated on the current link. */
     this.negotiatedMtu = new Map()
+    /** Peer id → CoreBluetooth `canSendWriteWithoutResponse`. Empty means ready. */
+    this.writeReady = new Map()
     this.adapter = {
       availability: 'available',
       authorization: 'granted',
@@ -524,6 +529,27 @@ class DeterministicRustCoreNative {
 
   opsInvoked(op) {
     return this.calls.filter(call => call[0] === 'invoke' && call[2] === op).map(call => JSON.parse(call[3]))
+  }
+
+  /**
+   * CoreBluetooth's queue flag. A connected session also receives
+   * `t=readiness` for that peer's live lease, as `peripheralIsReady` does
+   * when the queue becomes ready.
+   */
+  setWriteReady(peerId, ready) {
+    this.writeReady.set(peerId, ready)
+    for (const session of this.liveSessions()) {
+      for (const lease of session.leases.values()) {
+        if (lease.peerId === peerId && lease.connected) {
+          this.push(session, {
+            t: 'readiness',
+            peerId,
+            connectionGeneration: lease.generation,
+            ready
+          })
+        }
+      }
+    }
   }
 
   emitAdvertisement(peerId = DEFAULT_PEER, overrides = {}) {
@@ -1058,7 +1084,7 @@ class DeterministicRustCoreNative {
         return { state: 'released', failures: [] }
       case 'connection.connect': {
         const peripheral = this.peripheral(args.peerId)
-        if (args.intent === 'when-available' && apple) throw new WireFault('capability.unsupported', 'capability', op)
+        if (args.intent !== 'direct' && args.intent !== 'when-available') throw invalid('args.intent')
         const preferredPhy = [...new Set(args.preferredPhy ?? [])]
         if (preferredPhy.some(phy => !['le-1m', 'le-2m', 'le-coded'].includes(phy))) throw invalid('args.preferredPhy')
         if (preferredPhy.length > 0) {
@@ -1092,17 +1118,20 @@ class DeterministicRustCoreNative {
         return { rssi: -47 }
       case 'connection.effective-mtu':
         this.lease(session, args)
-        // Apple derives the ATT MTU per link as
-        // `maximumWriteValueLength(.withResponse) + 3` (frozen wire rule,
-        // ios/UnifiedBleRustRadioAdapter.swift); Android reports no MTU
-        // until `onMtuChanged` (native `readEffectiveMtu`).
-        if (apple) return { mtu: 512 + 3 }
+        // Apple does not observe an ATT MTU. Android reports no MTU until
+        // `onMtuChanged` (native `readEffectiveMtu`).
+        if (apple) return { mtu: null }
         return { mtu: this.negotiatedMtu.get(args.peerId) ?? null }
       case 'connection.request-mtu': {
         this.lease(session, args)
         const mtu = Math.min(args.mtu, 247)
         this.negotiatedMtu.set(args.peerId, mtu)
         return { mtu }
+      }
+      case 'connection.write-readiness': {
+        if (!apple) throw new WireFault('capability.unsupported', 'capability', op)
+        this.lease(session, args)
+        return { ready: this.writeReady.get(args.peerId) ?? true }
       }
       case 'connection.maximum-write-length': {
         this.lease(session, args)

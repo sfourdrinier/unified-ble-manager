@@ -29,6 +29,10 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ### Fixed
 
+- `bun-desktop-packed` installs the packed package and runs the six public manager scenarios under Node and Bun 1.4.2, through the CJS and ESM entries. It loads the sealed desktop prebuild, checks that identity against the installed `native-build-identity.ts`, and requires the event waker to fire. The job qualifies that claim. It has not passed on this revision, and it is not a physical-radio receipt.
+- Source daemon `5.87-ubm.10` does not disconnect a link another application brought up. Release uses the recorded arrival, not the controller initiator bit. A rejected Connect, Pair, StartNotify, or Acquire rolls back only that pending admission. A Connect, StartNotify, or AcquireNotify that fails after it was committed drops only that attempt, including a StartNotify accepted while GATT was down whose later registration fails. When the last in-flight operation ends after the owner's bus connection has died, that generation is reconciled with no further request. Explicit pairing on the same attachment resumes ATT security retry. The authority contract stays `(1, 2, 1)`. Producer tests cover the lease handlers. `gatt-client.c` for the deferred StartNotify path compiled on Linux. This source revision is not installed and is not a physical-radio receipt. The same-attachment pair-then-access case has not been run on a radio.
+- Apple and macOS `connection:effective-mtu` no longer publishes `maximumWriteValueLength(.withResponse) + 3` as a measured ATT MTU. That length can include a long write. The route stays `limited` with `corebluetooth-att-mtu-not-observed`, and `effectiveMtu()` reports `state: 'unavailable'` with a null ATT MTU. Per-mode write capacity stays on `maximumWriteLength`. Windows `GattSession.MaxPduSize` and the BlueZ characteristic MTU stay measured. A withheld BlueZ MTU stays `capability.unavailable`. This is not a physical-radio receipt.
+- Apple `connection:when-available` on the React Native Rust route is a pending CoreBluetooth connect for a known peer. The capability is `limited` with `corebluetooth-pending-connect`. The caller deadline and cancellation still apply. It is not Android `autoConnect`, and it does not reconnect after the link drops.
 - Source daemon `5.87-ubm.6` no longer treats another process's finished GATT
   read or write as a link holder. A hold remains only while that read or write
   is in flight, or until the sender's bus connection dies after an explicit
@@ -72,13 +76,17 @@ All notable changes to `unified-ble-manager` are documented here.
   between them, completed that exchange and left the link down. No platform
   evidence label changes.
 - WinRT discovery leaves the services Windows keeps for itself (HID, LE Audio,
-  Microphone Control, Ranging) out before `GetCharacteristics`, and it does not
-  call `GetDescriptors`. That call reads Characteristic User Description. When
-  the read returns Insufficient Encryption, the next connection waits to pair
-  before sending another read. With no pairing UI the wait does not finish, so
-  a following session never reaches battery, PMD, or heart rate. Subscribe
-  writes the Client Characteristic Configuration descriptor on the
-  characteristic. The OS advertisement service-UUID filter stays empty, and the
+  Microphone Control, Ranging) out before `GetCharacteristics`. Descriptor
+  discovery calls `GetDescriptorsWithCacheModeAsync(Uncached)`. Success
+  returns the list Windows returned. Any other status is an error, and
+  dropping the query cancels it. The call does not pair and does not read
+  descriptor values. An ordinary `AccessDenied` with no ATT byte stays in
+  the table as a restricted service. A protocol error, or an access denial
+  that still carries an ATT byte, fails discovery. Subscribe writes the
+  selected Client Characteristic Configuration mode once, through the
+  result-returning WinRT API, and keeps the protocol byte. This WinRT path
+  has not been compiled on macOS and has not been run on a Windows radio.
+  The OS advertisement service-UUID filter stays empty, and the
   software filter still admits Heart Rate. Two back-to-back Bun 1.4.2 sessions
   on the passed-through TP-Link adapter each connected only to local name
   `SIM Polar H10 0001`, read battery 90 and manufacturer Polar Electro Oy,
@@ -90,6 +98,12 @@ All notable changes to `unified-ble-manager` are documented here.
   CoreBluetooth and BlueZ still refuse `require-indication` with
   `capability.limited` when the characteristic also notifies, before any
   radio effect. WinRT still receives the requirement and can write that mode.
+- Bun, Node, and Electron forward the same hard requirement on BlueZ and
+  CoreBluetooth. A preference is still not a requirement. A radio report
+  that does not prove the required mode is `capability.limited`, and the
+  enable is undone. A `require-*` subscription does not join a preference
+  or automatic physical enable; the core accepts or refuses that join
+  without disabling the first CCCD.
 - The mobile host pump admits one journaled notification per value turn
   before a queued security or lifecycle signal. Each record is its own
   SQLite commit, so writing the whole queued scope first held the other

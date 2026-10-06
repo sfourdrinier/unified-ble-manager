@@ -30,6 +30,9 @@ import type {
   ConnectionPhyObservation,
   ConnectionPhyRequest,
   ConnectionPriorityRequest,
+  ConnectionParametersMeasurement,
+  ConnectionParametersRequest,
+  ConnectionParametersWatch,
   ConnectionWriteReadinessWatch,
   EffectiveMtuMeasurement,
   EffectiveMtuRequest,
@@ -242,6 +245,14 @@ export interface ConnectionBackend<Attachment extends string> {
     connection: BackendConnection<Attachment, string>,
     options?: PublicOperationOptions
   ): Promise<ConnectionWriteReadinessWatch<Attachment>>
+  parameters?<Operation extends string>(
+    connection: BackendConnection<Attachment, string>,
+    request: ConnectionParametersRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, ConnectionParametersMeasurement<Attachment, Operation>>
+  parameterEvents?(
+    connection: BackendConnection<Attachment, string>,
+    options?: PublicOperationOptions
+  ): Promise<ConnectionParametersWatch<Attachment>>
   maximumWriteLength?<Operation extends string>(
     connection: BackendConnection<Attachment, string>,
     request: ConnectionMaximumWriteLengthRequest<Attachment, Operation>

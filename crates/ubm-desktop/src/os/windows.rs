@@ -7,10 +7,9 @@
 //!   `UnpairAsync`.
 //! - `GattSession.MaintainConnection(true)` held for each connection and
 //!   released with it (legacy connect sequence, `winrt-boundary.inc`).
-//! - CCCD mode selection: btleplug writes `Indicate` whenever a
-//!   characteristic can indicate; this adapter rewrites the CCCD of the
-//!   exact subscribed instance (vendored `winrt-cccd-mode`) so the legacy
-//!   notify preference and a hard requirement both hold.
+//! - CCCD mode selection: the first write to the exact subscribed instance
+//!   is the selected mode (vendored `winrt-cccd-mode`). Notify is not
+//!   enabled by rewriting the CCCD after an Indicate write.
 //! - Adapter listing by native adapter id (`BluetoothAdapter` device
 //!   selector), selection of any listed adapter by that id with its own
 //!   radio (legacy `SelectAdapter`), the selected adapter's presence
@@ -43,9 +42,7 @@ use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 
 use btleplug::api::{Central as _, Peripheral as _};
 use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
-use windows::Devices::Bluetooth::GenericAttributeProfile::{
-    GattClientCharacteristicConfigurationDescriptorValue, GattSession,
-};
+use windows::Devices::Bluetooth::GenericAttributeProfile::GattSession;
 use windows::Devices::Bluetooth::{
     BluetoothAdapter, BluetoothAddressType, BluetoothConnectionStatus, BluetoothLEDevice,
 };
@@ -67,8 +64,8 @@ use super::winrt_model::{
     select_listed, unpairing_status,
 };
 use crate::boundary::{
-    AdapterLossCause, BondState, DeliveryMode, HostDeployment, PairOutcome, RadioEvent,
-    SecurityState, UnpairOutcome,
+    AdapterLossCause, BondState, HostDeployment, PairOutcome, RadioEvent, SecurityState,
+    UnpairOutcome,
 };
 use crate::errors::DesktopError;
 
@@ -842,31 +839,6 @@ pub(crate) async fn list_adapters() -> Result<Vec<WinRtAdapter>, DesktopError> {
         adapters.push(WinRtAdapter { id, name, default });
     }
     Ok(adapters)
-}
-
-/// Rewrite the CCCD of exactly the characteristic instance btleplug
-/// subscribed (finding 39): btleplug writes `Indicate` whenever a
-/// characteristic can indicate, so the legacy notify preference and a hard
-/// requirement are written here, through the vendored
-/// `Peripheral::write_client_configuration` on the same GATT object the
-/// subscription uses (UBM patch `winrt-cccd-mode`). Repeated UUIDs are
-/// addressed by their handle, never refused as ambiguous.
-pub(crate) async fn write_cccd(
-    peripheral: &btleplug::platform::Peripheral,
-    characteristic: &btleplug::api::Characteristic,
-    mode: DeliveryMode,
-) -> Result<(), DesktopError> {
-    let value = match mode {
-        DeliveryMode::Notification => GattClientCharacteristicConfigurationDescriptorValue::Notify,
-        DeliveryMode::Indication => GattClientCharacteristicConfigurationDescriptorValue::Indicate,
-    };
-    peripheral
-        .write_client_configuration(characteristic, value)
-        .await
-        .map_err(|error| {
-            use crate::btleplug_backend::WithOs;
-            winrt_text("gatt.subscribe.delivery", &error).with_os(&error)
-        })
 }
 
 /// The legacy addon's `deployment` diagnostic (`addon.cpp`

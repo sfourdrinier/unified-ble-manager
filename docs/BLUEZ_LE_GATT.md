@@ -85,10 +85,12 @@ zero answer. Cross-adapter/device retries cannot retarget an original token.
 
 Release replies retain version, exact token, physical LE generation and scope:
 `physical-released`, `reservation-released`, `lease-released-protected`, or
-`lease-released-indeterminate`. Only positive physical termination retires an
-established UBM connection under the current public cleanup contract. Protected
-and indeterminate scopes remain explicit release failures with retry ownership;
-they are not silently converted into successful disconnects. A finished
+`lease-released-indeterminate`. A matching `lease-released-protected` receipt
+retires this logical lease only: the other owner's link stays up, and this
+manager records no physical generation, disconnect reason, or `AckLease`.
+`lease-released-indeterminate`, a protected receipt whose token or generation
+does not match, and a protected receipt that carries a disconnect reason stay
+retry-owned failures. They are not turned into a successful disconnect. A finished
 characteristic or descriptor read or write is not a protected external
 interest. A zero-generation
 reservation receipt proves no accepted physical work, not that a link closed.

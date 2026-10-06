@@ -66,6 +66,7 @@ pub const OPS: &[&str] = &[
     "connection.read-phy",
     "connection.request-phy",
     "connection.maximum-write-length",
+    "connection.write-readiness",
     "security.state",
     "security.pair",
     "security.cancel-pairing",
@@ -1000,12 +1001,6 @@ impl MobileSession {
                 let intent = args
                     .opt_one_of("intent", &["direct", "when-available"])?
                     .unwrap_or("direct");
-                if intent == "when-available" && apple {
-                    return Err(unsupported(
-                        "connection.connect.when-available",
-                        "CoreBluetooth has no autoConnect",
-                    ));
-                }
                 args.opt_one_of("transport", &["auto", "le"])?;
                 let mut preferred_phy: Vec<Phy> = Vec::new();
                 for text in args.strings("preferredPhy")? {
@@ -1033,7 +1028,10 @@ impl MobileSession {
                         peer_id: args.string("peerId")?,
                         lease: args.string("lease")?,
                         staging: ConnectStaging {
-                            auto_connect: intent == "when-available",
+                            // Apple `when-available` is the ordinary CoreBluetooth
+                            // connect, which stays outstanding until that known
+                            // peripheral is available. It is not Android `autoConnect`.
+                            auto_connect: !apple && intent == "when-available",
                             preferred_phy,
                         },
                     },
@@ -1058,7 +1056,8 @@ impl MobileSession {
             | "connection.request-priority"
             | "connection.read-phy"
             | "connection.request-phy"
-            | "connection.maximum-write-length" => {
+            | "connection.maximum-write-length"
+            | "connection.write-readiness" => {
                 let (required, optional): (&[&str], &[&str]) = match op {
                     "connection.effective-mtu" => {
                         (&["peerId", "lease", "operationId"], &["budgetMs"])
@@ -1083,8 +1082,7 @@ impl MobileSession {
                 if apple
                     && matches!(
                         op,
-                        "connection.effective-mtu"
-                            | "connection.request-mtu"
+                        "connection.request-mtu"
                             | "connection.request-priority"
                             | "connection.read-phy"
                             | "connection.request-phy"
@@ -1119,6 +1117,7 @@ impl MobileSession {
                         args.one_of("mode", &["with-response", "without-response"])?
                             == "with-response",
                     ),
+                    "connection.write-readiness" => Control::WriteReadiness,
                     _ => {
                         let tx = args.opt_one_of("tx", PHYS)?.and_then(phy);
                         let rx = args.opt_one_of("rx", PHYS)?.and_then(phy);
@@ -2312,17 +2311,30 @@ impl MobileSession {
             let rssi = host.central.read_rssi(peer_id, &core_lease, ctl).await?;
             return Ok(object(vec![("rssi", Value::from(rssi))]));
         }
+        if let Control::WriteReadiness = control {
+            let ready = host
+                .central
+                .write_readiness(peer_id, &core_lease, ctl)
+                .await?;
+            return Ok(object(vec![("ready", Value::from(ready))]));
+        }
         self.require_lease(peer_id, lease, operation)?;
         self.require_connected(peer_id, operation).await?;
+        if matches!(control, Control::EffectiveMtu) && host.platform == MobilePlatform::Apple {
+            // CoreBluetooth write length can include a long write. It is not
+            // an observed ATT MTU, so the route stays and reports unobserved.
+            return Ok(object(vec![("mtu", Value::Null)]));
+        }
         let peer = peer_id.to_owned();
         let completion = bounded(
             &ctl,
             operation,
             host.radio.call(move |id| match control {
                 // Rssi and MaximumWriteLength returned above through the core.
-                Control::EffectiveMtu | Control::Rssi | Control::MaximumWriteLength(_) => {
-                    RadioRequest::ReadMtu { id, peer_id: peer }
-                }
+                Control::EffectiveMtu
+                | Control::Rssi
+                | Control::MaximumWriteLength(_)
+                | Control::WriteReadiness => RadioRequest::ReadMtu { id, peer_id: peer },
                 Control::RequestMtu(mtu) => RadioRequest::RequestMtu {
                     id,
                     peer_id: peer,
@@ -2937,6 +2949,7 @@ enum Control {
     RequestPhy(Option<Phy>, Option<Phy>),
     /// `true` = with response.
     MaximumWriteLength(bool),
+    WriteReadiness,
 }
 
 impl Control {
@@ -2949,6 +2962,7 @@ impl Control {
             Self::ReadPhy => "connection.read-phy",
             Self::RequestPhy(..) => "connection.request-phy",
             Self::MaximumWriteLength(_) => "connection.maximum-write-length",
+            Self::WriteReadiness => "connection.write-readiness",
         }
     }
 }

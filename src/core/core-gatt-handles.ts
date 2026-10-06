@@ -41,6 +41,8 @@ import type {
   ConnectionPhyRequest,
   ConnectionPriority,
   ConnectionPriorityRequest,
+  ConnectionParametersMeasurement,
+  ConnectionParametersWatch,
   ConnectionWriteReadinessWatch,
   EffectiveMtuMeasurement,
   MtuNegotiation,
@@ -179,6 +181,14 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
 
   writeWithoutResponseReadiness(options?: PublicOperationOptions): Promise<ConnectionWriteReadinessWatch<Attachment>> {
     return this.controls.writeWithoutResponseReadiness(this, options)
+  }
+
+  parameters(options: PublicOperationOptions): Promise<ConnectionParametersMeasurement<Attachment, string>> {
+    return this.controls.parameters(this, options)
+  }
+
+  parameterEvents(options?: PublicOperationOptions): Promise<ConnectionParametersWatch<Attachment>> {
+    return this.controls.parameterEvents(this, options)
   }
 
   isCurrent(): boolean {

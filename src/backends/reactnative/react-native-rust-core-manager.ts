@@ -1186,9 +1186,27 @@ class NativeConnection {
   }
 
   async writeWithoutResponseReadiness(
-    _options?: PortableOperationOptions
+    options?: PortableOperationOptions
   ): Promise<ConnectionWriteReadinessWatch<string>> {
-    throw contractError('capability.unsupported', 'connection', 'rust-core-manager.connection.write-readiness')
+    const operationName = 'rust-core-manager.connection.write-readiness'
+    const state = this.manager.featureState(BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness)
+    if (state !== 'supported' && state !== 'limited') {
+      throw contractError(
+        state === 'unavailable' ? 'capability.unavailable' : 'capability.unsupported',
+        'connection',
+        operationName
+      )
+    }
+    this.assertCurrent()
+    const publicOptions = toPublicOperationOptions(options ?? { signal: null, deadline: null })
+    if (publicOptions.signal?.aborted === true) {
+      throw contractError('operation.aborted', 'connection', operationName)
+    }
+    const open = this.manager.backendConnections.writeWithoutResponseReadiness
+    if (open === undefined) {
+      throw contractError('capability.unsupported', 'connection', operationName)
+    }
+    return open(this.resource, publicOptions)
   }
 
   /**
@@ -1479,20 +1497,110 @@ class NativeGattDatabase {
   }
 
   async writeWhenReady(
-    _path: CurrentCharacteristicPath,
-    _bytes: Readonly<Uint8Array>,
+    path: CurrentCharacteristicPath,
+    bytes: Readonly<Uint8Array>,
     options: WritePolicy
   ): Promise<WriteReceipt<string, string>> {
+    const operation = 'rust-core-manager.write-when-ready'
     if (options.mode !== 'without-response') {
-      throw contractError('argument.invalid', 'gatt', 'rust-core-manager.write-when-ready.mode')
+      throw contractError('argument.invalid', 'gatt', `${operation}.mode`)
     }
     const registration = this.manager.features.registrations.find(
       candidate => candidate.id === BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness
     )
     if (registration?.state === 'unavailable') {
-      throw contractError('capability.unavailable', 'connection', 'rust-core-manager.write-when-ready')
+      throw contractError('capability.unavailable', 'connection', operation)
     }
-    throw contractError('capability.unsupported', 'connection', 'rust-core-manager.write-when-ready')
+    if (
+      registration === undefined ||
+      registration.state === 'unsupported' ||
+      this.connection.writeWithoutResponseReadiness === undefined
+    ) {
+      throw contractError('capability.unsupported', 'connection', operation)
+    }
+    this.assertPath(path)
+    this.assertOperationAdmission(options, 'write-when-ready')
+    const watch = await this.connection.writeWithoutResponseReadiness(options)
+    let failure: unknown = null
+    try {
+      const iterator = watch.events[Symbol.asyncIterator]()
+      while (true) {
+        const item = await this.nextReadinessItem(iterator, options, operation)
+        if (item.done === true || item.value === undefined) {
+          throw contractError('operation.disconnected', 'connection', `${operation}.closed`)
+        }
+        const streamItem = item.value
+        if (streamItem.kind === 'overflow') {
+          throw contractError('stream.overflow', 'connection', operation)
+        }
+        if (streamItem.kind === 'terminal') {
+          throw readinessTerminalError(streamItem.reason, operation)
+        }
+        if (
+          String(streamItem.value.connectionId) !== String(path.connectionId) ||
+          String(streamItem.value.connectionGeneration) !== String(path.connectionGeneration)
+        ) {
+          throw contractError('protocol.violation', 'connection', `${operation}.generation`)
+        }
+        if (streamItem.value.ready === true) break
+      }
+      return await this.write(path, bytes, options)
+    } catch (error) {
+      failure = error
+      throw error
+    } finally {
+      const cleanup = await watch.close()
+      if (failure === null && cleanup.state === 'release-failed') {
+        throw contractError('platform.failure', 'cleanup', `${operation}.close`)
+      }
+    }
+  }
+
+  private nextReadinessItem(
+    iterator: AsyncIterator<
+      { kind: 'value'; value: { connectionId: unknown; connectionGeneration: unknown; ready: boolean } } | { kind: 'overflow' } | { kind: 'terminal'; reason: string },
+      undefined,
+      undefined
+    >,
+    options: WritePolicy,
+    operation: string
+  ): Promise<
+    IteratorResult<
+      { kind: 'value'; value: { connectionId: unknown; connectionGeneration: unknown; ready: boolean } } | { kind: 'overflow' } | { kind: 'terminal'; reason: string },
+      undefined
+    >
+  > {
+    if (options.signal?.aborted === true) {
+      return Promise.reject(contractError('operation.aborted', 'gatt', operation))
+    }
+    if (options.deadline !== null && options.deadline !== undefined && options.deadline <= this.options.now()) {
+      return Promise.reject(contractError('operation.timed-out', 'gatt', operation))
+    }
+    return new Promise((resolve, reject) => {
+      let settled = false
+      let timer: CoreDeadlineHandle | null = null
+      const signal = options.signal
+      const onAbort = (): void => {
+        finish(() => reject(contractError('operation.aborted', 'gatt', operation)))
+      }
+      const finish = (action: () => void): void => {
+        if (settled) return
+        settled = true
+        timer?.cancel()
+        signal?.removeEventListener('abort', onAbort)
+        action()
+      }
+      if (options.deadline !== null && options.deadline !== undefined) {
+        timer = this.scheduleDeadline(options.deadline, () => {
+          finish(() => reject(contractError('operation.timed-out', 'gatt', operation)))
+        })
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      iterator.next().then(
+        item => finish(() => resolve(item)),
+        error => finish(() => reject(error))
+      )
+    })
   }
 
   async maximumWriteLength(
@@ -1879,6 +1987,14 @@ class NativeSubscription {
     if (record.state === 'released') this.database.untrackSubscription(this)
     return record
   }
+}
+
+function readinessTerminalError(reason: string, operation: string): BackendContractError {
+  if (reason === 'operation-aborted') return contractError('operation.aborted', 'connection', operation)
+  if (reason === 'operation-timed-out') return contractError('operation.timed-out', 'connection', operation)
+  if (reason === 'overflow') return contractError('stream.overflow', 'connection', operation)
+  if (reason === 'source-failed') return contractError('platform.failure', 'connection', operation)
+  return contractError('operation.disconnected', 'connection', operation)
 }
 
 function isAborted(signal: AbortSignal | null | undefined): boolean {

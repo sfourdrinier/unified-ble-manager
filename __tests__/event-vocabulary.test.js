@@ -76,7 +76,8 @@ describe('the event vocabulary cannot drift', () => {
     const entry = EVENT_VOCABULARY.find(candidate => candidate.event === 'restoration-received')
 
     expect(entry.description).toContain('Android `when-available`')
-    expect(entry.description).toContain('iOS `direct` with the restored `PeerReference`')
+    expect(entry.description).toContain('`when-available` for a known restored `PeerReference`')
+    expect(entry.description).toContain('not automatic post-loss reconnection')
     expect(entry.description).toContain('does not prove that a link is live')
     expect(entry.description).not.toContain('completing at once')
     expect(entry.description).not.toContain('`restoration.claim()`')
@@ -238,9 +239,9 @@ describe('the connection supervisor decides the same for the same event on every
   // Restoration is a peer-directory event before an app has supplied the
   // platform-specific reconnect request. It is deliberately not a synthetic
   // lifecycle event that starts a supervisor-owned connection.
-  const cases = EVENT_VOCABULARY
-    .filter(entry => entry.supervisor.context !== 'restore')
-    .flatMap(entry => VOCABULARY_BACKENDS.map(backend => [entry.event, backend, entry]))
+  const cases = EVENT_VOCABULARY.filter(entry => entry.supervisor.context !== 'restore').flatMap(entry =>
+    VOCABULARY_BACKENDS.map(backend => [entry.event, backend, entry])
+  )
   test.each(cases)('%s on %s', async (_event, backend, entry) => {
     await expect(observeDecision(entry, backend)).resolves.toBe(entry.supervisor.decision)
   })

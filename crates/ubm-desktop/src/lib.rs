@@ -40,10 +40,10 @@ pub use boundary::{
     AdapterLossCause, AdapterPowerState, AddressType, AdmissionPolicy, AdvertisementExtras,
     BluezBus, BondState, CharacteristicAccess, CharacteristicRead, CharacteristicSnapshot,
     DeliveryMode, DescriptorKey, DescriptorSnapshot, DirectoryPeer, FakeRadio, FaultOp,
-    HostDeployment, InstanceKey, ManufacturerData, ObservationSource, ObservedDelivery,
-    PairOutcome, PeerSnapshot, PropertyFlags, RadioBoundary, RadioCloseFailure, RadioEvent,
-    ReadProvenance, ScanFilterSpec, SecurityState, ServiceData, ServiceSnapshot, UnpairOutcome,
-    WriteLimits,
+    HostDeployment, InstanceKey, ManufacturerData, ObservationSource, ObservedConnectionParameters,
+    ObservedDelivery, PairOutcome, PeerSnapshot, PropertyFlags, RadioBoundary, RadioCloseFailure,
+    RadioEvent, ReadProvenance, ScanFilterSpec, SecurityState, ServiceAccess, ServiceData,
+    ServiceSnapshot, UnpairOutcome, WriteLimits,
 };
 #[cfg(feature = "btleplug")]
 pub use btleplug_backend::BtleplugRadio;
@@ -62,8 +62,9 @@ pub use central::{
     ScanStop, ShutdownReport,
 };
 pub use central::{
-    CancelPairingOutcome, PairRequest, PairingGeneration, PairingGenerationController,
-    ScanTerminalEvent, SecureConnections, SecurityEvent, WriteReadinessEvent,
+    CancelPairingOutcome, ConnectionParametersEvent, PairRequest, PairingGeneration,
+    PairingGenerationController, ScanTerminalEvent, SecureConnections, SecurityEvent,
+    WriteReadinessEvent,
 };
 pub use delivery::{BothPropertiesRule, DeliveryPlan, plan_delivery, platform_rule};
 pub use errors::{DesktopError, PlatformDetail, PlatformValue, Retryability};

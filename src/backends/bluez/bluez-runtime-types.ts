@@ -71,6 +71,7 @@ export interface BluezScanGroup {
   startupComplete: boolean
   readonly startupSettled: Promise<void>
   readonly settleStartup: () => void
+  readonly evidence: import('../../backend-contract/scan-evidence').ScanEvidenceSession
 }
 
 export interface BluezAddressAcquisition {

@@ -6,7 +6,7 @@ reconfigures the system daemon. Application integration and deployment require
 separate review and explicit host action. Do not silently apply it, enable
 experimental APIs, grant privileges or upgrade a host.
 
-The current source deployment identity is `5.87-ubm.9`, with unchanged Linux
+The current source deployment identity is `5.87-ubm.10`, with unchanged Linux
 authority contract `(1,2,1)`. A finished GATT characteristic or descriptor
 read or write holds the link only while that ATT operation is in flight.
 Connect, pair, StartNotify, and Acquire hold until the sender's bus
@@ -52,7 +52,15 @@ and explicit Pair still raises security itself. Installing `5.87-ubm.9`,
 the unbonded H10 session completed that GATT exchange, reported disconnect
 `released`, and left the link down. The capture had no pairing request. A
 receipt for `.8` is not qualification of `.9`. That session does not change
-a platform evidence label.
+a platform evidence label. Source `5.87-ubm.10` does not treat the controller
+initiator bit as proof that this daemon owns the link. A rejected admission
+does not keep a hold. An AcquireNotify, StartNotify, or Connect that fails
+after early commit drops only that attempt. A StartNotify accepted while GATT
+is down keeps that message and drops only that admission if later registration
+fails. A dead owner's last in-flight
+operation schedules generation-fenced cleanup. Explicit pairing on the same
+attachment resumes ATT security retry. Those producer tests do not install a
+daemon and are not a physical-radio receipt.
 
 ## Provenance and license
 

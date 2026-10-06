@@ -78,9 +78,8 @@ export function createCoreBluetoothUnsupportedRegistrations(
       ),
       Object.freeze({ attMtu: Object.freeze({ minimum: null, maximum: 0, unit: 'bytes' }) })
     ),
-    // Finding 217 follow-up: the Rust core derives the effective ATT MTU
-    // per link (maximumWriteValueLength(.withResponse) + 3), so the legacy
-    // refusal is kept only where the core does not wire it.
+    // The Rust core wires effective MTU and reports macOS unobserved, so the
+    // legacy refusal is kept only where the core does not wire the route.
     ...(options.effectiveMtuWired === true
       ? []
       : [

@@ -35,6 +35,10 @@ const MAX_PENDING_EVENTS: usize = 256;
 mod peer_directory;
 #[path = "security.rs"]
 mod security;
+#[path = "write_readiness.rs"]
+mod write_readiness;
+#[path = "connection_parameters.rs"]
+mod connection_parameters;
 const MAX_CORRELATIONS: usize = 256;
 const COMPLETED_CORRELATION_TTL: Duration = Duration::from_secs(30);
 /// Delivery pacing between core polls (scan observations and notification
@@ -156,6 +160,10 @@ struct CallerState {
     connection_events: HashMap<String, ConnectionEventResource>,
     security_watches: HashMap<String, security::SecurityWatch>,
     security_watch_releases: HashSet<String>,
+    write_readiness_watches: HashMap<String, write_readiness::WriteReadinessWatch>,
+    write_readiness_releases: HashSet<String>,
+    parameter_watches: HashMap<String, connection_parameters::ConnectionParameterWatch>,
+    parameter_releases: HashSet<String>,
     operations: HashMap<String, TrackedOperation>,
     completed_correlations: HashMap<String, Instant>,
     pending_events: HashSet<String>,
@@ -1319,6 +1327,10 @@ impl BtleplugDispatcher {
                 connection_events: HashMap::new(),
                 security_watches: HashMap::new(),
                 security_watch_releases: HashSet::new(),
+                write_readiness_watches: HashMap::new(),
+                write_readiness_releases: HashSet::new(),
+                parameter_watches: HashMap::new(),
+                parameter_releases: HashSet::new(),
                 operations: HashMap::new(),
                 completed_correlations: HashMap::new(),
                 pending_events: HashSet::new(),
@@ -1769,6 +1781,19 @@ impl BtleplugDispatcher {
             "connection.effective-mtu" => self.read_effective_mtu(caller, payload, ctl).await,
             "connection.maximum-write-length" => {
                 self.maximum_write_length(caller, payload, ctl).await
+            }
+            "connection.write-readiness.subscribe" => {
+                self.subscribe_write_readiness(caller, payload, ctl).await
+            }
+            "connection.write-readiness.unsubscribe" => {
+                self.unsubscribe_write_readiness(caller, payload).await
+            }
+            "connection.parameters" => self.read_connection_parameters(caller, payload, ctl).await,
+            "connection.parameters.subscribe" => {
+                self.subscribe_connection_parameters(caller, payload, ctl).await
+            }
+            "connection.parameters.unsubscribe" => {
+                self.unsubscribe_connection_parameters(caller, payload).await
             }
             "gatt.discover" => self.discover(caller, payload, ctl).await,
             "gatt.database.release" => self.release_database(caller, payload).await,
@@ -3069,6 +3094,18 @@ impl BtleplugDispatcher {
                         .drain()
                         .map(|(handle, _watch)| handle),
                 );
+                caller_state.write_readiness_releases.extend(
+                    caller_state
+                        .write_readiness_watches
+                        .drain()
+                        .map(|(handle, _watch)| handle),
+                );
+                caller_state.parameter_releases.extend(
+                    caller_state
+                        .parameter_watches
+                        .drain()
+                        .map(|(handle, _watch)| handle),
+                );
                 let next = attachment_of(
                     current,
                     adapter_name
@@ -4171,12 +4208,10 @@ impl BtleplugDispatcher {
         Ok(object([("rssi", number(i64::from(rssi)))]))
     }
 
-    /// Effective ATT MTU of the link held under the caller's lease, as the
-    /// OS reports it (finding 217 follow-up): macOS derives
-    /// `maximumWriteValueLength(.withResponse) + 3`, Windows reads
-    /// `GattSession.MaxPduSize`, Linux reads the BlueZ characteristic MTU.
-    /// A withheld measurement answers `capability.unsupported` verbatim,
-    /// never a guessed 23.
+    /// Effective ATT MTU of the link held under the caller's lease, when
+    /// the OS observed one. Windows reads `GattSession.MaxPduSize`. Linux
+    /// reads the BlueZ characteristic MTU. macOS sends null: CoreBluetooth
+    /// write length is not an ATT MTU. Null is unobserved, not a link failure.
     async fn read_effective_mtu(
         &self,
         caller: &AuthenticatedCaller,
@@ -4191,7 +4226,11 @@ impl BtleplugDispatcher {
             .read_effective_mtu(&connection.peer_id, &connection.lease, ctl)
             .await
             .map_err(|error| DispatchError::from_core(&error))?;
-        Ok(object([("mtu", number(i64::from(mtu)))]))
+        let mtu_value = match mtu {
+            Some(value) => number(i64::from(value)),
+            None => IpcValue::Null,
+        };
+        Ok(object([("mtu", mtu_value)]))
     }
 
     /// The largest single write the OS accepts on this link for the
@@ -4820,6 +4859,18 @@ impl BtleplugDispatcher {
                             .drain()
                             .map(|(handle, _watch)| handle),
                     );
+                    caller_state.write_readiness_releases.extend(
+                        caller_state
+                            .write_readiness_watches
+                            .drain()
+                            .map(|(handle, _watch)| handle),
+                    );
+                    caller_state.parameter_releases.extend(
+                        caller_state
+                            .parameter_watches
+                            .drain()
+                            .map(|(handle, _watch)| handle),
+                    );
                     true
                 }
                 None => false,
@@ -5113,6 +5164,7 @@ fn is_release_command(command: &str) -> bool {
             | "gatt.database.release"
             | "connection.disconnect"
             | "connection.events.unsubscribe"
+            | "connection.write-readiness.unsubscribe"
             | "security.watch.unsubscribe"
     )
 }
@@ -6760,6 +6812,10 @@ mod tests {
                 connection_events: std::collections::HashMap::new(),
                 security_watches: std::collections::HashMap::new(),
                 security_watch_releases: std::collections::HashSet::new(),
+                write_readiness_watches: std::collections::HashMap::new(),
+                write_readiness_releases: std::collections::HashSet::new(),
+                parameter_watches: std::collections::HashMap::new(),
+                parameter_releases: std::collections::HashSet::new(),
                 operations: std::collections::HashMap::new(),
                 completed_correlations: std::collections::HashMap::new(),
                 pending_events: std::collections::HashSet::new(),

@@ -311,6 +311,9 @@ pub fn request_call(request: &RadioRequest) -> (&'static str, Vec<Arg>) {
         RadioRequest::ReadWriteLimits { peer_id, .. } => {
             ("readWriteLimits", vec![rid, text(peer_id)])
         }
+        RadioRequest::ReadWriteReadiness { peer_id, .. } => {
+            ("readWriteReadiness", vec![rid, text(peer_id)])
+        }
         RadioRequest::RequestMtu { peer_id, mtu, .. } => (
             "requestMtu",
             vec![rid, text(peer_id), Arg::Int(i32::from(*mtu))],
@@ -717,6 +720,7 @@ pub fn discovery_tree(
                 uuid,
                 occurrence,
                 characteristics: Vec::new(),
+                access: std::default::Default::default(),
             }),
             1 => services
                 .last_mut()

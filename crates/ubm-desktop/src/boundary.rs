@@ -409,6 +409,16 @@ pub const ATT_MAX_ATTRIBUTE_VALUE: u16 = 512;
 /// the MTU of a link before (or without) an MTU exchange.
 pub const ATT_DEFAULT_LE_MTU: u16 = 23;
 
+/// One observed LE connection-parameter snapshot. Interval and supervision
+/// timeout are microseconds, the units WinRT converts into before this
+/// boundary. `latency` is the peripheral latency in connection events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ObservedConnectionParameters {
+    pub interval_us: u32,
+    pub latency: u16,
+    pub supervision_timeout_us: u32,
+}
+
 /// The largest single write the OS accepts on one link, per write mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WriteLimits {
@@ -789,12 +799,28 @@ pub struct CharacteristicSnapshot {
     pub descriptors: Vec<DescriptorSnapshot>,
 }
 
+/// Why a discovered service has no characteristics.
+///
+/// `Open` is a normal service. `OsReserved` is a service Windows keeps and
+/// was not queried. `AccessDenied` is an ordinary service whose
+/// characteristic discovery returned AccessDenied with no ATT byte. Neither
+/// is an absent service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ServiceAccess {
+    #[default]
+    Open,
+    OsReserved,
+    AccessDenied,
+}
+
 /// One service snapshot with occurrence index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceSnapshot {
     pub uuid: String,
     pub occurrence: u64,
     pub characteristics: Vec<CharacteristicSnapshot>,
+    /// `Open` when the radio listed the service normally.
+    pub access: ServiceAccess,
 }
 
 /// Authoritative identity of one accepted platform GATT graph. This is an
@@ -844,6 +870,15 @@ pub enum RadioEvent {
     WriteReadiness {
         peer_id: String,
         ready: bool,
+    },
+    /// WinRT reported the link's current connection parameters. Units are
+    /// microseconds for the interval and supervision timeout. A scan
+    /// response is not a connection-parameter observation.
+    ConnectionParameters {
+        peer_id: String,
+        interval_us: u32,
+        latency: u16,
+        supervision_timeout_us: u32,
     },
     /// The OS stopped the scan on its own (WinRT watcher `Stopped` without
     /// a stop request): `aborted` when it reported an error, with the OS's
@@ -1199,22 +1234,19 @@ pub trait RadioBoundary: Send + Sync + 'static {
         let _ = peer_id;
         async { Err(unsupported("peer.rssi", "this radio cannot measure RSSI")) }
     }
-    /// Effective ATT MTU of the live link to `peer_id`, as the OS reports
-    /// it (macOS: `maximumWriteValueLength(.withResponse) + 3`; Windows:
-    /// `GattSession.MaxPduSize`; Linux: the `org.bluez.GattCharacteristic1`
-    /// MTU). A radio that withholds it answers `capability.unsupported`
-    /// with the reason, never a guessed 23.
+    /// Effective ATT MTU of the live link to `peer_id`, when the OS has
+    /// actually observed one. Windows reports `GattSession.MaxPduSize`.
+    /// Linux reports the `org.bluez.GattCharacteristic1` MTU.
+    /// `Ok(None)` means the link is up and no ATT MTU was observed.
+    /// CoreBluetooth's `maximumWriteValueLength` is a write capacity, not
+    /// that observation. `Ok(None)` is not a link failure and not
+    /// `capability.unsupported`.
     fn read_effective_mtu<'a>(
         &'a self,
         peer_id: &'a str,
-    ) -> impl Future<Output = Result<u16, DesktopError>> + Send + 'a {
+    ) -> impl Future<Output = Result<Option<u16>, DesktopError>> + Send + 'a {
         let _ = peer_id;
-        async {
-            Err(unsupported(
-                "connection.effective-mtu",
-                "this radio reports no effective ATT MTU",
-            ))
-        }
+        async { Ok(None) }
     }
     /// Current adapter power state. A radio that cannot read it answers
     /// `capability.unsupported`.
@@ -1251,6 +1283,23 @@ pub trait RadioBoundary: Send + Sync + 'static {
         peer_id: &'a str,
     ) -> impl Future<Output = Option<WriteLimits>> + Send + 'a {
         async move { self.mtu(peer_id).await.and_then(WriteLimits::from_mtu) }
+    }
+    /// Observed LE connection parameters for `peer_id`. Interval and
+    /// supervision timeout are microseconds. Changes arrive as
+    /// [`RadioEvent::ConnectionParameters`]. Platforms without the API
+    /// answer `capability.unsupported`. Windows older than build 22000
+    /// answers `capability.unavailable`.
+    fn connection_parameters<'a>(
+        &'a self,
+        peer_id: &'a str,
+    ) -> impl Future<Output = Result<ObservedConnectionParameters, DesktopError>> + Send + 'a {
+        let _ = peer_id;
+        async {
+            Err(unsupported(
+                "connection.parameters",
+                "this radio reports no connection parameters",
+            ))
+        }
     }
     /// Whether the link to `peer_id` can take a write without response now
     /// (CoreBluetooth `canSendWriteWithoutResponse`). Readiness changes
@@ -1574,6 +1623,8 @@ struct FakeInner {
     /// Scripted per-peer write-without-response readiness (unset:
     /// unsupported).
     write_readiness: HashMap<String, bool>,
+    /// Scripted per-peer connection parameters (unset: unsupported).
+    connection_parameters: HashMap<String, ObservedConnectionParameters>,
 }
 
 impl Default for FakeRadio {
@@ -1709,6 +1760,7 @@ impl FakeRadio {
                 address_types: HashMap::new(),
                 access: HashMap::new(),
                 write_readiness: HashMap::new(),
+                connection_parameters: HashMap::new(),
             }),
             notify: Arc::new(Notify::new()),
             calls_changed: tokio::sync::watch::channel(()).0,
@@ -1997,6 +2049,19 @@ impl FakeRadio {
             .expect("fake radio state")
             .address_types
             .insert(peer_id.to_owned(), address_type);
+    }
+
+    /// Script the parameters `connection_parameters` reports.
+    pub fn set_connection_parameters(
+        &self,
+        peer_id: &str,
+        parameters: ObservedConnectionParameters,
+    ) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .connection_parameters
+            .insert(peer_id.to_owned(), parameters);
     }
 
     /// Script the readiness `write_without_response_ready` reports.
@@ -2795,7 +2860,7 @@ impl RadioBoundary for FakeRadio {
         scripted.ok_or_else(|| unsupported("peer.rssi", "no RSSI measured for this peer"))
     }
 
-    async fn read_effective_mtu(&self, peer_id: &str) -> Result<u16, DesktopError> {
+    async fn read_effective_mtu(&self, peer_id: &str) -> Result<Option<u16>, DesktopError> {
         self.record("read_effective_mtu");
         if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::EffectiveMtu) {
             return Err(scripted(
@@ -2816,12 +2881,7 @@ impl RadioBoundary for FakeRadio {
             .effective_mtu
             .get(peer_id)
             .copied();
-        scripted.ok_or_else(|| {
-            unsupported(
-                "connection.effective-mtu",
-                "no effective ATT MTU measured for this peer",
-            )
-        })
+        Ok(scripted)
     }
 
     async fn adapter_state(&self) -> Result<AdapterPowerState, DesktopError> {
@@ -3023,6 +3083,23 @@ impl RadioBoundary for FakeRadio {
             .address_types
             .get(peer_id)
             .copied())
+    }
+
+    async fn connection_parameters(
+        &self,
+        peer_id: &str,
+    ) -> Result<ObservedConnectionParameters, DesktopError> {
+        self.record("connection_parameters");
+        let scripted = self
+            .state
+            .lock()
+            .expect("fake radio state")
+            .connection_parameters
+            .get(peer_id)
+            .copied();
+        scripted.ok_or_else(|| {
+            unsupported("connection.parameters", "no connection parameters scripted")
+        })
     }
 
     async fn write_without_response_ready(&self, peer_id: &str) -> Result<bool, DesktopError> {

@@ -139,6 +139,9 @@ enum HostSignal {
     ScanFailed(String),
     ScanDeadlines,
     Security(String, SecurityState),
+    /// Latest write-without-response readiness for one peer. The generation
+    /// is the connection generation current when the report arrived.
+    WriteReadiness(String, Option<String>, bool),
     Restored(Vec<RestoredPeer>),
     IngressDrop(IngressClass, u64),
 }
@@ -197,10 +200,11 @@ const fn ingress_index(class: IngressClass) -> usize {
 #[derive(Default)]
 struct SignalState {
     queue: VecDeque<HostSignal>,
-    /// Every value scope with unflushed core values. Entries are small
-    /// (one tuple per scope); the queue holds at most one marker for all
-    /// of them, so the queue — not this set — is the bounded channel.
-    dirty: HashSet<InstanceKey>,
+    /// Dirty value scopes in round-robin order. The queue holds at most
+    /// one marker for all of them, so the queue — not this list — is the
+    /// bounded channel. `dirty_members` keeps `push_value` idempotent.
+    dirty: VecDeque<InstanceKey>,
+    dirty_members: HashSet<InstanceKey>,
     /// A `Values` marker already waits in the queue.
     value_marker_queued: bool,
     advertisements_pending: bool,
@@ -317,6 +321,29 @@ impl Signals {
                         Self::push_bounded(&mut state, HostSignal::Security(peer_id, observed));
                     }
                 }
+                HostSignal::WriteReadiness(peer_id, generation, ready) => {
+                    let mut merged = false;
+                    for queued in state.queue.iter_mut() {
+                        if let HostSignal::WriteReadiness(
+                            existing,
+                            current_generation,
+                            current_ready,
+                        ) = queued
+                            && *existing == peer_id
+                        {
+                            *current_generation = generation.clone();
+                            *current_ready = ready;
+                            merged = true;
+                            break;
+                        }
+                    }
+                    if !merged {
+                        Self::push_bounded(
+                            &mut state,
+                            HostSignal::WriteReadiness(peer_id, generation, ready),
+                        );
+                    }
+                }
                 HostSignal::Restored(peers) => {
                     let mut merged = false;
                     for queued in state.queue.iter_mut() {
@@ -392,7 +419,9 @@ impl Signals {
             if state.closed {
                 return;
             }
-            state.dirty.insert(scope);
+            if state.dirty_members.insert(scope.clone()) {
+                state.dirty.push_back(scope);
+            }
             Self::ensure_value_marker(&mut state);
         }
         self.notify.notify_one();
@@ -407,16 +436,19 @@ impl Signals {
         }
     }
 
-    /// Take up to `max` dirty value scopes for one bounded pump batch.
-    /// Scopes leave the dirty set here, so each drains exactly once per
-    /// marker cycle; leftovers requeue the marker below. Order across
-    /// scopes is unspecified — values within a scope stay ordered by the
-    /// core queue the pump polls — so callers must not depend on it.
+    /// Take up to `max` dirty value scopes from the front of the FIFO.
+    /// A caller that still has values pushes that scope back, behind the
+    /// scopes that have not had this cycle's turn. Values within a scope
+    /// stay ordered by the core queue the pump polls.
     fn take_value_batch(&self, max: usize) -> Vec<InstanceKey> {
         let mut state = lock(&self.state);
-        let batch: Vec<InstanceKey> = state.dirty.iter().take(max).cloned().collect();
-        for scope in &batch {
-            state.dirty.remove(scope);
+        let mut batch = Vec::with_capacity(max.min(state.dirty.len()));
+        while batch.len() < max {
+            let Some(scope) = state.dirty.pop_front() else {
+                break;
+            };
+            state.dirty_members.remove(&scope);
+            batch.push(scope);
         }
         batch
     }
@@ -966,6 +998,15 @@ impl HostInner {
                     ("t", Value::from("security")),
                     ("peerId", Value::from(peer_id.as_str())),
                     ("state", security_value(&state)),
+                ]);
+                self.broadcast(&record);
+            }
+            HostSignal::WriteReadiness(peer_id, generation, ready) => {
+                let record = object(vec![
+                    ("t", Value::from("readiness")),
+                    ("peerId", Value::from(peer_id.as_str())),
+                    ("connectionGeneration", opt_text(generation.as_deref())),
+                    ("ready", Value::from(ready)),
                 ]);
                 self.broadcast(&record);
             }
@@ -2051,15 +2092,20 @@ impl MobileHost {
                     event.ended_scan.is_some(),
                 ));
             }
-            // The platform delivers these facts to the host directly as
-            // ingress (`SecurityChanged` → `security` record, `ScanFailed` →
-            // `scan-end`) and never hands them to the central as radio
-            // events, so the central has none to signal here; the mobile
-            // radio reports no write readiness (Apple readiness is read per
-            // write through `ReadWriteLimits`/the adapter).
+            // Security, scan-terminal, and connection-parameter facts are
+            // not a mobile readiness stream. Apple write readiness is:
+            // the radio probes `canSendWriteWithoutResponse` and ingests
+            // `peripheralIsReady(toSendWriteWithoutResponse:)`.
+            CentralSignal::WriteReadiness(event) => {
+                observer_signals.push(HostSignal::WriteReadiness(
+                    event.peer_id,
+                    event.connection_generation,
+                    event.ready,
+                ));
+            }
             CentralSignal::Security(_)
-            | CentralSignal::WriteReadiness(_)
-            | CentralSignal::ScanTerminal(_) => {}
+            | CentralSignal::ScanTerminal(_)
+            | CentralSignal::ConnectionParameters(_) => {}
         });
         let drop_signals = Arc::clone(&signals);
         radio.set_drop_hook(Arc::new(move |class| {
@@ -2250,6 +2296,9 @@ impl MobileHost {
                 inner.signals.push(HostSignal::Security(peer_id, state));
                 Ok(())
             }
+            RadioIngress::WriteReadiness { peer_id, ready } => inner
+                .radio
+                .push_event(RadioEvent::WriteReadiness { peer_id, ready }),
             RadioIngress::Restored { peers } => {
                 {
                     let mut restored = lock(&inner.restored);
@@ -2901,5 +2950,67 @@ mod signal_tests {
         );
         let (lost, drops) = signals.take_overflow();
         assert_eq!((lost, drops), (0, [0, 0, 0]));
+    }
+
+    /// A batch that stays busy is pushed behind the scopes still waiting.
+    /// Hash-set iteration used to poll the same 32 and never reach the rest.
+    #[test]
+    fn busy_scopes_past_one_batch_each_get_a_turn() {
+        let signals = Signals::default();
+        let count = VALUE_SCOPE_BATCH + 8;
+        let scopes: Vec<_> = (0..count)
+            .map(|index| scope(&format!("peer-{index:05}")))
+            .collect();
+        for scope_key in &scopes {
+            signals.push_value(scope_key.clone());
+        }
+        // Deadline and security sit behind the first value batch. They must
+        // run before the requeued marker, while some scopes are still unseen.
+        signals.push(HostSignal::ScanDeadlines);
+        signals.push(security("peer-security", BondState::Bonded));
+        let mut seen = HashSet::new();
+        let mut saw_deadline = false;
+        let mut saw_security = false;
+        for _ in 0..(count + 2) {
+            let signal = signals.pop().expect("queued signal");
+            match signal {
+                HostSignal::Values => {
+                    let batch = signals.take_value_batch(VALUE_SCOPE_BATCH);
+                    assert!(!batch.is_empty() && batch.len() <= VALUE_SCOPE_BATCH);
+                    for scope_key in batch {
+                        seen.insert(scope_key.clone());
+                        signals.push_value(scope_key);
+                    }
+                    signals.requeue_values_if_dirty();
+                }
+                HostSignal::ScanDeadlines => {
+                    assert!(
+                        seen.len() < count,
+                        "the deadline waited until every scope had a turn"
+                    );
+                    saw_deadline = true;
+                }
+                HostSignal::Security(_, state) => {
+                    assert_eq!(state.bond, BondState::Bonded);
+                    assert!(
+                        seen.len() < count,
+                        "security waited until every scope had a turn"
+                    );
+                    saw_security = true;
+                }
+                _ => panic!("unexpected signal while rotating busy scopes"),
+            }
+            if seen.len() == count && saw_deadline && saw_security {
+                break;
+            }
+        }
+        assert!(saw_deadline, "scan deadline never ran");
+        assert!(saw_security, "security never ran");
+        assert_eq!(
+            seen.len(),
+            count,
+            "a busy first batch kept {count} scopes from all being polled; saw {}",
+            seen.len()
+        );
     }
 }

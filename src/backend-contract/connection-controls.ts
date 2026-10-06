@@ -88,6 +88,33 @@ export interface ConnectionWriteReadinessWatch<Attachment extends string> {
   close(): Promise<CleanupRecord>
 }
 
+/** Backend observation of the link's current connection parameters.
+ * Interval and supervision timeout are microseconds. */
+export interface ConnectionParametersMeasurement<Attachment extends string, _Operation extends string> {
+  readonly connectionId: ConnectionId<Attachment, string>
+  readonly connectionGeneration: GenerationId<'connection-generation', string>
+  readonly intervalUs: number
+  readonly latency: number
+  readonly supervisionTimeoutUs: number
+  readonly observedAtMonotonicMs: number
+  readonly terminal: OperationTerminalRecord<Attachment, string>
+}
+
+export interface ConnectionParametersStreamObservation<Attachment extends string> {
+  readonly connectionId: ConnectionId<Attachment, string>
+  readonly connectionGeneration: GenerationId<'connection-generation', string>
+  readonly intervalUs: number
+  readonly latency: number
+  readonly supervisionTimeoutUs: number
+  readonly observedAtMonotonicMs: number
+  readonly ordinal: number
+}
+
+export interface ConnectionParametersWatch<Attachment extends string> {
+  readonly events: BoundedAsyncStream<ConnectionParametersStreamObservation<Attachment>>
+  close(): Promise<CleanupRecord>
+}
+
 /** Backend result for the connection-level write-length boundary. */
 export interface ConnectionMaximumWriteLengthMeasurement<Attachment extends string, _Operation extends string> {
   readonly connectionId: ConnectionId<Attachment, string>
@@ -96,6 +123,10 @@ export interface ConnectionMaximumWriteLengthMeasurement<Attachment extends stri
   readonly maximumWriteLength: number
   readonly observedAtMonotonicMs: number
   readonly terminal: OperationTerminalRecord<Attachment, string>
+}
+
+export interface ConnectionParametersRequest<Attachment extends string, Operation extends string> {
+  readonly operation: OperationOptions<Attachment, Operation>
 }
 
 export interface ReadRssiRequest<Attachment extends string, Operation extends string> {

@@ -59,6 +59,19 @@ pub struct WriteReadinessEvent {
     pub ready: bool,
 }
 
+/// One observed connection-parameter snapshot. Interval and supervision
+/// timeout are microseconds. `connection_generation` is the generation
+/// current when the report arrived.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionParametersEvent {
+    pub sequence: u64,
+    pub peer_id: String,
+    pub connection_generation: Option<String>,
+    pub interval_us: u32,
+    pub latency: u16,
+    pub supervision_timeout_us: u32,
+}
+
 /// A scan the OS ended without a stop request (legacy WinRT
 /// `OnScanTerminal`, or the OS event source closing). `aborted` when the OS
 /// reported an error; `detail` is the OS's own words.
@@ -91,6 +104,34 @@ pub(super) async fn publish_write_readiness<B>(inner: &Inner<B>, peer_id: &str, 
     let _ = inner.write_readiness.send(event.clone());
     // Finding 118: wake the host as the legacy readiness callback did.
     inner.signal(CentralSignal::WriteReadiness(event));
+}
+
+pub(super) async fn publish_connection_parameters<B>(
+    inner: &Inner<B>,
+    peer_id: &str,
+    interval_us: u32,
+    latency: u16,
+    supervision_timeout_us: u32,
+) {
+    let peer_key = inner.peers.lock().await.get(peer_id).cloned();
+    let connection_generation = match peer_key {
+        Some(peer_key) => inner.core.lock().await.connection_generation(&peer_key),
+        None => None,
+    };
+    let sequence = inner
+        .connection_parameters_sequence
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
+    let event = ConnectionParametersEvent {
+        sequence,
+        peer_id: peer_id.to_owned(),
+        connection_generation,
+        interval_us,
+        latency,
+        supervision_timeout_us,
+    };
+    let _ = inner.connection_parameters.send(event.clone());
+    inner.signal(CentralSignal::ConnectionParameters(event));
 }
 
 pub(super) fn publish_scan_terminal<B>(
@@ -362,6 +403,56 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     #[must_use]
     pub fn write_readiness_events(&self) -> broadcast::Receiver<WriteReadinessEvent> {
         self.inner.write_readiness.subscribe()
+    }
+
+    /// Subscribe to connection-parameter reports. Same lag rule as
+    /// [`DesktopCentral::lifecycle_events`].
+    #[must_use]
+    pub fn connection_parameter_events(&self) -> broadcast::Receiver<ConnectionParametersEvent> {
+        self.inner.connection_parameters.subscribe()
+    }
+
+    /// Observed connection parameters for the lease holding `peer_id`.
+    /// Admitted like [`DesktopCentral::write_readiness`].
+    pub async fn connection_parameters(
+        &self,
+        peer_id: &str,
+        lease: &str,
+        ctl: OpControl,
+    ) -> Result<crate::boundary::ObservedConnectionParameters, DesktopError> {
+        let _settle = SettleOnDrop(&ctl.ticket);
+        self.precheck(&ctl, "connection.parameters")?;
+        let window = ctl.budget.window(LIVENESS_OP);
+        let peer_key = self.known_peer_key(peer_id).await?;
+        self.require_connected_lease(&peer_key, lease, "connection.parameters")
+            .await?;
+        match drive_link(
+            &self.inner,
+            peer_id,
+            "connection.parameters",
+            &ctl.ticket,
+            window,
+            self.inner.boundary.connection_parameters(peer_id),
+        )
+        .await
+        {
+            Wait::Done(Ok(parameters)) => Ok(parameters),
+            Wait::Done(Err(error)) => {
+                return self
+                    .name_link_end(&peer_key, Err(classify(error, OpKind::Read, true)))
+                    .await;
+            }
+            Wait::Expired => Err(classify(
+                timed_out("connection.parameters", window),
+                OpKind::Read,
+                true,
+            )),
+            Wait::Cancelled => Err(classify(
+                ctl.ticket.interruption("connection.parameters"),
+                OpKind::Read,
+                true,
+            )),
+        }
     }
 
     /// Subscribe to scans the OS ended without a stop request. Same lag
@@ -918,23 +1009,19 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     }
 
     /// Effective ATT MTU of the live link to `peer_id`
-    /// (`connection:effective-mtu`): the ATT MTU the OS negotiated, as the
-    /// OS reports it. macOS derives
-    /// `CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3` per
-    /// link (finding 217: the same derivation as the Apple React Native
-    /// route, so both hosts report the same value); Windows reads the
-    /// `GattSession.MaxPduSize` btleplug already tracks as the ATT MTU;
-    /// Linux reads the `org.bluez.GattCharacteristic1` MTU. Admitted like
+    /// (`connection:effective-mtu`): the ATT MTU the OS observed.
+    /// Windows reads `GattSession.MaxPduSize`. Linux reads the
+    /// `org.bluez.GattCharacteristic1` MTU. macOS returns `Ok(None)`:
+    /// CoreBluetooth's write-length API is not an ATT MTU. Admitted like
     /// [`DesktopCentral::connection_maximum_write_length`]: the lease
-    /// holder of a connected link. A radio that withholds the measurement
-    /// answers `capability.unsupported` with the reason, never a guessed
-    /// 23.
+    /// holder of a connected link. `Ok(None)` is an unobserved MTU, not a
+    /// link failure and not `capability.unsupported`.
     pub async fn read_effective_mtu(
         &self,
         peer_id: &str,
         lease: &str,
         ctl: OpControl,
-    ) -> Result<u16, DesktopError> {
+    ) -> Result<Option<u16>, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "connection.effective-mtu")?;
         let window = ctl.budget.window(LIVENESS_OP);

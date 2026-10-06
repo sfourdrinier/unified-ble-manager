@@ -23,11 +23,13 @@ type ReactNativeConnectionControlPlatform = 'android' | 'apple'
 export interface ReactNativeConnectionControlOptions {
   /**
    * How the Apple route answers `connection:effective-mtu`. The Rust route
-   * derives it per link as `maximumWriteValueLength(.withResponse) + 3`
-   * (finding 217); the legacy Apple reference route keeps reporting it
-   * unsupported, matching its frozen native boundary. Android ignores this.
+   * keeps the call and reports the ATT MTU unobserved (`unobserved`):
+   * CoreBluetooth does not expose one, and `maximumWriteValueLength` is the
+   * per-mode write capacity. The legacy Apple reference route keeps reporting
+   * it unsupported (`unavailable`), matching its frozen native boundary.
+   * Android ignores this.
    */
-  readonly appleEffectiveMtu?: 'derived' | 'unavailable'
+  readonly appleEffectiveMtu?: 'unobserved' | 'unavailable'
 }
 
 export function createReactNativeConnectionControlFeatureRegistry(
@@ -86,7 +88,7 @@ export function createReactNativeConnectionControlFeatureRegistry(
             attMtu: Object.freeze({ maximum: MAXIMUM_REQUESTED_ATT_MTU, minimum: MINIMUM_ATT_MTU, unit: 'bytes' })
           })
         )
-      : options.appleEffectiveMtu === 'derived'
+      : options.appleEffectiveMtu === 'unobserved'
         ? createFeatureRegistration(
             BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
             'limited',
@@ -94,9 +96,9 @@ export function createReactNativeConnectionControlFeatureRegistry(
             'react-native-apple-corebluetooth-effective-mtu-v2',
             Object.freeze([
               Object.freeze({
-                code: 'corebluetooth-derived-effective-mtu',
+                code: 'corebluetooth-att-mtu-not-observed',
                 explanation:
-                  'CoreBluetooth exposes no ATT MTU readout: the reported value is derived per link as CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3, never negotiated.',
+                  'CoreBluetooth does not observe an ATT MTU. maximumWriteValueLength(for:) is the per-mode write capacity and can include a long write, so it is not reported as an ATT MTU. effectiveMtu stays unavailable.',
                 affectedGuarantee: 'current effective ATT MTU observation'
               }),
               liveQualificationLimitation('effective ATT MTU observation')

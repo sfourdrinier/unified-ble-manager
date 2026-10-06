@@ -30,8 +30,9 @@ use tokio::sync::broadcast;
 use ubm_core::contracts::{AttachmentTuple, OperationId};
 use ubm_desktop::{
     AdapterAuthorization, AdapterPowerState, AdapterResetEvent, AdapterStatus, CancelAck,
-    CharacteristicRead, ConnectionHandle, DeliveryMode, DesktopCentral, DesktopError,
-    DiscoveredPath, DiscoveryReport, LifecycleEvent, NotificationPoll, ObservedDelivery, OpControl,
+    CharacteristicRead, ConnectionHandle, ConnectionParametersEvent, DeliveryMode, DesktopCentral,
+    DesktopError, DiscoveredPath, DiscoveryReport, LifecycleEvent, NotificationPoll,
+    ObservedConnectionParameters, ObservedDelivery, OpControl,
     OpTicket, PathSelector, PeerSnapshot, RadioBoundary, ScanStop, ScanTerminalEvent,
     ShutdownReport,
 };
@@ -252,14 +253,14 @@ pub trait CoreAuthority: Send + Sync {
         lease: &'a str,
         ctl: OpControl,
     ) -> CoreFuture<'a, i16>;
-    /// Effective ATT MTU of the link held under `lease`, as the OS
-    /// reports it (finding 217 follow-up).
+    /// Effective ATT MTU of the link held under `lease`, when the OS
+    /// observed one. `None` is unobserved, not a link failure.
     fn read_effective_mtu<'a>(
         &'a self,
         peer_id: &'a str,
         lease: &'a str,
         ctl: OpControl,
-    ) -> CoreFuture<'a, u16>;
+    ) -> CoreFuture<'a, Option<u16>>;
     /// The largest single write the OS accepts on the link held under
     /// `lease`, for one write mode (the same limit a write of that mode is
     /// admitted against).
@@ -270,6 +271,23 @@ pub trait CoreAuthority: Send + Sync {
         with_response: bool,
         ctl: OpControl,
     ) -> CoreFuture<'a, u64>;
+    /// Whether the lease's link can take a write without response now.
+    fn write_readiness<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, bool>;
+    fn write_readiness_events(&self) -> broadcast::Receiver<ubm_desktop::WriteReadinessEvent>;
+    /// Observed connection parameters for the lease holding the link.
+    /// Interval and supervision timeout are microseconds.
+    fn connection_parameters<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ObservedConnectionParameters>;
+    fn connection_parameter_events(&self) -> broadcast::Receiver<ConnectionParametersEvent>;
     /// Cancel the operation behind `ticket` (before or after admission).
     fn cancel<'a>(&'a self, ticket: &'a OpTicket) -> CoreFuture<'a, CancelAck>;
     /// Subscribe to connection-lifecycle events.
@@ -554,7 +572,7 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
         peer_id: &'a str,
         lease: &'a str,
         ctl: OpControl,
-    ) -> CoreFuture<'a, u16> {
+    ) -> CoreFuture<'a, Option<u16>> {
         Box::pin(DesktopCentral::read_effective_mtu(
             self, peer_id, lease, ctl,
         ))
@@ -574,6 +592,34 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
             with_response,
             ctl,
         ))
+    }
+
+    fn write_readiness<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, bool> {
+        Box::pin(DesktopCentral::write_readiness(self, peer_id, lease, ctl))
+    }
+
+    fn write_readiness_events(&self) -> broadcast::Receiver<ubm_desktop::WriteReadinessEvent> {
+        DesktopCentral::write_readiness_events(self)
+    }
+
+    fn connection_parameters<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ObservedConnectionParameters> {
+        Box::pin(DesktopCentral::connection_parameters(
+            self, peer_id, lease, ctl,
+        ))
+    }
+
+    fn connection_parameter_events(&self) -> broadcast::Receiver<ConnectionParametersEvent> {
+        DesktopCentral::connection_parameter_events(self)
     }
 
     fn cancel<'a>(&'a self, ticket: &'a OpTicket) -> CoreFuture<'a, CancelAck> {

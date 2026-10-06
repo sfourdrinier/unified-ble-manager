@@ -54,6 +54,7 @@ fn database(services: usize, characteristics: usize) -> Vec<ServiceSnapshot> {
                     descriptors: Vec::new(),
                 })
                 .collect(),
+            access: std::default::Default::default(),
         })
         .collect()
 }

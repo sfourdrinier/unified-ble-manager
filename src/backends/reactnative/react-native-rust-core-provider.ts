@@ -48,6 +48,7 @@ import {
   type ScanFilter,
   type SourceTimestamp
 } from '../../backend-contract/advertisement'
+import { ScanEvidenceSession } from '../../backend-contract/scan-evidence'
 import {
   normalizeBackgroundContinuation,
   serializeBackgroundContinuation,
@@ -67,6 +68,8 @@ import type {
 import type {
   ConnectionMaximumWriteLengthMeasurement,
   ConnectionMaximumWriteLengthRequest,
+  ConnectionWriteReadinessObservation,
+  ConnectionWriteReadinessWatch,
   ConnectionPhyObservation,
   ConnectionPhyRequest,
   ConnectionPriorityRequest,
@@ -797,6 +800,7 @@ interface PendingScanStart {
 interface ScanDelivery {
   readonly scanSessionId: ScanSessionId<string, string>
   readonly consumers: Map<string, ScanConsumer>
+  readonly evidence: ScanEvidenceSession
 }
 
 interface ScanGroup extends ScanDelivery {
@@ -857,6 +861,16 @@ interface IngressLossAccount {
 /** Why the owner invalidated a peer's streams, as the next `stream-end` should say. */
 type InvalidationReason = Extract<CoreStreamTerminalReason, 'connection-lost' | 'service-changed' | 'source-failed'>
 
+/** One Apple write-without-response readiness watch for a single connection generation. */
+interface ReadinessWatch {
+  readonly nativePeerId: string
+  readonly connectionId: string
+  readonly connectionGeneration: string
+  readonly coreGeneration: string
+  readonly stream: OwnedCoreBoundedStream<ConnectionWriteReadinessObservation<string>>
+  ordinal: number
+}
+
 // -- the backend -------------------------------------------------------------------
 
 /**
@@ -898,6 +912,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private readonly retiredLinks = new Set<string>()
   private readonly databases = new Map<string, DatabaseEntry>()
   private readonly subscriptions = new Map<string, SubscriptionEntry>()
+  private readonly readinessWatches = new Set<ReadinessWatch>()
   private readonly invalidations = new Map<string, InvalidationReason>()
   private readonly eventStreams = new Set<OwnedCoreBoundedStream<BackendEvent<string>>>()
   private readonly adapterWatches = new Set<OwnedCoreBoundedStream<AdapterStateSnapshot<string>>>()
@@ -1017,7 +1032,15 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       maximumWriteLength: <Operation extends string>(
         connection: BackendConnection<string, string>,
         request: ConnectionMaximumWriteLengthRequest<string, Operation>
-      ) => this.maximumWriteLength(connection, request)
+      ) => this.maximumWriteLength(connection, request),
+      ...(platform === 'apple'
+        ? {
+            writeWithoutResponseReadiness: (
+              connection: BackendConnection<string, string>,
+              options?: PublicOperationOptions
+            ) => this.writeWithoutResponseReadiness(connection, options)
+          }
+        : {})
     })
     this.gatt = Object.freeze({
       discover: (connection: BackendConnection<string, string>, options: PublicOperationOptions) =>
@@ -1248,6 +1271,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
 
   private async destroyInternal(): Promise<CleanupRecord> {
     this.destroyed = true
+    for (const watch of [...this.readinessWatches]) this.closeReadinessWatch(watch, 'owner-released')
     const records: CleanupRecord[] = []
     for (const [requestId, cancel] of [...this.accessoryChoices]) {
       try {
@@ -1991,7 +2015,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.nextScan += 1
     const delivery: ScanDelivery = {
       scanSessionId: this.identifiers.scanSessionId(`${resourcePrefixFor(this.platform)}-scan-session-${ordinal}`),
-      consumers: new Map()
+      consumers: new Map(),
+      evidence: new ScanEvidenceSession()
     }
     const ownerLeaseId = this.identifiers.leaseId(`${resourcePrefixFor(this.platform)}-scan-lease-${ordinal}`)
     const owner = this.addScanConsumer(delivery, ownerLeaseId, options)
@@ -2331,12 +2356,15 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const observation = this.observation(record, group.scanSessionId, receivedAt, ingressOrdinal)
     for (const consumer of group.consumers.values()) {
       if (consumer.stream.isTerminal()) continue
-      if (!advertisementMatchesFilter(consumer.filter, observation)) continue
+      const matched = group.evidence.matchAdvertisement(observation, candidate =>
+        advertisementMatchesFilter(consumer.filter, candidate)
+      )
+      if (matched === null) continue
       if (consumer.options.duplicatePolicy === 'first') {
         if (consumer.seenPeers.has(record.peerId)) continue
         consumer.seenPeers.add(record.peerId)
       }
-      consumer.stream.emit(observation, bytes, record.peerId, bytes - RECORD_BYTES)
+      consumer.stream.emit(matched, bytes, record.peerId, bytes - RECORD_BYTES)
     }
   }
 
@@ -2407,10 +2435,6 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.assertOperational(operation)
     const nativePeerId = this.nativeIdForPeerId(String(peerId), operation)
     const intent = options.intent ?? 'direct'
-    if (intent === 'when-available' && this.platform === 'apple') {
-      // CoreBluetooth has no autoConnect; the capability is not registered.
-      throw contractError('capability.unsupported', 'connection', `${operation}.when-available`)
-    }
     await this.supersedePendingAcquisition(nativePeerId)
     const operationId = this.mintOperationId('connect')
     const ordinal = this.nextOrdinal
@@ -2531,6 +2555,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   }
 
   private forgetConnection(entry: ConnectionEntry): void {
+    this.closeReadinessWatches(entry, 'connection-lost')
     this.connectionsByKey.delete(entry.key)
     this.leaseIds.delete(entry.key)
     const link = linkKey(entry.nativePeerId, entry.coreGeneration)
@@ -2594,6 +2619,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
    * `stream-end` records may have been lost with it).
    */
   private endLink(entry: ConnectionEntry, reason: 'local' | 'peer' | 'adapter' | null): void {
+    this.closeReadinessWatches(entry, 'connection-lost')
     this.connectionsByLink.delete(linkKey(entry.nativePeerId, entry.coreGeneration))
     // An adapter loss failed the link's streams at their source, as the
     // legacy adapter-loss cleanup (and every desktop host and Tauri) said it.
@@ -2859,6 +2885,135 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         terminal: this.terminal(request.operation.correlation)
       })
     })
+  }
+
+  /**
+   * Apple write-without-response readiness. The probe is
+   * `canSendWriteWithoutResponse`; later `peripheralIsReady` reports for this
+   * connection generation follow on the same stream. Android has no signal,
+   * so the method is absent there and callers fail closed.
+   */
+  private async writeWithoutResponseReadiness(
+    connection: BackendConnection<string, string>,
+    options: PublicOperationOptions = { signal: null, deadline: null }
+  ): Promise<ConnectionWriteReadinessWatch<string>> {
+    const operation = `${SCOPE}.connection.write-readiness`
+    this.assertOperational(operation)
+    const entry = this.requireConnection(connection, operation)
+    let watch!: ReadinessWatch
+    const stream = new OwnedCoreBoundedStream<ConnectionWriteReadinessObservation<string>>(
+      { itemCapacity: capacity(64), byteCapacity: capacity(16 * 1024), reservedControlCapacity: capacity(1) },
+      'drop-oldest',
+      () => {
+        this.readinessWatches.delete(watch)
+      }
+    )
+    watch = {
+      nativePeerId: entry.nativePeerId,
+      connectionId: String(entry.resource.connectionId),
+      connectionGeneration: String(entry.resource.connectionGeneration),
+      coreGeneration: entry.coreGeneration,
+      stream,
+      ordinal: 0
+    }
+    this.readinessWatches.add(watch)
+    const operationId = this.mintOperationId('write-readiness')
+    const removeAbort = this.watchAbort(options.signal ?? null, operationId, operation)
+    let ready: boolean
+    try {
+      ready = (
+        await this.invoke('connection.write-readiness', {
+          peerId: entry.nativePeerId,
+          lease: entry.lease,
+          operationId,
+          ...this.budget(options, operation)
+        })
+      ).ready
+    } catch (error) {
+      removeAbort()
+      this.closeReadinessWatch(
+        watch,
+        'source-failed',
+        error instanceof BackendContractError
+          ? error.normalized
+          : contractError('platform.failure', 'connection', operation).normalized
+      )
+      throw error
+    }
+    removeAbort()
+    if (!this.readinessWatches.has(watch)) {
+      throw contractError('connection.stale', 'connection', `${operation}.closed`)
+    }
+    this.emitReadiness(watch, ready)
+    return Object.freeze({
+      events: stream,
+      close: async (): Promise<CleanupRecord> => {
+        this.closeReadinessWatch(watch, 'owner-released')
+        return Object.freeze({ state: 'released', failures: Object.freeze([]) })
+      }
+    })
+  }
+
+  private emitReadiness(watch: ReadinessWatch, ready: boolean): void {
+    if (!this.readinessWatches.has(watch)) return
+    watch.ordinal += 1
+    const observation: ConnectionWriteReadinessObservation<string> = Object.freeze({
+      connectionId: watch.connectionId as ConnectionWriteReadinessObservation<string>['connectionId'],
+      connectionGeneration:
+        watch.connectionGeneration as ConnectionWriteReadinessObservation<string>['connectionGeneration'],
+      ready,
+      observedAtMonotonicMs: this.now(),
+      ordinal: watch.ordinal
+    })
+    if (watch.stream.emit(observation, 128).terminated) this.readinessWatches.delete(watch)
+  }
+
+  private closeReadinessWatch(
+    watch: ReadinessWatch,
+    reason: 'owner-released' | 'connection-lost' | 'source-failed',
+    normalized: NormalizedBleError | null = null
+  ): void {
+    if (!this.readinessWatches.delete(watch)) return
+    watch.stream.closeWithReason(reason, normalized)
+  }
+
+  private closeReadinessWatches(
+    entry: ConnectionEntry,
+    reason: 'connection-lost' | 'owner-released'
+  ): void {
+    for (const watch of [...this.readinessWatches]) {
+      if (watch.nativePeerId === entry.nativePeerId && watch.coreGeneration === entry.coreGeneration) {
+        this.closeReadinessWatch(watch, reason)
+      }
+    }
+  }
+
+  private async reconcileReadinessWatches(): Promise<void> {
+    for (const watch of [...this.readinessWatches]) {
+      const entry = this.connectionsByLink.get(linkKey(watch.nativePeerId, watch.coreGeneration))
+      if (entry === undefined || entry.linkState !== 'connected') {
+        this.closeReadinessWatch(watch, 'connection-lost')
+        continue
+      }
+      try {
+        const answer = await this.invoke('connection.write-readiness', {
+          peerId: entry.nativePeerId,
+          lease: entry.lease,
+          operationId: this.mintOperationId('write-readiness')
+        })
+        if (this.readinessWatches.has(watch)) this.emitReadiness(watch, answer.ready)
+      } catch (error) {
+        if (this.readinessWatches.has(watch)) {
+          this.closeReadinessWatch(
+            watch,
+            'source-failed',
+            error instanceof BackendContractError
+              ? error.normalized
+              : contractError('platform.failure', 'connection', `${SCOPE}.connection.write-readiness.reconcile`).normalized
+          )
+        }
+      }
+    }
   }
 
   /** The `gatt:maximum-write-length` registration's answer for one current connection. */
@@ -3417,6 +3572,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       case 'security':
         this.onSecurity(record.peerId, record.state)
         break
+      case 'readiness':
+        this.onReadiness(record)
+        break
       case 'restored':
         this.onRestored(record.peers)
         break
@@ -3564,6 +3722,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       }
     }
     if (snapshot.restored.length > 0) this.onRestored(snapshot.restored)
+    await this.reconcileReadinessWatches()
     for (const [membership, group] of scannedGroups) {
       if (group.nativeReleaseConfirmed || this.scanGroups.get(membership) !== group || membership === snapshot.scan) {
         continue
@@ -3591,6 +3750,15 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         )
       })
     })
+  }
+
+  private onReadiness(record: Extract<WireDrainRecord, { t: 'readiness' }>): void {
+    for (const watch of [...this.readinessWatches]) {
+      if (watch.nativePeerId !== record.peerId) continue
+      if (record.connectionGeneration !== null && record.connectionGeneration !== watch.coreGeneration) continue
+      if (record.connectionGeneration === null) continue
+      this.emitReadiness(watch, record.ready)
+    }
   }
 
   private onSecurity(nativePeerId: string, state: WireSecurityState): void {

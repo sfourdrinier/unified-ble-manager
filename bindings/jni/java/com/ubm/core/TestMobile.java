@@ -50,6 +50,9 @@ public final class TestMobile {
         public void disableNotifications(long id, String p, String s, long so, String c, long co) { MobileCoreBridge.nativeCompleteUnit(id); }
         public void readMtu(long id, String p) { MobileCoreBridge.nativeCompleteMtu(id, 247); }
         public void readWriteLimits(long id, String p) { MobileCoreBridge.nativeCompleteWriteLimits(id, 512, 20); }
+        public void readWriteReadiness(long id, String p) {
+            MobileCoreBridge.nativeCompleteFailure(id, "unsupported", -1, "Android reports no write-without-response readiness", false, null);
+        }
         public void requestMtu(long id, String p, int mtu) { MobileCoreBridge.nativeCompleteMtu(id, mtu); }
         public void readRssi(long id, String p) { MobileCoreBridge.nativeCompleteRssi(id, -60); }
         public void requestConnectionPriority(long id, String p, String priority) { MobileCoreBridge.nativeCompleteAccepted(id, true); }

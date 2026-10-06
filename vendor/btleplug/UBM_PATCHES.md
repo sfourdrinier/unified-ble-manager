@@ -578,25 +578,22 @@ and connect confirmation ~898) queried every level `Uncached`, required
 **Change.**
 
 - `ble/device.rs`: `GATT_CACHE_TIMEOUT` and the cached fallback removed.
-  Services and characteristics are queried `Uncached` every
-  time. Descriptor discovery does not call `GetDescriptors` or
-  `GetDescriptorsForUuid`, and the descriptor list stays empty. Any non-success status is `Err("<stage> failed with
-  GattCommunicationStatus <Name> (<raw>)")`; a status that cannot be read is
-  an error too. `discover_services` returns the fresh service list.
-  One exception: services Windows keeps for itself (HID, the LE Audio
-  services, Microphone Control `0x184D`, Ranging) are left out before
-  `GetCharacteristics`. Asking that call returns `AccessDenied` with no
-  ATT Read By Type. An `AccessDenied` with no ATT protocol byte from any
-  other service is left out the same way.
-  Descriptor discovery does not call `GetDescriptors` or
-  `GetDescriptorsForUuid`. Both read Characteristic User Description
-  (`0x2901`) when the characteristic has one. On this simulator that read
-  returns ATT Insufficient Encryption (`0x0F`) at once and Windows does
-  not pair. The next connection then waits to pair before it sends the
-  read, and sends nothing until the process exits, so discovery never
-  reaches the characteristics after it. Subscribe writes the Client
-  Characteristic Configuration descriptor through `GattCharacteristic`,
-  which does not read the user description. The descriptor list is empty.
+  Services, characteristics, and descriptors are queried `Uncached` every
+  time. Descriptor discovery calls `GetDescriptorsWithCacheModeAsync(Uncached)`.
+  Success returns the list Windows returned, which is empty only when the
+  peer listed none. Any other status is a platform error and keeps the ATT
+  byte when the result had one. Dropping the future cancels the WinRT
+  operation. The call does not pair and does not read descriptor values.
+  `discover_services` returns the fresh service list.
+  Services Windows keeps for itself (HID, the LE Audio services,
+  Microphone Control `0x184D`, Ranging) are left out before
+  `GetCharacteristics`. An ordinary `AccessDenied` with no ATT byte stays
+  in the table as a restricted service. A `ProtocolError`, or an
+  `AccessDenied` that still carries an ATT byte, fails discovery.
+  Subscribe writes the Client Characteristic Configuration descriptor
+  through `WriteClientCharacteristicConfigurationDescriptorWithResultAsync`
+  and keeps the protocol byte. This WinRT path has not been compiled on
+  macOS and has not been run on a Windows radio.
   `ProtocolError`, `AccessDenied` that still carries an ATT byte, and
   `Unreachable` still fail the whole discovery.
 - `peripheral.rs` `discover_services`: builds the complete table first

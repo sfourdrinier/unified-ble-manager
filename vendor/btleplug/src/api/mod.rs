@@ -343,6 +343,13 @@ pub trait Peripheral: Send + Sync + Clone + Debug {
     /// `discover_services` is called.
     fn services(&self) -> BTreeSet<Service>;
 
+    /// Services present without characteristics. Each entry is
+    /// `(uuid, instance, "os-reserved" | "access-denied")`. Open services
+    /// are omitted. The default is no restrictions.
+    fn service_restrictions(&self) -> Vec<(Uuid, u64, &'static str)> {
+        Vec::new()
+    }
+
     /// The set of characteristics we've discovered for this device. This will be empty until
     /// `discover_services` is called.
     fn characteristics(&self) -> BTreeSet<Characteristic> {
@@ -398,6 +405,18 @@ pub trait Peripheral: Send + Sync + Clone + Debug {
 
     /// Enables either notify or indicate (depending on support) for the specified characteristic.
     async fn subscribe(&self, characteristic: &Characteristic) -> Result<()>;
+
+    /// First CCCD write. `Some(true)` is notification, `Some(false)` is
+    /// indication, and `None` is [`subscribe`](Self::subscribe). Platforms
+    /// that cannot choose a mode keep [`subscribe`].
+    async fn subscribe_selecting(
+        &self,
+        characteristic: &Characteristic,
+        notify: Option<bool>,
+    ) -> Result<()> {
+        let _ = notify;
+        self.subscribe(characteristic).await
+    }
 
     /// Disables either notify or indicate (depending on support) for the specified characteristic.
     async fn unsubscribe(&self, characteristic: &Characteristic) -> Result<()>;

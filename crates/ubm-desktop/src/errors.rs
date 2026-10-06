@@ -470,6 +470,7 @@ impl DesktopError {
                 | BleErrorCode::GattReadFailed
                 | BleErrorCode::GattWriteFailed
                 | BleErrorCode::GattSubscribeFailed
+                | BleErrorCode::GattDiscoveryRequired
         );
         let refused = generic
             && is_link_operation(&self.operation)
@@ -1046,6 +1047,40 @@ mod tests {
                 .classify_security();
             assert_eq!(error.code(), BleErrorCode::GattReadFailed, "{platform:?}");
         }
+        // The code each verb actually carries into classify(): read, write,
+        // and subscribe keep their GATT codes; discovery arrives as
+        // GattDiscoveryRequired from map_radio. A security ATT byte renames
+        // all of them. A non-security discovery stays discovery-required.
+        for byte in ["5", "8", "12", "15"] {
+            let platform = winrt_att(byte);
+            for (operation, code) in [
+                ("gatt.read", BleErrorCode::GattReadFailed),
+                ("gatt.discover", BleErrorCode::GattDiscoveryRequired),
+                ("discovery.complete", BleErrorCode::GattDiscoveryRequired),
+                ("gatt.subscribe", BleErrorCode::GattSubscribeFailed),
+                ("gatt.write", BleErrorCode::GattWriteFailed),
+            ] {
+                let error = DesktopError::new(code, BleErrorDomain::Gatt, operation)
+                    .with_platform(platform.clone())
+                    .classify_security();
+                assert_eq!(
+                    error.code(),
+                    BleErrorCode::PlatformSecurity,
+                    "{operation} att {byte}"
+                );
+                assert_eq!(error.platform(), Some(&platform));
+            }
+        }
+        let ordinary = winrt_att("3");
+        let discovery = DesktopError::new(
+            BleErrorCode::GattDiscoveryRequired,
+            BleErrorDomain::Gatt,
+            "discovery.complete",
+        )
+        .with_platform(ordinary.clone())
+        .classify_security();
+        assert_eq!(discovery.code(), BleErrorCode::GattDiscoveryRequired);
+        assert_eq!(discovery.platform(), Some(&ordinary));
         let connect = DesktopError::connection_failed("x")
             .with_platform(android(5))
             .classify_security();

@@ -328,8 +328,12 @@ PHY read/request as `limited` / deterministic controls: effective MTU is
 unavailable before a successful `onMtuChanged` callback, and PHY request
 `accepted` plus its observation come from the native callback result. Direct
 CoreBluetooth Node/Electron-main readiness is also `limited` / deterministic
-when both native readiness hooks are bridged. `parameters`, `subrate`,
-`connection:parameters`, and `connection:subrate` remain unsupported.
+when both native readiness hooks are bridged. React Native Apple reports the
+same readiness as `limited` (`canSendWriteWithoutResponse` plus
+`peripheralIsReady(toSendWriteWithoutResponse:)`). Windows 11 build 22000
+desktop, Electron, and Tauri observe connection parameters (limited,
+`winrt-connection-parameters-22000`). BlueZ, CoreBluetooth, and older Windows
+do not. `subrate` and `connection:subrate` remain unsupported.
 `writeWhenReady` is available only when the instantiated backend advertises
 authoritative write-without-response readiness; otherwise it rejects
 `capability.unsupported` (or `capability.unavailable` when the registered

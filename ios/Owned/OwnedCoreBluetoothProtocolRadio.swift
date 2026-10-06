@@ -11,6 +11,9 @@ import Foundation
   func protocolRadioDidReceiveNotification(_ subscriptionIdentifier: String, value: NSData)
   /// `willRestoreState` peers (Native Protocol v2 reads `restorationPeerIdentifiers` instead).
   @objc optional func protocolRadioDidRestorePeers(_ peers: [NSDictionary])
+  /// CoreBluetooth says the without-response queue can accept another write.
+  /// Optional so existing protocol-radio delegates keep compiling.
+  @objc optional func protocolRadioDidBecomeReadyToSendWriteWithoutResponse(_ peerIdentifier: String)
 }
 
 /**
@@ -659,6 +662,10 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     guard let address = address(for: characteristic, peerIdentifier: peripheral.identifier.uuidString),
           let pending = pendingWrite.removeValue(forKey: address) else { return }
     pending.completion(error as NSError?)
+  }
+
+  public func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+    delegate?.protocolRadioDidBecomeReadyToSendWriteWithoutResponse?(peripheral.identifier.uuidString)
   }
 
   public func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {

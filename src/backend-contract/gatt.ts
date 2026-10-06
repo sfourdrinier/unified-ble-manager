@@ -79,6 +79,32 @@ export interface DescriptorPath<
   readonly descriptorUuid: Uuid
   readonly descriptorOccurrence: GenerationId<'descriptor-occurrence', DescriptorScope>
 }
+/** A discovered service whose characteristics could not be listed. */
+export interface GattServiceRestriction {
+  readonly state: 'restricted'
+  readonly reason: 'os-reserved' | 'access-denied'
+  readonly gattStatus: 'access-denied' | null
+  readonly attError: null
+}
+
+/** Map a native service-access label onto the public restriction. */
+export function serviceAccessRestriction(
+  access: string | null | undefined
+): GattServiceRestriction | undefined {
+  if (access === 'os-reserved') {
+    return Object.freeze({ state: 'restricted', reason: 'os-reserved', gattStatus: null, attError: null })
+  }
+  if (access === 'access-denied') {
+    return Object.freeze({
+      state: 'restricted',
+      reason: 'access-denied',
+      gattStatus: 'access-denied',
+      attError: null
+    })
+  }
+  return undefined
+}
+
 export interface Service<
   Attachment extends string,
   Connection extends string,
@@ -88,6 +114,7 @@ export interface Service<
   readonly path: ServicePath<Attachment, Connection, Database, Occurrence>
   readonly primary: boolean
   readonly includedServices: readonly GattServiceReference[]
+  readonly restriction?: GattServiceRestriction
 }
 export interface Characteristic<
   Attachment extends string,

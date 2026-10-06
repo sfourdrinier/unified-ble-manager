@@ -86,12 +86,12 @@ describe('React Native Rust route: public link controls', () => {
     await manager.destroy()
   })
 
-  test('apple: effectiveMtu reports maximumWriteValueLength(.withResponse)+3 as the observed ATT MTU', async () => {
+  test('apple: effectiveMtu stays unavailable because CoreBluetooth does not observe an ATT MTU', async () => {
     const { manager, connection } = await openConnection('apple')
     await expect(connection.controls.effectiveMtu()).resolves.toMatchObject({
-      state: 'measured',
-      attMtu: 515,
-      payloadBytes: 512,
+      state: 'unavailable',
+      attMtu: null,
+      payloadBytes: null,
       platformPduBytes: null
     })
     const registration = manager.attachedBackend.backend.features.registrations.find(
@@ -99,7 +99,7 @@ describe('React Native Rust route: public link controls', () => {
     )
     expect(registration.state).toBe('limited')
     expect(registration.limitations.map(entry => entry.code)).toEqual([
-      'corebluetooth-derived-effective-mtu',
+      'corebluetooth-att-mtu-not-observed',
       'live-radio-qualification-pending'
     ])
     await manager.destroy()

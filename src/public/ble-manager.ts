@@ -70,6 +70,7 @@ import {
   type NormalizedScanObservation,
   type ScanQuery
 } from './scan-query'
+import { ScanEvidenceSession } from '../backend-contract/scan-evidence'
 import { bindScanSourceTerminal, createScanState, projectScanDeliveryTerminal } from './scan-state'
 import type { BlePeerDirectory, BlePeerState, PeerSource } from './peer-directory'
 import { createPublicPeerDirectory } from './peer-directory'
@@ -85,6 +86,8 @@ import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
   type ConnectionPriority,
+  type ConnectionParametersStreamObservation,
+  type ConnectionParametersWatch,
   type ConnectionWriteReadinessObservation,
   type ConnectionWriteReadinessWatch
 } from '../backend-contract/connection-controls'
@@ -776,6 +779,7 @@ class PublicScanSessionController<Attachment extends string> {
     null
   private pumpStarted = false
   private closed = false
+  private readonly evidence = new ScanEvidenceSession()
 
   constructor(
     private readonly source: BoundedAsyncStream<AdvertisementObservation<Attachment> | IpcAdvertisement>,
@@ -809,6 +813,7 @@ class PublicScanSessionController<Attachment extends string> {
 
   async closeView(reason: PublicScanEventTerminalReason = 'owner-released'): Promise<BackendCleanupRecord> {
     this.closed = true
+    this.evidence.clear()
     this.cancelPresenceTimers()
     this.observationBroadcast.closeWithReason(reason)
     this.eventBroadcast.close(reason)
@@ -857,8 +862,9 @@ class PublicScanSessionController<Attachment extends string> {
   }
 
   private accept(raw: AdvertisementObservation<Attachment> | IpcAdvertisement): void {
-    const observation = projectPublicScanObservation(raw)
-    if (!observationMatchesScanQuery(this.query, observation)) return
+    const matched = this.matchSplitAdvertisement(raw)
+    if (matched === null) return
+    const observation = projectPublicScanObservation(matched)
 
     this.observePresence(observation)
     if (this.duplicates === 'coalesced') {
@@ -876,6 +882,17 @@ class PublicScanSessionController<Attachment extends string> {
       estimatePublicDiscoveryEventBytes({ kind: 'observed', peer: observation.peer })
     )
     if (observationTerminated || eventTerminated) this.terminateFromOverflow()
+  }
+
+  private matchSplitAdvertisement(
+    raw: AdvertisementObservation<Attachment> | IpcAdvertisement
+  ): AdvertisementObservation<Attachment> | IpcAdvertisement | null {
+    const matches = (candidate: AdvertisementObservation<Attachment> | IpcAdvertisement): boolean =>
+      observationMatchesScanQuery(this.query, normalizeScanObservation(candidate))
+    if ('device' in raw) {
+      return this.evidence.matchAdvertisement(raw, matches)
+    }
+    return this.evidence.matchIpc(raw, this.now(), 'public-scan', matches)
   }
 
   private observePresence(observation: PublicScanObservation): void {
@@ -1056,6 +1073,15 @@ interface OptionalInternalControlConnection<Attachment extends string> {
     readonly observedAtMonotonicMs?: number
   }>
   readonly writeWithoutResponseReadiness?: () => Promise<ConnectionWriteReadinessWatch<Attachment>>
+  readonly parameters?: () => Promise<{
+    readonly connectionId: string
+    readonly connectionGeneration: string
+    readonly intervalUs: number
+    readonly latency: number
+    readonly supervisionTimeoutUs: number
+    readonly observedAtMonotonicMs: number
+  }>
+  readonly parameterEvents?: () => Promise<ConnectionParametersWatch<Attachment>>
 }
 
 type PublicControlConnection<
@@ -1158,6 +1184,146 @@ function unsupportedControlStream<Value>(
   descriptor: CapabilityDescriptor | null = null
 ): AsyncIterable<Value> {
   return new UnsupportedControlStream(operation, code, descriptor)
+}
+
+function publicParameterObservation(
+  generation: string,
+  observedAtMonotonicMs: number,
+  descriptor: CapabilityDescriptor | null,
+  measured: { readonly intervalUs: number; readonly latency: number; readonly supervisionTimeoutUs: number }
+): ConnectionParametersObservation {
+  return Object.freeze({
+    ...controlMetadata(generation, observedAtMonotonicMs, descriptor, 'backend-observation'),
+    state: 'measured',
+    intervalMs: measured.intervalUs / 1000,
+    peripheralLatency: measured.latency,
+    supervisionTimeoutMs: measured.supervisionTimeoutUs / 1000,
+    subrateFactor: null,
+    connectionEventLengthMs: null
+  })
+}
+
+function publicParameterStream<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  connection: PublicControlConnection<Attachment, Identity>,
+  generation: string,
+  descriptor: ReturnType<PublicInternalManager<Attachment, Identity>['capability']>
+): AsyncIterable<ConnectionParametersObservation> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<ConnectionParametersObservation> {
+      let watch: ConnectionParametersWatch<Attachment> | null = null
+      let iterator: BoundedAsyncStreamIterator<ConnectionParametersStreamObservation<Attachment>> | null = null
+      let closed = false
+      let iteratorDone = false
+      let opening: Promise<void> | null = null
+      let closing: Promise<void> | null = null
+      const operation = 'public-connection.controls.parameter-events'
+      const open = (): Promise<void> => {
+        if (opening === null) {
+          opening = Promise.resolve().then(async () => {
+            if (connection.parameterEvents === undefined) {
+              throw contractError('capability.unsupported', 'connection', operation)
+            }
+            watch = await connection.parameterEvents()
+          })
+        }
+        return opening
+      }
+      const close = (): Promise<void> => {
+        if (closing !== null) return closing
+        const releasing = Promise.resolve().then(async () => {
+          if (opening !== null) {
+            const acquired = await opening.then(
+              () => true,
+              () => false
+            )
+            if (!acquired) return
+          }
+          if (watch === null) return
+          if (iterator === null) {
+            const cleanup = await watch.close()
+            if (cleanup.state === 'release-failed') throw new BleCleanupError(cleanup)
+            return
+          }
+          const ownedWatch = watch
+          await closePublicReadinessWatch(iterator, () => ownedWatch.close(), iteratorDone)
+        })
+        closing = releasing.catch(error => {
+          closing = null
+          throw error
+        })
+        return closing
+      }
+      return {
+        async next(): Promise<IteratorResult<ConnectionParametersObservation, undefined>> {
+          if (closed) return { done: true, value: undefined }
+          let teardownAttempted = false
+          try {
+            await open()
+            if (closed) {
+              teardownAttempted = true
+              await close()
+              return { done: true, value: undefined }
+            }
+            if (watch === null) throw contractError('lifecycle.invariant-violation', 'connection', operation)
+            if (iterator === null) iterator = watch.events[Symbol.asyncIterator]()
+            const item = await iterator.next()
+            if (closed) {
+              teardownAttempted = true
+              await close()
+              return { done: true, value: undefined }
+            }
+            if (item.done) {
+              iteratorDone = true
+              closed = true
+              teardownAttempted = true
+              await close()
+              return { done: true, value: undefined }
+            }
+            const streamItem = item.value
+            if (streamItem.kind === 'value') {
+              assertPublicConnectionIdentity(connection, streamItem.value, `${operation}.identity`)
+              return {
+                done: false,
+                value: publicParameterObservation(generation, streamItem.value.observedAtMonotonicMs, descriptor, streamItem.value)
+              }
+            }
+            if (streamItem.kind === 'overflow') throw contractError('stream.overflow', 'connection', operation)
+            if (streamItem.reason === 'source-failed') {
+              throw streamItem.error == null
+                ? contractError('platform.failure', 'stream', operation)
+                : new BackendContractError(streamItem.error)
+            }
+            closed = true
+            teardownAttempted = true
+            await close()
+            return { done: true, value: undefined }
+          } catch (error) {
+            const sourceError = rehydratePublicError(error)
+            if (teardownAttempted) throw sourceError
+            closed = true
+            try {
+              await close()
+            } catch (cleanupError) {
+              throw new AggregateError(
+                [sourceError, rehydratePublicError(cleanupError)],
+                'BLE connection-parameter watch operation and cleanup both failed'
+              )
+            }
+            throw sourceError
+          }
+        },
+        async return(): Promise<IteratorResult<ConnectionParametersObservation, undefined>> {
+          closed = true
+          try {
+            await close()
+            return { done: true, value: undefined }
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
+        }
+      }
+    }
+  }
 }
 
 function publicWriteReadinessStream<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
@@ -1592,17 +1758,51 @@ function createPublicConnectionControls<Attachment extends string, Identity exte
     readPhy,
     requestPhy,
     parameters: () =>
-      unsupportedPromise<ConnectionParametersObservation>(
-        'connection:parameters',
-        'public-connection.controls.parameters'
-      ),
+      runPublicControl(async () => {
+        const descriptor = requireControlCapability(
+          internal,
+          'connection:parameters',
+          'public-connection.controls.parameters'
+        )
+        if (connection.parameters === undefined) {
+          throw contractError('capability.unsupported', 'connection', 'public-connection.controls.parameters')
+        }
+        const measured = await connection.parameters()
+        assertPublicConnectionIdentity(connection, measured, 'public-connection.controls.parameters.identity')
+        if (
+          !Number.isFinite(measured.intervalUs) ||
+          measured.intervalUs <= 0 ||
+          !Number.isInteger(measured.latency) ||
+          measured.latency < 0 ||
+          !Number.isFinite(measured.supervisionTimeoutUs) ||
+          measured.supervisionTimeoutUs <= 0
+        ) {
+          throw contractError('protocol.violation', 'connection', 'public-connection.controls.parameters.result')
+        }
+        return publicParameterObservation(
+          generation,
+          measured.observedAtMonotonicMs,
+          descriptor,
+          measured
+        )
+      }),
     parameterEvents: () => {
       const descriptor = internal.capability('connection:parameters')
-      return unsupportedControlStream<ConnectionParametersObservation>(
-        'public-connection.controls.parameter-events',
-        descriptor?.state === 'unavailable' ? 'capability.unavailable' : 'capability.unsupported',
-        descriptor
-      )
+      if (descriptor === null || descriptor.state === 'unsupported' || connection.parameterEvents === undefined) {
+        return unsupportedControlStream<ConnectionParametersObservation>(
+          'public-connection.controls.parameter-events',
+          'capability.unsupported',
+          descriptor
+        )
+      }
+      if (descriptor.state === 'unavailable') {
+        return unsupportedControlStream<ConnectionParametersObservation>(
+          'public-connection.controls.parameter-events',
+          'capability.unavailable',
+          descriptor
+        )
+      }
+      return publicParameterStream(connection, generation, descriptor)
     },
     requestSubrate: (_mode: SubrateMode, _options: OperationOptions = {}) =>
       unsupportedPromise<SubrateResult>('connection:subrate', 'public-connection.controls.request-subrate'),
@@ -2599,18 +2799,28 @@ export function filterScanObservations(
     [Symbol.asyncIterator](): BoundedAsyncStreamIterator<PublicScanObservation> {
       const iterator = source[Symbol.asyncIterator]()
       const lastObservations = new Map<string, string>()
+      const evidence = new ScanEvidenceSession()
+      const matches = (candidate: AdvertisementObservation<string> | IpcAdvertisement): boolean =>
+        observationMatchesScanQuery(query, normalizeScanObservation(candidate))
       return {
         async next() {
           while (true) {
             const item = await iterator.next()
             if (item.done) {
               lastObservations.clear()
+              evidence.clear()
               return item
             }
             if (item.value.kind === 'overflow' || item.value.kind === 'terminal') {
               return { done: false, value: item.value }
             }
-            const observation = projectPublicScanObservation(item.value.value)
+            const raw = item.value.value
+            const matched =
+              'device' in raw
+                ? evidence.matchAdvertisement(raw, matches)
+                : evidence.matchIpc(raw, 0, 'filtered-scan', matches)
+            if (matched === null) continue
+            const observation = projectPublicScanObservation(matched)
             if (observationMatchesScanQuery(query, observation)) {
               if (duplicates === 'coalesced') {
                 const fingerprint = publicObservationFingerprint(observation)
@@ -2627,6 +2837,7 @@ export function filterScanObservations(
         },
         return: async () => {
           lastObservations.clear()
+          evidence.clear()
           await iterator.return()
           return { done: true, value: undefined }
         },

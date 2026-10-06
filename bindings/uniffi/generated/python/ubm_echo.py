@@ -2750,6 +2750,30 @@ class MobileRadioCompletion:
             return True
 
     @dataclass
+    class READY:
+
+        def __init__(self, ready:bool):
+            self.ready = ready
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioCompletion.READY(ready={})".format(self.ready)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioCompletion):
+                return NotImplemented
+            if not other.is_READY():
+                return False
+            if self.ready != other.ready:
+                return False
+            return True
+
+    @dataclass
     class RSSI:
 
         def __init__(self, rssi:int):
@@ -3104,6 +3128,10 @@ class MobileRadioCompletion:
         return isinstance(self, MobileRadioCompletion.WRITE_LIMITS)
     def is_write_limits(self) -> bool:
         return isinstance(self, MobileRadioCompletion.WRITE_LIMITS)
+    def is_READY(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.READY)
+    def is_ready(self) -> bool:
+        return isinstance(self, MobileRadioCompletion.READY)
     def is_RSSI(self) -> bool:
         return isinstance(self, MobileRadioCompletion.RSSI)
     def is_rssi(self) -> bool:
@@ -3161,6 +3189,7 @@ MobileRadioCompletion.DISCOVERED = type("MobileRadioCompletion.DISCOVERED", (Mob
 MobileRadioCompletion.NOTIFY_ENABLED = type("MobileRadioCompletion.NOTIFY_ENABLED", (MobileRadioCompletion.NOTIFY_ENABLED, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.MTU = type("MobileRadioCompletion.MTU", (MobileRadioCompletion.MTU, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.WRITE_LIMITS = type("MobileRadioCompletion.WRITE_LIMITS", (MobileRadioCompletion.WRITE_LIMITS, MobileRadioCompletion,), {})  # type: ignore
+MobileRadioCompletion.READY = type("MobileRadioCompletion.READY", (MobileRadioCompletion.READY, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.RSSI = type("MobileRadioCompletion.RSSI", (MobileRadioCompletion.RSSI, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.ACCEPTED = type("MobileRadioCompletion.ACCEPTED", (MobileRadioCompletion.ACCEPTED, MobileRadioCompletion,), {})  # type: ignore
 MobileRadioCompletion.PHY = type("MobileRadioCompletion.PHY", (MobileRadioCompletion.PHY, MobileRadioCompletion,), {})  # type: ignore
@@ -3214,52 +3243,56 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterUInt16.read(buf),
             )
         if variant == 9:
+            return MobileRadioCompletion.READY(
+                _UniffiFfiConverterBoolean.read(buf),
+            )
+        if variant == 10:
             return MobileRadioCompletion.RSSI(
                 _UniffiFfiConverterInt16.read(buf),
             )
-        if variant == 10:
+        if variant == 11:
             return MobileRadioCompletion.ACCEPTED(
                 _UniffiFfiConverterBoolean.read(buf),
             )
-        if variant == 11:
+        if variant == 12:
             return MobileRadioCompletion.PHY(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 12:
+        if variant == 13:
             return MobileRadioCompletion.PHY_REQUEST(
                 _UniffiFfiConverterBoolean.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
             )
-        if variant == 13:
+        if variant == 14:
             return MobileRadioCompletion.SECURITY(
                 _UniffiFfiConverterTypeMobileSecurityState.read(buf),
             )
-        if variant == 14:
+        if variant == 15:
             return MobileRadioCompletion.BONDED_PEERS(
                 _UniffiFfiConverterSequenceTypeMobilePeerName.read(buf),
             )
-        if variant == 15:
+        if variant == 16:
             return MobileRadioCompletion.LEASE(
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 16:
+        if variant == 17:
             return MobileRadioCompletion.COMPANION(
                 _UniffiFfiConverterInt64.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterBoolean.read(buf),
             )
-        if variant == 17:
+        if variant == 18:
             return MobileRadioCompletion.COMPANION_LIST(
                 _UniffiFfiConverterSequenceTypeMobileCompanionRecord.read(buf),
             )
-        if variant == 18:
+        if variant == 19:
             return MobileRadioCompletion.CLOSED(
                 _UniffiFfiConverterSequenceTypeMobileCloseFailure.read(buf),
             )
-        if variant == 19:
+        if variant == 20:
             return MobileRadioCompletion.FAILED(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterOptionalInt32.read(buf),
@@ -3296,6 +3329,9 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
         if value.is_WRITE_LIMITS():
             _UniffiFfiConverterUInt16.check_lower(value.with_response)
             _UniffiFfiConverterUInt16.check_lower(value.without_response)
+            return
+        if value.is_READY():
+            _UniffiFfiConverterBoolean.check_lower(value.ready)
             return
         if value.is_RSSI():
             _UniffiFfiConverterInt16.check_lower(value.rssi)
@@ -3370,44 +3406,47 @@ class _UniffiFfiConverterTypeMobileRadioCompletion(_UniffiConverterRustBuffer):
             buf.write_i32(8)
             _UniffiFfiConverterUInt16.write(value.with_response, buf)
             _UniffiFfiConverterUInt16.write(value.without_response, buf)
-        if value.is_RSSI():
+        if value.is_READY():
             buf.write_i32(9)
+            _UniffiFfiConverterBoolean.write(value.ready, buf)
+        if value.is_RSSI():
+            buf.write_i32(10)
             _UniffiFfiConverterInt16.write(value.rssi, buf)
         if value.is_ACCEPTED():
-            buf.write_i32(10)
+            buf.write_i32(11)
             _UniffiFfiConverterBoolean.write(value.accepted, buf)
         if value.is_PHY():
-            buf.write_i32(11)
+            buf.write_i32(12)
             _UniffiFfiConverterString.write(value.tx, buf)
             _UniffiFfiConverterString.write(value.rx, buf)
         if value.is_PHY_REQUEST():
-            buf.write_i32(12)
+            buf.write_i32(13)
             _UniffiFfiConverterBoolean.write(value.accepted, buf)
             _UniffiFfiConverterOptionalString.write(value.tx, buf)
             _UniffiFfiConverterOptionalString.write(value.rx, buf)
         if value.is_SECURITY():
-            buf.write_i32(13)
+            buf.write_i32(14)
             _UniffiFfiConverterTypeMobileSecurityState.write(value.state, buf)
         if value.is_BONDED_PEERS():
-            buf.write_i32(14)
+            buf.write_i32(15)
             _UniffiFfiConverterSequenceTypeMobilePeerName.write(value.peers, buf)
         if value.is_LEASE():
-            buf.write_i32(15)
+            buf.write_i32(16)
             _UniffiFfiConverterString.write(value.lease_id, buf)
         if value.is_COMPANION():
-            buf.write_i32(16)
+            buf.write_i32(17)
             _UniffiFfiConverterInt64.write(value.association_id, buf)
             _UniffiFfiConverterOptionalString.write(value.peer_id, buf)
             _UniffiFfiConverterOptionalString.write(value.display_name, buf)
             _UniffiFfiConverterBoolean.write(value.already_associated, buf)
         if value.is_COMPANION_LIST():
-            buf.write_i32(17)
+            buf.write_i32(18)
             _UniffiFfiConverterSequenceTypeMobileCompanionRecord.write(value.records, buf)
         if value.is_CLOSED():
-            buf.write_i32(18)
+            buf.write_i32(19)
             _UniffiFfiConverterSequenceTypeMobileCloseFailure.write(value.failures, buf)
         if value.is_FAILED():
-            buf.write_i32(19)
+            buf.write_i32(20)
             _UniffiFfiConverterString.write(value.kind, buf)
             _UniffiFfiConverterOptionalInt32.write(value.gatt_status, buf)
             _UniffiFfiConverterOptionalString.write(value.native_domain, buf)
@@ -3644,6 +3683,35 @@ class MobileRadioIngress:
             return True
 
     @dataclass
+    class WRITE_READINESS:
+
+        def __init__(self, peer_id:str, ready:bool):
+            self.peer_id = peer_id
+
+
+            self.ready = ready
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioIngress.WRITE_READINESS(peer_id={}, ready={})".format(self.peer_id, self.ready)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioIngress):
+                return NotImplemented
+            if not other.is_WRITE_READINESS():
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            if self.ready != other.ready:
+                return False
+            return True
+
+    @dataclass
     class RESTORED:
 
         def __init__(self, peers:typing.List[MobileRestoredPeer]):
@@ -3728,6 +3796,10 @@ class MobileRadioIngress:
         return isinstance(self, MobileRadioIngress.SECURITY_CHANGED)
     def is_security_changed(self) -> bool:
         return isinstance(self, MobileRadioIngress.SECURITY_CHANGED)
+    def is_WRITE_READINESS(self) -> bool:
+        return isinstance(self, MobileRadioIngress.WRITE_READINESS)
+    def is_write_readiness(self) -> bool:
+        return isinstance(self, MobileRadioIngress.WRITE_READINESS)
     def is_RESTORED(self) -> bool:
         return isinstance(self, MobileRadioIngress.RESTORED)
     def is_restored(self) -> bool:
@@ -3748,6 +3820,7 @@ MobileRadioIngress.NOTIFICATION = type("MobileRadioIngress.NOTIFICATION", (Mobil
 MobileRadioIngress.ADAPTER_STATE = type("MobileRadioIngress.ADAPTER_STATE", (MobileRadioIngress.ADAPTER_STATE, MobileRadioIngress,), {})  # type: ignore
 MobileRadioIngress.SCAN_FAILED = type("MobileRadioIngress.SCAN_FAILED", (MobileRadioIngress.SCAN_FAILED, MobileRadioIngress,), {})  # type: ignore
 MobileRadioIngress.SECURITY_CHANGED = type("MobileRadioIngress.SECURITY_CHANGED", (MobileRadioIngress.SECURITY_CHANGED, MobileRadioIngress,), {})  # type: ignore
+MobileRadioIngress.WRITE_READINESS = type("MobileRadioIngress.WRITE_READINESS", (MobileRadioIngress.WRITE_READINESS, MobileRadioIngress,), {})  # type: ignore
 MobileRadioIngress.RESTORED = type("MobileRadioIngress.RESTORED", (MobileRadioIngress.RESTORED, MobileRadioIngress,), {})  # type: ignore
 MobileRadioIngress.DROPPED = type("MobileRadioIngress.DROPPED", (MobileRadioIngress.DROPPED, MobileRadioIngress,), {})  # type: ignore
 
@@ -3792,10 +3865,15 @@ class _UniffiFfiConverterTypeMobileRadioIngress(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterTypeMobileSecurityState.read(buf),
             )
         if variant == 8:
+            return MobileRadioIngress.WRITE_READINESS(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterBoolean.read(buf),
+            )
+        if variant == 9:
             return MobileRadioIngress.RESTORED(
                 _UniffiFfiConverterSequenceTypeMobileRestoredPeer.read(buf),
             )
-        if variant == 9:
+        if variant == 10:
             return MobileRadioIngress.DROPPED(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
@@ -3829,6 +3907,10 @@ class _UniffiFfiConverterTypeMobileRadioIngress(_UniffiConverterRustBuffer):
         if value.is_SECURITY_CHANGED():
             _UniffiFfiConverterString.check_lower(value.peer_id)
             _UniffiFfiConverterTypeMobileSecurityState.check_lower(value.state)
+            return
+        if value.is_WRITE_READINESS():
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            _UniffiFfiConverterBoolean.check_lower(value.ready)
             return
         if value.is_RESTORED():
             _UniffiFfiConverterSequenceTypeMobileRestoredPeer.check_lower(value.peers)
@@ -3867,11 +3949,15 @@ class _UniffiFfiConverterTypeMobileRadioIngress(_UniffiConverterRustBuffer):
             buf.write_i32(7)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterTypeMobileSecurityState.write(value.state, buf)
-        if value.is_RESTORED():
+        if value.is_WRITE_READINESS():
             buf.write_i32(8)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+            _UniffiFfiConverterBoolean.write(value.ready, buf)
+        if value.is_RESTORED():
+            buf.write_i32(9)
             _UniffiFfiConverterSequenceTypeMobileRestoredPeer.write(value.peers, buf)
         if value.is_DROPPED():
-            buf.write_i32(9)
+            buf.write_i32(10)
             _UniffiFfiConverterString.write(value.ingress_class, buf)
             _UniffiFfiConverterString.write(value.detail, buf)
 
@@ -4356,6 +4442,35 @@ class MobileRadioRequest:
             if not isinstance(other, MobileRadioRequest):
                 return NotImplemented
             if not other.is_READ_WRITE_LIMITS():
+                return False
+            if self.id != other.id:
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            return True
+
+    @dataclass
+    class READ_WRITE_READINESS:
+
+        def __init__(self, id:int, peer_id:str):
+            self.id = id
+
+
+            self.peer_id = peer_id
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioRequest.READ_WRITE_READINESS(id={}, peer_id={})".format(self.id, self.peer_id)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioRequest):
+                return NotImplemented
+            if not other.is_READ_WRITE_READINESS():
                 return False
             if self.id != other.id:
                 return False
@@ -4980,6 +5095,10 @@ class MobileRadioRequest:
         return isinstance(self, MobileRadioRequest.READ_WRITE_LIMITS)
     def is_read_write_limits(self) -> bool:
         return isinstance(self, MobileRadioRequest.READ_WRITE_LIMITS)
+    def is_READ_WRITE_READINESS(self) -> bool:
+        return isinstance(self, MobileRadioRequest.READ_WRITE_READINESS)
+    def is_read_write_readiness(self) -> bool:
+        return isinstance(self, MobileRadioRequest.READ_WRITE_READINESS)
     def is_REQUEST_MTU(self) -> bool:
         return isinstance(self, MobileRadioRequest.REQUEST_MTU)
     def is_request_mtu(self) -> bool:
@@ -5071,6 +5190,7 @@ MobileRadioRequest.ENABLE_NOTIFICATIONS = type("MobileRadioRequest.ENABLE_NOTIFI
 MobileRadioRequest.DISABLE_NOTIFICATIONS = type("MobileRadioRequest.DISABLE_NOTIFICATIONS", (MobileRadioRequest.DISABLE_NOTIFICATIONS, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.READ_MTU = type("MobileRadioRequest.READ_MTU", (MobileRadioRequest.READ_MTU, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.READ_WRITE_LIMITS = type("MobileRadioRequest.READ_WRITE_LIMITS", (MobileRadioRequest.READ_WRITE_LIMITS, MobileRadioRequest,), {})  # type: ignore
+MobileRadioRequest.READ_WRITE_READINESS = type("MobileRadioRequest.READ_WRITE_READINESS", (MobileRadioRequest.READ_WRITE_READINESS, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.REQUEST_MTU = type("MobileRadioRequest.REQUEST_MTU", (MobileRadioRequest.REQUEST_MTU, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.READ_RSSI = type("MobileRadioRequest.READ_RSSI", (MobileRadioRequest.READ_RSSI, MobileRadioRequest,), {})  # type: ignore
 MobileRadioRequest.REQUEST_CONNECTION_PRIORITY = type("MobileRadioRequest.REQUEST_CONNECTION_PRIORITY", (MobileRadioRequest.REQUEST_CONNECTION_PRIORITY, MobileRadioRequest,), {})  # type: ignore
@@ -5182,99 +5302,104 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterString.read(buf),
             )
         if variant == 15:
+            return MobileRadioRequest.READ_WRITE_READINESS(
+                _UniffiFfiConverterUInt64.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 16:
             return MobileRadioRequest.REQUEST_MTU(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterUInt16.read(buf),
             )
-        if variant == 16:
+        if variant == 17:
             return MobileRadioRequest.READ_RSSI(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 17:
+        if variant == 18:
             return MobileRadioRequest.REQUEST_CONNECTION_PRIORITY(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 18:
+        if variant == 19:
             return MobileRadioRequest.READ_PHY(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 19:
+        if variant == 20:
             return MobileRadioRequest.REQUEST_PHY(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
             )
-        if variant == 20:
+        if variant == 21:
             return MobileRadioRequest.SECURITY_STATE(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 21:
+        if variant == 22:
             return MobileRadioRequest.CREATE_BOND(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 22:
+        if variant == 23:
             return MobileRadioRequest.CANCEL_BOND(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 23:
+        if variant == 24:
             return MobileRadioRequest.BONDED_PEERS(
                 _UniffiFfiConverterUInt64.read(buf),
             )
-        if variant == 24:
+        if variant == 25:
             return MobileRadioRequest.ACQUIRE_BACKGROUND(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 25:
+        if variant == 26:
             return MobileRadioRequest.RELEASE_BACKGROUND(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 26:
+        if variant == 27:
             return MobileRadioRequest.UPDATE_BACKGROUND_NOTIFICATION(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
             )
-        if variant == 27:
+        if variant == 28:
             return MobileRadioRequest.ASSOCIATE_COMPANION(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
                 _UniffiFfiConverterOptionalString.read(buf),
             )
-        if variant == 28:
+        if variant == 29:
             return MobileRadioRequest.LIST_COMPANION(
                 _UniffiFfiConverterUInt64.read(buf),
             )
-        if variant == 29:
+        if variant == 30:
             return MobileRadioRequest.DISASSOCIATE_COMPANION(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterInt64.read(buf),
             )
-        if variant == 30:
+        if variant == 31:
             return MobileRadioRequest.OBSERVE_PRESENCE(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 31:
+        if variant == 32:
             return MobileRadioRequest.STOP_PRESENCE(
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 32:
+        if variant == 33:
             return MobileRadioRequest.CLOSE(
                 _UniffiFfiConverterUInt64.read(buf),
             )
@@ -5349,6 +5474,10 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
             _UniffiFfiConverterString.check_lower(value.peer_id)
             return
         if value.is_READ_WRITE_LIMITS():
+            _UniffiFfiConverterUInt64.check_lower(value.id)
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            return
+        if value.is_READ_WRITE_READINESS():
             _UniffiFfiConverterUInt64.check_lower(value.id)
             _UniffiFfiConverterString.check_lower(value.peer_id)
             return
@@ -5505,84 +5634,88 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
             buf.write_i32(14)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
-        if value.is_REQUEST_MTU():
+        if value.is_READ_WRITE_READINESS():
             buf.write_i32(15)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+        if value.is_REQUEST_MTU():
+            buf.write_i32(16)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterUInt16.write(value.mtu, buf)
         if value.is_READ_RSSI():
-            buf.write_i32(16)
+            buf.write_i32(17)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_REQUEST_CONNECTION_PRIORITY():
-            buf.write_i32(17)
+            buf.write_i32(18)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterString.write(value.priority, buf)
         if value.is_READ_PHY():
-            buf.write_i32(18)
+            buf.write_i32(19)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_REQUEST_PHY():
-            buf.write_i32(19)
+            buf.write_i32(20)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterOptionalString.write(value.tx, buf)
             _UniffiFfiConverterOptionalString.write(value.rx, buf)
         if value.is_SECURITY_STATE():
-            buf.write_i32(20)
+            buf.write_i32(21)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_CREATE_BOND():
-            buf.write_i32(21)
+            buf.write_i32(22)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterString.write(value.transport, buf)
         if value.is_CANCEL_BOND():
-            buf.write_i32(22)
+            buf.write_i32(23)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
         if value.is_BONDED_PEERS():
-            buf.write_i32(23)
+            buf.write_i32(24)
             _UniffiFfiConverterUInt64.write(value.id, buf)
         if value.is_ACQUIRE_BACKGROUND():
-            buf.write_i32(24)
+            buf.write_i32(25)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.kind, buf)
             _UniffiFfiConverterString.write(value.reason, buf)
         if value.is_RELEASE_BACKGROUND():
-            buf.write_i32(25)
+            buf.write_i32(26)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.lease_id, buf)
         if value.is_UPDATE_BACKGROUND_NOTIFICATION():
-            buf.write_i32(26)
+            buf.write_i32(27)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.lease_id, buf)
             _UniffiFfiConverterString.write(value.title, buf)
             _UniffiFfiConverterOptionalString.write(value.body, buf)
         if value.is_ASSOCIATE_COMPANION():
-            buf.write_i32(27)
+            buf.write_i32(28)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterOptionalString.write(value.name, buf)
             _UniffiFfiConverterOptionalString.write(value.service_uuid, buf)
             _UniffiFfiConverterOptionalString.write(value.filters_json, buf)
         if value.is_LIST_COMPANION():
-            buf.write_i32(28)
+            buf.write_i32(29)
             _UniffiFfiConverterUInt64.write(value.id, buf)
         if value.is_DISASSOCIATE_COMPANION():
-            buf.write_i32(29)
+            buf.write_i32(30)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterInt64.write(value.association_id, buf)
         if value.is_OBSERVE_PRESENCE():
-            buf.write_i32(30)
-            _UniffiFfiConverterUInt64.write(value.id, buf)
-            _UniffiFfiConverterString.write(value.peer_id, buf)
-        if value.is_STOP_PRESENCE():
             buf.write_i32(31)
             _UniffiFfiConverterUInt64.write(value.id, buf)
             _UniffiFfiConverterString.write(value.peer_id, buf)
-        if value.is_CLOSE():
+        if value.is_STOP_PRESENCE():
             buf.write_i32(32)
+            _UniffiFfiConverterUInt64.write(value.id, buf)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+        if value.is_CLOSE():
+            buf.write_i32(33)
             _UniffiFfiConverterUInt64.write(value.id, buf)
 
 

@@ -145,6 +145,7 @@ export interface PortableGattDatabaseSnapshot {
     readonly path: PortableServicePath
     readonly primary?: boolean
     readonly includedServices?: readonly { readonly uuid: string; readonly occurrence: string }[]
+    readonly restriction?: import('../backend-contract/gatt').GattServiceRestriction
   }[]
   readonly characteristics: readonly {
     readonly path: PortableCurrentCharacteristicPath

@@ -373,6 +373,13 @@ async fn generate() -> String {
     .await;
     r.invoke(
         &session,
+        "write readiness on android",
+        "connection.write-readiness",
+        json!({"peerId": peer, "lease": "lease-1", "operationId": "ready-1"}),
+    )
+    .await;
+    r.invoke(
+        &session,
         "request mtu",
         "connection.request-mtu",
         json!({"peerId": peer, "lease": "lease-1", "mtu": 247, "operationId": "mtu-1"}),

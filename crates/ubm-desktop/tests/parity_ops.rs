@@ -51,6 +51,7 @@ fn control_service() -> ServiceSnapshot {
             },
             descriptors: Vec::new(),
         }],
+        access: std::default::Default::default(),
     }
 }
 
@@ -769,6 +770,7 @@ fn notify_service() -> ServiceSnapshot {
             },
             descriptors: Vec::new(),
         }],
+        access: std::default::Default::default(),
     }
 }
 
@@ -1009,6 +1011,63 @@ async fn write_readiness_is_probed_and_reported_per_connection() {
         .expect("report");
     assert!(report.ready);
     assert_eq!(report.peer_id, "peer-wr");
+    assert_eq!(report.connection_generation, generation);
+}
+
+/// Observed connection parameters stay on the lease that holds the link and
+/// carry the generation current when the report arrives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connection_parameters_are_read_and_reported_per_connection() {
+    let central = open().await;
+    connected_peer(&central, "peer-cp").await;
+    let unsupported = central
+        .connection_parameters("peer-cp", "lease-a", OpControl::budget_ms(1000))
+        .await
+        .expect_err("a radio without parameters says so");
+    assert_eq!(unsupported.code_str(), "capability.unsupported");
+    central.boundary().set_connection_parameters(
+        "peer-cp",
+        ubm_desktop::ObservedConnectionParameters {
+            interval_us: 7_500,
+            latency: 0,
+            supervision_timeout_us: 200_000,
+        },
+    );
+    let read = central
+        .connection_parameters("peer-cp", "lease-a", OpControl::budget_ms(1000))
+        .await
+        .expect("probe");
+    assert_eq!(read.interval_us, 7_500);
+    assert_eq!(read.latency, 0);
+    assert_eq!(read.supervision_timeout_us, 200_000);
+    let foreign = central
+        .connection_parameters("peer-cp", "lease-z", OpControl::budget_ms(1000))
+        .await
+        .expect_err("foreign lease");
+    assert_eq!(foreign.code_str(), "ownership.denied");
+    let generation = central
+        .peer_records()
+        .await
+        .into_iter()
+        .find(|record| record.peer_id == "peer-cp")
+        .and_then(|record| record.connection_generation);
+    let mut reports = central.connection_parameter_events();
+    central
+        .boundary()
+        .push_event(RadioEvent::ConnectionParameters {
+            peer_id: "peer-cp".to_owned(),
+            interval_us: 15_000,
+            latency: 4,
+            supervision_timeout_us: 400_000,
+        });
+    let report = tokio::time::timeout(Duration::from_secs(2), reports.recv())
+        .await
+        .expect("in time")
+        .expect("report");
+    assert_eq!(report.interval_us, 15_000);
+    assert_eq!(report.latency, 4);
+    assert_eq!(report.supervision_timeout_us, 400_000);
+    assert_eq!(report.peer_id, "peer-cp");
     assert_eq!(report.connection_generation, generation);
 }
 

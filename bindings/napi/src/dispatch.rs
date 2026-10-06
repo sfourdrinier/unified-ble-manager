@@ -53,8 +53,9 @@ use ubm_desktop::{
     ObservedDelivery, OpControl, OpTicket, PairOutcome, PairRequest, PairingGeneration,
     PairingGenerationController, PathSelector, PeerSnapshot, PlatformDetail, PlatformValue,
     PropertyFlags, RadioBoundary, RadioCloseFailure, RadioEvent, Retryability, ScanFilterSpec,
-    ScanStop, ScanTerminalEvent, SecureConnections, SecurityEvent, SecurityState, ServiceData,
-    ServiceSnapshot, UnpairOutcome, WriteLimits, WriteReadinessEvent,
+    ScanStop, ScanTerminalEvent, SecureConnections, SecurityEvent, SecurityState, ServiceAccess,
+    ConnectionParametersEvent, ServiceData, ServiceSnapshot, UnpairOutcome, WriteLimits,
+    WriteReadinessEvent,
 };
 
 /// Typed dispatch failure carrying a frozen C-UBM identity. [`DesktopError`]
@@ -701,7 +702,10 @@ impl RadioBoundary for DispatchRadio {
         }
     }
 
-    async fn read_effective_mtu(&self, peer_id: &str) -> std::result::Result<u16, DesktopError> {
+    async fn read_effective_mtu(
+        &self,
+        peer_id: &str,
+    ) -> std::result::Result<Option<u16>, DesktopError> {
         match self {
             Self::Radio(radio) => radio.read_effective_mtu(peer_id).await,
             Self::Synthetic(radio) => radio.read_effective_mtu(peer_id).await,
@@ -1467,6 +1471,11 @@ pub struct PathInfo {
     /// reports them for this platform (`null` otherwise; each field `null`
     /// when the OS does not report that fact — never `false`).
     pub access: Option<CharacteristicAccessInfo>,
+    /// Service-level restriction. `null` is an open service or a
+    /// characteristic/descriptor path. `os-reserved` and `access-denied`
+    /// keep the service identity.
+    #[napi(js_name = "serviceAccess")]
+    pub service_access: Option<String>,
 }
 
 /// Wire form of [`CharacteristicAccess`].
@@ -1551,7 +1560,16 @@ fn path_info(
         descriptor_occurrence,
         properties: u32::from(path.properties),
         access: path.access.as_ref().map(access_info),
+        service_access: path.service_access.map(service_access_name),
     })
+}
+
+fn service_access_name(access: ServiceAccess) -> String {
+    match access {
+        ServiceAccess::Open => "open".to_owned(),
+        ServiceAccess::OsReserved => "os-reserved".to_owned(),
+        ServiceAccess::AccessDenied => "access-denied".to_owned(),
+    }
 }
 
 /// Path selector input. UUIDs are canonicalized by
@@ -2106,6 +2124,34 @@ fn pair_outcome_info(outcome: PairOutcome) -> PairOutcomeInfo {
     }
 }
 
+/// Observed connection parameters. Interval and supervision timeout are
+/// microseconds.
+#[napi(object)]
+pub struct ConnectionParametersInfo {
+    #[napi(js_name = "intervalUs")]
+    pub interval_us: u32,
+    pub latency: u32,
+    #[napi(js_name = "supervisionTimeoutUs")]
+    pub supervision_timeout_us: u32,
+}
+
+/// One connection-parameter report (`state`) or a gap marker.
+#[napi(object)]
+pub struct ConnectionParametersEventInfo {
+    pub kind: String,
+    pub sequence: Option<i64>,
+    #[napi(js_name = "peerId")]
+    pub peer_id: Option<String>,
+    #[napi(js_name = "connectionGeneration")]
+    pub connection_generation: Option<String>,
+    #[napi(js_name = "intervalUs")]
+    pub interval_us: Option<u32>,
+    pub latency: Option<u32>,
+    #[napi(js_name = "supervisionTimeoutUs")]
+    pub supervision_timeout_us: Option<u32>,
+    pub missed: Option<i64>,
+}
+
 /// One write-without-response readiness report (`state`) or a gap marker.
 #[napi(object)]
 pub struct WriteReadinessEventInfo {
@@ -2482,6 +2528,7 @@ fn staged_services(services: &[StageService]) -> Vec<ServiceSnapshot> {
                         .collect(),
                 })
                 .collect(),
+            access: std::default::Default::default(),
         })
         .collect()
 }
@@ -2676,6 +2723,7 @@ pub struct UbmCentral {
     adapter: AsyncMutex<broadcast::Receiver<AdapterEvent>>,
     security: AsyncMutex<broadcast::Receiver<SecurityEvent>>,
     write_readiness: AsyncMutex<broadcast::Receiver<WriteReadinessEvent>>,
+    connection_parameters: AsyncMutex<broadcast::Receiver<ConnectionParametersEvent>>,
     scan_terminals: AsyncMutex<broadcast::Receiver<ScanTerminalEvent>>,
     adapter_resets: AsyncMutex<broadcast::Receiver<AdapterResetEvent>>,
     tickets: StdMutex<HashMap<String, OpTicket>>,
@@ -2749,6 +2797,7 @@ impl UbmCentral {
         let adapter = AsyncMutex::new(central.adapter_events());
         let security = AsyncMutex::new(central.security_events());
         let write_readiness = AsyncMutex::new(central.write_readiness_events());
+        let connection_parameters = AsyncMutex::new(central.connection_parameter_events());
         let scan_terminals = AsyncMutex::new(central.scan_terminal_events());
         let adapter_resets = AsyncMutex::new(central.adapter_reset_events());
         Self {
@@ -2761,6 +2810,7 @@ impl UbmCentral {
             adapter,
             security,
             write_readiness,
+            connection_parameters,
             scan_terminals,
             adapter_resets,
             tickets: StdMutex::new(HashMap::new()),
@@ -3513,6 +3563,69 @@ impl UbmCentral {
             .collect())
     }
 
+    /// Observed connection parameters for the lease's link. Interval and
+    /// supervision timeout are microseconds.
+    #[napi(catch_unwind)]
+    pub async fn connection_parameters(
+        &self,
+        options: LeaseOptions,
+    ) -> Result<ConnectionParametersInfo> {
+        let ctl = self
+            .control(
+                options.timeout_ms,
+                options.ticket.as_deref(),
+                "dispatch.connection-parameters",
+            )
+            .map_err(to_napi)?;
+        let params = self
+            .central
+            .connection_parameters(&options.peer_id, &options.lease, ctl)
+            .await
+            .map_err(fail)?;
+        Ok(ConnectionParametersInfo {
+            interval_us: params.interval_us,
+            latency: u32::from(params.latency),
+            supervision_timeout_us: params.supervision_timeout_us,
+        })
+    }
+
+    /// Take one connection-parameter report (`null` when none is waiting).
+    #[napi(catch_unwind)]
+    pub async fn take_connection_parameter_event(
+        &self,
+    ) -> Result<Option<ConnectionParametersEventInfo>> {
+        const OP: &str = "dispatch.take-connection-parameter-event";
+        let mut receiver = self.connection_parameters.lock().await;
+        let gap = |kind: &str, missed: Option<i64>| ConnectionParametersEventInfo {
+            kind: kind.to_owned(),
+            sequence: None,
+            peer_id: None,
+            connection_generation: None,
+            interval_us: None,
+            latency: None,
+            supervision_timeout_us: None,
+            missed,
+        };
+        match receiver.try_recv() {
+            Ok(event) => Ok(Some(ConnectionParametersEventInfo {
+                kind: "state".to_owned(),
+                sequence: Some(number_wire(event.sequence, OP).map_err(to_napi)?),
+                peer_id: Some(event.peer_id),
+                connection_generation: event.connection_generation,
+                interval_us: Some(event.interval_us),
+                latency: Some(u32::from(event.latency)),
+                supervision_timeout_us: Some(event.supervision_timeout_us),
+                missed: None,
+            })),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Lagged(missed)) => Ok(Some(gap(
+                "lagged",
+                Some(number_wire(missed, OP).map_err(to_napi)?),
+            ))),
+            Err(TryRecvError::Closed) => Ok(Some(gap("closed", None))),
+        }
+    }
+
     /// Whether the lease's link can take a write without response now.
     #[napi(catch_unwind)]
     pub async fn write_readiness(&self, options: LeaseOptions) -> Result<bool> {
@@ -3988,13 +4101,12 @@ impl UbmCentral {
             .map_err(fail)
     }
 
-    /// Effective ATT MTU of the live link, as the OS reports it (finding
-    /// 217 follow-up): macOS `maximumWriteValueLength(.withResponse) + 3`,
-    /// Windows `GattSession.MaxPduSize`, Linux the BlueZ characteristic
-    /// MTU. A withheld measurement is `capability.unsupported` with the
-    /// reason, never a guessed 23.
+    /// Effective ATT MTU of the live link when the OS observed one.
+    /// Windows reads `GattSession.MaxPduSize`. Linux reads the BlueZ
+    /// characteristic MTU. macOS returns null: CoreBluetooth's write
+    /// length is not an ATT MTU. Null is unobserved, not a link failure.
     #[napi(catch_unwind)]
-    pub async fn read_effective_mtu(&self, options: LeaseOptions) -> Result<i32> {
+    pub async fn read_effective_mtu(&self, options: LeaseOptions) -> Result<Option<i32>> {
         let ctl = self
             .control(
                 options.timeout_ms,
@@ -4006,7 +4118,7 @@ impl UbmCentral {
         self.central
             .read_effective_mtu(&options.peer_id, &options.lease, ctl)
             .await
-            .map(i32::from)
+            .map(|mtu| mtu.map(i32::from))
             .map_err(fail)
     }
 
@@ -6605,7 +6717,7 @@ mod tests {
                 .read_effective_mtu(lease(Some(2000)))
                 .await
                 .expect("effective mtu"),
-            515
+            Some(515)
         );
         let counters = central.dispatch_counters().expect("counters");
         assert_eq!(counters.read_effective_mtu, 1);

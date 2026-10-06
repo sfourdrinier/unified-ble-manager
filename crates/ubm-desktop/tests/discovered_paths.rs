@@ -11,7 +11,7 @@
 use ubm_desktop::OpControl;
 use ubm_desktop::{
     CharacteristicSnapshot, DescriptorSnapshot, DesktopCentral, FakeRadio, PeerSnapshot,
-    PropertyFlags, RadioEvent, ServiceSnapshot,
+    PropertyFlags, RadioEvent, ServiceAccess, ServiceSnapshot,
 };
 
 const HRM_SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
@@ -54,17 +54,23 @@ fn db_services() -> Vec<ServiceSnapshot> {
                     descriptors: Vec::new(),
                 },
             ],
+
+            access: std::default::Default::default(),
         },
         // Duplicate service UUID: occurrences keep the instances distinct.
         ServiceSnapshot {
             uuid: HRM_SERVICE.to_owned(),
             occurrence: 1,
             characteristics: Vec::new(),
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
             uuid: BATTERY_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: Vec::new(),
+
+            access: std::default::Default::default(),
         },
     ]
 }
@@ -194,4 +200,49 @@ async fn discovered_paths_requires_discovery() {
         .await
         .expect_err("undiscovered peer must fail");
     assert_eq!(error.code_str(), "gatt.discovery-required");
+}
+
+#[tokio::test]
+async fn a_denied_service_stays_in_the_discovered_tree() {
+    let central = DesktopCentral::open(FakeRadio::new(), "test-host")
+        .await
+        .expect("open");
+    central
+        .boundary()
+        .push_event(RadioEvent::Advertisement(PeerSnapshot {
+            id: "peer-denied".to_owned(),
+            address: None,
+            service_uuids: vec![HRM_SERVICE.to_owned(), BATTERY_SERVICE.to_owned()],
+            rssi: Some(-40),
+            local_name: None,
+            manufacturer_data: Vec::new(),
+            service_data: Vec::new(),
+            tx_power_level: None,
+            extras: ubm_desktop::AdvertisementExtras::default(),
+        }));
+    central
+        .connect("peer-denied", "lease-a", OpControl::budget_ms(5000))
+        .await
+        .expect("connect");
+    let mut services = db_services();
+    services[2].access = ServiceAccess::AccessDenied;
+    central.boundary().set_services("peer-denied", services);
+    central
+        .discover("peer-denied", "lease-a", OpControl::unbounded())
+        .await
+        .expect("discover");
+    let paths = central
+        .discovered_paths("peer-denied")
+        .await
+        .expect("paths");
+    let battery = paths
+        .iter()
+        .find(|path| path.service_uuid == BATTERY_SERVICE && path.characteristic_uuid.is_none())
+        .expect("battery service path");
+    assert_eq!(battery.service_access, Some(ServiceAccess::AccessDenied));
+    let heart = paths
+        .iter()
+        .find(|path| path.service_uuid == HRM_SERVICE && path.characteristic_uuid.is_none())
+        .expect("heart rate service path");
+    assert_eq!(heart.service_access, None);
 }

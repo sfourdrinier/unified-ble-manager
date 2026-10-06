@@ -142,25 +142,21 @@ const MACOS_WRITE_LENGTH_LIMITATION: Option<&str> = None;
 #[cfg(not(btleplug_ubm_write_length))]
 const MACOS_WRITE_LENGTH_NOTE: &str = "Unpatched btleplug 0.12: CoreBluetooth mtu() stays 23, so no measured write length exists; the vendored patch (vendor/btleplug) provides it.";
 
-/// macOS `connection:effective-mtu`: derived per link as
-/// `CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3` through
-/// the vendored write-length patch (`vendor/btleplug`, UBM_PATCHES.md #1)
-/// — the same derivation, and the same limitation code, as the Apple
-/// React Native route (finding 217), so both hosts report the same value.
-/// Without the patch btleplug's CoreBluetooth `mtu()` never leaves 23
-/// and nothing measured exists.
+/// macOS `connection:effective-mtu`: the route exists and answers
+/// `unavailable`. CoreBluetooth does not observe an ATT MTU.
+/// `maximumWriteValueLength` stays a per-mode write capacity.
 #[cfg(btleplug_ubm_write_length)]
 const MACOS_EFFECTIVE_MTU_VERDICT: CapabilityVerdict = CapabilityVerdict::OsAdapterProvides;
 #[cfg(btleplug_ubm_write_length)]
-const MACOS_EFFECTIVE_MTU_LIMITATION: Option<&str> = Some("corebluetooth-derived-effective-mtu");
+const MACOS_EFFECTIVE_MTU_LIMITATION: Option<&str> = Some("corebluetooth-att-mtu-not-observed");
 #[cfg(btleplug_ubm_write_length)]
-const MACOS_EFFECTIVE_MTU_NOTE: &str = "Derived per link as CBPeripheral.maximumWriteValueLength(for: .withResponse) + 3 through the vendored btleplug patch (vendor/btleplug); deterministic-only until physical-radio qualification (live-radio-qualification-pending).";
+const MACOS_EFFECTIVE_MTU_NOTE: &str = "CoreBluetooth does not observe an ATT MTU. maximumWriteValueLength(for:) remains the per-mode write capacity and is not reported as an ATT MTU. The observation is unavailable.";
 #[cfg(not(btleplug_ubm_write_length))]
-const MACOS_EFFECTIVE_MTU_VERDICT: CapabilityVerdict = CapabilityVerdict::NarrowOsAdapterNeeded;
+const MACOS_EFFECTIVE_MTU_VERDICT: CapabilityVerdict = CapabilityVerdict::OsAdapterProvides;
 #[cfg(not(btleplug_ubm_write_length))]
-const MACOS_EFFECTIVE_MTU_LIMITATION: Option<&str> = None;
+const MACOS_EFFECTIVE_MTU_LIMITATION: Option<&str> = Some("corebluetooth-att-mtu-not-observed");
 #[cfg(not(btleplug_ubm_write_length))]
-const MACOS_EFFECTIVE_MTU_NOTE: &str = "Unpatched btleplug 0.12: CoreBluetooth mtu() stays 23, so no measured ATT MTU exists; the vendored write-length patch (vendor/btleplug) provides it.";
+const MACOS_EFFECTIVE_MTU_NOTE: &str = "CoreBluetooth does not observe an ATT MTU. The observation is unavailable; a write-length API is not a measurement of one ATT PDU.";
 
 /// macOS `gatt:write-without-response-readiness`: with the vendored patch
 /// (UBM_PATCHES.md #4) the legacy readiness watch exists
@@ -421,9 +417,15 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         id: "connection:parameters",
         verdict: CapabilityVerdict::NarrowOsAdapterNeeded,
         scenario: "connection.parameters",
-        note: "Connection-parameter update needs a per-OS adapter.",
+        note: "Connection parameters need a per-OS observation. BlueZ and CoreBluetooth do not expose this read.",
         limitation: None,
-        per_os: &[],
+        per_os: &[OsOverride {
+            os: DesktopOs::Windows,
+            verdict: CapabilityVerdict::OsAdapterProvides,
+            limitation: Some("winrt-connection-parameters-22000"),
+            note: "WinRT BluetoothLEDevice.GetConnectionParameters and ConnectionParametersChanged. Present from Windows 11 build 22000; an older OS answers capability.unavailable with winrt-connection-parameters-requires-windows-11-22000. Values are observed, not a preferred-parameter request.",
+            needs_pairing_generation_controller: false,
+        }],
     },
     DesktopCapability {
         id: "connection:phy",
@@ -672,7 +674,9 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
 /// compiled for, so runtime capability truth matches the report row for
 /// row. Provided rows register `limited` (deterministic evidence at most);
 /// adapter-needed rows register `unsupported`; limitation candidates
-/// register `limited` with their named limitation. The host supplies no
+/// register `limited` with their named limitation. `no-readiness-signal`
+/// registers `unsupported` and keeps that limitation: Windows and Linux
+/// have no write-without-response readiness signal. The host supplies no
 /// pairing-generation controller.
 pub fn register_desktop_capabilities(core: &mut Central) -> Result<(), CoreError> {
     register_for(core, DesktopOs::current(), false)
@@ -699,9 +703,13 @@ pub fn desktop_capability_states(
         .iter()
         .map(|capability| {
             let (verdict, limitation, _) = capability.on(os, pairing_generation);
-            let state = match verdict {
-                CapabilityVerdict::NarrowOsAdapterNeeded => CapabilityState::Unsupported,
-                _ => CapabilityState::Limited,
+            let state = if limitation == Some("no-readiness-signal") {
+                CapabilityState::Unsupported
+            } else {
+                match verdict {
+                    CapabilityVerdict::NarrowOsAdapterNeeded => CapabilityState::Unsupported,
+                    _ => CapabilityState::Limited,
+                }
             };
             (capability.id, state, limitation)
         })
@@ -729,19 +737,27 @@ fn register_for(
     for capability in DESKTOP_CAPABILITIES {
         let (verdict, limitation, _) = capability.on(os, pairing_generation);
         let (state, evidence, limitations): (CapabilityState, EvidenceLevel, Vec<&str>) =
-            match verdict {
-                CapabilityVerdict::BtleplugProvides
-                | CapabilityVerdict::LimitationCandidate
-                | CapabilityVerdict::OsAdapterProvides => (
-                    CapabilityState::Limited,
-                    EvidenceLevel::Deterministic,
-                    limitation.into_iter().collect(),
-                ),
-                CapabilityVerdict::NarrowOsAdapterNeeded => (
+            if limitation == Some("no-readiness-signal") {
+                (
                     CapabilityState::Unsupported,
                     EvidenceLevel::Blocked,
-                    Vec::from([NOT_IMPLEMENTED]),
-                ),
+                    vec!["no-readiness-signal"],
+                )
+            } else {
+                match verdict {
+                    CapabilityVerdict::BtleplugProvides
+                    | CapabilityVerdict::LimitationCandidate
+                    | CapabilityVerdict::OsAdapterProvides => (
+                        CapabilityState::Limited,
+                        EvidenceLevel::Deterministic,
+                        limitation.into_iter().collect(),
+                    ),
+                    CapabilityVerdict::NarrowOsAdapterNeeded => (
+                        CapabilityState::Unsupported,
+                        EvidenceLevel::Blocked,
+                        Vec::from([NOT_IMPLEMENTED]),
+                    ),
+                }
             };
         core.register_capability(CapabilityDescriptor::new(
             capability.id,
@@ -1129,6 +1145,39 @@ mod tests {
         assert_eq!(DesktopOs::ALL.len(), 3);
     }
 
+    /// Windows and Linux have no write-without-response readiness signal.
+    /// The row stays a base limitation-candidate in the parity report, and
+    /// the runtime answer is `unsupported` with that limitation kept.
+    /// macOS stays limited when the vendored probe and callback exist.
+    #[test]
+    fn windows_and_linux_readiness_is_unsupported_with_its_named_limitation() {
+        use super::DesktopOs;
+        for os in [DesktopOs::Windows, DesktopOs::Linux] {
+            let states = super::desktop_capability_states(Some(os), false);
+            let row = states
+                .iter()
+                .find(|(id, _, _)| *id == "gatt:write-without-response-readiness")
+                .expect("readiness row");
+            assert_eq!(row.1, ubm_core::central::CapabilityState::Unsupported);
+            assert_eq!(row.2, Some("no-readiness-signal"));
+        }
+        let states = super::desktop_capability_states(Some(DesktopOs::MacOs), false);
+        let macos = states
+            .iter()
+            .find(|(id, _, _)| *id == "gatt:write-without-response-readiness")
+            .expect("readiness row");
+        #[cfg(btleplug_ubm_write_readiness)]
+        {
+            assert_eq!(macos.1, ubm_core::central::CapabilityState::Limited);
+            assert_eq!(macos.2, Some("deterministic-only"));
+        }
+        #[cfg(not(btleplug_ubm_write_readiness))]
+        {
+            assert_eq!(macos.1, ubm_core::central::CapabilityState::Unsupported);
+            assert_eq!(macos.2, None);
+        }
+    }
+
     /// F11: the macOS readiness row names its patch or its absence. With
     /// the vendored patch the OS adapter provides the legacy watch;
     /// without it no readiness signal exists (the probe answers
@@ -1162,16 +1211,12 @@ mod tests {
         }
     }
 
-    /// Finding 217 follow-up: every desktop OS answers the effective ATT
-    /// MTU it measures — macOS derives
-    /// `maximumWriteValueLength(.withResponse) + 3` (the same derivation
-    /// as the Apple React Native route, and its limitation code), Windows
-    /// reads `GattSession.MaxPduSize`, Linux reads the
-    /// `org.bluez.GattCharacteristic1` MTU. macOS without the vendored
-    /// write-length patch stays open work, like the maximum-write-length
-    /// row. Each side is asserted under its own build configuration.
+    /// Windows reads `GattSession.MaxPduSize`. Linux reads the
+    /// `org.bluez.GattCharacteristic1` MTU. macOS keeps the route and
+    /// names the observation unavailable: CoreBluetooth write length is
+    /// not an ATT MTU.
     #[test]
-    fn effective_mtu_names_its_per_os_derivation() {
+    fn effective_mtu_names_its_per_os_observation() {
         use super::DesktopOs;
         let row = super::DESKTOP_CAPABILITIES
             .iter()
@@ -1196,22 +1241,8 @@ mod tests {
             .iter()
             .find(|entry| entry.os == DesktopOs::MacOs)
             .expect("macOS effective-mtu override");
-        #[cfg(btleplug_ubm_write_length)]
-        {
-            assert_eq!(macos.verdict, super::CapabilityVerdict::OsAdapterProvides);
-            assert_eq!(
-                macos.limitation,
-                Some("corebluetooth-derived-effective-mtu")
-            );
-        }
-        #[cfg(not(btleplug_ubm_write_length))]
-        {
-            assert_eq!(
-                macos.verdict,
-                super::CapabilityVerdict::NarrowOsAdapterNeeded
-            );
-            assert_eq!(macos.limitation, None);
-        }
+        assert_eq!(macos.verdict, super::CapabilityVerdict::OsAdapterProvides);
+        assert_eq!(macos.limitation, Some("corebluetooth-att-mtu-not-observed"));
     }
 
     #[test]
@@ -1223,21 +1254,36 @@ mod tests {
         register_desktop_capabilities(&mut core).expect("register");
         // The core's own `parity_rows` covers its six generic rows; the
         // desktop catalog projection is verified row by row through the
-        // capability gate against this build's per-OS verdicts.
+        // capability gate against the state this build actually registers.
+        // `no-readiness-signal` is unsupported on Windows and Linux while
+        // its base parity verdict stays a limitation candidate.
         let os = super::DesktopOs::current();
+        let states = super::desktop_capability_states(os, false);
         let mut limited = 0usize;
         let mut unsupported = 0usize;
         for capability in DESKTOP_CAPABILITIES {
-            let (verdict, _, _) = capability.on(os, false);
+            let (_, state, _) = states
+                .iter()
+                .find(|(id, _, _)| *id == capability.id)
+                .expect("registered row");
             match core.check_capability(capability.id, "desktop.probe") {
-                Ok(CapabilityAdmission::ProceedWithLimitation) => limited += 1,
+                Ok(CapabilityAdmission::ProceedWithLimitation) => {
+                    assert_eq!(
+                        *state,
+                        ubm_core::central::CapabilityState::Limited,
+                        "{} admitted a row registered unsupported",
+                        capability.id
+                    );
+                    limited += 1;
+                }
                 Ok(CapabilityAdmission::Proceed) => {
                     panic!("row {} must carry a limitation", capability.id)
                 }
                 Err(error) => {
-                    assert!(
-                        matches!(verdict, super::CapabilityVerdict::NarrowOsAdapterNeeded),
-                        "only open adapter work gates closed, got {}",
+                    assert_eq!(
+                        *state,
+                        ubm_core::central::CapabilityState::Unsupported,
+                        "only a row registered unsupported gates closed, got {}",
                         capability.id
                     );
                     assert_eq!(error.code(), BleErrorCode::CapabilityUnsupported);
@@ -1247,5 +1293,31 @@ mod tests {
         }
         assert!(limited > 0 && unsupported > 0, "both sides present");
         let _ = EffectBatch::new(64);
+    }
+
+    /// Windows and Linux register readiness unsupported and keep the
+    /// limitation name on the descriptor. The base verdict stays a
+    /// limitation candidate, so the parity counts do not move.
+    #[test]
+    fn windows_and_linux_register_readiness_unsupported_with_its_name() {
+        use ubm_core::central::EvidenceLevel;
+        use ubm_core::contracts::BleErrorCode;
+
+        for os in [super::DesktopOs::Windows, super::DesktopOs::Linux] {
+            let mut core = test_core();
+            super::register_desktop_capabilities_for(&mut core, Some(os), false).expect("register");
+            let row = core
+                .registered_capability_descriptors()
+                .into_iter()
+                .find(|row| row.id() == "gatt:write-without-response-readiness")
+                .expect("readiness descriptor");
+            assert_eq!(row.state(), ubm_core::central::CapabilityState::Unsupported);
+            assert_eq!(row.limitations(), &["no-readiness-signal"]);
+            assert_eq!(row.evidence_level(), EvidenceLevel::Blocked);
+            let refused = core
+                .check_capability("gatt:write-without-response-readiness", "desktop.probe")
+                .expect_err("readiness is closed");
+            assert_eq!(refused.code(), BleErrorCode::CapabilityUnsupported);
+        }
     }
 }

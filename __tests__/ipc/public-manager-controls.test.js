@@ -4,7 +4,27 @@ function descriptor(id, state, limitations = []) {
   return { id, state, limitations }
 }
 
-function capabilities(readinessState = 'unsupported', deferredState) {
+function scriptedStream(items) {
+  return {
+    [Symbol.asyncIterator]() {
+      let index = 0
+      return {
+        async next() {
+          if (index >= items.length) return { done: true, value: undefined }
+          const value = items[index]
+          index += 1
+          return { done: false, value }
+        },
+        async return() {
+          index = items.length
+          return { done: true, value: undefined }
+        }
+      }
+    }
+  }
+}
+
+function capabilities(readinessState = 'unsupported', deferredState, parametersState = 'unsupported') {
   const descriptors = new Map([
     ['connection:direct', descriptor('connection:direct', 'supported')],
     [
@@ -22,7 +42,7 @@ function capabilities(readinessState = 'unsupported', deferredState) {
     ['connection:request-mtu', descriptor('connection:request-mtu', 'unsupported')],
     ['connection:priority', descriptor('connection:priority', 'unsupported')],
     ['connection:phy', descriptor('connection:phy', 'unsupported')],
-    ['connection:parameters', descriptor('connection:parameters', 'unsupported')],
+    ['connection:parameters', descriptor('connection:parameters', parametersState)],
     ['connection:subrate', descriptor('connection:subrate', 'unsupported')],
     ['gatt:write-without-response-readiness', descriptor('gatt:write-without-response-readiness', readinessState)]
   ])
@@ -90,8 +110,8 @@ function database(generation) {
   }
 }
 
-function setup(readinessState, deferredState) {
-  const capabilitySnapshot = capabilities(readinessState, deferredState)
+function setup(readinessState, deferredState, parametersState) {
+  const capabilitySnapshot = capabilities(readinessState, deferredState, parametersState)
   let discoveryCount = 0
   const calls = []
   const base = {
@@ -122,6 +142,24 @@ function setup(readinessState, deferredState) {
     },
     disconnect: async () => ({ state: 'released', failures: [] }),
     release: async () => ({ state: 'released', failures: [] })
+  }
+  if (readinessState === 'limited' || readinessState === 'supported') {
+    base.writeReadiness = async () => ({
+      events: scriptedStream([{ kind: 'value', value: { ready: true, observedAtMonotonicMs: 42 } }]),
+      close: async () => ({ state: 'released', failures: [] })
+    })
+  }
+  if (parametersState === 'limited' || parametersState === 'supported') {
+    base.parameters = async () => ({ intervalUs: 7500, latency: 0, supervisionTimeoutUs: 200000 })
+    base.parameterEvents = async () => ({
+      events: scriptedStream([
+        {
+          kind: 'value',
+          value: { intervalUs: 7500, latency: 0, supervisionTimeoutUs: 200000, observedAtMonotonicMs: 42 }
+        }
+      ]),
+      close: async () => ({ state: 'released', failures: [] })
+    })
   }
   const ipc = {
     capabilities: capabilitySnapshot,
@@ -364,6 +402,23 @@ describe('IPC public connection controls', () => {
     ]) {
       await expect(stream[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'capability.unsupported' })
     }
+  })
+
+  test('converts observed microseconds to milliseconds and yields a limited readiness event', async () => {
+    const { manager } = setup('limited', undefined, 'limited')
+    const connection = await manager.connect('peer-1')
+    await expect(connection.controls.parameters()).resolves.toMatchObject({
+      state: 'measured',
+      intervalMs: 7.5,
+      peripheralLatency: 0,
+      supervisionTimeoutMs: 200,
+      subrateFactor: null,
+      connectionEventLengthMs: null
+    })
+    const parameters = await connection.controls.parameterEvents()[Symbol.asyncIterator]().next()
+    expect(parameters.value).toMatchObject({ intervalMs: 7.5, supervisionTimeoutMs: 200 })
+    const readiness = await connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]().next()
+    expect(readiness.value).toMatchObject({ state: 'measured', mode: 'without-response', ready: true })
   })
 
   test('preserves unavailable readiness state in the renderer stream error', async () => {

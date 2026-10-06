@@ -947,6 +947,27 @@ impl RadioBoundary for ForeignRadio {
         }
     }
 
+    /// Apple probes `canSendWriteWithoutResponse`. Android has no queue
+    /// readiness signal, so the core refuses before a write waits on it.
+    async fn write_without_response_ready(&self, peer_id: &str) -> Result<bool, DesktopError> {
+        if self.shared.mobile_platform != MobilePlatform::Apple {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "gatt.write-readiness",
+            )
+            .with_detail("Android reports no write-without-response readiness"));
+        }
+        let peer_id = peer_id.to_owned();
+        match self
+            .call(|id| RadioRequest::ReadWriteReadiness { id, peer_id })
+            .await?
+        {
+            RadioCompletion::Ready(ready) => Ok(ready),
+            _ => Err(Self::unexpected(RequestKind::ReadWriteReadiness)),
+        }
+    }
+
     async fn next_event(&self) -> Option<RadioEvent> {
         loop {
             let notified = self.shared.notify.notified();

@@ -1,11 +1,7 @@
-//! Desktop effective ATT MTU (finding 217 follow-up): the OS-measured MTU
-//! exposed as a host read. Scripted radio only; physical proof stays queued.
+//! Desktop effective ATT MTU. Scripted radio only; physical proof stays queued.
 //!
-//! macOS answers `maximumWriteValueLength(.withResponse) + 3` (the same
-//! derivation as the Apple React Native route), Windows answers
-//! `GattSession.MaxPduSize`, Linux answers the `org.bluez.GattCharacteristic1`
-//! MTU. A radio that withholds the measurement answers
-//! `capability.unsupported` with the reason, never a guessed 23.
+//! A scripted value is that observation. An unset script is `Ok(None)`:
+//! unobserved, not a link failure and not `capability.unsupported`.
 
 use ubm_desktop::{
     DesktopCentral, FakeRadio, FaultOp, OpControl, PeerSnapshot, PlatformDetail, RadioEvent,
@@ -45,7 +41,7 @@ async fn connected_effective_mtu_reads_the_radio_for_the_lease_holder() {
         .read_effective_mtu("peer-1", "lease-a", OpControl::budget_ms(5000))
         .await
         .expect("effective mtu");
-    assert_eq!(mtu, 515);
+    assert_eq!(mtu, Some(515));
     let foreign = central
         .read_effective_mtu("peer-1", "lease-z", OpControl::budget_ms(5000))
         .await
@@ -78,18 +74,13 @@ async fn effective_mtu_is_refused_on_a_link_that_is_not_connected() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn unmeasured_effective_mtu_is_unsupported_with_a_reason() {
+async fn unmeasured_effective_mtu_is_unobserved() {
     let central = connected("peer-3").await;
-    let error = central
+    let mtu = central
         .read_effective_mtu("peer-3", "lease-a", OpControl::budget_ms(5000))
         .await
-        .expect_err("no measurement scripted");
-    assert_eq!(error.code_str(), "capability.unsupported");
-    let detail = error.detail().expect("unsupported names its reason");
-    assert!(
-        detail.contains("no effective ATT MTU measured"),
-        "unexpected reason: {detail}"
-    );
+        .expect("an unobserved MTU is not a link failure");
+    assert_eq!(mtu, None);
 }
 
 /// RV3 finding 1: a link drop mid-MTU-read is one physical event with the

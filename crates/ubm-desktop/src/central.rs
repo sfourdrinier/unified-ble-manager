@@ -60,7 +60,7 @@ use crate::boundary::{
     AdapterAuthorization, AdapterAvailability, AdapterLossCause, AdapterPowerState,
     AdmissionPolicy, CharacteristicAccess, CharacteristicRead, DeliveryMode, GattSnapshotIdentity,
     InstanceKey, ObservedDelivery, PeerSnapshot, RadioBoundary, RadioCloseFailure, RadioEvent,
-    ScanFilterSpec,
+    ScanFilterSpec, ServiceAccess,
 };
 use ubm_core::central::ScanDuplicatePolicy;
 
@@ -73,9 +73,9 @@ use crate::op_control::{
     LIVENESS_CLEANUP, LIVENESS_OP, LIVENESS_SCAN_START, OpControl, OpTicket, SettleOnDrop, Window,
 };
 pub use parity::{
-    CancelPairingOutcome, ControllerFuture, PairRequest, PairingGeneration,
-    PairingGenerationController, ScanTerminalEvent, SecureConnections, SecurityEvent,
-    WriteReadinessEvent, cancel_outcome_for, canonical_address,
+    CancelPairingOutcome, ConnectionParametersEvent, ControllerFuture, PairRequest,
+    PairingGeneration, PairingGenerationController, ScanTerminalEvent, SecureConnections,
+    SecurityEvent, WriteReadinessEvent, cancel_outcome_for, canonical_address,
 };
 
 /// Effect batch capacity per core call (matches the core's own default).
@@ -924,6 +924,9 @@ pub struct DiscoveredPath {
     /// Characteristic facts beyond the core bits (characteristic level
     /// only), when the radio reports them for this platform.
     pub access: Option<CharacteristicAccess>,
+    /// Service-level restriction. `None` is an open service, or any
+    /// characteristic or descriptor path.
+    pub service_access: Option<ServiceAccess>,
 }
 
 /// Authoritative per-central shutdown outcome (F14/F15): the final
@@ -1080,6 +1083,9 @@ pub enum CentralSignal {
     /// The write-readiness report also published on
     /// [`DesktopCentral::write_readiness_events`] (finding 118).
     WriteReadiness(parity::WriteReadinessEvent),
+    /// The connection-parameter report also published on
+    /// [`DesktopCentral::connection_parameter_events`].
+    ConnectionParameters(parity::ConnectionParametersEvent),
     /// The OS-ended scan also published on
     /// [`DesktopCentral::scan_terminal_events`] (finding 118).
     ScanTerminal(parity::ScanTerminalEvent),
@@ -1618,6 +1624,10 @@ struct Inner<B> {
     /// Characteristic facts beyond the core bits from the last discovery,
     /// per instance.
     access: StdMutex<HashMap<InstanceKey, CharacteristicAccess>>,
+    /// Service restrictions from the last successful discovery, keyed by
+    /// peer, service UUID, and service occurrence. Open services are absent.
+    /// A failed discovery leaves the previous notes in place.
+    service_access: StdMutex<HashMap<(String, String, u64), ServiceAccess>>,
     /// Physical enablements a service change orphaned (finding 40): the
     /// core paths and routing are gone, but the OS-side CCCD may still be
     /// live. `unsubscribe` releases them by the instance the enable
@@ -1635,6 +1645,9 @@ struct Inner<B> {
     /// Write-without-response readiness reports.
     write_readiness: broadcast::Sender<WriteReadinessEvent>,
     write_readiness_sequence: AtomicU64,
+    /// Observed connection-parameter reports.
+    connection_parameters: broadcast::Sender<parity::ConnectionParametersEvent>,
+    connection_parameters_sequence: AtomicU64,
     /// Scans the OS ended without a stop request.
     scan_terminal: broadcast::Sender<ScanTerminalEvent>,
     scan_terminal_sequence: AtomicU64,
@@ -1914,6 +1927,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             failed_disables: Mutex::new(HashSet::new()),
             deliveries: StdMutex::new(HashMap::new()),
             access: StdMutex::new(HashMap::new()),
+            service_access: StdMutex::new(HashMap::new()),
             retained_enablements: StdMutex::new(HashSet::new()),
             security: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
             security_sequence: AtomicU64::new(0),
@@ -1921,6 +1935,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             generation_restore_failures: AtomicU64::new(0),
             write_readiness: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
             write_readiness_sequence: AtomicU64::new(0),
+            connection_parameters: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
+            connection_parameters_sequence: AtomicU64::new(0),
             scan_terminal: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
             scan_terminal_sequence: AtomicU64::new(0),
             advertisements: Mutex::new(VecDeque::new()),
@@ -4329,6 +4345,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             // Occurrences count per UUID in snapshot order, as before: the
             // radio's order is the discovery order (finding 96).
             let mut service_counts: HashMap<&str, u64> = HashMap::new();
+            let mut service_notes: Vec<(String, u64, ServiceAccess)> = Vec::new();
             for service in &services {
                 let service_occurrence = next_occurrence(&mut service_counts, &service.uuid);
                 core.register_path(
@@ -4343,6 +4360,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     lease,
                 )
                 .map_err(|error| unregistrable(&mut core, &peer_key, error))?;
+                if service.access != ServiceAccess::Open {
+                    service_notes.push((service.uuid.clone(), service_occurrence, service.access));
+                }
                 report.paths_registered += 1;
                 let mut char_counts: HashMap<&str, u64> = HashMap::new();
                 for characteristic in &service.characteristics {
@@ -4383,6 +4403,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 }
             }
             lock_std(&self.inner.gatt_observation_failures).remove(peer_id);
+            let mut notes = lock_std(&self.inner.service_access);
+            notes.retain(|(peer, _, _), _| peer != peer_id);
+            for (uuid, occurrence, access) in service_notes {
+                notes.insert((peer_id.to_owned(), uuid, occurrence), access);
+            }
         }
         Ok((report, identity))
     }
@@ -4402,6 +4427,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         self.gatt_peer_observation_admission(peer_id, "discovery.snapshot")?;
         let stored = core.snapshot_paths(&peer_key).map_err(DesktopError::from)?;
         let access = lock_std(&self.inner.access);
+        let service_access = lock_std(&self.inner.service_access);
         Ok(stored
             .iter()
             .map(|path| DiscoveredPath {
@@ -4417,6 +4443,19 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                         .get(&instance_key(peer_id, path, characteristic))
                         .copied()
                 }),
+                service_access: path
+                    .characteristic_uuid()
+                    .is_none()
+                    .then(|| {
+                        service_access
+                            .get(&(
+                                peer_id.to_owned(),
+                                path.service_uuid().to_owned(),
+                                path.service_occurrence(),
+                            ))
+                            .copied()
+                    })
+                    .flatten(),
             })
             .collect())
     }
@@ -6498,6 +6537,21 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                     Some(RadioEvent::WriteReadiness { peer_id, ready }) => {
                         parity::publish_write_readiness(&inner, &peer_id, ready).await;
                     }
+                    Some(RadioEvent::ConnectionParameters {
+                        peer_id,
+                        interval_us,
+                        latency,
+                        supervision_timeout_us,
+                    }) => {
+                        parity::publish_connection_parameters(
+                            &inner,
+                            &peer_id,
+                            interval_us,
+                            latency,
+                            supervision_timeout_us,
+                        )
+                        .await;
+                    }
                     Some(RadioEvent::Advertisement(snapshot)) => {
                         ingest_advertisement(&inner, snapshot).await;
                     }
@@ -7807,6 +7861,7 @@ mod adapter_tests {
                     occurrence: 0,
                 }],
             }],
+            access: std::default::Default::default(),
         }
     }
 
@@ -7830,6 +7885,7 @@ mod adapter_tests {
                     descriptors: Vec::new(),
                 },
             ],
+            access: std::default::Default::default(),
         }
     }
 
@@ -7843,6 +7899,7 @@ mod adapter_tests {
                 properties: rw_props(),
                 descriptors: Vec::new(),
             }],
+            access: std::default::Default::default(),
         }
     }
 
@@ -12381,6 +12438,7 @@ mod adapter_tests {
                 characteristic(BODY_SENSOR_LOCATION, false, true),
                 characteristic(HEART_RATE_CONTROL_POINT, true, true),
             ],
+            access: std::default::Default::default(),
         }
     }
 
@@ -12512,6 +12570,8 @@ mod adapter_tests {
                     },
                     descriptors: Vec::new(),
                 }],
+
+                access: std::default::Default::default(),
             },
             ServiceSnapshot {
                 uuid: HRM_SERVICE.to_owned(),
@@ -12531,6 +12591,8 @@ mod adapter_tests {
                         occurrence: 0,
                     }],
                 }],
+
+                access: std::default::Default::default(),
             },
         ]
     }

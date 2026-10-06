@@ -110,6 +110,8 @@ export interface GattService {
   readonly occurrence: number
   readonly primary: boolean
   readonly includedServices: readonly GattServiceReference[]
+  /** Present when Windows kept the service but did not list its characteristics. */
+  readonly restriction?: import('../backend-contract/gatt').GattServiceRestriction
   readonly characteristics: readonly GattCharacteristic[]
   characteristic(uuid: UuidInput, selector?: OccurrenceSelector): GattCharacteristic
   characteristicsByUuid(uuid: UuidInput): readonly GattCharacteristic[]
@@ -363,6 +365,7 @@ class PublicGattService implements GattService {
   readonly occurrence: number
   readonly primary: boolean
   readonly includedServices: readonly GattServiceReference[]
+  readonly restriction?: import('../backend-contract/gatt').GattServiceRestriction
   readonly characteristics: readonly GattCharacteristic[]
   private readonly characteristicLookup: ReadonlyMap<string, readonly GattCharacteristic[]>
 
@@ -383,6 +386,7 @@ class PublicGattService implements GattService {
         Object.freeze({ uuid: normalizeUuid(reference.uuid), occurrence: occurrenceNumber(reference.occurrence) })
       )
     )
+    this.restriction = indexedRecord.record.restriction
     this.characteristics = Object.freeze(
       characteristics.map(
         entry => new PublicGattCharacteristic(this, source, entry.characteristic, entry.descriptors, provisionalOwner)

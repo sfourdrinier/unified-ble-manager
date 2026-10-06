@@ -56,7 +56,7 @@ test('BlueZ derivative source assets retain exact upstream provenance and licens
     deployment: 'external-explicit-host-action',
     automaticInstallOrLaunch: false,
     linuxAuthorityContract: [1, 2, 1],
-    release: '5.87-ubm.9'
+    release: '5.87-ubm.10'
   })
   const patch = readFileSync(new URL(manifest.patch.file, directory), 'utf8')
   for (const path of [

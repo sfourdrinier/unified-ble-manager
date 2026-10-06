@@ -213,11 +213,10 @@ export function createReactNativeRustCoreFeatureRegistry(
     'discovery:continuous-scan.invoke-without-scan'
   )
   const common = [
-    // Finding 217: the Rust owner answers Apple effective MTU per link as
-    // `maximumWriteValueLength(.withResponse) + 3`; the legacy Apple
-    // reference route keeps the frozen unsupported registration.
+    // Apple effective MTU stays limited and unavailable: CoreBluetooth does
+    // not observe an ATT MTU. Write capacity stays on maximumWriteValueLength.
     createReactNativeConnectionControlFeatureRegistry(platform, implementationVersion, {
-      appleEffectiveMtu: 'derived'
+      appleEffectiveMtu: 'unobserved'
     }),
     createReactNativeDescriptorFeatureRegistry(platform, implementationVersion),
     createReactNativeRestorationFeatureRegistry(platform, implementationVersion),
@@ -271,7 +270,59 @@ export function createReactNativeRustCoreFeatureRegistry(
     )
   ]
   if (platform === 'apple') {
-    return combineReactNativeFeatureRegistries(...common)
+    // Pending initial acquisition for a known peer. CoreBluetooth keeps
+    // `connect` outstanding until that peripheral is available. This is not
+    // Android `autoConnect` and it does not reconnect after the link drops.
+    const whenAvailable = createBackendOperationCapabilityRegistration({
+      id: BUILT_IN_FEATURE_IDS.connectionWhenAvailable,
+      implementationVersion,
+      sourceDigest: 'react-native-rust-core-apple-connection-when-available-v1',
+      tckSuiteId: 'capability.catalog-v2',
+      requiredScenarioIds: [...catalogScenarioIds],
+      operation: 'connection:when-available.invoke-without-connection',
+      limitations: [
+        {
+          code: 'corebluetooth-pending-connect',
+          explanation:
+            'CoreBluetooth keeps a connect to a known peripheral outstanding until that peripheral is available. The caller deadline and cancellation still apply. This is pending initial acquisition, not Android autoConnect, and it does not reconnect after the link is lost.',
+          affectedGuarantee: 'pending initial connection to a known peer'
+        },
+        {
+          code: 'live-radio-qualification-pending',
+          explanation:
+            'The backend operation has deterministic contract coverage; physical-radio qualification remains separate.',
+          affectedGuarantee: 'reliability-qualified physical-radio interoperability'
+        }
+      ]
+    })
+    // Queue readiness is CoreBluetooth's own flag plus the ready callback.
+    // Android has no equivalent signal, so it stays unregistered.
+    const writeReadiness = createBackendOperationCapabilityRegistration({
+      id: BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness,
+      implementationVersion,
+      sourceDigest: 'react-native-rust-core-apple-write-readiness-v1',
+      tckSuiteId: 'capability.catalog-v2',
+      requiredScenarioIds: [...catalogScenarioIds],
+      operation: 'gatt:write-without-response-readiness.invoke-without-connection',
+      limitations: [
+        {
+          code: 'corebluetooth-write-without-response-readiness',
+          explanation:
+            'CoreBluetooth reports write-without-response readiness through canSendWriteWithoutResponse and peripheralIsReady(toSendWriteWithoutResponse:). This is not Android auto-ready and it is not a measured ATT MTU.',
+          affectedGuarantee: 'write-without-response queue readiness'
+        },
+        {
+          code: 'live-radio-qualification-pending',
+          explanation:
+            'The backend operation has deterministic contract coverage; physical-radio qualification remains separate.',
+          affectedGuarantee: 'reliability-qualified physical-radio interoperability'
+        }
+      ]
+    })
+    return combineReactNativeFeatureRegistries(
+      ...common,
+      createFeatureRegistry(Object.freeze([whenAvailable, writeReadiness]))
+    )
   }
   const phyAvailable = facts.androidApiLevel !== null && facts.androidApiLevel >= ANDROID_PHY_API_LEVEL
   const android = createFeatureRegistry(

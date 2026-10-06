@@ -87,8 +87,8 @@ use crate::boundary::{
     AdapterAuthorization, AdapterPowerState, AddressType, CharacteristicAccess, CharacteristicRead,
     CharacteristicSnapshot, DeliveryMode, DescriptorSnapshot, GattSnapshotIdentity, InstanceKey,
     ManufacturerData, ObservedDelivery, PairOutcome, PeerSnapshot, PropertyFlags, RadioBoundary,
-    RadioCloseFailure, RadioEvent, ScanFilterSpec, SecurityState, ServiceData, ServiceSnapshot,
-    UnpairOutcome, WriteLimits,
+    RadioCloseFailure, RadioEvent, ScanFilterSpec, SecurityState, ServiceAccess, ServiceData,
+    ServiceSnapshot, UnpairOutcome, WriteLimits,
 };
 use crate::delivery::{
     DeliveryPlan, os_answers_unflagged_subscribe, plan_delivery_for_os, platform_rule,
@@ -1030,6 +1030,9 @@ pub struct BtleplugRadio {
     /// Per-connection CoreBluetooth readiness forwarders (macOS, vendored
     /// patch 4), aborted with the link.
     readiness_watchers: StdMutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Per-connection WinRT connection-parameter forwarders, aborted with
+    /// the link.
+    parameter_watchers: StdMutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     /// The WinRT watcher-stopped forwarder (vendored patch 5), aborted with
     /// the radio.
     scan_stopped_watch: Option<tokio::task::JoinHandle<()>>,
@@ -1077,6 +1080,14 @@ impl Drop for BtleplugRadio {
         }
         for (_, watcher) in self
             .readiness_watchers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .drain()
+        {
+            watcher.abort();
+        }
+        for (_, watcher) in self
+            .parameter_watchers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .drain()
@@ -1255,6 +1266,7 @@ impl BtleplugRadio {
             #[cfg(target_os = "windows")]
             winrt,
             readiness_watchers: StdMutex::new(HashMap::new()),
+            parameter_watchers: StdMutex::new(HashMap::new()),
             scan_stopped_watch,
             expected_scan_stops,
         })
@@ -1442,7 +1454,7 @@ impl BtleplugRadio {
                 },
             )
             .await?;
-        let graph = service_snapshots(&peripheral.services());
+        let graph = service_snapshots(&peripheral.services(), &peripheral.service_restrictions());
         let identity = match self.gatt_snapshot_identity(peer_id) {
             Ok(identity) => identity,
             Err(error) => {
@@ -2007,6 +2019,14 @@ impl BtleplugRadio {
         {
             watcher.abort();
         }
+        if let Some(watcher) = self
+            .parameter_watchers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(peer_id)
+        {
+            watcher.abort();
+        }
         #[cfg(target_os = "linux")]
         if let Ok(bluez) = self.bluez() {
             bluez.forget(peer_id);
@@ -2064,98 +2084,48 @@ impl BtleplugRadio {
         }
     }
 
-    /// Rewrite the CCCD the platform just wrote (finding 39, Windows). On
-    /// success the rewritten mode is what the link has. On failure the
-    /// platform's own write stands: without a requirement that is reported
-    /// truthfully as observed; with one the enable is rolled back and
-    /// fails, never accepting a requirement nothing enforced.
-    #[allow(clippy::too_many_arguments)]
-    async fn rewrite_cccd(
-        &self,
-        scope: &InstanceKey,
-        key: &str,
-        mode: DeliveryMode,
-        platform_writes: DeliveryMode,
-        required: bool,
-    ) -> Result<ObservedDelivery, DesktopError> {
-        let rewrite = self.write_cccd(scope, mode).await;
-        let observed = |mode: DeliveryMode| match mode {
-            DeliveryMode::Notification => ObservedDelivery::Notification,
-            DeliveryMode::Indication => ObservedDelivery::Indication,
-        };
-        match rewrite {
-            Ok(()) => Ok(observed(mode)),
-            Err(_) if !required => Ok(observed(platform_writes)),
-            Err(error) => {
-                if let Err(rollback) = release_notification_target(
-                    &self.notification_targets,
-                    &self.forwarders,
-                    &self.cleanup_debt,
-                    key,
-                    scope,
-                )
-                .await
-                {
-                    let reason = format!(
-                        "{}; rolling the enable back also failed ({}), the scope is \
-                         parked as cleanup debt",
-                        error.detail().unwrap_or(error.code_str()),
-                        rollback.detail().unwrap_or(rollback.code_str())
-                    );
-                    return Err(error.with_detail(reason));
+    /// Forward WinRT `ConnectionParametersChanged` as
+    /// [`RadioEvent::ConnectionParameters`]. Other platforms have no event.
+    fn watch_connection_parameters(&self, peer_id: &str, peripheral: &Peripheral) {
+        #[cfg(target_os = "windows")]
+        {
+            let mut reports = peripheral.connection_parameter_events();
+            let events = self._os_events_tx.clone();
+            let peer = peer_id.to_owned();
+            let task = self.spawn.spawn(async move {
+                loop {
+                    match reports.recv().await {
+                        Ok(params) => {
+                            let event = RadioEvent::ConnectionParameters {
+                                peer_id: peer.clone(),
+                                interval_us: params.interval_us,
+                                latency: params.latency,
+                                supervision_timeout_us: params.supervision_timeout_us,
+                            };
+                            if events.send(event).await.is_err() {
+                                return;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            OS_EVENT_DROPS.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    }
                 }
-                Err(error)
+            });
+            if let Some(previous) = self
+                .parameter_watchers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(peer_id.to_owned(), task)
+            {
+                previous.abort();
             }
         }
-    }
-
-    /// Windows: the CCCD of exactly the subscribed instance, on the GATT
-    /// object btleplug's subscription holds (vendored `winrt-cccd-mode`).
-    #[cfg(target_os = "windows")]
-    async fn write_cccd(
-        &self,
-        scope: &InstanceKey,
-        mode: DeliveryMode,
-    ) -> Result<(), DesktopError> {
-        let (peer_id, service_uuid, service_occurrence, characteristic_uuid, occurrence) = scope;
-        let peripheral = self.cached_peripheral(peer_id).await?;
-        let characteristic = Self::find_characteristic(
-            &peripheral,
-            service_uuid,
-            *service_occurrence,
-            characteristic_uuid,
-            *occurrence,
-        )
-        .ok_or_else(|| {
-            DesktopError::new(
-                BleErrorCode::GattDiscoveryRequired,
-                BleErrorDomain::Gatt,
-                "gatt.subscribe.delivery",
-            )
-            .with_detail(format!(
-                "characteristic {characteristic_uuid}#{occurrence} of service \
-                 {service_uuid}#{service_occurrence} is no longer discovered"
-            ))
-        })?;
-        crate::os::windows::write_cccd(&peripheral, &characteristic, mode).await
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    async fn write_cccd(
-        &self,
-        scope: &InstanceKey,
-        mode: DeliveryMode,
-    ) -> Result<(), DesktopError> {
-        let _ = scope;
-        Err(DesktopError::new(
-            BleErrorCode::CapabilityLimited,
-            BleErrorDomain::Capability,
-            "gatt.subscribe.delivery",
-        )
-        .with_detail(format!(
-            "this platform cannot rewrite the CCCD ({} requested)",
-            mode.as_str()
-        )))
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (peer_id, peripheral);
+        }
     }
 
     fn find_descriptor(
@@ -2415,10 +2385,13 @@ pub fn ingress_release(queued_bytes: &AtomicU64, len: u64) {
 /// (`Peripheral::new`, `Adapter::new`, and `DeviceId::new` are all
 /// `pub(crate)`), and `Manager::new` requires a live BlueZ D-Bus session.
 pub trait NotificationTransport: Send + Sync {
-    /// Enable the native CCCD for `characteristic`.
+    /// Enable the native CCCD for `characteristic`. `selected` is the mode
+    /// the first write must use. `None` keeps the platform subscribe
+    /// (Indicate-if-possible on Windows).
     fn transport_subscribe<'a>(
         &'a self,
         characteristic: &'a Characteristic,
+        selected: Option<DeliveryMode>,
     ) -> impl Future<Output = Result<(), btleplug::Error>> + Send + 'a;
 
     /// Acquire the peripheral-wide notification stream.
@@ -2565,10 +2538,23 @@ async fn subscribe_and_stream_owned<T: NotificationTransport + Clone>(
     debt: &StdMutex<HashSet<InstanceKey>>,
     scope: &InstanceKey,
 ) -> Result<NotificationStream, EnableStreamError> {
+    subscribe_and_stream_owned_selecting(transport, characteristic, targets, debt, scope, None)
+        .await
+}
+
+async fn subscribe_and_stream_owned_selecting<T: NotificationTransport + Clone>(
+    transport: &T,
+    characteristic: &Characteristic,
+    targets: &NotificationTargets<T>,
+    debt: &StdMutex<HashSet<InstanceKey>>,
+    scope: &InstanceKey,
+    selected: Option<DeliveryMode>,
+) -> Result<NotificationStream, EnableStreamError> {
     let admitted = StdMutex::new(None);
     subscribe_and_stream_admitted(
         transport,
         characteristic,
+        selected,
         || {
             let target = targets.retain(scope, transport.clone(), characteristic.clone())?;
             *admitted.lock().expect("admitted notification target") = Some(target);
@@ -2709,8 +2695,10 @@ where
     fn transport_subscribe<'a>(
         &'a self,
         characteristic: &'a Characteristic,
+        selected: Option<DeliveryMode>,
     ) -> impl Future<Output = Result<(), btleplug::Error>> + Send + 'a {
-        btleplug::api::Peripheral::subscribe(self, characteristic)
+        let notify = selected.map(|mode| mode == DeliveryMode::Notification);
+        btleplug::api::Peripheral::subscribe_selecting(self, characteristic, notify)
     }
 
     fn transport_notifications(
@@ -2756,12 +2744,13 @@ pub async fn subscribe_and_stream<T>(
 where
     T: NotificationTransport,
 {
-    subscribe_and_stream_admitted(transport, characteristic, || Ok(()), |_| {}).await
+    subscribe_and_stream_admitted(transport, characteristic, None, || Ok(()), |_| {}).await
 }
 
 async fn subscribe_and_stream_admitted<T: NotificationTransport>(
     transport: &T,
     characteristic: &Characteristic,
+    selected: Option<DeliveryMode>,
     before_enable: impl FnOnce() -> Result<(), DesktopError>,
     enable_refused: impl FnOnce(&btleplug::Error),
 ) -> Result<NotificationStream, EnableStreamError> {
@@ -2770,7 +2759,7 @@ async fn subscribe_and_stream_admitted<T: NotificationTransport>(
     })?;
     before_enable().map_err(EnableStreamError::Subscribe)?;
     transport
-        .transport_subscribe(characteristic)
+        .transport_subscribe(characteristic, selected)
         .await
         .map_err(|error| {
             enable_refused(&error);
@@ -3162,7 +3151,18 @@ fn bluez_write_limits(mtu: Option<u16>) -> WriteLimits {
 /// discovery position, UBM_PATCHES.md #6), as the legacy backends reported
 /// it. Occurrences count per UUID in that order, which is the order
 /// [`select_service`] / [`select_characteristic`] resolve them in.
-fn service_snapshots(services: &BTreeSet<Service>) -> Vec<ServiceSnapshot> {
+fn service_access_of(label: &str) -> ServiceAccess {
+    match label {
+        "os-reserved" => ServiceAccess::OsReserved,
+        "access-denied" => ServiceAccess::AccessDenied,
+        _ => ServiceAccess::Open,
+    }
+}
+
+fn service_snapshots(
+    services: &BTreeSet<Service>,
+    restrictions: &[(uuid::Uuid, u64, &'static str)],
+) -> Vec<ServiceSnapshot> {
     fn in_discovery_order<'a, T: 'a>(
         items: impl IntoIterator<Item = &'a T>,
         instance: impl Fn(&T) -> u64,
@@ -3185,6 +3185,13 @@ fn service_snapshots(services: &BTreeSet<Service>) -> Vec<ServiceSnapshot> {
             ServiceSnapshot {
                 uuid: service.uuid.to_string(),
                 occurrence: occurrence(&mut service_counts, service.uuid),
+                access: restrictions
+                    .iter()
+                    .find(|(uuid, instance, _)| {
+                        *uuid == service.uuid && *instance == service.instance
+                    })
+                    .map(|(_, _, label)| service_access_of(label))
+                    .unwrap_or(ServiceAccess::Open),
                 characteristics: in_discovery_order(&service.characteristics, |c| c.instance)
                     .into_iter()
                     .map(|characteristic| {
@@ -3729,6 +3736,7 @@ impl RadioBoundary for BtleplugRadio {
             return Err(maintained_connection_failure(error));
         }
         self.watch_write_readiness(peer_id, &peripheral);
+        self.watch_connection_parameters(peer_id, &peripheral);
         Ok(())
     }
 
@@ -4131,15 +4139,31 @@ impl RadioBoundary for BtleplugRadio {
             // side and never share bytes.
             // F13 / finding 128: shared enable sequencing — the value
             // stream opens before the native enable.
-            let stream: NotificationStream = match subscribe_and_stream_owned(
-                &cleanup_peripheral,
-                &characteristic,
-                &self.notification_targets,
-                &self.cleanup_debt,
-                &scope,
-            )
-            .await
-            {
+            let selected = match plan {
+                DeliveryPlan::AdapterWrites { mode, .. } => Some(mode),
+                DeliveryPlan::Platform(_) => None,
+            };
+            let enabled = if let Some(mode) = selected {
+                subscribe_and_stream_owned_selecting(
+                    &cleanup_peripheral,
+                    &characteristic,
+                    &self.notification_targets,
+                    &self.cleanup_debt,
+                    &scope,
+                    Some(mode),
+                )
+                .await
+            } else {
+                subscribe_and_stream_owned(
+                    &cleanup_peripheral,
+                    &characteristic,
+                    &self.notification_targets,
+                    &self.cleanup_debt,
+                    &scope,
+                )
+                .await
+            };
+            let stream: NotificationStream = match enabled {
                 Ok(stream) => stream,
                 Err(EnableStreamError::Subscribe(refusal) | EnableStreamError::Stream(refusal)) => {
                     return Err(refusal);
@@ -4195,13 +4219,12 @@ impl RadioBoundary for BtleplugRadio {
                 .remove(&scope);
             return match plan {
                 DeliveryPlan::Platform(observed) => Ok(observed),
-                DeliveryPlan::AdapterWrites {
-                    mode,
-                    platform_writes,
-                } => {
-                    self.rewrite_cccd(&scope, &key, mode, platform_writes, requested.is_some())
-                        .await
-                }
+                // The first subscribe already wrote `mode`. Do not rewrite,
+                // and do not report `platform_writes` as what was observed.
+                DeliveryPlan::AdapterWrites { mode, .. } => Ok(match mode {
+                    DeliveryMode::Notification => ObservedDelivery::Notification,
+                    DeliveryMode::Indication => ObservedDelivery::Indication,
+                }),
             };
         }
         Ok(ObservedDelivery::Unknown)
@@ -4378,68 +4401,34 @@ impl RadioBoundary for BtleplugRadio {
             .map_err(|error| capability_error("peer.rssi", error))
     }
 
-    /// Effective ATT MTU of the live link, as the OS reports it (finding
-    /// 217 follow-up). macOS derives
-    /// `maximumWriteValueLength(.withResponse) + 3` through the vendored
-    /// write-length patch — the same derivation as the Apple React Native
-    /// route, so both hosts report the same value; without the patch
-    /// btleplug's CoreBluetooth `mtu()` never leaves 23 and nothing
-    /// measured exists. Windows reads the `GattSession.MaxPduSize`
-    /// btleplug already tracks as the ATT MTU
-    /// (`winrtble/ble/device.rs`). Linux reads the
-    /// `org.bluez.GattCharacteristic1` MTU through the BlueZ adapter; a
-    /// link BlueZ withholds it on is `capability.unavailable`, never a
-    /// guessed 23.
-    async fn read_effective_mtu(&self, peer_id: &str) -> Result<u16, DesktopError> {
+    /// Effective ATT MTU of the live link, when the OS observed one.
+    /// Windows reads `GattSession.MaxPduSize`. Linux reads the
+    /// `org.bluez.GattCharacteristic1` MTU; a link BlueZ withholds it on
+    /// is `capability.unavailable`, never a guessed 23. macOS returns
+    /// `Ok(None)`: `maximumWriteValueLength` is a per-mode write capacity
+    /// and can include a long write, so it is not an ATT MTU.
+    async fn read_effective_mtu(&self, peer_id: &str) -> Result<Option<u16>, DesktopError> {
         #[cfg(target_os = "linux")]
         {
             let mtu = self.bluez()?.mtu(peer_id).await?;
-            mtu.ok_or_else(|| {
+            return mtu.map(Some).ok_or_else(|| {
                 DesktopError::new(
                     BleErrorCode::CapabilityUnavailable,
                     BleErrorDomain::Platform,
                     "connection.effective-mtu",
                 )
                 .with_detail("BlueZ reported no GattCharacteristic1 MTU for this link")
-            })
+            });
         }
         #[cfg(target_os = "windows")]
         {
             let peripheral = self.peripheral_by_id(peer_id).await?;
-            Ok(peripheral.mtu())
+            return Ok(Some(peripheral.mtu()));
         }
-        #[cfg(all(target_os = "macos", btleplug_ubm_write_length))]
-        {
-            let peripheral = self.peripheral_by_id(peer_id).await?;
-            let (with_response, _) = peripheral
-                .maximum_write_value_lengths()
-                .await
-                .map_err(|error| capability_error("connection.effective-mtu", error))?;
-            if with_response == 0 {
-                return Err(DesktopError::new(
-                    BleErrorCode::CapabilityUnavailable,
-                    BleErrorDomain::Platform,
-                    "connection.effective-mtu",
-                )
-                .with_detail("CoreBluetooth reported no write limit for this link"));
-            }
-            Ok(with_response.saturating_add(3))
-        }
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "windows",
-            all(target_os = "macos", btleplug_ubm_write_length)
-        )))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let _ = peer_id;
-            Err(DesktopError::new(
-                BleErrorCode::CapabilityUnsupported,
-                BleErrorDomain::Capability,
-                "connection.effective-mtu",
-            )
-            .with_detail(
-                "unpatched btleplug 0.12: CoreBluetooth mtu() stays 23, so no measured ATT MTU exists; the vendored write-length patch (vendor/btleplug) provides it",
-            ))
+            Ok(None)
         }
     }
 
@@ -4507,9 +4496,10 @@ impl RadioBoundary for BtleplugRadio {
         {
             self.mtu(peer_id).await.and_then(WriteLimits::os_long_write)
         }
-        // macOS with the vendored patch: CoreBluetooth's own per-type answer
-        // (`maximumWriteValueLengthForType:`), which also moves btleplug's
-        // `mtu()` off its initial 23 (UBM_PATCHES.md #1).
+        // macOS with the vendored patch: CoreBluetooth's own per-type write
+        // capacity (`maximumWriteValueLengthForType:`). That length can
+        // include a long write, so `read_effective_mtu` does not publish it
+        // as an ATT MTU and does not read `peripheral.mtu()`.
         #[cfg(all(target_os = "macos", btleplug_ubm_write_length))]
         {
             let peripheral = self.peripheral_by_id(peer_id).await.ok()?;
@@ -4546,6 +4536,53 @@ impl RadioBoundary for BtleplugRadio {
     /// hands a command to the OS stack directly — so they answer
     /// `capability.unsupported` (the legacy WinRT and BlueZ backends had
     /// no readiness either).
+    async fn connection_parameters(
+        &self,
+        peer_id: &str,
+    ) -> Result<crate::boundary::ObservedConnectionParameters, DesktopError> {
+        #[cfg(target_os = "windows")]
+        {
+            let peripheral = self.peripheral_by_id(peer_id).await?;
+            let params = peripheral.connection_parameters().await.map_err(|error| {
+                if let btleplug::Error::Platform(platform) = &error
+                    && platform.code == "winrt-connection-parameters-requires-windows-11-22000"
+                {
+                    return DesktopError::new(
+                        BleErrorCode::CapabilityUnavailable,
+                        BleErrorDomain::Platform,
+                        "connection.parameters",
+                    )
+                    .with_detail(platform.message.clone())
+                    .with_os(&error);
+                }
+                capability_error("connection.parameters", error)
+            })?;
+            let Some(params) = params else {
+                return Err(DesktopError::new(
+                    BleErrorCode::CapabilityUnavailable,
+                    BleErrorDomain::Platform,
+                    "connection.parameters",
+                )
+                .with_detail("WinRT returned no connection parameters"));
+            };
+            return Ok(crate::boundary::ObservedConnectionParameters {
+                interval_us: params.interval_us,
+                latency: params.latency,
+                supervision_timeout_us: params.supervision_timeout_us,
+            });
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = peer_id;
+            Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                "connection.parameters",
+            )
+            .with_detail("this platform reports no connection parameters"))
+        }
+    }
+
     async fn write_without_response_ready(&self, peer_id: &str) -> Result<bool, DesktopError> {
         #[cfg(all(target_os = "macos", btleplug_ubm_write_readiness))]
         {
@@ -4563,7 +4600,9 @@ impl RadioBoundary for BtleplugRadio {
                 BleErrorDomain::Capability,
                 "gatt.write-readiness",
             )
-            .with_detail("this platform reports no write-without-response readiness"))
+            .with_detail(
+                "no-readiness-signal: this platform reports no write-without-response readiness",
+            ))
         }
     }
 
@@ -5311,6 +5350,7 @@ mod tests {
         drop_event_stream, find_peer, forwarder_key, select_characteristic, select_descriptor,
         select_service, service_snapshots, sorted_manufacturer_data, sorted_service_data,
     };
+    use crate::DeliveryMode;
     use crate::boundary::PropertyFlags;
     use ubm_core::central::{
         GATT_PROP_INDICATE, GATT_PROP_NOTIFY, GATT_PROP_READ, GATT_PROP_WRITE,
@@ -5768,7 +5808,12 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let snapshot = service_snapshots(&services);
+        let snapshot = service_snapshots(&services, &[]);
+        assert!(
+            snapshot
+                .iter()
+                .all(|service| service.access == crate::boundary::ServiceAccess::Open)
+        );
         let order: Vec<(&str, u64)> = snapshot
             .iter()
             .map(|service| (service.uuid.as_str(), service.occurrence))
@@ -5797,6 +5842,14 @@ mod tests {
             Some(0x40),
             "the lookup agrees with the reported occurrence"
         );
+        let battery_uuid = uuid::Uuid::parse_str(BATTERY).expect("battery uuid");
+        let restricted = service_snapshots(&services, &[(battery_uuid, 0x30, "access-denied")]);
+        assert_eq!(restricted[1].uuid, BATTERY);
+        assert_eq!(
+            restricted[1].access,
+            crate::boundary::ServiceAccess::AccessDenied
+        );
+        assert_eq!(restricted[0].access, crate::boundary::ServiceAccess::Open);
     }
 
     #[test]
@@ -6145,6 +6198,11 @@ mod tests {
     #[derive(Clone, Default)]
     struct ExactNotificationTransport {
         subscribed: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+        cccd_modes: std::sync::Arc<std::sync::Mutex<Vec<DeliveryMode>>>,
+        emit_on_write: std::sync::Arc<std::sync::Mutex<Option<ValueNotification>>>,
+        inbound: std::sync::Arc<
+            std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<ValueNotification>>>,
+        >,
         unsubscribed: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
         refuse_release: std::sync::Arc<std::sync::atomic::AtomicBool>,
         refuse_stream: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -6160,11 +6218,20 @@ mod tests {
         async fn transport_subscribe(
             &self,
             characteristic: &Characteristic,
+            selected: Option<DeliveryMode>,
         ) -> Result<(), btleplug::Error> {
             self.subscribed
                 .lock()
                 .unwrap()
                 .push(characteristic.instance);
+            if let Some(mode) = selected {
+                self.cccd_modes.lock().unwrap().push(mode);
+            }
+            if let Some(value) = self.emit_on_write.lock().unwrap().clone()
+                && let Some(sender) = self.inbound.lock().unwrap().clone()
+            {
+                let _ = sender.send(value);
+            }
             if let Some(gate) = &self.enable_gate {
                 gate.notified().await;
             }
@@ -6195,7 +6262,12 @@ mod tests {
                     "fixture stream refusal".into(),
                 ));
             }
-            Ok(Box::pin(futures_util::stream::empty()))
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+            *self.inbound.lock().unwrap() = Some(sender);
+            Ok(Box::pin(futures_util::stream::unfold(
+                receiver,
+                |mut receiver| async move { receiver.recv().await.map(|value| (value, receiver)) },
+            )))
         }
         async fn transport_unsubscribe(
             &self,
@@ -6237,6 +6309,74 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    /// The first CCCD write is the selected mode. A value emitted while that
+    /// write runs is already on the stream opened before it. A refused
+    /// notification write does not fall back to indication and leaves no
+    /// target.
+    #[tokio::test]
+    async fn selected_notification_is_the_only_cccd_write() {
+        use futures_util::StreamExt;
+        let transport = ExactNotificationTransport::default();
+        let characteristic = characteristic(
+            HRM_SERVICE,
+            HRM_MEASUREMENT,
+            0x12,
+            CharPropFlags::NOTIFY | CharPropFlags::INDICATE,
+        );
+        let owned = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        *transport.emit_on_write.lock().unwrap() =
+            Some(notification(HRM_SERVICE, HRM_MEASUREMENT, vec![0x5a]));
+        let targets = super::NotificationTargets::default();
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        let mut stream = super::subscribe_and_stream_owned_selecting(
+            &transport,
+            &characteristic,
+            &targets,
+            &debt,
+            &owned,
+            Some(DeliveryMode::Notification),
+        )
+        .await
+        .expect("notification enable");
+        assert_eq!(
+            *transport.cccd_modes.lock().unwrap(),
+            vec![DeliveryMode::Notification]
+        );
+        let value = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+            .await
+            .expect("value wait")
+            .expect("value during the write");
+        assert_eq!(value.value, vec![0x5a]);
+
+        let refused = ExactNotificationTransport::default();
+        refused
+            .subscribe_local_refusal
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+        let refused_scope = scope("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 1);
+        let targets = super::NotificationTargets::default();
+        let debt = std::sync::Mutex::new(std::collections::HashSet::new());
+        let error = match super::subscribe_and_stream_owned_selecting(
+            &refused,
+            &characteristic,
+            &targets,
+            &debt,
+            &refused_scope,
+            Some(DeliveryMode::Notification),
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("refused notification write"),
+        };
+        assert!(matches!(error, super::EnableStreamError::Subscribe(_)));
+        assert_eq!(
+            *refused.cccd_modes.lock().unwrap(),
+            vec![DeliveryMode::Notification]
+        );
+        assert!(targets.get(&refused_scope).is_none());
+        assert!(!debt.lock().unwrap().contains(&refused_scope));
     }
 
     #[tokio::test]

@@ -10,11 +10,15 @@ authority contract and retained source are described in
 The current source revision adds an optional authoritative LE advertisement
 observer after the `.4` ready-callback lifetime correction. Earlier receipts
 remain tied to their original bytes, including failures; they do not qualify
-this revision. `5.87-ubm.9` fails an unbonded LE attribute operation that
-returns Insufficient Encryption or Insufficient Authentication instead of
-raising link security. The ACL stays up. A paired link still retries so an
-existing key can encrypt it. Installing that daemon, an unbonded Bun 1.4.2 H10 session on `hci0` read battery 90 and manufacturer Polar Electro Oy, completed the PMD get-settings indication and one 72 bpm notification, and reported disconnect `released` and close `released`. The link was down, the peer was not paired, and the capture had no pairing request. The authority tuple is unchanged, and the package does not
-automatically upgrade or restart a host.
+this revision. Source `5.87-ubm.10` records who brought the link up, separately
+from the controller initiator bit, so releasing a borrowed connection does not
+disconnect another application's link. A rejected admission rolls back only
+that pending hold. When a dead owner's last in-flight operation ends, that
+generation is reconciled without a further request. After explicit pairing on
+the same attachment, ATT security retry is enabled again. Those are producer
+tests, not an installed daemon and not a physical-radio receipt. The authority
+tuple is unchanged, and the package does not automatically upgrade or restart
+a host.
 
 ## One explicit deployment owner
 
@@ -30,7 +34,7 @@ fresh, disjoint directories outside the repository:
 ```sh
 node /absolute/ubm/vendor/bluez/deployment/bundle.mjs \
   /absolute/bluez-5.87.tar.xz /absolute/new-bluez-bundle \
-  /absolute/new-bluez-build-work 5.87-ubm.9
+  /absolute/new-bluez-build-work 5.87-ubm.10
 node --test /absolute/ubm/vendor/bluez/deployment/deployment.test.mjs
 ```
 
@@ -190,7 +194,7 @@ recovery is not a claim that previous physical resources were released.
 
 ### Optional authoritative deferred LE availability
 
-Maintained `5.87-ubm.9` includes optional observer revision 1 on
+Maintained `5.87-ubm.10` includes optional observer revision 1 on
 `org.unifiedblemanager.LinuxAuthority1`: `GetLeAvailability` reads the current
 advertisement sequence, and `LeAdvertisement` identifies a fresh connectable LE
 report. The client subscribes under the pinned unique owner before reading its
@@ -228,7 +232,7 @@ remain separately scoped operator actions.
 
 ```sh
 node /absolute/ubm/vendor/bluez/deployment/activate.mjs rollback \
-  /opt/unified-ble-manager/bluez/5.87-ubm.9-PATCH_HASH_PREFIX/deployment-receipt.json \
+  /opt/unified-ble-manager/bluez/5.87-ubm.10-PATCH_HASH_PREFIX/deployment-receipt.json \
   --confirm-override-removal
 ```
 

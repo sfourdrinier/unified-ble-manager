@@ -31,6 +31,7 @@ async fn aliases_are_refused_before_ownership_and_native_events_retire_the_canon
                 },
                 descriptors: vec![],
             }],
+            access: std::default::Default::default(),
         }],
     );
     let central = DesktopCentral::open(radio, "identity-admission")

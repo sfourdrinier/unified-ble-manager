@@ -409,7 +409,7 @@ describe('Tauri v2 public manager', () => {
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 
-  test('finding 217 follow-up: effective MTU is measured through IPC when the native snapshot reports it limited', async () => {
+  test('macOS effective MTU is unavailable when the native route reports the ATT MTU unobserved', async () => {
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
       if (request.kind === 'bootstrap')
@@ -419,7 +419,7 @@ describe('Tauri v2 public manager', () => {
             'connection:effective-mtu',
             'connection.rssi-and-att-mtu-capability-contract',
             'limited',
-            'corebluetooth-derived-effective-mtu'
+            'corebluetooth-att-mtu-not-observed'
           ])
         }
       if (request.kind === 'event.ack') return { kind: 'event.ack' }
@@ -449,7 +449,12 @@ describe('Tauri v2 public manager', () => {
         }
       }
       if (command === 'connection.events.ready') return { kind: 'route', payload: { state: 'ready' } }
-      if (command === 'connection.effective-mtu') return { kind: 'route', payload: { mtu: 515 } }
+      if (command === 'connection.effective-mtu') {
+        const reads = invoke.mock.calls.filter(
+          ([, call]) => call.request.envelope?.command === 'connection.effective-mtu'
+        ).length
+        return { kind: 'route', payload: { mtu: reads === 1 ? null : 515 } }
+      }
       if (command === 'connection.events.unsubscribe' || command === 'connection.disconnect') {
         return { kind: 'route', payload: { state: 'released', failures: [] } }
       }
@@ -461,6 +466,12 @@ describe('Tauri v2 public manager', () => {
     expect(effectiveMtu).toMatchObject({ state: 'limited' })
 
     const connection = await manager.connect('polar-h10')
+    await expect(connection.controls.effectiveMtu()).resolves.toMatchObject({
+      state: 'unavailable',
+      attMtu: null,
+      payloadBytes: null,
+      platformPduBytes: null
+    })
     await expect(connection.controls.effectiveMtu()).resolves.toMatchObject({
       state: 'measured',
       attMtu: 515,

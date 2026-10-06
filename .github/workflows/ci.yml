@@ -314,6 +314,39 @@ jobs:
         if: runner.os == 'Linux' && matrix.node == '22'
         run: node scripts/ci/check-tck-test-only-packaging.js
 
+  # Packed Bun 1.4.2 and Node consume the sealed desktop prebuild through the
+  # public package. The source-mode smoke above does not cover this.
+  bun-desktop-packed:
+    name: Packed Bun desktop acceptance
+    timeout-minutes: 90
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+        with:
+          prepack: 'true'
+          node-version: '22'
+
+      - name: Install pinned Rust
+        run: cargo --version
+
+      - name: Install Linux native build dependencies
+        run: bash scripts/ci/install-linux-native-system-dependencies.sh desktop-prebuild
+
+      - name: Install Bun 1.4.2
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.2"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+
+      - name: Build the desktop-core prebuild
+        run: pnpm native-prebuild:build -- --backend desktop-core
+
+      - name: Packed Bun and Node public acceptance
+        run: node scripts/ci/bun-packed-desktop-acceptance.js
+
   # UBM 5.0 contract-freeze gate (U1): strict typecheck plus the frozen
   # contract suite. Runs on every CI invocation like `package`; see
   # contracts/README.md and contracts/RED_BASELINE.md.

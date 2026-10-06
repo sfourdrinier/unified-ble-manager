@@ -189,8 +189,8 @@ fn service_filter_keeps(
         }
         ServiceMatch::Unreadable => true,
         ServiceMatch::Absent => {
-            let scan_response = args.AdvertisementType().ok()
-                == Some(BluetoothLEAdvertisementType::ScanResponse);
+            let scan_response =
+                args.AdvertisementType().ok() == Some(BluetoothLEAdvertisementType::ScanResponse);
             if !scan_response {
                 return false;
             }
@@ -222,7 +222,9 @@ fn advertised_services(
         return ServiceMatch::Unreadable;
     };
     let count = uuids.Size().unwrap_or(0);
-    let advertised: Vec<windows::core::GUID> = (0..count).filter_map(|index| uuids.GetAt(index).ok()).collect();
+    let advertised: Vec<windows::core::GUID> = (0..count)
+        .filter_map(|index| uuids.GetAt(index).ok())
+        .collect();
     if required.iter().all(|service| advertised.contains(service)) {
         ServiceMatch::Present
     } else {

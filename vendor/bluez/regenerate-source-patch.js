@@ -21,7 +21,7 @@ if (digest(fs.readFileSync(archive)) !== manifest.upstream.sha256) {
 const files = [
   'Makefile.am', 'Makefile.in', 'src/adapter.c', 'src/bearer.c', 'src/device.c',
   'src/device.h', 'src/gatt-client.c', 'src/gatt-client.h', 'src/gatt-database.c',
-  'src/shared/att.c', 'src/shared/gatt-client.c', 'src/shared/gatt-client.h',
+  'src/shared/att.c', 'src/shared/att.h', 'src/shared/gatt-client.c', 'src/shared/gatt-client.h',
   'src/ubm-gatt-state.h', 'src/ubm-le-lease.c', 'src/ubm-le-lease.h',
   'unit/test-ubm-att-exchange.c', 'unit/test-ubm-bonded-notify.c',
   'unit/test-ubm-device.c', 'unit/test-ubm-gatt-projection.c',

@@ -206,7 +206,11 @@ mod ubm_platform_error_tests {
 
 impl std::fmt::Display for PlatformError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} ({} {})", self.message, self.domain, self.code)
+        write!(f, "{} ({} {})", self.message, self.domain, self.code)?;
+        for (key, value) in &self.metadata {
+            write!(f, " {key}={value}")?;
+        }
+        Ok(())
     }
 }
 

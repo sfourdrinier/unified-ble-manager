@@ -2074,6 +2074,7 @@ fn hrm_service() -> ServiceSnapshot {
             characteristic(INDICATE_ONLY, flags(false, false, false, true)),
             characteristic(CONTROL_POINT, flags(true, true, false, false)),
         ],
+        access: std::default::Default::default(),
     }
 }
 
@@ -2235,6 +2236,10 @@ impl Harness {
                     connection_events: HashMap::new(),
                     security_watches: HashMap::new(),
                     security_watch_releases: std::collections::HashSet::new(),
+                    write_readiness_watches: HashMap::new(),
+                    write_readiness_releases: std::collections::HashSet::new(),
+                    parameter_watches: HashMap::new(),
+                    parameter_releases: std::collections::HashSet::new(),
                     operations: HashMap::new(),
                     completed_correlations: HashMap::new(),
                     pending_events: std::collections::HashSet::new(),
@@ -4311,15 +4316,15 @@ async fn pr210_32_racing_first_calls_open_exactly_one_authority() {
     assert!(Arc::ptr_eq(&first, &second), "one shared central");
 }
 
-// Finding 217 follow-up — the effective ATT MTU the OS reports crosses the
-// dispatcher: macOS derives `maximumWriteValueLength(.withResponse) + 3`,
-// Windows reads `GattSession.MaxPduSize`, Linux reads the BlueZ
-// characteristic MTU. A withheld measurement is never synthesized.
+// The effective ATT MTU the OS observed crosses the dispatcher. An
+// unobserved link is null, not a synthesized length and not a link failure.
+// Windows reads `GattSession.MaxPduSize`. Linux reads the BlueZ
+// characteristic MTU. A scripted measurement still crosses as a number.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn connected_effective_mtu_reads_the_live_link_through_the_core() {
     let harness = Harness::new().await;
     let link = harness.connect("peer-a").await;
-    let error = harness
+    let unobserved = harness
         .execute(
             "connection.effective-mtu",
             Harness::link_entries(&link),
@@ -4327,8 +4332,8 @@ async fn connected_effective_mtu_reads_the_live_link_through_the_core() {
             OpControl::unbounded(),
         )
         .await
-        .expect_err("an unmeasured MTU is not synthesized");
-    assert_eq!(error.code, BleErrorCode::CapabilityUnsupported);
+        .expect("an unobserved MTU is null");
+    assert_eq!(field(&unobserved, "mtu"), &IpcValue::Null);
     harness.radio().set_effective_mtu("peer-a", 515);
     let mtu = harness
         .execute(
@@ -4485,10 +4490,6 @@ async fn transport_only_restrictions_match_absent_routes_and_rebind_ownership() 
         ("discovery:advertisement-watch", "advertisement.watch"),
         ("gatt:reliable-write", "gatt.reliable-write"),
         (
-            "gatt:write-without-response-readiness",
-            "gatt.write-readiness",
-        ),
-        (
             "gatt:high-throughput-acquire",
             "gatt.high-throughput-acquire",
         ),
@@ -4500,6 +4501,20 @@ async fn transport_only_restrictions_match_absent_routes_and_rebind_ownership() 
             .unwrap_err();
         assert_eq!(error.operation, "tauri.route-command");
     }
+    assert!(crate::capabilities::transport_restriction(
+        "gatt:write-without-response-readiness"
+    )
+    .is_none());
+    let readiness = harness
+        .execute(
+            "connection.write-readiness.subscribe",
+            vec![],
+            None,
+            OpControl::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_ne!(readiness.operation, "tauri.route-command");
     assert!(crate::capabilities::transport_restriction("peer:origin-authorized").is_some());
     let error = harness
         .execute(
@@ -5610,6 +5625,8 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                     Vec::new(),
                 ),
             ],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
             uuid: "00001801-0000-1000-8000-00805f9b34fb".to_owned(),
@@ -5619,6 +5636,8 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                 flags(false, false, false, true),
                 Vec::new(),
             )],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
             uuid: "0000180d-0000-1000-8000-00805f9b34fb".to_owned(),
@@ -5640,6 +5659,8 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                     Vec::new(),
                 ),
             ],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
             uuid: "0000180a-0000-1000-8000-00805f9b34fb".to_owned(),
@@ -5659,6 +5680,8 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                     Vec::new(),
                 ),
             ],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
             uuid: "0000180f-0000-1000-8000-00805f9b34fb".to_owned(),
@@ -5668,6 +5691,8 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                 flags(true, false, true, false),
                 vec![cccd()],
             )],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
             uuid: "6217ff4b-fb31-1140-ad5a-a45545d7ecf3".to_owned(),
@@ -5677,6 +5702,8 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                 flags(true, true, false, false),
                 Vec::new(),
             )],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
             uuid: "fb005c80-02e7-f387-1cad-8acd2d8df0c8".to_owned(),
@@ -5686,6 +5713,8 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                 flags(false, false, true, false),
                 vec![cccd()],
             )],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
             uuid: "0000feee-0000-1000-8000-00805f9b34fb".to_owned(),
@@ -5695,6 +5724,8 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                 flags(true, false, false, false),
                 Vec::new(),
             )],
+
+            access: std::default::Default::default(),
         },
     ]
 }

@@ -324,6 +324,17 @@ class RustRadioHostAdapter(
    * ATT payload of the MTU `onMtuChanged` reported, or of the ATT default
    * LE MTU before any exchange (the link's MTU until one completes).
    */
+  /**
+   * Android has no write-without-response queue callback. A GATT commit is
+   * not that signal, so the request fails before any radio effect.
+   */
+  override fun readWriteReadiness(requestId: Long, peerId: String) = perform(requestId) {
+    throw RadioPortFailure(
+      RadioFailureKind.UNSUPPORTED,
+      "Android reports no write-without-response readiness"
+    )
+  }
+
   override fun readWriteLimits(requestId: Long, peerId: String) = perform(requestId) {
     requireConnected(peerId)
     track(requestId, radio.readMtu(peerId) { result ->

@@ -140,6 +140,13 @@ public final class MobileCoreBridge {
          */
         void readWriteLimits(long requestId, String peerId);
 
+        /**
+         * Apple write-without-response readiness. Android has no equivalent
+         * signal. Answer: {@link #nativeCompleteFailure} kind {@code unsupported},
+         * dispatched=false. Do not invent a ready=true from a GATT commit.
+         */
+        void readWriteReadiness(long requestId, String peerId);
+
         /** Answer: {@link #nativeCompleteMtu} with the negotiated MTU. */
         void requestMtu(long requestId, String peerId, int mtu);
 
