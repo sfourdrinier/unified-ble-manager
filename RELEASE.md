@@ -163,6 +163,21 @@ git tag -a v4.0.0 -m "v4.0.0"
 
 ## Releasing 5.0.0-rc.20
 
+### One-time owner-authorized unpublished-tag replacement
+
+The repository owner explicitly authorized replacing the failed, unpublished
+`v5.0.0-rc.20` tag once. Its original annotated object was
+`2473c5677a0b2edddf6b29b7f7cee357d40992c0`, pointing to
+`306179508ba553af3e85934156cdd9e740e2742e`; publisher run `37415179598`
+failed desktop offline-consumer installation and never entered the protected
+OIDC publish job. Retain that failed run and original tag identity. Before
+replacement, recheck npm rc.20 is absent, qualify the complete publisher-fix
+batch and exact current `main`, and ensure the remote tag still has that
+original object. Recreate one annotated tag on qualified current `main` and
+let the normal trusted `publish.yml` OIDC workflow publish with provenance.
+This exception permits neither manual npm publication nor weakened gates,
+and does not apply to any published version or other tag.
+
 This corrective release aligns installation guidance, historical release status,
 Tauri MTU errors and Windows write-limit descriptions with the implementation.
 It also corrects public stream initialization, retryable cleanup and terminal

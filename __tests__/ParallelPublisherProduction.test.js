@@ -11,6 +11,23 @@ const root = path.resolve(__dirname, '..')
 const baselineText = fs.readFileSync(path.join(root, '.github/publish-serial-reference.yml'), 'utf8')
 const baseline = YAML.parse(baselineText)
 
+test('isolated desktop acceptance prepares cache and its debug negative fixture before offline probes', () => {
+  const workflow = buildProduction(baseline)
+  const steps = workflow.jobs['packed-desktop'].steps
+  const names = steps.map(step => step.name)
+  const acceptance = names.indexOf('Clean-tarball desktop-core acceptance (linux-x64, identity + negative legs)')
+  for (const name of [
+    'Install pinned Rust',
+    'Build NAPI dispatch addon (R03 converged path)',
+    'Prepare offline desktop consumer cache'
+  ]) {
+    expect(names.indexOf(name)).toBeGreaterThan(-1)
+    expect(names.indexOf(name)).toBeLessThan(acceptance)
+  }
+  expect(steps.find(step => step.name === 'Prepare offline desktop consumer cache').run).toContain('--prepare-cache')
+  expect(steps[acceptance].run).toContain('--negative')
+})
+
 test('release guide describes the parallel graph without serial Tauri-before-Android promises', () => {
   const guide = fs.readFileSync(path.join(root, 'RELEASE.md'), 'utf8')
   expect(guide).not.toContain('Cargo consumer runs immediately after `prepack`, before examples, Android')
