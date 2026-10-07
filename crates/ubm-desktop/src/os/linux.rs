@@ -702,7 +702,7 @@ impl Bluez {
         Ok(!present)
     }
 
-    async fn current_daemon_owner_for(&self, operation: &str) -> Result<String, DesktopError> {
+    async fn observe_daemon_owner_for(&self, operation: &str) -> Result<String, DesktopError> {
         let owner: String = self
             .conn
             .call_method(
@@ -717,6 +717,11 @@ impl Bluez {
             .body()
             .deserialize()
             .map_err(|error| platform(operation, error))?;
+        Ok(owner)
+    }
+
+    async fn current_daemon_owner_for(&self, operation: &str) -> Result<String, DesktopError> {
+        let owner = self.observe_daemon_owner_for(operation).await?;
         if self
             .le_owner
             .as_ref()
@@ -730,6 +735,45 @@ impl Bluez {
             .with_detail("the bound BlueZ daemon owner changed; create a fresh manager to resolve and verify native authority"));
         }
         Ok(owner)
+    }
+
+    // Admission keeps its bound authority refusal. An already admitted
+    // acquisition instead compares its captured epoch before FD publication.
+    async fn verify_acquired_owner(
+        &self,
+        owner: &str,
+        operation: &str,
+    ) -> Result<(), DesktopError> {
+        let reset =
+            || DesktopError::new(BleErrorCode::BackendReset, BleErrorDomain::Core, operation);
+        match self.observe_daemon_owner_for(operation).await {
+            Ok(current) if current == owner => Ok(()),
+            Ok(current) => Err(reset()
+                .with_detail("the BlueZ daemon owner changed during acquired transport admission")
+                .with_platform(
+                    crate::errors::PlatformDetail::new("bluez-daemon", "owner-changed")
+                        .with_metadata(
+                            "expectedOwner",
+                            crate::errors::PlatformValue::Text(owner.into()),
+                        )
+                        .with_metadata(
+                            "observedOwner",
+                            crate::errors::PlatformValue::Text(current),
+                        ),
+                )),
+            Err(error) => {
+                if let Some(detail) = error.platform()
+                    && detail.domain == "bluez-dbus"
+                    && detail.code == "org.freedesktop.DBus.Error.NameHasNoOwner"
+                {
+                    Err(reset()
+                        .with_detail(error.to_string())
+                        .with_platform(detail.clone()))
+                } else {
+                    Err(error)
+                }
+            }
+        }
     }
 
     /// A daemon owner string is an epoch, not a capability. Verify the private
@@ -1209,13 +1253,7 @@ impl Bluez {
         let (services, characteristics) = self
             .characteristics_from(&owner, &scope.0, operation)
             .await?;
-        if self.current_daemon_owner_for(operation).await? != owner {
-            return Err(DesktopError::new(
-                BleErrorCode::BackendReset,
-                BleErrorDomain::Core,
-                operation,
-            ));
-        }
+        self.verify_acquired_owner(&owner, operation).await?;
         if characteristics.len() > 4096 {
             return Err(DesktopError::new(
                 BleErrorCode::CapabilityLimited,
@@ -1265,13 +1303,7 @@ impl Bluez {
             )
             .with_detail("optional acquired transport property is absent"));
         }
-        if self.current_daemon_owner_for(operation).await? != owner {
-            return Err(DesktopError::new(
-                BleErrorCode::BackendReset,
-                BleErrorDomain::Core,
-                operation,
-            ));
-        }
+        self.verify_acquired_owner(&owner, operation).await?;
         let method = match kind {
             AcquisitionKind::Write => "AcquireWrite",
             AcquisitionKind::Notify => "AcquireNotify",
@@ -1337,16 +1369,7 @@ impl Bluez {
             usize::from(mtu - 3).min(512),
         )?);
         opening.install_fd(io);
-        let current_owner = self.current_daemon_owner_for(operation).await;
-        let admission = match current_owner {
-            Ok(current) if current == owner => Ok(()),
-            Ok(_) => Err(DesktopError::new(
-                BleErrorCode::BackendReset,
-                BleErrorDomain::Core,
-                operation,
-            )),
-            Err(error) => Err(error),
-        };
+        let admission = self.verify_acquired_owner(&owner, operation).await;
         if let Err(primary) = admission {
             return match opening.close().await {
                 Ok(()) => Err(primary),

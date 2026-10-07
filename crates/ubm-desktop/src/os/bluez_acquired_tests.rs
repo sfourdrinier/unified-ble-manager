@@ -305,3 +305,31 @@ async fn private_bus_daemon_replacement_cannot_publish_the_old_owners_deferred_f
     replacement.close().await.unwrap();
     publisher.close().await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires a dedicated dbus-run-session; daemon name vanishes before deferred publication"]
+async fn private_bus_daemon_absence_cannot_publish_a_deferred_fd() {
+    let (publisher, state, peer, authority) =
+        fixture(true, vec!["write-without-response".into()]).await;
+    let old = authority.clone();
+    let opening =
+        tokio::spawn(async move { old.acquire_gatt(&scope(), AcquisitionKind::Write).await });
+    tokio::time::timeout(Duration::from_secs(1), state.entered.notified())
+        .await
+        .unwrap();
+    let sender = state.sender.lock().unwrap().clone().unwrap();
+    publisher.release_name(BLUEZ).await.unwrap();
+    state.unblock.notify_one();
+    let error = opening.await.unwrap().unwrap_err();
+    assert_eq!(error.code(), BleErrorCode::BackendReset);
+    assert!(error.platform().is_some());
+    assert!(authority.finish_acquired().await.is_empty());
+    assert!(!sender_exists(&publisher, &sender).await);
+    let receiver = LinuxAcquiredGattIo::new(peer, 20).unwrap();
+    assert_eq!(
+        receiver.receive().await.unwrap_err().code(),
+        BleErrorCode::PlatformTransport
+    );
+    receiver.close().await.unwrap();
+    publisher.close().await.unwrap();
+}

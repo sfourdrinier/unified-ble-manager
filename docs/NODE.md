@@ -92,6 +92,10 @@ never substitute ordinary writes or CCCD subscriptions. A dedicated D-Bus
 sender owns each pending acquisition and returned descriptor, so cancellation
 before the FD reply also ends the daemon admission. Failed descriptor or sender
 cleanup remains owned for retry. Check the cleanup record returned by `close()`.
+If the captured daemon owner changes or disappears while an acquisition is
+pending, publication fails with `backend.reset` and the sender and descriptor
+are closed. The operation retains the D-Bus failure or observed owner identities;
+it never redirects the acquisition to the replacement daemon.
 
 Connection lease release closes its acquired descendants. Database changes,
 physical link loss, adapter reset and source failure terminalize old sessions;

@@ -9,6 +9,11 @@ All notable changes to `unified-ble-manager` are documented here.
   acknowledgment; dispatched writes retain uncertain commit state and are never
   automatically retryable. Joined packed-route verification is pending.
 
+- Reject deferred acquired-FD publication with `backend.reset` when the
+  captured BlueZ daemon owner is replaced or disappears. Retain the original
+  D-Bus failure or observed owner identities and close the dedicated sender and
+  descriptor. Clean preflight and live daemon qualification remain pending.
+
 - Advance the private mobile wire to `ubm-mobile-wire/2` and desktop IPC to
   version 6 for required resource/graph values and owned operation routes.
   Older peers fail negotiation before session, renderer-lease or radio admission.
