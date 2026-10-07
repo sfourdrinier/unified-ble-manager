@@ -3370,7 +3370,11 @@ function isConnectionParametersObservation(value: unknown): value is {
     typeof record.supervisionTimeoutUs === 'number' &&
     Number.isFinite(record.supervisionTimeoutUs) &&
     typeof record.observedAtMonotonicMs === 'number' &&
-    typeof record.ordinal === 'number'
+    Number.isFinite(record.observedAtMonotonicMs) &&
+    record.observedAtMonotonicMs >= 0 &&
+    typeof record.ordinal === 'number' &&
+    Number.isSafeInteger(record.ordinal) &&
+    record.ordinal > 0
   )
 }
 
@@ -3388,7 +3392,11 @@ function isWriteReadinessObservation(value: unknown): value is {
     typeof record.connectionGeneration === 'string' &&
     typeof record.ready === 'boolean' &&
     typeof record.observedAtMonotonicMs === 'number' &&
-    typeof record.ordinal === 'number'
+    Number.isFinite(record.observedAtMonotonicMs) &&
+    record.observedAtMonotonicMs >= 0 &&
+    typeof record.ordinal === 'number' &&
+    Number.isSafeInteger(record.ordinal) &&
+    record.ordinal > 0
   )
 }
 

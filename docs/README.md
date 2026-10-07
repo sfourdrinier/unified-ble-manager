@@ -130,6 +130,7 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 | [`review/RC21_BLUEZ_LIVE_QUALIFICATION_PLAN.md`](review/RC21_BLUEZ_LIVE_QUALIFICATION_PLAN.md)               | Prepared lab daemon activation, rollback and live-test scope | Current    |
 | [`review/rc21-round2/REVIEW.md`](review/rc21-round2/REVIEW.md)                                               | Immutable second-review findings at b80542f3                 | Historical |
 | [`review/rc21-round2/AGENT_HANDOFF.md`](review/rc21-round2/AGENT_HANDOFF.md)                                 | Immutable second-review implementation handoff               | Historical |
+| [`review/rc21-round2/final-batch-evidence/README.md`](review/rc21-round2/final-batch-evidence/README.md)     | Final runtime qualification and retained failures            | Current    |
 | [`review/rc21-round2/twelfth-batch-evidence/README.md`](review/rc21-round2/twelfth-batch-evidence/README.md) | Frozen candidate receipts and remaining Windows failure      | Historical |
 
 | Document                                                                               | What it is                                                                                                                        | Status     |

@@ -99,6 +99,17 @@ async fn finish_within_caller_control<T>(
     outcome.map_err(|error| DispatchError::from_core(&error))
 }
 
+// Re-subscribe at the current broadcast tail before the fresh read. Retained
+// pre-gap values cannot supersede that read; reports arriving during it remain
+// available to the opening drain under the original request budget.
+fn discard_opening_parameters_before_probe(
+    receiver: &mut broadcast::Receiver<ubm_desktop::ConnectionParametersEvent>,
+    values: &mut VecDeque<ubm_desktop::ObservedConnectionParameters>,
+) {
+    *receiver = receiver.resubscribe();
+    values.clear();
+}
+
 impl BtleplugDispatcher {
     /// Observed connection parameters for the lease holding the link.
     /// Interval and supervision timeout are microseconds.
@@ -191,7 +202,7 @@ impl BtleplugDispatcher {
                         return Err(DispatchError::from_core(&error));
                     }
                     if event.missed != 0 {
-                        opening_values.clear();
+                        discard_opening_parameters_before_probe(&mut receiver, &mut opening_values);
                         measured = connection_parameters_within_request(
                             authority.as_ref(),
                             &connection.peer_id,
@@ -209,7 +220,7 @@ impl BtleplugDispatcher {
                 }
                 Ok(_) => {}
                 Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                    opening_values.clear();
+                    discard_opening_parameters_before_probe(&mut receiver, &mut opening_values);
                     measured = connection_parameters_within_request(
                         authority.as_ref(),
                         &connection.peer_id,
@@ -561,6 +572,42 @@ impl BtleplugDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_gap_discards_pre_probe_records_but_keeps_newer_events() {
+        let (sender, mut receiver) = broadcast::channel(2);
+        let event = |sequence| ubm_desktop::ConnectionParametersEvent {
+            sequence,
+            peer_id: "peer".to_owned(),
+            connection_generation: Some("generation".to_owned()),
+            interval_us: 30_000,
+            latency: 0,
+            supervision_timeout_us: 4_000_000,
+            error: None,
+            missed: 0,
+        };
+        for sequence in 1..=3 {
+            sender.send(event(sequence)).unwrap();
+        }
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Lagged(_))
+        ));
+        let mut values = VecDeque::from([ubm_desktop::ObservedConnectionParameters {
+            interval_us: 60_000,
+            latency: 0,
+            supervision_timeout_us: 4_000_000,
+        }]);
+        discard_opening_parameters_before_probe(&mut receiver, &mut values);
+        assert!(values.is_empty());
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        // A report arriving during the fresh probe still follows that probe.
+        sender.send(event(4)).unwrap();
+        assert_eq!(receiver.try_recv().unwrap().sequence, 4);
+    }
 
     #[tokio::test]
     async fn opening_parameter_read_keeps_the_caller_budget_and_cancel() {

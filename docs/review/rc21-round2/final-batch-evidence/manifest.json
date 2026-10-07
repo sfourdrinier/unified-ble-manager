@@ -1,0 +1,68 @@
+{
+  "runtime_source_head": "9916500f44a0789d25a83d9f1879e48456be8a70",
+  "canonical_source_head": "0d5f4cb90f4f4c4963459b340ecb71e8f40f0ff2",
+  "canonical_run": 37687349196,
+  "canonical_sha256": "60050759afe7cbca2564ecaef83b8c497e5f2231b6c0858916dc6f8c7baaaef2",
+  "receipts": {
+    "bluez-live-pending-pair-success-before-lease-corrected-final.log": {
+      "original_sha256": "93e2d266652737c6eb9f158c5e9204c7e34ec125b577ab193d931ad39884c051",
+      "lf_normalized_sha256": "93e2d266652737c6eb9f158c5e9204c7e34ec125b577ab193d931ad39884c051"
+    },
+    "bluez-live-pending-pair-success-before-lease-final.log": {
+      "original_sha256": "559783df6cb6a09355d15cf65e5a4f41be77cd9637b03e52031bf8ec6eea6c4d",
+      "lf_normalized_sha256": "559783df6cb6a09355d15cf65e5a4f41be77cd9637b03e52031bf8ec6eea6c4d"
+    },
+    "bluez-live-pending-pair-success-before-lease-owned-cleanup.py": {
+      "original_sha256": "76246e71ca9dfeae23bad9a884393f31f9afe0aef755a71c203955bef96846c2",
+      "lf_normalized_sha256": "76246e71ca9dfeae23bad9a884393f31f9afe0aef755a71c203955bef96846c2"
+    },
+    "windows-final-install-0d5f4cb9-cache-reify.log": {
+      "original_sha256": "b93abe4bfcd69cf85e784974eea639000ff598d3c17ffabba0306568af14f76d",
+      "lf_normalized_sha256": "85aa463e2f8c10fd430d764397febece47ab8a9b6491d61165adb804ba73128a"
+    },
+    "windows-bun-live-retirement-0d5f4cb9.log": {
+      "original_sha256": "9b2acbe0c73e2d145b382903c892964bb7476ccd533c925d80a182f3861656f2",
+      "lf_normalized_sha256": "016b4f94ff3020ccc62abd27531c3c9d12d6df2da41290a6587a78569afd7fb9"
+    },
+    "windows-remaining-public-matrix-0d5f4cb9.log": {
+      "original_sha256": "235c76f82f188ef34b4ee57dbb9b52e372343b9cf6ef0f2e2025297d22424357",
+      "lf_normalized_sha256": "476d062aa4c0e81a8155d4e1dec64cb54005692d82c55b51724e1af0a36d7f2b"
+    },
+    "windows-bun-esm-retirement-0d5f4cb9.log": {
+      "original_sha256": "0b3f19bcbc34bf88246ae05c9d26ef0de33ac129d4c2e13d1371495c56a2bc4e",
+      "lf_normalized_sha256": "94bd04f3c90ce02944b856d873a9d4fa1a8198e0d375d6e5e38e59bdcc1e020d"
+    },
+    "windows-bun-esm-retirement-owned-peer-loss.log": {
+      "original_sha256": "1040e668223e4b071fdee9cda739de1b4a84f8b282e9bbdd1bc8d2e3fc67614a",
+      "lf_normalized_sha256": "1040e668223e4b071fdee9cda739de1b4a84f8b282e9bbdd1bc8d2e3fc67614a"
+    },
+    "windows-bun-esm-midi-isolated-0d5f4cb9.log": {
+      "original_sha256": "81c512d2710b445f47e9d4df0e7fc684eb112ce28260169fb595ca07c9794bb9",
+      "lf_normalized_sha256": "b6a134d3e18cbc022fa820f5b68ee3e72bc9e71f7b769bb3571c909b655a243f"
+    },
+    "windows-midi-isolation-setup.log": {
+      "original_sha256": "3873623373e49a9368122870737ce7304d8d7a9a60ac1178dabc42615d10c20c",
+      "lf_normalized_sha256": "3873623373e49a9368122870737ce7304d8d7a9a60ac1178dabc42615d10c20c"
+    },
+    "windows-midi-isolation-rollback.log": {
+      "original_sha256": "9a8e3187c715b10fa1e43a8187467030c7b4a3dfe808d7408c6764c256c1729d",
+      "lf_normalized_sha256": "9a8e3187c715b10fa1e43a8187467030c7b4a3dfe808d7408c6764c256c1729d"
+    },
+    "preflight-linux-9916500f-final-rn-feedback.log": {
+      "original_sha256": "4c4323076bc54b830fc5ddb1807af7bd304bba15e61e39fdbf32d00d7a7e37ba",
+      "lf_normalized_sha256": "4c4323076bc54b830fc5ddb1807af7bd304bba15e61e39fdbf32d00d7a7e37ba"
+    },
+    "rn-final-feedback-lint.log": {
+      "original_sha256": "2899c590c9f244fa6334e5df29af65eb7cb3aa3bd8a3098d7c888afd07884d86",
+      "lf_normalized_sha256": "2899c590c9f244fa6334e5df29af65eb7cb3aa3bd8a3098d7c888afd07884d86"
+    },
+    "canonical-run-37687349196-final.json": {
+      "original_sha256": "8003b7e1c34e041087ce068631b9f5bc43f9e9faa0e9763094157346bc8f31da",
+      "lf_normalized_sha256": "8003b7e1c34e041087ce068631b9f5bc43f9e9faa0e9763094157346bc8f31da"
+    },
+    "ci-9916500f-failed.log": {
+      "original_sha256": "5234b13db06038ea40bf3f5b1ad4a0186bc2cc8cc454dd99db81835ea0a7f121",
+      "lf_normalized_sha256": "5234b13db06038ea40bf3f5b1ad4a0186bc2cc8cc454dd99db81835ea0a7f121"
+    }
+  }
+}

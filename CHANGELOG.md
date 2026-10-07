@@ -4,6 +4,11 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.0-rc.21] - 2026-10-05
 
+- Discard retained pre-gap Tauri parameter events before opening reconciliation,
+  preserving reports that arrive during the fresh read and the caller budget.
+  Reject non-finite or negative IPC control timestamps and ordinals that are not
+  positive safe integers, terminalizing malformed watches with owned cleanup.
+
 - Keep Tauri parameter-watch opening probes and reconciliation inside the
   original caller deadline and cancellation scope, using separate child tickets.
 
@@ -13,64 +18,61 @@ All notable changes to `unified-ble-manager` are documented here.
   establish internal GATT quiescence. Pending work prevents service close and
   stays owned for cleanup retry. Connection admission retains
   the native owner before awaiting discovery. A cleanup refusal does not invent
-  a lost connection. Combined and live verification remains pending.
+  a lost connection.
 
 - Scope reference-only known-peer and service-filtered connected-peer capability
   restrictions to CoreBluetooth. Linux and Windows independent native inventories
-  no longer report those unrelated restrictions. The collected qualification
-  follow-up remains under verification.
+  no longer report those unrelated restrictions. Verification and live scope are recorded in the rc.21 remediation ledger.
 
 - Include Windows' native connected inventory in known-peer retrieval so a
   connected, unpaired peer returned by the system directory can resolve on a
   fresh manager. Retrieval starts no unpaired discovery scan and acquires no
-  connection lease. Live round-trip verification of the correction is pending.
+  connection lease.
 
 - Report the documented `operation.reset` when adapter-loss teardown settles
   pending operations. Native ownership remains retained until
   acknowledgment; dispatched writes retain uncertain commit state and are never
-  automatically retryable. Joined packed-route verification is pending.
+  automatically retryable.
 
 - Reject deferred acquired-FD publication with `backend.reset` when the
   captured BlueZ daemon owner is replaced or disappears. Retain the original
   D-Bus failure or observed owner identities and close the dedicated sender and
-  descriptor. Clean preflight and live daemon qualification remain pending.
+  descriptor.
 
 - Advance the private mobile wire to `ubm-mobile-wire/2` and desktop IPC to
   version 6 for required resource/graph values and owned operation routes.
   Older peers fail negotiation before session, renderer-lease or radio admission.
   Package rc.21 is retained; previous receipts remain bound to their old source
-  and wire identity. Mixed-version verification remains pending.
+  and wire identity.
 
 - Draft rc.21 remediation: desktop and Tauri known/system-connected directories
   now use independent native inventories; RN has an owned system-connected query
   using Android GATT inventory and Apple service-scoped CoreBluetooth retrieval.
-  These source changes await the complete frozen-batch verification.
+  Native/public controls and collected package gates pass.
 
 - Represent unavailable GATT primary and inclusion metadata as `null`, distinct
   from observed secondary status and an observed empty inclusion list. Public
   and IPC codecs preserve unknown facts; desktop/mobile native graphs carry
   inclusion occurrence identity. CoreBluetooth retains callback ownership after
   cancellation or discovery failure, and Web traversal rejects oversized graphs.
-  Frozen-batch verification remains pending.
+
   This prerelease API correction requires regenerating the API reports.
 
 - Keep WinRT public and random address peers distinct in the native peripheral
   map and event identities, with immutable address-qualified opaque peer IDs.
   Typed direct-address lookup returns the same identity used by scanning.
-  Complete ingress qualification remains pending.
 
 - Add typed Windows active/passive/None scan modes and extended-advertisement
   opt-in through the desktop public provider and native watcher. Versioned APIs
   and default-adapter support are checked; absent options restore active,
   nonextended scanning. Scan cleanup retains failed handler-removal ownership.
-  Electron/Tauri preserve these controls. Frozen-batch and Windows qualification
-  remain pending.
+  Electron/Tauri preserve these controls. Runtime controls and Windows VM qualification are recorded in the remediation ledger.
 
 - Wire Windows preferred connection presets through the lease-owned Rust,
   NAPI/provider and Electron/Tauri IPC routes. Runtime API absence is explicit;
   native requests stay owned until replacement or disconnect, and failed close
   retains retryable cleanup debt. Acceptance does not assert changed link
-  parameters. Frozen-batch and Windows qualification remain pending.
+  parameters.
 
 ### Added
 
@@ -80,26 +82,24 @@ All notable changes to `unified-ble-manager` are documented here.
   Closing a notification iterator closes its native session; failed cleanup
   remains retryable, and unresolved CCCD cleanup prevents conflicting acquisition.
   Windows, Apple and ineligible BlueZ characteristics retain explicit unsupported
-  results. Frozen-batch and physical FD qualification remain pending.
+  results.
 
 - Carry Android report delay and nonlegacy PHY scan settings into the native
   builder and process native batch callbacks without borrowing caller payloads.
   Late callbacks from a retired scan cannot publish into its replacement.
-  Native/bridge verification remains pending.
 
 - Preserve original parameter getter/source failures, reconcile native queue
   gaps and fence retired source registrations. Initial watch events retain
   their native order instead of publishing a delayed probe afterward. A failed
   observation source requires fresh native evidence or a new generation to
-  recover; a snapshot alone does not reopen it. Frozen-batch verification and
-  Windows qualification remain pending.
+  recover; a snapshot alone does not reopen it. Collected provider/native controls and Windows VM parameter observations pass.
 
 - Add distinct read-only desktop OS-known and system-connected peer directory
   routes, preserving unbonded cached records and foreign connection observations
   without acquiring leases. Linux requires positive LE bearer evidence for a
   connected record; Windows selectors are limited to the default adapter and
-  retain failed transient-object cleanup. Mobile and IPC route drafts use their
-  native inventories; frozen-batch verification and qualification remain pending.
+  retain failed transient-object cleanup. Mobile and IPC routes use their
+  native inventories; native/public inventory controls pass.
 
 - Buffer the latest Apple RN readiness state while its initial probe is pending,
   then publish the probe before that newer state. Readiness watches retain their
@@ -108,12 +108,12 @@ All notable changes to `unified-ble-manager` are documented here.
 - Move RN and desktop readiness writes into one bounded native FIFO operation,
   owning bytes before waiting and retaining the original budget. Database and
   link loss interrupt readiness waits, and Electron/Tauri forward the helper
-  through the host-owned GATT route. Batch verification remains pending.
+  through the host-owned GATT route.
 
 - Windows parameter snapshots and callbacks classify the native all-zero
   disconnected getter answer as `connection.lost`, retaining its raw fields.
   Zero peripheral latency remains valid and malformed generic samples remain
-  fail-closed. Source-batch verification is pending.
+  fail-closed.
 
 - Android security observes API 36 LE encryption changes and SDK 36.1 public
   snapshots independently of bonding. Source errors retain controller status
@@ -152,7 +152,7 @@ All notable changes to `unified-ble-manager` are documented here.
 ### Fixed
 
 - At reviewed head `b80542f3`, Linux `bun-desktop-packed` passes under Node and Bun 1.4.2 through the CJS and ESM entries. It runs six public scenarios through the deterministic testing factory and separately loads the sealed native synthetic central, verifies build identity and requires its event waker to fire. That passing gate does not exercise the joined public desktop factory/provider/native route, qualify macOS or Windows Bun execution, or provide physical-radio evidence. The rc.21 remediation tracks those remaining qualification requirements.
-- Source daemon `5.87-ubm.10` does not disconnect a link another application brought up. Release uses the recorded arrival, not the controller initiator bit. A rejected Connect, Pair, StartNotify, or Acquire rolls back only that pending admission. A Connect, StartNotify, or AcquireNotify that fails after it was committed drops only that attempt, including a StartNotify accepted while GATT was down whose later registration fails. When the last in-flight operation ends after the owner's bus connection has died, that generation is reconciled with no further request. Explicit pairing on the same attachment resumes ATT security retry. The remediation changes the authority contract to `(1, 3, 1)`; protected release ACK transfers generation cleanup to the daemon and frees the logical token. Prior producer/compiler receipts do not verify this new batch. This source revision is not installed and is not a physical-radio receipt. The same-attachment pair-then-access case has not been run on a radio.
+- Source daemon `5.87-ubm.10` does not disconnect a link another application brought up. Release uses the recorded arrival, not the controller initiator bit. A rejected Connect, Pair, StartNotify, or Acquire rolls back only that pending admission. A Connect, StartNotify, or AcquireNotify that fails after it was committed drops only that attempt, including a StartNotify accepted while GATT was down whose later registration fails. When the last in-flight operation ends after the owner's bus connection has died, that generation is reconciled with no further request. Explicit pairing on the same attachment resumes ATT security retry. The remediation changes the authority contract to `(1, 3, 1)`; protected release ACK transfers generation cleanup to the daemon and frees the logical token. Prior producer/compiler receipts do not verify this new batch. This daemon is installed and qualified on lx5090 with real USB controllers and a simulated RF peripheral. Live held Pair success, refusal, cancellation, sender death and pre-first-lease protection pass; no physical H10 qualification is inferred. The same-attachment pair-then-access case has not been run on a radio.
 - Apple and macOS `connection:effective-mtu` no longer publishes `maximumWriteValueLength(.withResponse) + 3` as a measured ATT MTU. That length can include a long write. The route stays `limited` with `corebluetooth-att-mtu-not-observed`, and `effectiveMtu()` reports `state: 'unavailable'` with a null ATT MTU. Per-mode write capacity stays on `maximumWriteLength`. Windows `GattSession.MaxPduSize` and the BlueZ characteristic MTU stay measured. A withheld BlueZ MTU stays `capability.unavailable`. This is not a physical-radio receipt.
 - Apple `connection:when-available` on the React Native Rust route is a pending CoreBluetooth connect for a known peer. The capability is `limited` with `corebluetooth-pending-connect`. The caller deadline and cancellation still apply. It is not Android `autoConnect`, and it does not reconnect after the link drops.
 - Source daemon `5.87-ubm.6` no longer treats another process's finished GATT

@@ -1,0 +1,21 @@
+{"phase": "fresh-pair-before-first-lease-baseline", "pairable": [false, false], "existingTestBonds": false, "daemon": "ExecStart={ path=/opt/unified-ble-manager/bluez/5.87-ubm.10-30c195c3c53f/libexec/bluetoothd ; argv[]=/opt/unified-ble-manager/bluez/5.87-ubm.10-30c195c3c53f/libexec/bluetoothd --experimental ; ignore_errors=no ; start_time=[Wed 2026-10-07 14:58:43 PDT] ; stop_time=[n/a] ; pid=4180512 ; code=(null) ; status=0/0 }"}
+{"phase": "authorization-held", "device": "/org/bluez/hci1/dev_20_E1_5D_9E_A0_7F"}
+{"phase": "pending-pair-protected", "generation": 1, "receipt": "lease-released-protected", "connected": true, "foreignSender": ":1.15797", "agentDevice": "/org/bluez/hci1/dev_20_E1_5D_9E_A0_7F"}
+{"phase": "pair-success-committed", "connected": true, "paired": true, "foreignSender": ":1.15797"}
+Traceback (most recent call last):
+  File "/tmp/ubm-rc21-pending-pair-success-before-lease.py", line 87, in <module>
+    pump_until(lambda:not connected(),15,'Pair interest retirement reconciliation')
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/ubm-rc21-pending-pair-success-before-lease.py", line 34, in pump_until
+    if time.monotonic()>end:raise RuntimeError(label+' deadline')
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: Pair interest retirement reconciliation deadline
+Traceback (most recent call last):
+  File "<stdin>", line 10, in <module>
+RuntimeError: Fresh Pair held-success fixture failed 1
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<stdin>", line 14, in <module>
+RuntimeError: Refuse removing a connected test bond

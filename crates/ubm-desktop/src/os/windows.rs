@@ -373,7 +373,7 @@ impl WinRt {
                 .map_err(|error| winrt(operation, error))?
                 .await
                 .map_err(|error| winrt(operation, error))?;
-            devices.extend(records.into_iter());
+            devices.extend(records);
             if devices.len() > 4096 {
                 return Err(DesktopError::new(
                     BleErrorCode::CapabilityLimited,

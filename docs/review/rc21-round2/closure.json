@@ -1,0 +1,2082 @@
+{
+  "status": "Implementation and review acceptance controls verified; final Rust CI gate correction awaiting combined verification.",
+  "items": [
+    {
+      "id": "R2-01",
+      "priority": "P1",
+      "required_outcome": "All required CI and package gates pass on the final head; investigate the Windows setup timeout",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        ".github/workflows/ci.yml",
+        "scripts/ci/preflight.sh"
+      ],
+      "regression_suites": [
+        "__tests__/ElectronIpcBoundary.test.js",
+        "__tests__/native-protocol/AppleNativeProtocolV2.test.js"
+      ],
+      "verification_status": "Open: final Rust workspace CI gate corrections collected; other current-head JS/packed/Tauri/Android gates pass. Original recording setup/count/loss/order passes without relaxed budget; original timeout root cause remains unestablished.",
+      "historical_evidence": "Checkpoint 345833ce passes all required CI jobs and its complete non-publishing candidate gate. The current collected source batch passes local 430-suite / 5,414-test package execution. Clean preflight was stopped at owner request; final combined CI remains required. Original Windows timeout root cause is unestablished; same-budget setup/count/loss/order execution passes at checkpoint 345833ce.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        ".github/workflows/ci.yml": "e1555fe661711ac70e48dcae15050533dc7a2613",
+        "scripts/ci/preflight.sh": "f6c398ec09f4c929a621b9aef3ce3682406c2843"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/ElectronIpcBoundary.test.js": [
+          "does not retire a lease when the initial document commits after renderer bootstrap",
+          "does not arm lease retirement for same-document or child-frame navigation starts",
+          "rejects malformed host frame identity before authentication, validation, or routing",
+          "rejects a null host main-frame identity as a malformed request",
+          "rejects every request kind from a child frame before allocating or routing ownership",
+          "binds two authenticated renderers and rejects a cross-client opaque-handle route",
+          "keeps the successor lease active when StrictMode cleanup releases an overlapping bootstrap",
+          "keeps leases through speculative navigation and releases the old frame before replacement bootstrap",
+          "retires a lease bootstrapped after replacement navigation already started",
+          "preserves a replacement-document lease bootstrapped before its navigation commit",
+          "preserves a replacement-document lease when Electron reuses the outgoing frame identity",
+          "keeps a usable conservative retirement latch for ambiguous same-target failure pairs",
+          "quiesces a committed old document before it can route, acknowledge, or receive another event",
+          "releases a bootstrap lease when WebContents is destroyed while router dispatch is pending",
+          "drains an admitted bootstrap before binding destruction can report complete",
+          "serializes same-WebContents bootstrap admission across changing frame and trust facts",
+          "quiesces every renderer before sequential binding teardown awaits the first release",
+          "drains a retired old-identity lease before admitting changed trust on the same WebContents",
+          "rejects changed trust on an active WebContents document",
+          "snapshots host trust so in-place identity mutation cannot transfer an active lease",
+          "does not attach a replacement renderer when destroy races retired-lease cleanup",
+          "cancels a scheduled renderer-release retry when router teardown owns final cleanup",
+          "releases the exact renderer lease when oversized-response rollback fails",
+          "releases every renderer lease when the renderer process exits without destroying WebContents",
+          "removes every exact lease lifetime listener across repeated handoffs and binding teardown",
+          "releases the exact renderer lease when terminal delivery quota is exhausted",
+          "copies renderer binary input, forwards bounded events, and releases the preload subscription",
+          "preserves a complete rich advertisement observation through the renderer IPC boundary",
+          "disconnects only the selected connection descendants when two databases and subscriptions are live",
+          "P1-05 rejects an invalid GATT deliveryMode instead of silently dropping it",
+          "retires the prior main-process database handle on explicit rediscovery",
+          "holds terminal-first and more-than-buffer-capacity lifecycle records until renderer admission is ready",
+          "maps oversized and renderer-backpressure lifecycle terminals into renderer-supported reasons",
+          "quarantines stale lifecycle generations, enforces renderer ownership, and detaches on unsubscribe",
+          "rejects a renderer lifecycle stream identifier that collides with a main-issued scan stream",
+          "admits one exclusive lifecycle iterator per renderer connection without allocating a competing consumer",
+          "uses renderer lifecycle cleanup to detach connection event consumers before destroying their connection",
+          "decodes the versioned connection lifecycle stream in the renderer and quarantines stale deliveries",
+          "retains and acknowledges a terminal-first lifecycle event delivered while readiness is in flight",
+          "decodes every synthetic lifecycle terminal mapping with its required counters in the renderer",
+          "retries remote lifecycle detach after a malformed admission response before allowing a clean resubscription",
+          "aborts and drains a destroyed renderer in-flight operation before releasing a late connection result",
+          "quarantines a late connect success after its Electron IPC deadline expires",
+          "projects the real authenticated router into the common public manager journey",
+          "retains a failed lifecycle iterator detach for an explicit unsubscribe retry",
+          "retries a failed natural lifecycle terminal detach without publishing a second terminal",
+          "defers renderer teardown connection disconnect until a failed lifecycle detach succeeds on retry",
+          "terminalizes failed sources and oversize subscription values exactly once after native cleanup",
+          "bounds a frozen renderer event backlog, then terminalizes and cleans its subscription",
+          "releases resources after a WebContents delivery failure without waiting on the failed stream pump",
+          "retains failed stop and unsubscribe resources for explicit retry ownership",
+          "keeps the renderer client retryable when its release transport fails",
+          "coalesces concurrent bootstrap and releases main ownership when destroy races initialization",
+          "retains release-race events and acknowledges them only when failed cleanup restores the client",
+          "terminalizes lifecycle subscriptions after mixed main release cleanup and retries without a double detach",
+          "discards release-race events without stale acknowledgements after successful main cleanup",
+          "returns a stale renderer ownership denial as a normalized IPC response",
+          "normalizes unexpected IPC handler exceptions without exposing the thrown object",
+          "rehydrates failure responses into contract errors for bootstrap, route, and release",
+          "releases a host lease when renderer bootstrap validation fails after allocation"
+        ],
+        "__tests__/native-protocol/AppleNativeProtocolV2.test.js": [
+          "keeps bonded-peer enumeration unsupported after ABI 6 recognizes the command",
+          "owns direct CoreBluetooth bytes, duplicate-aware paths, and direct restoration",
+          "shares one process-owned restoration radio across TurboModule borrowers",
+          "keeps the active borrower attached until its asynchronous radio cleanup is terminal",
+          "fails attachment closed while cleanup is active or awaiting a successful retry",
+          "reports the generated ABI while preserving control-surface v2 in the handshake response",
+          "blocks reconnect overlap and validates generation-bound Apple dispatch paths",
+          "strictly validates Apple GATT occurrence strings before NSInteger conversion",
+          "forwards CoreBluetooth service changes through the generation-bound database event",
+          "treats a fatal runtime close as an idempotent attachment close",
+          "invalidates Apple execution, runtime, and radio ownership in a retry-safe order",
+          "fails the pre-JavaScript stream closed with generation-safe sink ownership and observable counters",
+          "derives one native restoration identity before append or adoption",
+          "rolls back a failed restoration bootstrap before rejecting the handshake",
+          "retains no read output after a late terminal result and routes the first pre-ack notification",
+          "validates Apple binary references before conversion and preserves cleanup ownership on failure",
+          "requires terminal ingress admission before settling ownership and retains cancelled CoreBluetooth cleanup",
+          "contains malformed adapter-state serialization inside Objective-C++ callback boundaries",
+          "retains unreachable sinks for runtime-thread destruction when scheduler invocation fails",
+          "preserves one structured native failure and waits for CoreBluetooth disconnect completion",
+          "dispatches destroy before requiring a characteristic-scoped command path",
+          "owns the command record for asynchronous CoreBluetooth completions",
+          "keeps the queue-confined radio under the file cap by moving stateless projections to support",
+          "compiles discovery callbacks from the owned discovery extension on every Apple product route",
+          "carries every CoreBluetooth-provided rich advertisement field through owned protocol binary references",
+          "does not manufacture advertisement fields CoreBluetooth does not expose",
+          "publishes duplicate-safe descriptor discovery and descriptor read/write over the canonical binary boundary",
+          "executes the Apple harness on macOS or verifies its required macOS CI route elsewhere",
+          "release and destroy wait for pendingDisconnect confirmation before completing"
+        ]
+      }
+    },
+    {
+      "id": "R2-02",
+      "priority": "P1",
+      "required_outcome": "Protect accepted pending foreign Pair for its full lifetime; rollback rejected work",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "vendor/bluez/ubm-le-gatt-5.87.patch"
+      ],
+      "regression_suites": [
+        "vendor/bluez/build-test-isolated.sh"
+      ],
+      "verification_status": "Verified: production lifetime/rollback controls plus installed-daemon real SMP pending Pair refusal, cancellation, sender death, pre-first-lease and held successful Pair. Explicit foreign-owner cleanup preserves external origin.",
+      "historical_evidence": "Production Pair/admission controls pass. Actual installed daemon/D-Bus/SMP/controller pending Pair protection passes for refusal, cancellation, sender death and Pair opening before the first lease. Successful pairing remains outstanding; no final closure claim.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "vendor/bluez/ubm-le-gatt-5.87.patch": "7144a8fabd9185d8a58350479dfa8851aad93627"
+      },
+      "remaining_limits": "Current lab Pair returns success before the held agent callback. Numeric-confirmation fixture also failed its required precondition; no bonds or keys were deleted. Production successful-commit controls do not establish this missing live held-success combination.",
+      "regression_names": {
+        "vendor/bluez/build-test-isolated.sh": [
+          "unit/test-ubm-le-lease: prelease_lifetimes (complete maintained producer with controlled external boundaries)"
+        ]
+      }
+    },
+    {
+      "id": "R2-03",
+      "priority": "P2",
+      "required_outcome": "Retain reconciliation ownership for protected logical lease release and reclaim daemon tokens",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "vendor/bluez/ubm-le-gatt-5.87.patch",
+        "crates/ubm-desktop/src/os/linux_lease.rs"
+      ],
+      "regression_suites": [
+        "crates/ubm-desktop/tests/bluez_bearer_scope.rs"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Production protocol/retry/replay controls pass. Actual daemon integration passes 1,200 protected cycles with two live lease senders and foreign notification ownership; held foreign read with a live sender passes physical deferred cleanup after completion. Final evidence reconciliation remains required.",
+      "previous_findings": [
+        "F09",
+        "F08"
+      ],
+      "implementation_blobs": {
+        "vendor/bluez/ubm-le-gatt-5.87.patch": "7144a8fabd9185d8a58350479dfa8851aad93627",
+        "crates/ubm-desktop/src/os/linux_lease.rs": "3ed8ba5810a22dbbe925d371543aa3eed5d14a4a"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "crates/ubm-desktop/tests/bluez_bearer_scope.rs": [
+          "private_bus_le_connect_does_not_add_classic_bearer",
+          "private_bus_le_release_preserves_other_apps_classic_bearer",
+          "private_bus_public_peer_identity_releases_accepted_le_without_a_directory_read",
+          "private_bus_adapter_cleanup_routes_the_public_peer_to_native_le_release",
+          "private_bus_cancelled_wait_retains_late_le_acquisition_for_cleanup",
+          "private_bus_scoped_release_refusal_is_retryable_without_classic_effects",
+          "private_bus_wrong_or_well_known_owner_refuses_before_effects",
+          "private_bus_owner_pin_applies_to_gatt_directory_and_replacement_refuses",
+          "private_bus_cancelled_release_reuses_accepted_reply_before_retry",
+          "private_bus_abandoned_queued_cleanup_cannot_release_a_later_external_link",
+          "private_bus_absent_le_method_has_no_fabricated_cleanup_debt",
+          "private_bus_absent_le_method_stays_released_after_owner_departure",
+          "private_bus_le_confirmation_timeout_is_not_reported_as_service_discovery",
+          "private_bus_indeterminate_release_never_resends_or_admits_new_connect",
+          "private_bus_refused_connect_retries_after_exact_cleanup_with_or_without_partial_link"
+        ]
+      }
+    },
+    {
+      "id": "R2-04",
+      "priority": "P2",
+      "required_outcome": "Abandon admission when deferred acquired-FD delivery fails, preserving other interest",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "vendor/bluez/ubm-le-gatt-5.87.patch"
+      ],
+      "regression_suites": [
+        "vendor/bluez/build-test-isolated.sh",
+        "crates/ubm-desktop/src/os/bluez_acquired_tests.rs"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Complete immediate/deferred write and notify failure controls pass with exact-admission cleanup. Actual public Node/Bun acquisition, conflict, abort and zero-resource cleanup pass against installed daemon. Fault controls and RF-positive routes retain their separate evidence levels; remaining live FD lifetime scenarios are outstanding.",
+      "previous_findings": [
+        "F07"
+      ],
+      "implementation_blobs": {
+        "vendor/bluez/ubm-le-gatt-5.87.patch": "7144a8fabd9185d8a58350479dfa8851aad93627"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "crates/ubm-desktop/src/os/bluez_acquired_tests.rs": [
+          "private_bus_acquired_fd_owns_a_dedicated_sender_and_closes_both",
+          "private_bus_cancelled_acquisition_retires_its_pending_sender",
+          "private_bus_absent_method_and_ineligible_flags_are_explicit_without_fallback",
+          "private_bus_invalid_mtu_retires_the_fd_and_dedicated_sender",
+          "private_bus_daemon_replacement_cannot_publish_the_old_owners_deferred_fd",
+          "private_bus_daemon_absence_cannot_publish_a_deferred_fd"
+        ],
+        "vendor/bluez/build-test-isolated.sh": [
+          "unit/test-ubm-acquired-failure: immediate_write, deferred_success, deferred, pending_notify_cleanup, acquired_notify_delivery"
+        ]
+      }
+    },
+    {
+      "id": "R2-05",
+      "priority": "P2",
+      "required_outcome": "Track foreign one-shot operations before the first UBM lease",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "vendor/bluez/ubm-le-gatt-5.87.patch"
+      ],
+      "regression_suites": [
+        "vendor/bluez/build-test-isolated.sh"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Production early operation controls pass. Actual accepted ATT read before first ReserveLease remains protected across release/ACK, then permits physical disconnect after completion while its foreign sender remains alive. Failure/cancellation/removal/generation controls are retained separately.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "vendor/bluez/ubm-le-gatt-5.87.patch": "7144a8fabd9185d8a58350479dfa8851aad93627"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "vendor/bluez/build-test-isolated.sh": [
+          "unit/test-ubm-le-lease: prelease_lifetimes (complete maintained producer with controlled external boundaries)"
+        ]
+      }
+    },
+    {
+      "id": "R2-06",
+      "priority": "P2",
+      "required_outcome": "Clean pre-lease arrival/admission state on physical loss",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "vendor/bluez/ubm-le-gatt-5.87.patch"
+      ],
+      "regression_suites": [
+        "vendor/bluez/build-test-isolated.sh"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Repeated no-peer loss/storage controls pass. Actual remote controller loss of an unleased generation followed by a new lease passes: old sender/admission does not protect the replacement, and prior kernel auto-connect inventory is restored. Live execution does not directly measure internal daemon maps.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "vendor/bluez/ubm-le-gatt-5.87.patch": "7144a8fabd9185d8a58350479dfa8851aad93627"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "vendor/bluez/build-test-isolated.sh": [
+          "unit/test-ubm-le-lease: prelease_lifetimes (complete maintained producer with controlled external boundaries)"
+        ]
+      }
+    },
+    {
+      "id": "R2-07",
+      "priority": "P2",
+      "required_outcome": "RN ready writes own bytes on admission, preserve FIFO/deadline, and settle on invalidation",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "src/backends/reactnative/react-native-rust-core-manager.ts",
+        "crates/ubm-mobile/src/session.rs"
+      ],
+      "regression_suites": [
+        "__tests__/backends/reactnative/rust-core-write-readiness.test.js",
+        "__tests__/backends/desktop/desktop-public-write-readiness.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "RN, desktop, core and public readiness suites pass in the full 430-suite package gate; native mobile/workspace admission and generation controls pass. Current final-head replay pending; no physical-radio evidence inferred.",
+      "previous_findings": [
+        "F13"
+      ],
+      "implementation_blobs": {
+        "src/backends/reactnative/react-native-rust-core-manager.ts": "4da1b36244748ebd35a76cde7d31d55caf6e2661",
+        "crates/ubm-mobile/src/session.rs": "65a624fee9ac45c6a830adac7f755d107e70b669"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/backends/reactnative/rust-core-write-readiness.test.js": [
+          "a failed source settles a held opening probe and refuses later acquisition with the original failure",
+          "source failure does not wait for a refused probe cancellation or disconnect cleanup",
+          "the probe returns the current queue flag and records the owner op",
+          "a later peripheralIsReady edge reaches the open watch",
+          "writeWhenReady waits until the queue is ready, then writes without response",
+          "the native readiness operation owns bytes and preserves its FIFO position ahead of an ordinary write",
+          "native readiness waiting settles on database invalidation without another readiness event",
+          "disconnect closes the watch",
+          "the connection method and writeWhenReady refuse before any owner op"
+        ],
+        "__tests__/backends/desktop/desktop-public-write-readiness.test.js": [
+          "public readiness writes retain owned bytes and native order until the radio is ready"
+        ]
+      }
+    },
+    {
+      "id": "R2-08",
+      "priority": "P2",
+      "required_outcome": "RN readiness source failures terminalize independently of cleanup",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "src/backends/reactnative/react-native-rust-core-provider.ts"
+      ],
+      "regression_suites": [
+        "__tests__/backends/reactnative/rust-core-write-readiness.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "RN public readiness source-terminal, cleanup refusal, held opening and later-admission controls pass in the full package gate. Current final-head replay pending.",
+      "previous_findings": [
+        "F13"
+      ],
+      "implementation_blobs": {
+        "src/backends/reactnative/react-native-rust-core-provider.ts": "d50471771231137cb8ce6e43a0c9b69cf05f71d9"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/backends/reactnative/rust-core-write-readiness.test.js": [
+          "a failed source settles a held opening probe and refuses later acquisition with the original failure",
+          "source failure does not wait for a refused probe cancellation or disconnect cleanup",
+          "the probe returns the current queue flag and records the owner op",
+          "a later peripheralIsReady edge reaches the open watch",
+          "writeWhenReady waits until the queue is ready, then writes without response",
+          "the native readiness operation owns bytes and preserves its FIFO position ahead of an ordinary write",
+          "native readiness waiting settles on database invalidation without another readiness event",
+          "disconnect closes the watch",
+          "the connection method and writeWhenReady refuse before any owner op"
+        ]
+      }
+    },
+    {
+      "id": "R2-09",
+      "priority": "P2",
+      "required_outcome": "IPC characteristic writeWhenReady uses the supported readiness route",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "src/ipc/public-manager.ts",
+        "native/tauri/src/btleplug_dispatcher.rs"
+      ],
+      "regression_suites": [
+        "__tests__/ipc/public-manager-controls.test.js",
+        "native/tauri/src/dispatcher_packet_b_tests.rs"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Public IPC/Electron/Tauri helper forwarding, byte ownership and queue controls pass in package/Tauri gates. Current final-head replay pending.",
+      "previous_findings": [
+        "F14"
+      ],
+      "implementation_blobs": {
+        "src/ipc/public-manager.ts": "50da03b29020fe14ba802b477cddcec084f6e66c",
+        "native/tauri/src/btleplug_dispatcher.rs": "3fdf72e14e5cb009b7fc9a01b22885f573bf7bb1"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/ipc/public-manager-controls.test.js": [
+          "IPC public priority uses the supported host route and preserves request truth",
+          "passes only the remaining budget to discover after a partial connect",
+          "does not start discovery when connection consumes the budget",
+          "preserves cancellation through discovery and releases once",
+          "keeps the full budget after a fast connect and no deadline when omitted",
+          "P1-09 connect forwards the normalized deadline instead of restarting timeoutMs",
+          "rejects derived lost-peer events instead of silently ignoring them",
+          "projects typed observations and removes naked numeric control methods",
+          "fails closed for unsupported controls and rejects unsupported streams on first next",
+          "converts observed microseconds to milliseconds and yields a limited readiness event",
+          "rejects a foreign control event and stamps the renderer receipt clock",
+          "overflow and source failure close the watch and keep the platform error",
+          "preserves unavailable readiness state in the renderer stream error",
+          "validates rediscovery reason and forwards mapped reasons over IPC without replaying writes"
+        ],
+        "native/tauri/src/dispatcher_packet_b_tests.rs": [
+          "security_watch_retains_racing_event_order_without_regressing_to_an_unsequenced_snapshot",
+          "typed_address_connect_resolves_before_acquiring_the_core_lease",
+          "address_resolution_uses_original_deadline_and_parent_cancellation",
+          "security_cancel_reports_the_native_ceremony_and_invalid_options_do_not_pair",
+          "security_routes_reach_core_and_watch_is_lease_owned",
+          "scan_projection_preserves_exact_native_origin_and_service_union",
+          "scan_projection_preserves_authoritative_address_types_and_unknown",
+          "scan_projection_prefers_captured_identity_over_a_mutated_native_cache",
+          "parameter_gap_reconciles_the_live_native_answer_and_getter_failure_ends_the_watch",
+          "delayed_initial_parameter_probe_cannot_overtake_a_newer_native_event",
+          "acquired_routes_use_the_native_lease_and_retire_both_children_on_disconnect",
+          "parameter_source_failure_survives_for_a_later_watch_until_native_recovery",
+          "scan_stream_serializes_native_public_random_and_unknown_address_types",
+          "idle_process_handoff_never_opens_bluetooth_even_after_shutdown",
+          "process_shutdown_retains_native_claim_and_retry_owner",
+          "deferred_connect_dispatch_uses_shared_native_lease_authority",
+          "peer_directory_bonded_preserves_native_fact_without_link_ownership",
+          "peer_directory_native_inventory_keeps_backend_scope_and_foreign_link_unowned",
+          "peer_directory_connected_returns_identity_without_connection_ownership",
+          "peer_directory_validates_entire_query_before_native_dispatch",
+          "peer_directory_known_resolve_null_and_existing_connect_path",
+          "peer_directory_known_second_lookup_keeps_caller_cancellation",
+          "peer_directory_reset_during_batch_never_publishes_partial_records",
+          "peer_directory_unavailable_hosts_never_short_circuit_to_success_or_mac_requirements",
+          "peer_directory_deadline_bounds_held_read",
+          "peer_directory_batch_keeps_original_budget_after_first_read",
+          "peer_directory_retired_caller_cannot_receive_held_lookup",
+          "peer_directory_excluded_source_preserves_native_refusal",
+          "peer_directory_foreign_reference_and_malformed_reply_fail_closed",
+          "authority_shutdown_retains_half_open_compensation_cause_until_confirmed_retry",
+          "caller_connection_release_preserves_another_native_lease",
+          "caller_connection_release_retires_only_its_subscription",
+          "caller_owner_stream_send_failure_retains_exact_retry",
+          "caller_gatt_operation_cannot_borrow_another_native_lease",
+          "cancelling_orphan_drain_keeps_its_exact_identity_owned",
+          "held_orphan_drain_cannot_prevent_authoritative_shutdown",
+          "cancelling_orphan_snapshot_keeps_both_resources_and_other_callers",
+          "refused_parent_retains_timed_out_orphan_debt_until_clean_retry",
+          "held_orphan_release_still_reaches_bounded_parent_transport_close",
+          "authority_shutdown_retains_transport_cleanup_until_a_clean_retry",
+          "authority_shutdown_closes_admission_during_transport_cleanup",
+          "cancelled_authority_shutdown_preserves_the_closed_retry_owner",
+          "hung_authority_transport_cleanup_is_bounded_and_retryable",
+          "trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open",
+          "pr210_04_a_hung_discovery_never_stalls_another_peer_cancel_or_shutdown",
+          "pr210_05_a_cancel_targets_exactly_one_of_two_dispatched_writes",
+          "pr210_05_a_cancel_before_admission_never_reaches_the_radio",
+          "pr210_05_a_success_that_beat_the_cancel_is_returned_and_owned",
+          "pr210_06_budget_ms_is_validated_before_any_effect",
+          "pr210_06_a_short_budget_bounds_the_radio_call",
+          "pr210_06_queueing_behind_the_dispatcher_spends_the_budget",
+          "pr210_06_a_write_that_times_out_after_dispatch_is_never_retryable",
+          "pr210_06_a_budget_longer_than_the_old_backstop_is_honoured",
+          "a_read_carries_the_radio_provenance",
+          "pr210_07_scan_and_notification_forwarders_deliver_from_the_first_item",
+          "pr210_07_a_lease_replaced_during_admission_stops_the_scan_it_admitted",
+          "pr210_08_a_caller_released_during_scan_admission_gets_a_real_stop",
+          "pr210_08_connect_and_subscribe_compensation_is_recorded_not_discarded",
+          "pr210_09_a_failed_scan_stop_keeps_the_scan_for_a_real_retry",
+          "pr210_09_a_failed_unsubscribe_keeps_the_consumer_for_a_real_retry",
+          "pr210_09_a_failed_disconnect_keeps_the_link_for_a_real_retry",
+          "pr210_09_a_failed_destroy_keeps_the_caller_for_a_real_retry",
+          "pr210_10_a_wrong_generation_disconnect_changes_nothing",
+          "pr210_11_idle_link_loss_reaches_the_stream_and_invalidates",
+          "pr210_11_requested_disconnect_reports_requested_disconnect",
+          "finding_190a_a_requested_disconnect_ends_notifications_owner_released",
+          "requested_disconnect_pauses_an_in_flight_notification_terminal",
+          "a_notification_terminal_sent_before_disconnect_is_not_sent_twice",
+          "a_failed_owner_terminal_send_keeps_the_disconnect_retryable",
+          "pr210_11_a_stale_generation_matches_nothing",
+          "lifecycle_platform_fact_survives_active_and_early_stream_delivery",
+          "pr210_11_a_lagged_pump_ends_every_stream_with_overflow",
+          "pr210_11_a_service_change_invalidates_and_ends_notifications",
+          "pr210_11_a_loss_before_ready_is_delivered_at_ready",
+          "pr210_13t_a_requirement_is_refused_only_where_the_property_is_missing",
+          "pr210_13t_a_dual_property_indication_requirement_is_not_dropped",
+          "pr210_13t_a_preference_reports_unknown_delivery_when_the_radio_says_nothing",
+          "pr210_22_a_dispatcher_error_is_never_retryable_by_its_code",
+          "pr210_32_racing_first_calls_open_exactly_one_authority",
+          "connected_effective_mtu_reads_the_live_link_through_the_core",
+          "connected_rssi_reads_the_live_link_through_the_core",
+          "completed_control_watches_do_not_consume_live_watch_capacity",
+          "native_capability_bootstrap_agrees_with_routed_rssi_and_service_change",
+          "transport_only_restrictions_match_absent_routes_and_rebind_ownership",
+          "a_route_attachment_matches_its_record_by_identity_alone",
+          "pr210_08_a_hung_compensation_is_bounded_and_becomes_debt",
+          "pr210_09_a_hung_disconnect_is_bounded_and_keeps_the_link",
+          "finding_43_the_attachment_is_the_shared_central_s_own",
+          "finding_57_an_adapter_loss_ends_every_stream_in_the_legacy_vocabulary",
+          "finding_57_a_route_validated_before_rebind_stays_on_its_original_attachment",
+          "finding_57_the_previous_attachment_fails_backend_reset_before_native_io",
+          "finding_58_admission_refusals_cross_verbatim",
+          "finding_94_an_adapter_state_read_racing_a_reset_answers_the_new_state",
+          "finding_60_adapter_state_reports_the_central_s_facts",
+          "finding_60_an_unreadable_authorization_is_unknown_with_a_reason",
+          "finding_60_adapter_state_follows_the_reset_generation",
+          "finding_90_the_maximum_write_length_is_what_a_write_accepts_per_mode",
+          "finding_95_a_refused_discovery_crosses_the_ipc_whole_and_typed",
+          "finding_114_a_failed_compensation_retries_until_the_release_lands",
+          "orphan_retry_survives_transient_authority_lock_contention",
+          "finding_114_eight_refused_attempts_exhaust_and_are_reported",
+          "finding_114_a_window_released_during_retries_still_ends_the_orphan",
+          "finding_114_a_release_that_lands_first_ends_the_retries",
+          "finding_116_the_platform_identity_crosses_per_os",
+          "finding_182_a_characteristic_with_descriptors_registers_once",
+          "finding_182_a_second_discover_replaces_the_snapshot",
+          "findings_f1_f2_write_receipt_commit_state_matches_the_contract_on_both_modes",
+          "readiness_write_uses_the_owned_native_route_and_reports_unconfirmed_acceptance"
+        ]
+      }
+    },
+    {
+      "id": "R2-10",
+      "priority": "P2",
+      "required_outcome": "Preserve public IPC control-stream errors",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "src/ipc/public-manager.ts"
+      ],
+      "regression_suites": [
+        "__tests__/ipc/public-manager-controls.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Already fixed at review baseline; retained IPC control-stream public error regression passes in the full package gate. Final-head replay pending.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "src/ipc/public-manager.ts": "50da03b29020fe14ba802b477cddcec084f6e66c"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/ipc/public-manager-controls.test.js": [
+          "IPC public priority uses the supported host route and preserves request truth",
+          "passes only the remaining budget to discover after a partial connect",
+          "does not start discovery when connection consumes the budget",
+          "preserves cancellation through discovery and releases once",
+          "keeps the full budget after a fast connect and no deadline when omitted",
+          "P1-09 connect forwards the normalized deadline instead of restarting timeoutMs",
+          "rejects derived lost-peer events instead of silently ignoring them",
+          "projects typed observations and removes naked numeric control methods",
+          "fails closed for unsupported controls and rejects unsupported streams on first next",
+          "converts observed microseconds to milliseconds and yields a limited readiness event",
+          "rejects a foreign control event and stamps the renderer receipt clock",
+          "overflow and source failure close the watch and keep the platform error",
+          "preserves unavailable readiness state in the renderer stream error",
+          "validates rediscovery reason and forwards mapped reasons over IPC without replaying writes"
+        ]
+      }
+    },
+    {
+      "id": "R2-11",
+      "priority": "P2",
+      "required_outcome": "Live-watch quotas and bounded replay history remain independent",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "native/tauri/src/connection_parameters.rs",
+        "native/tauri/src/write_readiness.rs"
+      ],
+      "regression_suites": [
+        "native/tauri/src/dispatcher_packet_b_tests.rs"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Real Tauri dispatcher quota/history controls and 600-cycle reclamation pass in the Tauri gate on all three OSes at 345833ce. Final-head gate pending.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "native/tauri/src/connection_parameters.rs": "f2758b968022257f8f75536c5ee05bd118ac1cf1",
+        "native/tauri/src/write_readiness.rs": "a77aa73eb9d3bf738d1cda64eaf9aeedd51fb821"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "native/tauri/src/dispatcher_packet_b_tests.rs": [
+          "security_watch_retains_racing_event_order_without_regressing_to_an_unsequenced_snapshot",
+          "typed_address_connect_resolves_before_acquiring_the_core_lease",
+          "address_resolution_uses_original_deadline_and_parent_cancellation",
+          "security_cancel_reports_the_native_ceremony_and_invalid_options_do_not_pair",
+          "security_routes_reach_core_and_watch_is_lease_owned",
+          "scan_projection_preserves_exact_native_origin_and_service_union",
+          "scan_projection_preserves_authoritative_address_types_and_unknown",
+          "scan_projection_prefers_captured_identity_over_a_mutated_native_cache",
+          "parameter_gap_reconciles_the_live_native_answer_and_getter_failure_ends_the_watch",
+          "delayed_initial_parameter_probe_cannot_overtake_a_newer_native_event",
+          "acquired_routes_use_the_native_lease_and_retire_both_children_on_disconnect",
+          "parameter_source_failure_survives_for_a_later_watch_until_native_recovery",
+          "scan_stream_serializes_native_public_random_and_unknown_address_types",
+          "idle_process_handoff_never_opens_bluetooth_even_after_shutdown",
+          "process_shutdown_retains_native_claim_and_retry_owner",
+          "deferred_connect_dispatch_uses_shared_native_lease_authority",
+          "peer_directory_bonded_preserves_native_fact_without_link_ownership",
+          "peer_directory_native_inventory_keeps_backend_scope_and_foreign_link_unowned",
+          "peer_directory_connected_returns_identity_without_connection_ownership",
+          "peer_directory_validates_entire_query_before_native_dispatch",
+          "peer_directory_known_resolve_null_and_existing_connect_path",
+          "peer_directory_known_second_lookup_keeps_caller_cancellation",
+          "peer_directory_reset_during_batch_never_publishes_partial_records",
+          "peer_directory_unavailable_hosts_never_short_circuit_to_success_or_mac_requirements",
+          "peer_directory_deadline_bounds_held_read",
+          "peer_directory_batch_keeps_original_budget_after_first_read",
+          "peer_directory_retired_caller_cannot_receive_held_lookup",
+          "peer_directory_excluded_source_preserves_native_refusal",
+          "peer_directory_foreign_reference_and_malformed_reply_fail_closed",
+          "authority_shutdown_retains_half_open_compensation_cause_until_confirmed_retry",
+          "caller_connection_release_preserves_another_native_lease",
+          "caller_connection_release_retires_only_its_subscription",
+          "caller_owner_stream_send_failure_retains_exact_retry",
+          "caller_gatt_operation_cannot_borrow_another_native_lease",
+          "cancelling_orphan_drain_keeps_its_exact_identity_owned",
+          "held_orphan_drain_cannot_prevent_authoritative_shutdown",
+          "cancelling_orphan_snapshot_keeps_both_resources_and_other_callers",
+          "refused_parent_retains_timed_out_orphan_debt_until_clean_retry",
+          "held_orphan_release_still_reaches_bounded_parent_transport_close",
+          "authority_shutdown_retains_transport_cleanup_until_a_clean_retry",
+          "authority_shutdown_closes_admission_during_transport_cleanup",
+          "cancelled_authority_shutdown_preserves_the_closed_retry_owner",
+          "hung_authority_transport_cleanup_is_bounded_and_retryable",
+          "trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open",
+          "pr210_04_a_hung_discovery_never_stalls_another_peer_cancel_or_shutdown",
+          "pr210_05_a_cancel_targets_exactly_one_of_two_dispatched_writes",
+          "pr210_05_a_cancel_before_admission_never_reaches_the_radio",
+          "pr210_05_a_success_that_beat_the_cancel_is_returned_and_owned",
+          "pr210_06_budget_ms_is_validated_before_any_effect",
+          "pr210_06_a_short_budget_bounds_the_radio_call",
+          "pr210_06_queueing_behind_the_dispatcher_spends_the_budget",
+          "pr210_06_a_write_that_times_out_after_dispatch_is_never_retryable",
+          "pr210_06_a_budget_longer_than_the_old_backstop_is_honoured",
+          "a_read_carries_the_radio_provenance",
+          "pr210_07_scan_and_notification_forwarders_deliver_from_the_first_item",
+          "pr210_07_a_lease_replaced_during_admission_stops_the_scan_it_admitted",
+          "pr210_08_a_caller_released_during_scan_admission_gets_a_real_stop",
+          "pr210_08_connect_and_subscribe_compensation_is_recorded_not_discarded",
+          "pr210_09_a_failed_scan_stop_keeps_the_scan_for_a_real_retry",
+          "pr210_09_a_failed_unsubscribe_keeps_the_consumer_for_a_real_retry",
+          "pr210_09_a_failed_disconnect_keeps_the_link_for_a_real_retry",
+          "pr210_09_a_failed_destroy_keeps_the_caller_for_a_real_retry",
+          "pr210_10_a_wrong_generation_disconnect_changes_nothing",
+          "pr210_11_idle_link_loss_reaches_the_stream_and_invalidates",
+          "pr210_11_requested_disconnect_reports_requested_disconnect",
+          "finding_190a_a_requested_disconnect_ends_notifications_owner_released",
+          "requested_disconnect_pauses_an_in_flight_notification_terminal",
+          "a_notification_terminal_sent_before_disconnect_is_not_sent_twice",
+          "a_failed_owner_terminal_send_keeps_the_disconnect_retryable",
+          "pr210_11_a_stale_generation_matches_nothing",
+          "lifecycle_platform_fact_survives_active_and_early_stream_delivery",
+          "pr210_11_a_lagged_pump_ends_every_stream_with_overflow",
+          "pr210_11_a_service_change_invalidates_and_ends_notifications",
+          "pr210_11_a_loss_before_ready_is_delivered_at_ready",
+          "pr210_13t_a_requirement_is_refused_only_where_the_property_is_missing",
+          "pr210_13t_a_dual_property_indication_requirement_is_not_dropped",
+          "pr210_13t_a_preference_reports_unknown_delivery_when_the_radio_says_nothing",
+          "pr210_22_a_dispatcher_error_is_never_retryable_by_its_code",
+          "pr210_32_racing_first_calls_open_exactly_one_authority",
+          "connected_effective_mtu_reads_the_live_link_through_the_core",
+          "connected_rssi_reads_the_live_link_through_the_core",
+          "completed_control_watches_do_not_consume_live_watch_capacity",
+          "native_capability_bootstrap_agrees_with_routed_rssi_and_service_change",
+          "transport_only_restrictions_match_absent_routes_and_rebind_ownership",
+          "a_route_attachment_matches_its_record_by_identity_alone",
+          "pr210_08_a_hung_compensation_is_bounded_and_becomes_debt",
+          "pr210_09_a_hung_disconnect_is_bounded_and_keeps_the_link",
+          "finding_43_the_attachment_is_the_shared_central_s_own",
+          "finding_57_an_adapter_loss_ends_every_stream_in_the_legacy_vocabulary",
+          "finding_57_a_route_validated_before_rebind_stays_on_its_original_attachment",
+          "finding_57_the_previous_attachment_fails_backend_reset_before_native_io",
+          "finding_58_admission_refusals_cross_verbatim",
+          "finding_94_an_adapter_state_read_racing_a_reset_answers_the_new_state",
+          "finding_60_adapter_state_reports_the_central_s_facts",
+          "finding_60_an_unreadable_authorization_is_unknown_with_a_reason",
+          "finding_60_adapter_state_follows_the_reset_generation",
+          "finding_90_the_maximum_write_length_is_what_a_write_accepts_per_mode",
+          "finding_95_a_refused_discovery_crosses_the_ipc_whole_and_typed",
+          "finding_114_a_failed_compensation_retries_until_the_release_lands",
+          "orphan_retry_survives_transient_authority_lock_contention",
+          "finding_114_eight_refused_attempts_exhaust_and_are_reported",
+          "finding_114_a_window_released_during_retries_still_ends_the_orphan",
+          "finding_114_a_release_that_lands_first_ends_the_retries",
+          "finding_116_the_platform_identity_crosses_per_os",
+          "finding_182_a_characteristic_with_descriptors_registers_once",
+          "finding_182_a_second_discover_replaces_the_snapshot",
+          "findings_f1_f2_write_receipt_commit_state_matches_the_contract_on_both_modes",
+          "readiness_write_uses_the_owned_native_route_and_reports_unconfirmed_acceptance"
+        ]
+      }
+    },
+    {
+      "id": "R2-12",
+      "priority": "P2",
+      "required_outcome": "Union keyed list evidence and retain required packets through native ingress",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "src/backend-contract/scan-evidence.ts",
+        "vendor/btleplug/src/winrtble/ble/watcher.rs"
+      ],
+      "regression_suites": [
+        "__tests__/public/scan-evidence.test.js",
+        "__tests__/backends/desktop/desktop-rust-core-provider.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Split-service-list union and conservative native ingress controls pass in package/native gates; Windows packed/public route passes at 345833ce. Final-head gate pending; controlled evidence is not hardware proof.",
+      "previous_findings": [
+        "F05"
+      ],
+      "implementation_blobs": {
+        "src/backend-contract/scan-evidence.ts": "99ff5dbea03630b0fb43bc42f53a028ae9703c6d",
+        "vendor/btleplug/src/winrtble/ble/watcher.rs": "02903a1ea02bed3466191fa474ab4e9b26c3566f"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/public/scan-evidence.test.js": [
+          "downstream filtering does not turn an upstream merged projection into fresh radio facts",
+          "IPC merged projections do not renew facts in a later filtering cache",
+          "an unexpired peer capacity refusal is explicit and does not replace retained peers",
+          "in-window service lists union even when the newest packet carries a nonempty list",
+          "unrelated packets do not renew an old name or service fact",
+          "receipt progress expires inactive peers globally",
+          "IPC list evidence unions by key and each key expires independently",
+          "a service packet and a later name packet match together, and the raw packet stays raw",
+          "the name can arrive before the services",
+          "a services-only filter matches the advertising packet alone",
+          "a missing name is not invented, and a different address does not merge",
+          "evidence outside the window and a cleared generation do not match",
+          "the public filter accepts the split pair and keeps a single-packet miss",
+          "an IPC filter ages split packets from the receipt clock"
+        ],
+        "__tests__/backends/desktop/desktop-rust-core-provider.test.js": [
+          "WinRT scan planning includes the connectability reported by native observations",
+          "the provider retains an unavailable runtime parameter descriptor and its native reason",
+          "the guard defaults to the running process platform",
+          "the addon itself refuses a platform it does not drive (Rust-side check)",
+          "a missing packaged core fails loudly with the loader cause, never a fallback",
+          "native disconnect releases only its lease while a second native caller still owns the link",
+          "native GATT admission refuses an unowned caller lease despite a valid peer and selector",
+          "a without-response write reports commitState unknown, never confirmed (PR210-31)",
+          "descriptors read and write through the core",
+          "a without-response descriptor write fails with the legacy WinRT identity (W-R1)",
+          "CoreBluetooth serializes GATT verbs per connection (F6: fail-fast lifecycle.invalid-state)",
+          "the caller budget crosses as timeoutMs and the core owns the timeout outcome",
+          "no caller deadline sends no budget: the core liveness backstop applies (decision 2)",
+          "aborting an admitted read cancels exactly that core operation",
+          "requestCancellation on the dispatch reaches the core",
+          "an already-aborted signal refuses before any dispatch",
+          "scanner.plan pushes required service UUIDs to the core scan",
+          "name-prefix and manufacturer filters match in software instead of failing",
+          "a shared scan fans one core scan out to joined leases; the owner stop ends both",
+          "duplicate policy first delivers one sighting per peer (legacy BlueZ DuplicateData=false)",
+          "an OS link loss emits connection-lost for that connection and ends its streams",
+          "a GATT database change emits database-changed and ends subscriptions as service-changed",
+          "adapter power is read from the OS and its changes are watched",
+          "backend and adapter streams keep their legacy quotas (F10)",
+          "an unreadable adapter power reports unknown with the reason, never a guess",
+          "CoreBluetooth registers connection:rssi and reads it through the core",
+          "BlueZ keeps the priority/parameters registrations with their reasons",
+          "each OS adapter is listed; the selected label reaches the core open",
+          "an adapter id does not change when another adapter is added or removed, or the default moves",
+          "CoreBluetooth request-mtu and phy stay unsupported with the legacy codes (effective-mtu is limited: finding 217 follow-up)",
+          "BlueZ pairing generation without a host controller is unsupported with the privilege explanation",
+          "require-indication on a notify-only characteristic fails before any dispatch",
+          "require-notification is forwarded and a contradictory radio report is refused",
+          "the wire form carries the core retryability and commit verbatim",
+          "a platform detail without a message keeps the core detail as its message",
+          "a malformed platform field is a transport fault, never a guessed identity",
+          "a failed shutdown release is reported, never flattened to released",
+          "destroy retires later operations loudly",
+          "every desktop platform carries a hard delivery requirement to the core",
+          "CoreBluetooth maximum write length: registration, connection dispatch, and the long-write feature",
+          "maximum write length is measured on the link before any discovery (LEGACY-AUDIT-1 #65)",
+          "an unmeasured write limit is capability.unavailable, never a guess",
+          "WinRT: any listed adapter is selectable and the deployment is reported (LEGACY-AUDIT-1 #68)",
+          "a malformed deployment in the listing is refused",
+          "adapter authorization is the OS answer (macOS, Windows); unknown elsewhere",
+          "advertisement solicited UUIDs and connectable cross when the radio reports them",
+          "BlueZ pairing generation: the host controller holds the generation for a directed pair and it is restored",
+          "an OS link loss ends a ready write-readiness watch",
+          "CoreBluetooth write-without-response readiness: the core probe, then OS reports for this connection",
+          "maximum-write-length rejects empty connection ids as invalid (F9), as legacy did",
+          "CoreBluetooth RSSI keeps its legacy integer-precision limits (F7)",
+          "readiness overflow keeps drop-oldest (F1), as the legacy watch did",
+          "readiness reprobes every 100 ms while unready (F2 safety net)",
+          "a readiness report arriving during the probe is replayed, never dropped (F3)",
+          "WinRT scan terminated by the OS ends every consumer, and a new scan starts",
+          "CoreBluetooth exposes no security backend (legacy had none either)",
+          "WinRT registers maintain-connection (the Windows adapter holds it per connection)",
+          "BlueZ address targeting: an out-of-band address connects without a scan",
+          "BlueZ advertisement address type is the OS answer",
+          "BlueZ address without a reported type remains opaque",
+          "BlueZ advertisement without UUIDs leaves serviceUuids absent, as legacy did",
+          "characteristic flags and access requirements come from the radio; unreported stays unknown",
+          "BlueZ preserves each sighting address type and never guesses a missing type",
+          "every row names its platforms and either how it works or what blocks it"
+        ]
+      }
+    },
+    {
+      "id": "R2-13",
+      "priority": "P2",
+      "required_outcome": "Expire each carried scan fact independently",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "src/backend-contract/scan-evidence.ts"
+      ],
+      "regression_suites": [
+        "__tests__/public/scan-evidence.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Per-fact freshness and downstream nonrenewal regressions pass in the full package gate. Final-head replay pending.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "src/backend-contract/scan-evidence.ts": "99ff5dbea03630b0fb43bc42f53a028ae9703c6d"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/public/scan-evidence.test.js": [
+          "downstream filtering does not turn an upstream merged projection into fresh radio facts",
+          "IPC merged projections do not renew facts in a later filtering cache",
+          "an unexpired peer capacity refusal is explicit and does not replace retained peers",
+          "in-window service lists union even when the newest packet carries a nonempty list",
+          "unrelated packets do not renew an old name or service fact",
+          "receipt progress expires inactive peers globally",
+          "IPC list evidence unions by key and each key expires independently",
+          "a service packet and a later name packet match together, and the raw packet stays raw",
+          "the name can arrive before the services",
+          "a services-only filter matches the advertising packet alone",
+          "a missing name is not invented, and a different address does not merge",
+          "evidence outside the window and a cleared generation do not match",
+          "the public filter accepts the split pair and keeps a single-packet miss",
+          "an IPC filter ages split packets from the receipt clock"
+        ]
+      }
+    },
+    {
+      "id": "R2-14",
+      "priority": "P2",
+      "required_outcome": "Complete scan peer identity prevents cross-peer evidence borrowing",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "src/backend-contract/scan-evidence.ts",
+        "src/backends/desktop/desktop-rust-core-provider.ts"
+      ],
+      "regression_suites": [
+        "__tests__/public/scan-evidence.test.js",
+        "__tests__/backends/desktop/desktop-rust-core-provider.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Complete identity, address-type propagation and unread native-identity error controls pass in package/native gates. Windows exposed three stale address-only assertions; typed round-trip/distinctness repairs are in the current batch. Final-head Windows execution pending.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "src/backend-contract/scan-evidence.ts": "99ff5dbea03630b0fb43bc42f53a028ae9703c6d",
+        "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/public/scan-evidence.test.js": [
+          "downstream filtering does not turn an upstream merged projection into fresh radio facts",
+          "IPC merged projections do not renew facts in a later filtering cache",
+          "an unexpired peer capacity refusal is explicit and does not replace retained peers",
+          "in-window service lists union even when the newest packet carries a nonempty list",
+          "unrelated packets do not renew an old name or service fact",
+          "receipt progress expires inactive peers globally",
+          "IPC list evidence unions by key and each key expires independently",
+          "a service packet and a later name packet match together, and the raw packet stays raw",
+          "the name can arrive before the services",
+          "a services-only filter matches the advertising packet alone",
+          "a missing name is not invented, and a different address does not merge",
+          "evidence outside the window and a cleared generation do not match",
+          "the public filter accepts the split pair and keeps a single-packet miss",
+          "an IPC filter ages split packets from the receipt clock"
+        ],
+        "__tests__/backends/desktop/desktop-rust-core-provider.test.js": [
+          "WinRT scan planning includes the connectability reported by native observations",
+          "the provider retains an unavailable runtime parameter descriptor and its native reason",
+          "the guard defaults to the running process platform",
+          "the addon itself refuses a platform it does not drive (Rust-side check)",
+          "a missing packaged core fails loudly with the loader cause, never a fallback",
+          "native disconnect releases only its lease while a second native caller still owns the link",
+          "native GATT admission refuses an unowned caller lease despite a valid peer and selector",
+          "a without-response write reports commitState unknown, never confirmed (PR210-31)",
+          "descriptors read and write through the core",
+          "a without-response descriptor write fails with the legacy WinRT identity (W-R1)",
+          "CoreBluetooth serializes GATT verbs per connection (F6: fail-fast lifecycle.invalid-state)",
+          "the caller budget crosses as timeoutMs and the core owns the timeout outcome",
+          "no caller deadline sends no budget: the core liveness backstop applies (decision 2)",
+          "aborting an admitted read cancels exactly that core operation",
+          "requestCancellation on the dispatch reaches the core",
+          "an already-aborted signal refuses before any dispatch",
+          "scanner.plan pushes required service UUIDs to the core scan",
+          "name-prefix and manufacturer filters match in software instead of failing",
+          "a shared scan fans one core scan out to joined leases; the owner stop ends both",
+          "duplicate policy first delivers one sighting per peer (legacy BlueZ DuplicateData=false)",
+          "an OS link loss emits connection-lost for that connection and ends its streams",
+          "a GATT database change emits database-changed and ends subscriptions as service-changed",
+          "adapter power is read from the OS and its changes are watched",
+          "backend and adapter streams keep their legacy quotas (F10)",
+          "an unreadable adapter power reports unknown with the reason, never a guess",
+          "CoreBluetooth registers connection:rssi and reads it through the core",
+          "BlueZ keeps the priority/parameters registrations with their reasons",
+          "each OS adapter is listed; the selected label reaches the core open",
+          "an adapter id does not change when another adapter is added or removed, or the default moves",
+          "CoreBluetooth request-mtu and phy stay unsupported with the legacy codes (effective-mtu is limited: finding 217 follow-up)",
+          "BlueZ pairing generation without a host controller is unsupported with the privilege explanation",
+          "require-indication on a notify-only characteristic fails before any dispatch",
+          "require-notification is forwarded and a contradictory radio report is refused",
+          "the wire form carries the core retryability and commit verbatim",
+          "a platform detail without a message keeps the core detail as its message",
+          "a malformed platform field is a transport fault, never a guessed identity",
+          "a failed shutdown release is reported, never flattened to released",
+          "destroy retires later operations loudly",
+          "every desktop platform carries a hard delivery requirement to the core",
+          "CoreBluetooth maximum write length: registration, connection dispatch, and the long-write feature",
+          "maximum write length is measured on the link before any discovery (LEGACY-AUDIT-1 #65)",
+          "an unmeasured write limit is capability.unavailable, never a guess",
+          "WinRT: any listed adapter is selectable and the deployment is reported (LEGACY-AUDIT-1 #68)",
+          "a malformed deployment in the listing is refused",
+          "adapter authorization is the OS answer (macOS, Windows); unknown elsewhere",
+          "advertisement solicited UUIDs and connectable cross when the radio reports them",
+          "BlueZ pairing generation: the host controller holds the generation for a directed pair and it is restored",
+          "an OS link loss ends a ready write-readiness watch",
+          "CoreBluetooth write-without-response readiness: the core probe, then OS reports for this connection",
+          "maximum-write-length rejects empty connection ids as invalid (F9), as legacy did",
+          "CoreBluetooth RSSI keeps its legacy integer-precision limits (F7)",
+          "readiness overflow keeps drop-oldest (F1), as the legacy watch did",
+          "readiness reprobes every 100 ms while unready (F2 safety net)",
+          "a readiness report arriving during the probe is replayed, never dropped (F3)",
+          "WinRT scan terminated by the OS ends every consumer, and a new scan starts",
+          "CoreBluetooth exposes no security backend (legacy had none either)",
+          "WinRT registers maintain-connection (the Windows adapter holds it per connection)",
+          "BlueZ address targeting: an out-of-band address connects without a scan",
+          "BlueZ advertisement address type is the OS answer",
+          "BlueZ address without a reported type remains opaque",
+          "BlueZ advertisement without UUIDs leaves serviceUuids absent, as legacy did",
+          "characteristic flags and access requirements come from the radio; unreported stays unknown",
+          "BlueZ preserves each sighting address type and never guesses a missing type",
+          "every row names its platforms and either how it works or what blocks it"
+        ]
+      }
+    },
+    {
+      "id": "R2-15",
+      "priority": "P2",
+      "required_outcome": "Expire inactive scan peers globally and bound retention",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "src/backend-contract/scan-evidence.ts"
+      ],
+      "regression_suites": [
+        "__tests__/public/scan-evidence.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Global expiry and bounded peer/fact retention controls pass in the full package gate. Final-head replay pending.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "src/backend-contract/scan-evidence.ts": "99ff5dbea03630b0fb43bc42f53a028ae9703c6d"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/public/scan-evidence.test.js": [
+          "downstream filtering does not turn an upstream merged projection into fresh radio facts",
+          "IPC merged projections do not renew facts in a later filtering cache",
+          "an unexpired peer capacity refusal is explicit and does not replace retained peers",
+          "in-window service lists union even when the newest packet carries a nonempty list",
+          "unrelated packets do not renew an old name or service fact",
+          "receipt progress expires inactive peers globally",
+          "IPC list evidence unions by key and each key expires independently",
+          "a service packet and a later name packet match together, and the raw packet stays raw",
+          "the name can arrive before the services",
+          "a services-only filter matches the advertising packet alone",
+          "a missing name is not invented, and a different address does not merge",
+          "evidence outside the window and a cleared generation do not match",
+          "the public filter accepts the split pair and keeps a single-packet miss",
+          "an IPC filter ages split packets from the receipt clock"
+        ]
+      }
+    },
+    {
+      "id": "R2-16",
+      "priority": "P2",
+      "required_outcome": "Parameter initial probes cannot overwrite newer events",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "src/backends/desktop/desktop-rust-core-provider.ts",
+        "native/tauri/src/connection_parameters.rs"
+      ],
+      "regression_suites": [
+        "__tests__/backends/desktop/parameter-watch-ordering.test.js",
+        "native/tauri/src/connection_parameters.rs"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Initial-probe/event ordering and failed acquisition controls pass in package and packed public-provider routes. Final-head replay pending.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca",
+        "native/tauri/src/connection_parameters.rs": "f2758b968022257f8f75536c5ee05bd118ac1cf1"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/backends/desktop/parameter-watch-ordering.test.js": [
+          "a native getter failure during acquisition cancels the probe and promptly reports the source error",
+          "a failed native source refuses later watches until a fresh source observation recovers it",
+          "reports arriving during the initial probe replace its delayed answer and retain native order",
+          "initial probe failure closes the registered source and retains the refusal",
+          "disconnect during acquisition does not resurrect the watch or emit the stale probe",
+          "a malformed report during acquisition retains its own source failure",
+          "initial buffering overflow reports the source fault rather than a stale connection"
+        ],
+        "native/tauri/src/connection_parameters.rs": [
+          "opening_parameter_read_keeps_the_caller_budget_and_cancel"
+        ]
+      }
+    },
+    {
+      "id": "R2-17",
+      "priority": "P2",
+      "required_outcome": "Snapshot and streamed parameters share fail-closed validation",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "src/backends/desktop/desktop-rust-core-provider.ts",
+        "src/ipc/public-manager.ts",
+        "vendor/btleplug/src/connection_parameters_source.rs"
+      ],
+      "regression_suites": [
+        "__tests__/public-parameter-validation.test.js",
+        "vendor/btleplug/src/connection_parameters_source.rs"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Shared malformed snapshot/stream validation passes. Additional documented native all-zero disconnected getter correction and exact mapper/classifier controls pass locally; latest combined batch and final-head Windows CI pending.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca",
+        "src/ipc/public-manager.ts": "50da03b29020fe14ba802b477cddcec084f6e66c",
+        "vendor/btleplug/src/connection_parameters_source.rs": "bf6f4324e3aaa1ea7534de18a6170639bdbb399f"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/public-parameter-validation.test.js": [
+          "snapshot and stream agree on valid parameter units and identity"
+        ],
+        "vendor/btleplug/src/connection_parameters_source.rs": [
+          "callback_getter_failure_keeps_the_original_hresult_and_metadata",
+          "callback_success_is_the_getter_answer_and_nonplatform_failure_stays_explicit"
+        ]
+      }
+    },
+    {
+      "id": "R2-18",
+      "priority": "P2",
+      "required_outcome": "Lost-link errors retain shared vocabulary for parameter operations",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "crates/ubm-desktop/src/errors.rs",
+        "vendor/btleplug/src/connection_parameters_source.rs"
+      ],
+      "regression_suites": [
+        "crates/ubm-desktop/src/errors.rs"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Native/shared loss vocabulary controls pass. Additional all-zero WinRT answer now preserves raw native fields and connection.lost; exact native mapper/classifier controls pass locally. Latest combined batch and final-head Windows CI pending.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "crates/ubm-desktop/src/errors.rs": "9f7f9aac6abeae819165d0b08094e9f0503ea3a1",
+        "vendor/btleplug/src/connection_parameters_source.rs": "bf6f4324e3aaa1ea7534de18a6170639bdbb399f"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "crates/ubm-desktop/src/errors.rs": [
+          "the_platform_detail_survives_classification",
+          "core_identity_crosses_verbatim",
+          "boundary_failures_carry_contract_identities",
+          "errors_default_to_never_retryable_without_a_commit_fact",
+          "outcome_facts_travel_with_the_error_but_not_its_identity",
+          "a_transient_link_establishment_failure_is_caller_decides",
+          "a_link_loss_answer_on_a_link_operation_is_connection_lost",
+          "an_authentication_or_encryption_refusal_is_platform_security",
+          "a_platform_connect_failure_is_connection_failed",
+          "a_platform_connect_failure_is_caller_decides",
+          "a_connect_deadline_without_a_link_is_connection_failed",
+          "empty_operation_fails_closed"
+        ]
+      }
+    },
+    {
+      "id": "R2-19",
+      "priority": "P2",
+      "required_outcome": "Forward supported soft delivery preference distinctly from hard requirement",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "src/backends/desktop/desktop-rust-core-provider.ts",
+        "vendor/btleplug/src/winrtble/peripheral.rs"
+      ],
+      "regression_suites": [
+        "__tests__/backends/desktop/desktop-rust-core-provider.test.js",
+        "vendor/btleplug/src/winrtble/gatt_model.rs"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Separate preference/requirement forwarding and supported selection controls pass in native/provider gates. Final-head Windows gate pending; physical CCCD behavior is not established by fixtures.",
+      "previous_findings": [
+        "F03"
+      ],
+      "implementation_blobs": {
+        "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca",
+        "vendor/btleplug/src/winrtble/peripheral.rs": "d0c56d35b04b7f97002c79363dbb8e8aa39f5d86"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/backends/desktop/desktop-rust-core-provider.test.js": [
+          "WinRT scan planning includes the connectability reported by native observations",
+          "the provider retains an unavailable runtime parameter descriptor and its native reason",
+          "the guard defaults to the running process platform",
+          "the addon itself refuses a platform it does not drive (Rust-side check)",
+          "a missing packaged core fails loudly with the loader cause, never a fallback",
+          "native disconnect releases only its lease while a second native caller still owns the link",
+          "native GATT admission refuses an unowned caller lease despite a valid peer and selector",
+          "a without-response write reports commitState unknown, never confirmed (PR210-31)",
+          "descriptors read and write through the core",
+          "a without-response descriptor write fails with the legacy WinRT identity (W-R1)",
+          "CoreBluetooth serializes GATT verbs per connection (F6: fail-fast lifecycle.invalid-state)",
+          "the caller budget crosses as timeoutMs and the core owns the timeout outcome",
+          "no caller deadline sends no budget: the core liveness backstop applies (decision 2)",
+          "aborting an admitted read cancels exactly that core operation",
+          "requestCancellation on the dispatch reaches the core",
+          "an already-aborted signal refuses before any dispatch",
+          "scanner.plan pushes required service UUIDs to the core scan",
+          "name-prefix and manufacturer filters match in software instead of failing",
+          "a shared scan fans one core scan out to joined leases; the owner stop ends both",
+          "duplicate policy first delivers one sighting per peer (legacy BlueZ DuplicateData=false)",
+          "an OS link loss emits connection-lost for that connection and ends its streams",
+          "a GATT database change emits database-changed and ends subscriptions as service-changed",
+          "adapter power is read from the OS and its changes are watched",
+          "backend and adapter streams keep their legacy quotas (F10)",
+          "an unreadable adapter power reports unknown with the reason, never a guess",
+          "CoreBluetooth registers connection:rssi and reads it through the core",
+          "BlueZ keeps the priority/parameters registrations with their reasons",
+          "each OS adapter is listed; the selected label reaches the core open",
+          "an adapter id does not change when another adapter is added or removed, or the default moves",
+          "CoreBluetooth request-mtu and phy stay unsupported with the legacy codes (effective-mtu is limited: finding 217 follow-up)",
+          "BlueZ pairing generation without a host controller is unsupported with the privilege explanation",
+          "require-indication on a notify-only characteristic fails before any dispatch",
+          "require-notification is forwarded and a contradictory radio report is refused",
+          "the wire form carries the core retryability and commit verbatim",
+          "a platform detail without a message keeps the core detail as its message",
+          "a malformed platform field is a transport fault, never a guessed identity",
+          "a failed shutdown release is reported, never flattened to released",
+          "destroy retires later operations loudly",
+          "every desktop platform carries a hard delivery requirement to the core",
+          "CoreBluetooth maximum write length: registration, connection dispatch, and the long-write feature",
+          "maximum write length is measured on the link before any discovery (LEGACY-AUDIT-1 #65)",
+          "an unmeasured write limit is capability.unavailable, never a guess",
+          "WinRT: any listed adapter is selectable and the deployment is reported (LEGACY-AUDIT-1 #68)",
+          "a malformed deployment in the listing is refused",
+          "adapter authorization is the OS answer (macOS, Windows); unknown elsewhere",
+          "advertisement solicited UUIDs and connectable cross when the radio reports them",
+          "BlueZ pairing generation: the host controller holds the generation for a directed pair and it is restored",
+          "an OS link loss ends a ready write-readiness watch",
+          "CoreBluetooth write-without-response readiness: the core probe, then OS reports for this connection",
+          "maximum-write-length rejects empty connection ids as invalid (F9), as legacy did",
+          "CoreBluetooth RSSI keeps its legacy integer-precision limits (F7)",
+          "readiness overflow keeps drop-oldest (F1), as the legacy watch did",
+          "readiness reprobes every 100 ms while unready (F2 safety net)",
+          "a readiness report arriving during the probe is replayed, never dropped (F3)",
+          "WinRT scan terminated by the OS ends every consumer, and a new scan starts",
+          "CoreBluetooth exposes no security backend (legacy had none either)",
+          "WinRT registers maintain-connection (the Windows adapter holds it per connection)",
+          "BlueZ address targeting: an out-of-band address connects without a scan",
+          "BlueZ advertisement address type is the OS answer",
+          "BlueZ address without a reported type remains opaque",
+          "BlueZ advertisement without UUIDs leaves serviceUuids absent, as legacy did",
+          "characteristic flags and access requirements come from the radio; unreported stays unknown",
+          "BlueZ preserves each sighting address type and never guesses a missing type",
+          "every row names its platforms and either how it works or what blocks it"
+        ],
+        "vendor/btleplug/src/winrtble/gatt_model.rs": [
+          "only_success_passes_and_every_failure_names_its_status",
+          "repeated_uuids_stay_distinct_instances_by_handle",
+          "a_repeated_handle_is_refused_not_overwritten",
+          "advertisement_type_keeps_connectable_and_a_scan_response_stays_unknown",
+          "windows_reserved_services_are_the_os_audio_and_hid_set",
+          "access_denied_without_an_att_byte_keeps_the_service",
+          "descriptor_enumeration_lists_only_a_successful_result",
+          "the_att_error_byte_rides_the_platform_detail_as_decimal_text",
+          "platform_codes_follow_the_legacy_addon",
+          "service_data_sections_parse_by_uuid_width"
+        ]
+      }
+    },
+    {
+      "id": "R2-20",
+      "priority": "P2",
+      "required_outcome": "Preserve structured WinRT primary and cleanup failures and retry cleanup",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "vendor/btleplug/src/winrtble/ble/device.rs",
+        "vendor/btleplug/src/winrtble/peripheral.rs"
+      ],
+      "regression_suites": [
+        "vendor/btleplug/src/winrtble/gatt_model.rs",
+        "crates/ubm-desktop/src/os/winrt_cleanup.rs"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Structured discovery/CCCD primary and cleanup failure, original-target retention and cleanup retry controls pass in native gates. Final-head Windows gate pending; native fault controls retain their evidence level.",
+      "previous_findings": [
+        "F11"
+      ],
+      "implementation_blobs": {
+        "vendor/btleplug/src/winrtble/ble/device.rs": "99d9e3a0dd5cc991e4636bd686211384181e1a41",
+        "vendor/btleplug/src/winrtble/peripheral.rs": "d0c56d35b04b7f97002c79363dbb8e8aa39f5d86"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "vendor/btleplug/src/winrtble/gatt_model.rs": [
+          "only_success_passes_and_every_failure_names_its_status",
+          "repeated_uuids_stay_distinct_instances_by_handle",
+          "a_repeated_handle_is_refused_not_overwritten",
+          "advertisement_type_keeps_connectable_and_a_scan_response_stays_unknown",
+          "windows_reserved_services_are_the_os_audio_and_hid_set",
+          "access_denied_without_an_att_byte_keeps_the_service",
+          "descriptor_enumeration_lists_only_a_successful_result",
+          "the_att_error_byte_rides_the_platform_detail_as_decimal_text",
+          "platform_codes_follow_the_legacy_addon",
+          "service_data_sections_parse_by_uuid_width"
+        ],
+        "crates/ubm-desktop/src/os/winrt_cleanup.rs": [
+          "failed_handler_cleanup_does_not_skip_independent_peripheral_release",
+          "transient_inspection_closes_after_success_or_validation_failure",
+          "transient_inspection_retains_read_and_close_failures",
+          "held_vault_retry_cannot_look_clean_to_another_caller",
+          "held_and_refused_adapter_a_does_not_block_or_taint_adapter_b",
+          "peer_acquisition_reuses_healthy_owner_and_close_refuses_new_work",
+          "callback_queued_behind_close_has_no_effect_and_full_queue_does_not_park",
+          "cancelling_a_queued_acquisition_preserves_the_current_peer_owner",
+          "close_rejects_an_already_queued_acquisition_when_the_owner_settles",
+          "close_fences_a_held_callback_before_returning",
+          "singular_receipt_retains_each_native_failure_and_stage",
+          "partial_registration_keeps_later_tokens_and_failed_compensation_for_retry",
+          "every_refused_watch_stage_is_the_only_stage_retried",
+          "session_attempts_close_after_disable_refusal_and_preserves_all_failures",
+          "confirmed_session_close_settles_disable_but_keeps_its_diagnostic",
+          "failed_old_owner_survives_replacement_and_successful_retry_removes_only_it"
+        ]
+      }
+    },
+    {
+      "id": "R2-21",
+      "priority": "P2",
+      "required_outcome": "Propagate Tauri service restrictions",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "native/tauri/src/btleplug_dispatcher.rs"
+      ],
+      "regression_suites": [
+        "__tests__/tauri-gatt-database.test.js",
+        "native/tauri/src/dispatcher_packet_b_tests.rs"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Already fixed at review baseline; retained Tauri restriction serialization controls pass in the full Tauri gate. Final-head replay pending.",
+      "previous_findings": [
+        "F04"
+      ],
+      "implementation_blobs": {
+        "native/tauri/src/btleplug_dispatcher.rs": "3fdf72e14e5cb009b7fc9a01b22885f573bf7bb1"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/tauri-gatt-database.test.js": [
+          "the H10 database validates on the public snapshot with desktop occurrence numerals",
+          "the fixed Tauri encoding decodes to the desktop snapshot on both IPC hosts",
+          "the duplicated Tauri encoding fails with the offending characteristic path",
+          "connect, discover, discover replaces the snapshot instead of appending"
+        ],
+        "native/tauri/src/dispatcher_packet_b_tests.rs": [
+          "security_watch_retains_racing_event_order_without_regressing_to_an_unsequenced_snapshot",
+          "typed_address_connect_resolves_before_acquiring_the_core_lease",
+          "address_resolution_uses_original_deadline_and_parent_cancellation",
+          "security_cancel_reports_the_native_ceremony_and_invalid_options_do_not_pair",
+          "security_routes_reach_core_and_watch_is_lease_owned",
+          "scan_projection_preserves_exact_native_origin_and_service_union",
+          "scan_projection_preserves_authoritative_address_types_and_unknown",
+          "scan_projection_prefers_captured_identity_over_a_mutated_native_cache",
+          "parameter_gap_reconciles_the_live_native_answer_and_getter_failure_ends_the_watch",
+          "delayed_initial_parameter_probe_cannot_overtake_a_newer_native_event",
+          "acquired_routes_use_the_native_lease_and_retire_both_children_on_disconnect",
+          "parameter_source_failure_survives_for_a_later_watch_until_native_recovery",
+          "scan_stream_serializes_native_public_random_and_unknown_address_types",
+          "idle_process_handoff_never_opens_bluetooth_even_after_shutdown",
+          "process_shutdown_retains_native_claim_and_retry_owner",
+          "deferred_connect_dispatch_uses_shared_native_lease_authority",
+          "peer_directory_bonded_preserves_native_fact_without_link_ownership",
+          "peer_directory_native_inventory_keeps_backend_scope_and_foreign_link_unowned",
+          "peer_directory_connected_returns_identity_without_connection_ownership",
+          "peer_directory_validates_entire_query_before_native_dispatch",
+          "peer_directory_known_resolve_null_and_existing_connect_path",
+          "peer_directory_known_second_lookup_keeps_caller_cancellation",
+          "peer_directory_reset_during_batch_never_publishes_partial_records",
+          "peer_directory_unavailable_hosts_never_short_circuit_to_success_or_mac_requirements",
+          "peer_directory_deadline_bounds_held_read",
+          "peer_directory_batch_keeps_original_budget_after_first_read",
+          "peer_directory_retired_caller_cannot_receive_held_lookup",
+          "peer_directory_excluded_source_preserves_native_refusal",
+          "peer_directory_foreign_reference_and_malformed_reply_fail_closed",
+          "authority_shutdown_retains_half_open_compensation_cause_until_confirmed_retry",
+          "caller_connection_release_preserves_another_native_lease",
+          "caller_connection_release_retires_only_its_subscription",
+          "caller_owner_stream_send_failure_retains_exact_retry",
+          "caller_gatt_operation_cannot_borrow_another_native_lease",
+          "cancelling_orphan_drain_keeps_its_exact_identity_owned",
+          "held_orphan_drain_cannot_prevent_authoritative_shutdown",
+          "cancelling_orphan_snapshot_keeps_both_resources_and_other_callers",
+          "refused_parent_retains_timed_out_orphan_debt_until_clean_retry",
+          "held_orphan_release_still_reaches_bounded_parent_transport_close",
+          "authority_shutdown_retains_transport_cleanup_until_a_clean_retry",
+          "authority_shutdown_closes_admission_during_transport_cleanup",
+          "cancelled_authority_shutdown_preserves_the_closed_retry_owner",
+          "hung_authority_transport_cleanup_is_bounded_and_retryable",
+          "trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open",
+          "pr210_04_a_hung_discovery_never_stalls_another_peer_cancel_or_shutdown",
+          "pr210_05_a_cancel_targets_exactly_one_of_two_dispatched_writes",
+          "pr210_05_a_cancel_before_admission_never_reaches_the_radio",
+          "pr210_05_a_success_that_beat_the_cancel_is_returned_and_owned",
+          "pr210_06_budget_ms_is_validated_before_any_effect",
+          "pr210_06_a_short_budget_bounds_the_radio_call",
+          "pr210_06_queueing_behind_the_dispatcher_spends_the_budget",
+          "pr210_06_a_write_that_times_out_after_dispatch_is_never_retryable",
+          "pr210_06_a_budget_longer_than_the_old_backstop_is_honoured",
+          "a_read_carries_the_radio_provenance",
+          "pr210_07_scan_and_notification_forwarders_deliver_from_the_first_item",
+          "pr210_07_a_lease_replaced_during_admission_stops_the_scan_it_admitted",
+          "pr210_08_a_caller_released_during_scan_admission_gets_a_real_stop",
+          "pr210_08_connect_and_subscribe_compensation_is_recorded_not_discarded",
+          "pr210_09_a_failed_scan_stop_keeps_the_scan_for_a_real_retry",
+          "pr210_09_a_failed_unsubscribe_keeps_the_consumer_for_a_real_retry",
+          "pr210_09_a_failed_disconnect_keeps_the_link_for_a_real_retry",
+          "pr210_09_a_failed_destroy_keeps_the_caller_for_a_real_retry",
+          "pr210_10_a_wrong_generation_disconnect_changes_nothing",
+          "pr210_11_idle_link_loss_reaches_the_stream_and_invalidates",
+          "pr210_11_requested_disconnect_reports_requested_disconnect",
+          "finding_190a_a_requested_disconnect_ends_notifications_owner_released",
+          "requested_disconnect_pauses_an_in_flight_notification_terminal",
+          "a_notification_terminal_sent_before_disconnect_is_not_sent_twice",
+          "a_failed_owner_terminal_send_keeps_the_disconnect_retryable",
+          "pr210_11_a_stale_generation_matches_nothing",
+          "lifecycle_platform_fact_survives_active_and_early_stream_delivery",
+          "pr210_11_a_lagged_pump_ends_every_stream_with_overflow",
+          "pr210_11_a_service_change_invalidates_and_ends_notifications",
+          "pr210_11_a_loss_before_ready_is_delivered_at_ready",
+          "pr210_13t_a_requirement_is_refused_only_where_the_property_is_missing",
+          "pr210_13t_a_dual_property_indication_requirement_is_not_dropped",
+          "pr210_13t_a_preference_reports_unknown_delivery_when_the_radio_says_nothing",
+          "pr210_22_a_dispatcher_error_is_never_retryable_by_its_code",
+          "pr210_32_racing_first_calls_open_exactly_one_authority",
+          "connected_effective_mtu_reads_the_live_link_through_the_core",
+          "connected_rssi_reads_the_live_link_through_the_core",
+          "completed_control_watches_do_not_consume_live_watch_capacity",
+          "native_capability_bootstrap_agrees_with_routed_rssi_and_service_change",
+          "transport_only_restrictions_match_absent_routes_and_rebind_ownership",
+          "a_route_attachment_matches_its_record_by_identity_alone",
+          "pr210_08_a_hung_compensation_is_bounded_and_becomes_debt",
+          "pr210_09_a_hung_disconnect_is_bounded_and_keeps_the_link",
+          "finding_43_the_attachment_is_the_shared_central_s_own",
+          "finding_57_an_adapter_loss_ends_every_stream_in_the_legacy_vocabulary",
+          "finding_57_a_route_validated_before_rebind_stays_on_its_original_attachment",
+          "finding_57_the_previous_attachment_fails_backend_reset_before_native_io",
+          "finding_58_admission_refusals_cross_verbatim",
+          "finding_94_an_adapter_state_read_racing_a_reset_answers_the_new_state",
+          "finding_60_adapter_state_reports_the_central_s_facts",
+          "finding_60_an_unreadable_authorization_is_unknown_with_a_reason",
+          "finding_60_adapter_state_follows_the_reset_generation",
+          "finding_90_the_maximum_write_length_is_what_a_write_accepts_per_mode",
+          "finding_95_a_refused_discovery_crosses_the_ipc_whole_and_typed",
+          "finding_114_a_failed_compensation_retries_until_the_release_lands",
+          "orphan_retry_survives_transient_authority_lock_contention",
+          "finding_114_eight_refused_attempts_exhaust_and_are_reported",
+          "finding_114_a_window_released_during_retries_still_ends_the_orphan",
+          "finding_114_a_release_that_lands_first_ends_the_retries",
+          "finding_116_the_platform_identity_crosses_per_os",
+          "finding_182_a_characteristic_with_descriptors_registers_once",
+          "finding_182_a_second_discover_replaces_the_snapshot",
+          "findings_f1_f2_write_receipt_commit_state_matches_the_contract_on_both_modes",
+          "readiness_write_uses_the_owned_native_route_and_reports_unconfirmed_acceptance"
+        ]
+      }
+    },
+    {
+      "id": "R2-22",
+      "priority": "P2",
+      "required_outcome": "Carry observed primary/included-service graph facts and occurrence identity",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "crates/ubm-desktop/src/boundary.rs",
+        "src/backends/desktop/desktop-rust-core-provider.ts",
+        "src/backends/reactnative/react-native-rust-core-manager.ts",
+        "native/tauri/src/btleplug_dispatcher.rs",
+        "ios/Owned/OwnedCoreBluetoothProtocolRadioDiscovery.swift"
+      ],
+      "regression_suites": [
+        "__tests__/backends/desktop/desktop-public-service-graph.test.js",
+        "__tests__/tauri-gatt-database.test.js",
+        "__tests__/backends/reactnative/rust-core-discovery-failure.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Observed/unknown primary and inclusion graph propagation, duplicate service occurrence and missing-target refusal controls pass across package/mobile/Tauri gates. Node 24 invalidation synchronization repair passes at 345833ce. Final-head replay pending.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "crates/ubm-desktop/src/boundary.rs": "47211f53365ea54b99f0e78261773e69c30290c7",
+        "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca",
+        "src/backends/reactnative/react-native-rust-core-manager.ts": "4da1b36244748ebd35a76cde7d31d55caf6e2661",
+        "native/tauri/src/btleplug_dispatcher.rs": "3fdf72e14e5cb009b7fc9a01b22885f573bf7bb1",
+        "ios/Owned/OwnedCoreBluetoothProtocolRadioDiscovery.swift": "8b11503d02093446fc9ff8d8184c2c6d7eb77a51"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/tauri-gatt-database.test.js": [
+          "the H10 database validates on the public snapshot with desktop occurrence numerals",
+          "the fixed Tauri encoding decodes to the desktop snapshot on both IPC hosts",
+          "the duplicated Tauri encoding fails with the offending characteristic path",
+          "connect, discover, discover replaces the snapshot instead of appending"
+        ],
+        "__tests__/backends/reactnative/rust-core-discovery-failure.test.js": [
+          "a discovery answer that still carries `skipped` is refused as malformed, never read"
+        ]
+      }
+    },
+    {
+      "id": "R2-23",
+      "priority": "P2",
+      "required_outcome": "Complete Windows preferred parameter request route and lifetime",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "vendor/btleplug/src/winrtble/ble/device.rs",
+        "crates/ubm-desktop/src/os/windows.rs",
+        "src/backends/desktop/desktop-rust-core-provider.ts"
+      ],
+      "regression_suites": [
+        "__tests__/ipc/public-manager-controls.test.js",
+        "crates/ubm-desktop/src/os/winrt_model.rs",
+        "__tests__/backends/desktop/desktop-public-parameters.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Preferred preset route, runtime admission and explicit request lifetime controls pass in native and joined public-provider gates. Final-head Windows gate pending; requested preset remains distinct from measured outcome.",
+      "previous_findings": [
+        "F17"
+      ],
+      "implementation_blobs": {
+        "vendor/btleplug/src/winrtble/ble/device.rs": "99d9e3a0dd5cc991e4636bd686211384181e1a41",
+        "crates/ubm-desktop/src/os/windows.rs": "56b00d616c9d16a9e7840365d9a209ac0881d9bc",
+        "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/ipc/public-manager-controls.test.js": [
+          "IPC public priority uses the supported host route and preserves request truth",
+          "passes only the remaining budget to discover after a partial connect",
+          "does not start discovery when connection consumes the budget",
+          "preserves cancellation through discovery and releases once",
+          "keeps the full budget after a fast connect and no deadline when omitted",
+          "P1-09 connect forwards the normalized deadline instead of restarting timeoutMs",
+          "rejects derived lost-peer events instead of silently ignoring them",
+          "projects typed observations and removes naked numeric control methods",
+          "fails closed for unsupported controls and rejects unsupported streams on first next",
+          "converts observed microseconds to milliseconds and yields a limited readiness event",
+          "rejects a foreign control event and stamps the renderer receipt clock",
+          "overflow and source failure close the watch and keep the platform error",
+          "preserves unavailable readiness state in the renderer stream error",
+          "validates rediscovery reason and forwards mapped reasons over IPC without replaying writes"
+        ],
+        "crates/ubm-desktop/src/os/winrt_model.rs": [
+          "explicit_address_target_requires_both_native_address_and_type",
+          "peer_ids_parse_to_48_bit_addresses",
+          "a_listed_address_reopens_without_a_scan",
+          "pairing_statuses_follow_the_legacy_addon",
+          "device_access_statuses_follow_the_legacy_addon",
+          "a_named_adapter_is_selected_even_when_it_is_not_the_default",
+          "no_name_selects_the_default_then_a_sole_adapter_and_never_guesses",
+          "the_radio_is_read_only_with_granted_access",
+          "deployment_follows_get_current_package_full_name",
+          "presence_reports_loss_and_return_once_after_enumeration",
+          "an_adapter_missing_from_the_first_enumeration_is_lost",
+          "known_inventory_includes_connected_unpaired_peers_without_starting_a_scan"
+        ],
+        "__tests__/backends/desktop/desktop-public-parameters.test.js": [
+          "public parameter read and watch reach the inner NAPI radio"
+        ]
+      }
+    },
+    {
+      "id": "R2-24",
+      "priority": "P2",
+      "required_outcome": "Runtime WinRT capabilities reflect actual API presence",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "crates/ubm-desktop/src/capabilities.rs",
+        "vendor/btleplug/src/winrtble/ble/device.rs",
+        "src/backends/desktop/desktop-rust-core-provider.ts"
+      ],
+      "regression_suites": [
+        "crates/ubm-desktop/src/capabilities.rs"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Instantiated runtime API-presence/refusal capability controls pass in native/provider gates. Final-head Windows gate pending; compiled target alone is not support evidence.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "crates/ubm-desktop/src/capabilities.rs": "8ba727c7e08a28943ffbb149e918a5df4f3d779e",
+        "vendor/btleplug/src/winrtble/ble/device.rs": "99d9e3a0dd5cc991e4636bd686211384181e1a41",
+        "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "crates/ubm-desktop/src/capabilities.rs": [
+          "parameter_capability_uses_the_instantiated_api_refusal",
+          "instance_le_availability_refusal_does_not_disable_direct_connection",
+          "instance_connection_refusal_overrides_only_dependent_mechanisms",
+          "every_row_has_a_verdict_and_scenario",
+          "parity_report_matches_code_and_frozen_matrix",
+          "per_os_verdicts_are_well_formed_and_reported",
+          "windows_and_linux_readiness_is_unsupported_with_its_named_limitation",
+          "macos_readiness_names_its_patch_or_its_absence",
+          "effective_mtu_names_its_per_os_observation",
+          "registration_projects_truth_into_the_core",
+          "windows_and_linux_register_readiness_unsupported_with_its_name"
+        ]
+      }
+    },
+    {
+      "id": "R2-25",
+      "priority": "P2",
+      "required_outcome": "Surface callback getter failure and reconcile early parameter queue lag",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "vendor/btleplug/src/winrtble/ble/device.rs",
+        "vendor/btleplug/src/connection_parameters_source.rs",
+        "crates/ubm-desktop/src/parameter_source.rs",
+        "src/backends/desktop/desktop-rust-core-provider.ts"
+      ],
+      "regression_suites": [
+        "vendor/btleplug/src/connection_parameters_source.rs",
+        "crates/ubm-desktop/src/parameter_source.rs",
+        "__tests__/backends/desktop/parameter-watch-ordering.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Callback getter failure, generation retirement, queue lag and downstream reconciliation controls pass in native/package gates. Final-head Windows gate pending; all-zero callback correction is included in current batch.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "vendor/btleplug/src/winrtble/ble/device.rs": "99d9e3a0dd5cc991e4636bd686211384181e1a41",
+        "vendor/btleplug/src/connection_parameters_source.rs": "bf6f4324e3aaa1ea7534de18a6170639bdbb399f",
+        "crates/ubm-desktop/src/parameter_source.rs": "27f450f4afd072f752468ec8882cd5d34c6ea51a",
+        "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "vendor/btleplug/src/connection_parameters_source.rs": [
+          "callback_getter_failure_keeps_the_original_hresult_and_metadata",
+          "callback_success_is_the_getter_answer_and_nonplatform_failure_stays_explicit"
+        ],
+        "crates/ubm-desktop/src/parameter_source.rs": [
+          "replacement_and_retirement_reject_queued_callbacks_from_the_old_source",
+          "live_source_capacity_is_reclaimed_without_retaining_retirement_history",
+          "actual_callback_failure_and_source_close_are_explicit_radio_events",
+          "vendor_lag_discards_retained_pre_reconciliation_values_and_preserves_queued_failure"
+        ],
+        "__tests__/backends/desktop/parameter-watch-ordering.test.js": [
+          "a native getter failure during acquisition cancels the probe and promptly reports the source error",
+          "a failed native source refuses later watches until a fresh source observation recovers it",
+          "reports arriving during the initial probe replace its delayed answer and retain native order",
+          "initial probe failure closes the registered source and retains the refusal",
+          "disconnect during acquisition does not resurrect the watch or emit the stale probe",
+          "a malformed report during acquisition retains its own source failure",
+          "initial buffering overflow reports the source fault rather than a stale connection"
+        ]
+      }
+    },
+    {
+      "id": "R2-26",
+      "priority": "P2",
+      "required_outcome": "Implement available system/known peer directories independent of manager cache",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "crates/ubm-desktop/src/os/windows.rs",
+        "crates/ubm-desktop/src/os/linux.rs",
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+        "ios/UnifiedBleRustRadioAdapter.swift",
+        "src/backends/desktop/desktop-rust-core-provider.ts",
+        "src/ipc/public-manager.ts"
+      ],
+      "regression_suites": [
+        "__tests__/backends/desktop/desktop-peer-directory-provider.test.js",
+        "__tests__/backends/desktop/desktop-peer-directory.test.js",
+        "__tests__/public-peer-directory-admission.test.js"
+      ],
+      "verification_status": "Verified: native/public/mobile directory regressions and independent live foreign WinRT Node/Bun known/connected/resolve with owner still connected and zero owned resources.",
+      "historical_evidence": "Public/native/mobile directory and owner/refusal controls pass. Live foreign WinRT connected retrieval exposed a missing Known/reference round trip. The native Known-plus-Connected query and platform-specific capability correction are source-reviewed and locally checked; final Windows build/live round trip remains required.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "crates/ubm-desktop/src/os/windows.rs": "56b00d616c9d16a9e7840365d9a209ac0881d9bc",
+        "crates/ubm-desktop/src/os/linux.rs": "8be95179f3218aca3dc48720372f7adfb2854a3c",
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt": "eab08dcf103a36e5d80e1eefc631497fb9c7d601",
+        "ios/UnifiedBleRustRadioAdapter.swift": "d2a6b2096c7e9a6554a1f8c8e863d8dc424aac9f",
+        "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca",
+        "src/ipc/public-manager.ts": "50da03b29020fe14ba802b477cddcec084f6e66c"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/backends/desktop/desktop-peer-directory-provider.test.js": [
+          "directory lookup acquires no lease; explicit public owners share and release independently",
+          "resolve reaches the same native identity and late completion after destroy cannot publish"
+        ],
+        "__tests__/backends/desktop/desktop-peer-directory.test.js": [
+          "connected membership is reported without acquiring a connection or fabricating observations",
+          "resolve validates identity, preserves null, and never claims an owned connection",
+          "known resolves supplied references only; never fabricates a system-wide cache",
+          "sources and references filter real connected records without inventing matches",
+          "native failures retain their specific cause",
+          "abort while lookup is pending rejects the public wait and observes late native failure",
+          "lookup result cannot publish peer mappings after its owner is invalidated",
+          "resolve refuses a different identity instead of silently rebinding a saved reference",
+          "query filter is canonical, unique and disjunctive; provider receives every requested service",
+          "known refuses a generation change between sequential resolutions",
+          "a native known inventory cannot publish after the backend generation changes"
+        ],
+        "__tests__/public-peer-directory-admission.test.js": [
+          "expired pre-dispatch deadline never calls the backend",
+          "late success cannot win while the deadline timer is suspended",
+          "pre-abort rejects before any backend call",
+          "timely result preserves the one normalized deadline",
+          "native failure identity is not replaced by a budget error",
+          "synchronous backend abort still observes the subsequently rejected query",
+          "synchronous native throw preserves the original error identity",
+          "an absent directory retains its explicit unsupported policy",
+          "numeric UUID widths use the canonical input converter",
+          "backend query arrays and reference values are independent snapshots"
+        ]
+      },
+      "supplemental_live_receipts": [
+        "windows-final-foreign-holder-f0d0a3e8.log",
+        "windows-final-foreign-directory-f0d0a3e8.log"
+      ],
+      "supplemental_live_result": "Actual Node/Bun independent foreign WinRT Known/Connected/reference round trip passed without terminating the foreign link; inventory implementation unchanged in follow-up."
+    },
+    {
+      "id": "R2-27",
+      "priority": "P2",
+      "required_outcome": "Implement eligible BlueZ acquired FD transports with owned lifetime and backpressure",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "crates/ubm-desktop/src/central_acquired.rs",
+        "crates/ubm-desktop/src/acquired_gatt/linux.rs",
+        "crates/ubm-desktop/src/os/bluez_acquired.rs",
+        "src/backends/desktop/desktop-rust-core-provider.ts",
+        "src/ipc/public-manager.ts",
+        "native/tauri/src/acquired_gatt.rs"
+      ],
+      "regression_suites": [
+        "__tests__/backends/desktop/desktop-public-acquired-gatt.test.js",
+        "crates/ubm-desktop/src/os/bluez_acquired_tests.rs",
+        "retained final-evidence/acquired-mtu-backpressure-qualification.cjs (pending retention commit)"
+      ],
+      "verification_status": "Verified: actual Node/Bun installed-daemon acquired write/notify, conflicts, abort, HUP/link loss, reconnect and fresh generation; native synthetic MTU change/backpressure/close controls remain separately labeled.",
+      "historical_evidence": "Owned public/provider/NAPI/IPC, socket/backpressure/cancel/HUP and daemon-interest controls pass. Actual installed-daemon Node/Bun write/notify routes pass with native MTU, bytes, conflicts and zero counters. Remaining live HUP/reconnect/lifetime scenarios and final combined gate are outstanding; simulated RF peripheral is not a physical H10 receipt.",
+      "current_receipts": [
+        "bluez-live-acquired-native-link-loss-f0d0a3e8.log",
+        "bluez-live-acquired-native-link-loss-bun-f0d0a3e8.log",
+        "acquired-mtu-backpressure-node-f0d0a3e8-confirmed-close-contract.log",
+        "acquired-mtu-backpressure-bun-f0d0a3e8.log"
+      ],
+      "previous_findings": [],
+      "implementation_blobs": {
+        "crates/ubm-desktop/src/central_acquired.rs": "29e2947ba0622de1d76dd01ccb96e69f7de1a895",
+        "crates/ubm-desktop/src/acquired_gatt/linux.rs": "39a9af72238df3729d5952b2bbeb1fa99c2d4cc1",
+        "crates/ubm-desktop/src/os/bluez_acquired.rs": "866baae2f8a2e60d0ffede015bee05fc80c9d8e9",
+        "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca",
+        "src/ipc/public-manager.ts": "50da03b29020fe14ba802b477cddcec084f6e66c",
+        "native/tauri/src/acquired_gatt.rs": "482a74e777f62eace717574e235a8a6e32d2f8a7"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/backends/desktop/desktop-public-acquired-gatt.test.js": [
+          "owned acquired write reports actual MTU, copies before waiting and releases after close",
+          "acquired notification source delivers bytes and HUP fails the owned stream",
+          "optional absence, acquisition conflicts and cancelled backpressure never fall back to ordinary writes",
+          "acquired notifications and ordinary subscriptions refuse conflicting ownership in either order",
+          "connection release closes acquired descendants and a changed database rejects old transports",
+          "releasing one public connection closes its acquired children while a shared connection remains usable"
+        ],
+        "crates/ubm-desktop/src/os/bluez_acquired_tests.rs": [
+          "private_bus_acquired_fd_owns_a_dedicated_sender_and_closes_both",
+          "private_bus_cancelled_acquisition_retires_its_pending_sender",
+          "private_bus_absent_method_and_ineligible_flags_are_explicit_without_fallback",
+          "private_bus_invalid_mtu_retires_the_fd_and_dedicated_sender",
+          "private_bus_daemon_replacement_cannot_publish_the_old_owners_deferred_fd",
+          "private_bus_daemon_absence_cannot_publish_a_deferred_fd"
+        ]
+      },
+      "supplemental_live_receipts": [
+        "bluez-live-acquired-native-link-loss-f0d0a3e8.log",
+        "bluez-live-acquired-native-link-loss-bun-f0d0a3e8.log"
+      ],
+      "supplemental_live_result": "Actual native acquired-FD HUP/source error, reconnect with fresh acquisition and zero cleanup pass under Node/Bun on USB radios and simulated peripheral. MTU-change/backpressure/abort/close controls explicitly use synthetic native transport."
+    },
+    {
+      "id": "R2-28",
+      "priority": "P2",
+      "required_outcome": "Implement Android SDK 36.1 subrate with runtime authorization",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+        "crates/ubm-mobile/src/session.rs",
+        "src/backends/reactnative/react-native-rust-core-manager.ts"
+      ],
+      "regression_suites": [
+        "__tests__/backends/reactnative/rust-core-subrate.test.js",
+        "android/src/test/java/com/sfourdrinier/unifiedblemanager/radio/AndroidSubrateApiTest.kt"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "SDK minor-version/public-signature admission, four presets, authorization/native status, cancellation and supported TCK invocation controls pass in Android protocol/mobile/package gates. Final-head replay pending; SDK 36.1 physical negotiation remains a separate unverified evidence level.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt": "eab08dcf103a36e5d80e1eefc631497fb9c7d601",
+        "crates/ubm-mobile/src/session.rs": "65a624fee9ac45c6a830adac7f755d107e70b669",
+        "src/backends/reactnative/react-native-rust-core-manager.ts": "4da1b36244748ebd35a76cde7d31d55caf6e2661"
+      },
+      "remaining_limits": "SDK 36.0/36.1 native fixture admission, authorization, refusal and lifetime verified; physical SDK 36.1 negotiation not established and not inferred.",
+      "regression_names": {
+        "__tests__/backends/reactnative/rust-core-subrate.test.js": [
+          "the public subrate route uses the native runtime probe and requests every allowed preset"
+        ],
+        "android/src/test/java/com/sfourdrinier/unifiedblemanager/radio/AndroidSubrateApiTest.kt": [
+          "probeRequiresTheMinorVersionAndThePublicIntSignature",
+          "allPresetsReturnTheNativeStatusAndUnwrapPermissionFailure"
+        ]
+      }
+    },
+    {
+      "id": "R2-29",
+      "priority": "P2",
+      "required_outcome": "Implement Android encryption event/snapshot observations without invented authentication",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+        "crates/ubm-mobile/src/session.rs",
+        "src/backends/reactnative/react-native-rust-core-provider.ts"
+      ],
+      "regression_suites": [
+        "__tests__/backends/reactnative/rust-core-encryption.test.js",
+        "android/src/test/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidEncryptionTest.kt"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "API 36 events, 36.1 nullable snapshots, native algorithm mapping, delayed broadcast versus replacement generation and original source failure controls pass in 48-suite/473-test Android protocol and full package gates. Final-head replay pending; no authentication/SC facts or physical qualification inferred.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt": "eab08dcf103a36e5d80e1eefc631497fb9c7d601",
+        "crates/ubm-mobile/src/session.rs": "65a624fee9ac45c6a830adac7f755d107e70b669",
+        "src/backends/reactnative/react-native-rust-core-provider.ts": "d50471771231137cb8ce6e43a0c9b69cf05f71d9"
+      },
+      "remaining_limits": "API 35/36/36.1 event/snapshot native controls verified; no physical mobile encryption qualification inferred.",
+      "regression_names": {
+        "__tests__/backends/reactnative/rust-core-encryption.test.js": [
+          "an encryption event wins over an older delayed opening snapshot without inventing authentication"
+        ],
+        "android/src/test/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidEncryptionTest.kt": [
+          "api35DoesNotInventEncryptionAndApi36EventsNeedNoBondTransition",
+          "addressGetterPermissionFailureRemainsAnExplicitUnattributedSourceFailure",
+          "linkLossAndOldGattCallbacksCannotRenewEncryptionInTheNewGeneration",
+          "delayedPeerBroadcastCannotBecomeAReplacementLinksSnapshot",
+          "failedReceiverCleanupKeepsRetryDebtButRetiresCallbacksImmediately"
+        ]
+      }
+    },
+    {
+      "id": "R2-30",
+      "priority": "P2",
+      "required_outcome": "Implement available Android batching/PHY scan options and batch intake",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/rustcore/RustRadioHostAdapter.kt"
+      ],
+      "regression_suites": [
+        "__tests__/native-protocol/AndroidScanPlatformOptions.test.js",
+        "android/src/test/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidScanBatchTest.kt"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Native batch callback, report-delay/PHY forwarding, host/hardware restrictions and JNI/UniFFI/wire routes pass in Android/mobile/package gates. Final-head replay pending; hardware batching is not established by fixtures.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt": "eab08dcf103a36e5d80e1eefc631497fb9c7d601",
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/rustcore/RustRadioHostAdapter.kt": "c7380591a517fc5ed853bdd3d7f617338ec8d560"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/native-protocol/AndroidScanPlatformOptions.test.js": [
+          "encodes android low-power scan mode instead of the hardcoded low-latency default",
+          "fails closed when android platform options include fields the native record cannot encode",
+          "encodes the opportunistic scan mode as -1 for the ABI-6 native radio",
+          "fails closed on match-lost callback type instead of encoding it",
+          "maps the versioned -1 scan mode to SCAN_MODE_OPPORTUNISTIC",
+          "rejects legacyScan=false before any scan state changes on pre-26 devices"
+        ],
+        "android/src/test/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidScanBatchTest.kt": [
+          "nativeBatchOwnsEveryPayloadAndRejectsLateCallbacksAfterStop",
+          "synchronousStartupBatchBelongsToTheAdmittedScan",
+          "api26NonlegacyScanForwardsCodedPhyAndBatchDelayToTheNativeBuilder",
+          "api26NonlegacyScanForwardsAllSupportedPhysWithoutInventingASelectedPhy"
+        ]
+      }
+    },
+    {
+      "id": "R2-31",
+      "priority": "P2",
+      "required_outcome": "Implement available Windows scan mode and extended advertisement options",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "vendor/btleplug/src/winrtble/ble/watcher.rs",
+        "src/backends/desktop/desktop-rust-core-provider.ts"
+      ],
+      "regression_suites": [
+        "__tests__/backends/desktop/desktop-public-winrt-scan-options.test.js",
+        "__tests__/ipc/windows-scan-options.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Typed mode/extended advertisement route, runtime/default-adapter admission, payload and cleanup controls pass in native/package gates; joined Windows public route passes at 345833ce. Final-head Windows execution pending.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "vendor/btleplug/src/winrtble/ble/watcher.rs": "02903a1ea02bed3466191fa474ab4e9b26c3566f",
+        "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/backends/desktop/desktop-public-winrt-scan-options.test.js": [
+          "public Windows scan modes and extended opt-in reach the owned native scan"
+        ]
+      }
+    },
+    {
+      "id": "R2-32",
+      "priority": "P2",
+      "required_outcome": "Qualify the actual packed public desktop provider/native integration under Node/Bun on three OSes",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "scripts/ci/bun-packed-desktop-acceptance.js",
+        ".github/workflows/ci.yml"
+      ],
+      "regression_suites": [
+        "__tests__/PackedBunDesktopAcceptance.test.js",
+        "scripts/ci/bun-packed-desktop-acceptance.js"
+      ],
+      "verification_status": "Verified: same-head current PR packed lanes pass Node/Bun CJS/ESM actual public/provider/native controlled-radio integration on Linux, macOS and Windows. Source/packed/live scopes remain distinct; default-profile WinRT MIDI delay remains a live interoperability limitation.",
+      "historical_evidence": "Actual installed public host factory/default provider/sealed NAPI dispatch passes Node/Bun CJS/ESM on Linux, macOS and Windows at 345833ce, with cancellation/deadline/late completion, events, invalidation and zero cleanup counters. Native radio is explicitly synthetic; final-head same-source matrix pending.",
+      "previous_findings": [
+        "Q1"
+      ],
+      "implementation_blobs": {
+        "scripts/ci/bun-packed-desktop-acceptance.js": "6ee307c0bab2a5106891544512cbbb620ec62787",
+        ".github/workflows/ci.yml": "e1555fe661711ac70e48dcae15050533dc7a2613"
+      },
+      "remaining_limits": "Canonical integration uses explicitly injected synthetic native radio. Separate Windows Bun actual-radio discovery timed out and cleanup hung at f0; retirement correction is source-reviewed and Linux-portable regressions pass, but new Windows live replay remains pending.",
+      "regression_names": {
+        "__tests__/PackedBunDesktopAcceptance.test.js": [
+          "exports the six public manager scenario ids and does not pack on import",
+          "requires a sealed prebuild, both module formats, and a waker that fires",
+          "joins the installed public host factory to the identity-checked native provider",
+          "CI runs packed Node/Bun acceptance on all three desktop operating systems"
+        ]
+      }
+    },
+    {
+      "id": "R2-33",
+      "priority": "P3",
+      "required_outcome": "Scan planner reports native connectability accurately",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "src/backends/desktop/desktop-rust-core-provider.ts"
+      ],
+      "regression_suites": [
+        "__tests__/backends/winrt/winrt-scan-planner.test.js",
+        "__tests__/backends/desktop/desktop-rust-core-provider.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "WinRT planning connectability regression passes in the full package gate. Final-head replay pending.",
+      "previous_findings": [
+        "F16"
+      ],
+      "implementation_blobs": {
+        "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/backends/winrt/winrt-scan-planner.test.js": [
+          "advertises only observation fields supplied by the WinRT watcher",
+          "publishes the diagnostic planner through the backend scanner hook",
+          "projects only services required by every positive clause through the proven watcher filter",
+          "marks advertisement fields absent from WinRT unavailable while retaining every residual predicate",
+          "does not project unsafe service UUID shapes",
+          "returns a defensive diagnostic snapshot",
+          "keeps every canonical match in the WinRT native superset"
+        ],
+        "__tests__/backends/desktop/desktop-rust-core-provider.test.js": [
+          "WinRT scan planning includes the connectability reported by native observations",
+          "the provider retains an unavailable runtime parameter descriptor and its native reason",
+          "the guard defaults to the running process platform",
+          "the addon itself refuses a platform it does not drive (Rust-side check)",
+          "a missing packaged core fails loudly with the loader cause, never a fallback",
+          "native disconnect releases only its lease while a second native caller still owns the link",
+          "native GATT admission refuses an unowned caller lease despite a valid peer and selector",
+          "a without-response write reports commitState unknown, never confirmed (PR210-31)",
+          "descriptors read and write through the core",
+          "a without-response descriptor write fails with the legacy WinRT identity (W-R1)",
+          "CoreBluetooth serializes GATT verbs per connection (F6: fail-fast lifecycle.invalid-state)",
+          "the caller budget crosses as timeoutMs and the core owns the timeout outcome",
+          "no caller deadline sends no budget: the core liveness backstop applies (decision 2)",
+          "aborting an admitted read cancels exactly that core operation",
+          "requestCancellation on the dispatch reaches the core",
+          "an already-aborted signal refuses before any dispatch",
+          "scanner.plan pushes required service UUIDs to the core scan",
+          "name-prefix and manufacturer filters match in software instead of failing",
+          "a shared scan fans one core scan out to joined leases; the owner stop ends both",
+          "duplicate policy first delivers one sighting per peer (legacy BlueZ DuplicateData=false)",
+          "an OS link loss emits connection-lost for that connection and ends its streams",
+          "a GATT database change emits database-changed and ends subscriptions as service-changed",
+          "adapter power is read from the OS and its changes are watched",
+          "backend and adapter streams keep their legacy quotas (F10)",
+          "an unreadable adapter power reports unknown with the reason, never a guess",
+          "CoreBluetooth registers connection:rssi and reads it through the core",
+          "BlueZ keeps the priority/parameters registrations with their reasons",
+          "each OS adapter is listed; the selected label reaches the core open",
+          "an adapter id does not change when another adapter is added or removed, or the default moves",
+          "CoreBluetooth request-mtu and phy stay unsupported with the legacy codes (effective-mtu is limited: finding 217 follow-up)",
+          "BlueZ pairing generation without a host controller is unsupported with the privilege explanation",
+          "require-indication on a notify-only characteristic fails before any dispatch",
+          "require-notification is forwarded and a contradictory radio report is refused",
+          "the wire form carries the core retryability and commit verbatim",
+          "a platform detail without a message keeps the core detail as its message",
+          "a malformed platform field is a transport fault, never a guessed identity",
+          "a failed shutdown release is reported, never flattened to released",
+          "destroy retires later operations loudly",
+          "every desktop platform carries a hard delivery requirement to the core",
+          "CoreBluetooth maximum write length: registration, connection dispatch, and the long-write feature",
+          "maximum write length is measured on the link before any discovery (LEGACY-AUDIT-1 #65)",
+          "an unmeasured write limit is capability.unavailable, never a guess",
+          "WinRT: any listed adapter is selectable and the deployment is reported (LEGACY-AUDIT-1 #68)",
+          "a malformed deployment in the listing is refused",
+          "adapter authorization is the OS answer (macOS, Windows); unknown elsewhere",
+          "advertisement solicited UUIDs and connectable cross when the radio reports them",
+          "BlueZ pairing generation: the host controller holds the generation for a directed pair and it is restored",
+          "an OS link loss ends a ready write-readiness watch",
+          "CoreBluetooth write-without-response readiness: the core probe, then OS reports for this connection",
+          "maximum-write-length rejects empty connection ids as invalid (F9), as legacy did",
+          "CoreBluetooth RSSI keeps its legacy integer-precision limits (F7)",
+          "readiness overflow keeps drop-oldest (F1), as the legacy watch did",
+          "readiness reprobes every 100 ms while unready (F2 safety net)",
+          "a readiness report arriving during the probe is replayed, never dropped (F3)",
+          "WinRT scan terminated by the OS ends every consumer, and a new scan starts",
+          "CoreBluetooth exposes no security backend (legacy had none either)",
+          "WinRT registers maintain-connection (the Windows adapter holds it per connection)",
+          "BlueZ address targeting: an out-of-band address connects without a scan",
+          "BlueZ advertisement address type is the OS answer",
+          "BlueZ address without a reported type remains opaque",
+          "BlueZ advertisement without UUIDs leaves serviceUuids absent, as legacy did",
+          "characteristic flags and access requirements come from the radio; unreported stays unknown",
+          "BlueZ preserves each sighting address type and never guesses a missing type",
+          "every row names its platforms and either how it works or what blocks it"
+        ]
+      }
+    },
+    {
+      "id": "R2-34",
+      "priority": "P2",
+      "required_outcome": "Forward native parameters through real and synthetic NAPI radios; test joined read/watch route",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "bindings/napi/src/dispatch.rs"
+      ],
+      "regression_suites": [
+        "__tests__/backends/desktop/desktop-dispatch-radio-forwarding.test.js",
+        "__tests__/backends/desktop/desktop-public-parameters.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Real/synthetic DispatchRadio forwarding and actual joined public parameter read/watch tests pass in package and three-OS packed Node/Bun jobs at 345833ce. Final-head same-source replay pending.",
+      "previous_findings": [
+        "F17"
+      ],
+      "implementation_blobs": {
+        "bindings/napi/src/dispatch.rs": "df0eec80c45df3f7d585bb269c679e53f06e52e7"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/backends/desktop/desktop-dispatch-radio-forwarding.test.js": [
+          "the trait scan sees the defaulted methods that were missed before"
+        ],
+        "__tests__/backends/desktop/desktop-public-parameters.test.js": [
+          "public parameter read and watch reach the inner NAPI radio"
+        ]
+      }
+    },
+    {
+      "id": "R2-35",
+      "priority": "P2",
+      "required_outcome": "Implement RN internal parameter methods and bridge shapes together",
+      "implementation_commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "implementation": [
+        "src/backends/reactnative/react-native-rust-core-manager.ts"
+      ],
+      "regression_suites": [
+        "__tests__/backends/reactnative/rust-core-bridge-shape.test.js",
+        "__tests__/backends/reactnative/r01-native-manager.test.js"
+      ],
+      "verification_status": "Verified by collected package/native/platform regression gates; final release-wide CI gate R2-01 remains open.",
+      "historical_evidence": "Android/Apple production RN factory methods, bridge-shape validation and guarded ordinary public behavior pass in the full package gate. Final-head replay pending.",
+      "previous_findings": [],
+      "implementation_blobs": {
+        "src/backends/reactnative/react-native-rust-core-manager.ts": "4da1b36244748ebd35a76cde7d31d55caf6e2661"
+      },
+      "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
+      "regression_names": {
+        "__tests__/backends/reactnative/rust-core-bridge-shape.test.js": [
+          "the guards reject a misshapen value instead of retyping it"
+        ],
+        "__tests__/backends/reactnative/r01-native-manager.test.js": [
+          "module boundary: no runtime lifecycle imports",
+          "manager parity + scan routing through the native session",
+          "connection + GATT routing with handle parity",
+          "lifecycle event projection + unimplemented surface fails closed"
+        ]
+      }
+    }
+  ],
+  "missing_paths": [],
+  "candidate_run": "https://github.com/sfourdrinier/unified-ble-manager/actions/runs/37677463693",
+  "ci_runs": [
+    "https://github.com/sfourdrinier/unified-ble-manager/actions/runs/37677460618",
+    "https://github.com/sfourdrinier/unified-ble-manager/actions/runs/37677452144"
+  ],
+  "source_head": "9916500f44a0789d25a83d9f1879e48456be8a70",
+  "combined_verification": {
+    "clean_linux_preflight": {
+      "source": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "status": "passed",
+      "package_suites": 430,
+      "package_tests": 5415,
+      "plugin_suites": 7,
+      "plugin_tests": 67,
+      "receipt": "preflight-linux-9916500f-final-rn-feedback.log",
+      "scope": "Linux reproducible package and Tauri jobs; --fast excludes Android and other OS jobs"
+    },
+    "canonical_candidate": {
+      "run": 37687349196,
+      "source": "0d5f4cb90f4f4c4963459b340ecb71e8f40f0ff2",
+      "status": "success",
+      "publication": false,
+      "sha256": "60050759afe7cbca2564ecaef83b8c497e5f2231b6c0858916dc6f8c7baaaef2",
+      "artifact_id": 11511569908,
+      "jobs": 18
+    },
+    "previous_canonical_candidate": {
+      "run": 37677463693,
+      "source": "f0d0a3e80d072c9d92e644f809d499e209e572cc",
+      "status": "success",
+      "sha256": "bafad3fc34adcaf804737506d0e1d06af6e28da8649a16274a4e855e5070e848"
+    },
+    "final_pr_ci": {
+      "run": 37690424440,
+      "head": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "js_lanes": "4 passed",
+      "packed_desktop_lanes": "3 passed (Node/Bun CJS/ESM actual public/provider/native synthetic route)",
+      "tauri_lanes": "3 passed",
+      "android_builds": "2 passed",
+      "rust_workspace": "3 failed: missing logging dev dependency and redundant iterator conversion; corrected in collected gate batch"
+    }
+  },
+  "additional_followup": {
+    "windows_discovery_retirement": {
+      "commit": "31789a84",
+      "source_review": "complete",
+      "portable_actual_registry_regressions": "pass in clean Linux combined gate",
+      "windows_native_compilation": "passed in current owning candidate workflow",
+      "live_replay": "Bun CJS actual default WinRT factory/native parameters, three presets, 14 services, battery read, heart-rate notify, directory and zero cleanup passed against sealed canonical 0d5f4cb9; no pending fault branch was entered. Node CJS and ESM full public matrix pass. Bun ESM full-success case fails during discovery; cleanup returns structured discovery-retirement-pending without hanging. Explicit pending/loss/retry qualification is in progress.",
+      "remaining_primary_failure": "Underlying delayed native descriptor materialization is not claimed fixed.",
+      "pending_fault_receipt": "The Bun ESM native deadline and two prompt structured pending-retirement refusals were observed. The controlled Disconnect precondition was false because the exact peripheral was already disconnected. The coordinator missed its marker deadline; natural-completion/retry/zero cleanup was NOT verified in that failed attempt."
+    },
+    "ipc_control_identity_and_renderer_receipt_clock": "included in source reread and combined package gate",
+    "rn_readiness_opening_and_identity": {
+      "commit": "9916500f44a0789d25a83d9f1879e48456be8a70",
+      "verification": "lint/typecheck; 430 package suites / 5,415 tests; owning prepack; clean Linux preflight all pass",
+      "source_review": "generation filtering, bounded latest opening state, probe-first ordering, source-loss retirement and branded native identities"
+    },
+    "held_pair_success": {
+      "result": "passed",
+      "receipt": "docs/review/rc21-round2/final-batch-evidence/bluez-live-pending-pair-success-before-lease-corrected-final.log",
+      "origin": "foreign-created before first UBM lease",
+      "cleanup": "explicit foreign owner disconnect; only new test bonds removed; existing user bond preserved"
+    },
+    "winrt_live_scope": "Node CJS/ESM and Bun CJS default 14-service profile pass. Bun ESM 13-service no-MIDI profile passes. Default MIDI-enabled Bun ESM metadata delay remains; pending cleanup returns structured refusal. Failed loss/retry coordinator retained.",
+    "final_collected_feedback": [
+      {
+        "thread": "PRRT_kwDOT5DnRc6qG3C0",
+        "correction": "Tauri re-subscribe at current broadcast tail before gap reconciliation under original control; retained pre-gap values discarded",
+        "regression": "opening_gap_discards_pre_probe_records_but_keeps_newer_events"
+      },
+      {
+        "thread": "PRRT_kwDOT5DnRc6qG3C6",
+        "correction": "IPC parameter/readiness finite nonnegative timestamp and positive safe integer ordinal guards",
+        "regression": "18 malformed metadata terminal and release scenarios in connection-cleanup.test.js"
+      }
+    ]
+  }
+}

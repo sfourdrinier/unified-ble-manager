@@ -1,8 +1,11 @@
 # rc.21 end-to-end source reread
 
-This is a source review record, not execution evidence or final closure.
-Baseline for the reread: `64fb01d9`, plus the owner-directed verification-freeze
-note. No build or test has run since that freeze.
+This is the chronological source review record. The completed runtime batch is
+`9916500f`; final gate corrections add only the portable test logging dependency
+and remove an iterator conversion in Windows directory collection. Both preserve
+runtime behavior. Current execution evidence and all 35 acceptance records are
+in [RC21_REMEDIATION.md](RC21_REMEDIATION.md) and its indexed closure ledger.
+Earlier freeze and pending statements below apply to their named historical heads.
 
 ## Paths reread
 
@@ -11,7 +14,7 @@ note. No build or test has run since that freeze.
   reservation/recovery/release validation, protected release transfer and
   independently retained ACK maintenance. Accepted admission participates in
   protection before commit; loss cleans early interests before the no-peer
-  return. Pending Pair success remains a required live scenario.
+  return. Live held Pair success subsequently passes; see the final evidence ledger.
 - R2-07–09 and R2-35: actual RN internal methods and provider dispatch, mobile
   wire write-when-ready, shared Rust FIFO admission and readiness wait, public
   IPC GATT helper forwarding. Input ownership precedes awaiting, and waiting
@@ -131,3 +134,10 @@ and abort opening, so retained state cannot publish afterward. The native FIFO
 write route is unchanged. Collected local verification passes lint/typecheck, all
 430 package suites / 5,415 tests, and owning prepack with generated documentation
 and package-artifact checks. Clean preflight and final PR CI remain required.
+
+The final automated follow-up reread verifies both Tauri opening gap branches:
+receiver re-subscription precedes the bounded fresh probe, so retained pre-gap
+records cannot supersede it; post-boundary records remain available. IPC parameter
+and readiness guards both require finite nonnegative timestamps and positive
+safe-integer ordinals before bounded-stream admission and owned terminal cleanup.
+The new broadcast-gap and 18 malformed-metadata regressions precede implementation.

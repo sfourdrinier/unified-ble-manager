@@ -75,6 +75,8 @@ objc2 = { version = "0.5.2", optional = true }
 objc2-core-bluetooth = { version = "0.2.2", default-features = false, features = ["std", "CBManager"], optional = true }
 
 [dev-dependencies]
+# The portable controls compile the production operation registry and its logging.
+log = "0.4"
 futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
 

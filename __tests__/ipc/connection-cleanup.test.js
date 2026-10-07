@@ -82,6 +82,7 @@ function transportError(operation) {
 async function createConnectedIpc(behavior) {
   const commands = []
   const bootstrap = bootstrapRecord()
+  let eventListener
   const transport = {
     invoke: async request => {
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap }
@@ -164,7 +165,8 @@ async function createConnectedIpc(behavior) {
       }
       return { kind: 'route', payload: { state: 'released', failures: [] } }
     },
-    subscribe() {
+    subscribe(listener) {
+      eventListener = listener
       return () => undefined
     },
     acknowledge: async () => ({ kind: 'event.ack' })
@@ -176,7 +178,19 @@ async function createConnectedIpc(behavior) {
     await new Promise(resolve => setImmediate(resolve))
   }
   expect(commands).toContain('connection.events.ready')
-  return { ipc, connection, commands }
+  return {
+    ipc,
+    connection,
+    commands,
+    emit(streamId, value) {
+      eventListener({
+        rendererLease: bootstrap.rendererLease,
+        eventId: `metadata-${streamId}`,
+        streamId,
+        item: { kind: 'value', value }
+      })
+    }
+  }
 }
 
 test.each([
@@ -896,5 +910,58 @@ describe('IPC connection cleanup independence', () => {
     })
     await connection.release()
     await expect(ipc.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+})
+
+describe.each([
+  [
+    'parameterEvents',
+    'parametersSubscribe',
+    'parameterEventsHandle',
+    { intervalUs: 30000, latency: 0, supervisionTimeoutUs: 4000000 }
+  ],
+  ['writeReadiness', 'readinessSubscribe', 'writeReadinessHandle', { ready: true }]
+])('%s private control metadata', (method, subscribeHook, handleField, measurement) => {
+  test.each([
+    ['timestamp NaN', 'observedAtMonotonicMs', NaN],
+    ['timestamp infinity', 'observedAtMonotonicMs', Infinity],
+    ['timestamp negative', 'observedAtMonotonicMs', -1],
+    ['ordinal NaN', 'ordinal', NaN],
+    ['ordinal infinity', 'ordinal', Infinity],
+    ['ordinal negative', 'ordinal', -1],
+    ['ordinal zero', 'ordinal', 0],
+    ['ordinal fractional', 'ordinal', 1.5],
+    ['ordinal unsafe', 'ordinal', Number.MAX_SAFE_INTEGER + 1]
+  ])('terminalizes %s and releases the admitted host watch', async (_label, field, value) => {
+    let streamId
+    const fixture = await createConnectedIpc({
+      [subscribeHook]: payload => {
+        streamId = payload[handleField]
+        return { kind: 'route', payload: { handle: streamId } }
+      }
+    })
+    try {
+      const watch = await fixture.connection[method]()
+      fixture.emit(streamId, {
+        connectionId: 'connection-id-1',
+        connectionGeneration: 'generation-1',
+        ...measurement,
+        observedAtMonotonicMs: 0,
+        ordinal: 1,
+        [field]: value
+      })
+      const result = await watch.events[Symbol.asyncIterator]().next()
+      expect(result.value).toMatchObject({
+        kind: 'terminal',
+        reason: 'source-failed',
+        error: { code: 'protocol.malformed' }
+      })
+      await watch.close()
+      expect(fixture.commands).toContain(
+        method === 'parameterEvents' ? 'connection.parameters.unsubscribe' : 'connection.write-readiness.unsubscribe'
+      )
+    } finally {
+      await fixture.ipc.destroy()
+    }
   })
 })
