@@ -1,0 +1,7 @@
+{"guestPid": 980}
+
+added 2 packages in 2m
+{"phase":"fresh-final-canonical-install","version":"5.0.0-rc.21","node":"v24.19.0"}
+{"phase":"canonical-sha256","priorFixtureFailure":"PowerShell treated successful npm notice on stderr as terminating; install completed before that notice","sha256":"bafad3fc34adcaf804737506d0e1d06af6e28da8649a16274a4e855e5070e848","source":"f0d0a3e8","reinstallation":false}
+
+{"exitcode": 0, "outTruncated": false, "errTruncated": false}

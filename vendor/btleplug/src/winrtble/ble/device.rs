@@ -13,9 +13,9 @@
 
 use crate::active_operations::{NativeOperation, OperationPool, RetirementError};
 use crate::{
-    Error, Result,
     api::BDAddr,
     winrtble::{gatt_model, utils},
+    Error, Result,
 };
 use log::{debug, trace};
 use windows::core::RuntimeType;
@@ -105,8 +105,8 @@ pub fn connection_parameters_api_present() -> Result<bool> {
 }
 
 pub fn preferred_parameters_api_present() -> Result<bool> {
-    use windows::Foundation::Metadata::ApiInformation;
     use windows::core::HSTRING;
+    use windows::Foundation::Metadata::ApiInformation;
     let device = HSTRING::from("Windows.Devices.Bluetooth.BluetoothLEDevice");
     let presets =
         HSTRING::from("Windows.Devices.Bluetooth.BluetoothLEPreferredConnectionParameters");
@@ -163,7 +163,14 @@ impl BLEDevice {
         stage: &'static str,
     ) -> Result<T> {
         let control = DiscoveryOperation(std::sync::Arc::new(operation.clone()));
-        let guard = self.discovery_operations.admit(control.clone(), stage);
+        // IAsyncOperation::Cancel can report Canceled while WinRT still
+        // initializes GATT characteristics (including its descriptor reads).
+        // Closing the service then blocks on that initialization's lock. The
+        // caller may stop waiting, but the exact hot query remains owned until
+        // its natural terminal state; cleanup refuses promptly while pending.
+        let guard = self
+            .discovery_operations
+            .admit(control.clone(), false, stage);
         let result = operation.await.map_err(Error::from);
         match &result {
             Ok(_) => guard.complete(),
@@ -186,8 +193,10 @@ impl BLEDevice {
     }
 
     /// Do not close GATT services while an interrupted native query still owns
-    /// them. Cancellation is a request; cleanup refuses with retained ownership
-    /// until WinRT reports a terminal state, permitting the same owner to retry.
+    /// them. Public cancellation stops waiting without calling WinRT Cancel,
+    /// whose Canceled status does not establish internal GATT quiescence.
+    /// Cleanup refuses with retained ownership until the original query finishes,
+    /// permitting the same owner to retry.
     pub fn retire_discovery_operations(&self) -> Result<()> {
         self.discovery_operations.retire().map_err(|failures| {
             let mut errors = failures.into_iter().map(|(stage, failure)| match failure {
@@ -427,10 +436,12 @@ impl BLEDevice {
     /// `GetDescriptors` operation. Success returns the list Windows
     /// returned, which is empty only when the peer listed none. Any other
     /// status is a platform error carrying the ATT byte when the result
-    /// had one. Dropping this future cancels the WinRT operation, so a
-    /// discovery deadline does not leave the query running into the next
-    /// connection. This does not pair and does not read descriptor values.
-    /// Subscribe still writes the CCCD through `GattCharacteristic`.
+    /// had one. A discovery deadline stops waiting while retaining the exact
+    /// native query. Pending work prevents service close or a replacement
+    /// discovery until natural completion. The library does not initiate pairing
+    /// or explicitly read descriptor values; Windows may read descriptor metadata
+    /// while materializing characteristics. Subscribe still writes the CCCD
+    /// through `GattCharacteristic`.
     pub async fn get_characteristic_descriptors(
         &self,
         characteristic: &GattCharacteristic,

@@ -571,3 +571,37 @@ reconciliation with child tickets inside the original caller budget/cancellation
 scope. The added regression's lazy-future setup deadlock was corrected by polling
 both branches under one bounded timeout. This change is unexecuted; no per-fix
 build or test was run. It is included in the upcoming combined verification.
+
+## f0d0a3e8 combined verification and reopened Windows retirement
+
+The frozen candidate workflow [37677463693](https://github.com/sfourdrinier/unified-ble-manager/actions/runs/37677463693)
+completed successfully, including all five desktop prebuilds, the Apple native
+artifact, classic RN and Expo Android source builds, assembly of one sealed
+tarball, fresh consumers, source regressions, linked Tauri and negative desktop
+acceptance. The canonical tarball SHA-256 is
+`bafad3fc34adcaf804737506d0e1d06af6e28da8649a16274a4e855e5070e848`.
+This establishes the workflow levels; it does not close a failing live scenario.
+
+The actual Windows VM public route passed under Node CJS and ESM. Independent
+foreign-owned connected inventory, known inventory and reference resolution
+also passed under both Node and Bun, preserving the foreign link with zero UBM
+resources. Linux public Node/Bun acquired-FD native link loss, HUP terminal,
+reconnect and fresh-generation acquisition passed using the already-built f0
+native addon. Explicit synthetic-native MTU changes, backpressure cancellation
+and close wakeup passed separately, with their actual evidence level retained.
+
+Live Windows Bun discovery still timed out, then disconnect hung in native
+`GattDeviceService.CloseServiceResources`. A same-package Node control passed
+immediately afterward. Native stacks showed a concurrent characteristic
+initialization waiting on a user-description read; the Bluetooth trace recorded
+that descriptor read much later. A controlled explicit-MTA Bun comparison also
+failed, so COM initialization is not an established cause or proposed fix.
+
+The follow-up source batch retains interrupted discovery operations without
+calling WinRT `Cancel`: its terminal `Canceled` status was not sufficient to
+establish that the service's internal initialization had stopped. Cleanup now
+keeps the exact query owner and refuses while its original native work is
+pending, allowing retry after natural completion. Regression coverage was
+written before changing the Windows caller. No follow-up build or test has run;
+the affected source path must be reread before the collected verification batch.
+The live Bun scenario and successful Linux Pair receipt remain outstanding.

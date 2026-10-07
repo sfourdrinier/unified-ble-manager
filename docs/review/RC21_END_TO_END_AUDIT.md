@@ -97,3 +97,23 @@ The stopped preflight is not a pass. After all fixes/docs are collected and
 source reread is complete, run one combined owning build/gate pass and the
 remaining affected Linux/Windows live scenarios. Preserve failed attempts and
 hardware/OS limitations, and integrate into existing PR #251 only.
+
+## Follow-up after the f0d0a3e8 combined gate
+
+The canonical candidate workflow passed, but live Windows Bun discovery and
+cleanup failed. This reopens the discovery-retirement path; the earlier source
+reread is not a verification receipt for it. The follow-up retains the exact
+native query without calling WinRT Cancel, whose Canceled status did not prove
+that characteristic initialization had released its service lock. Public abort
+or deadline still ends the caller's wait. Pending native work refuses explicit
+disconnect, rediscovery and replacement before any service close; natural
+completion permits retry. The new regression covers repeated pending cleanup
+and subsequent completion. The follow-up reread follows admission before native await, interrupted-guard
+retention, repeated retirement checks, the pre-close barriers in disconnect,
+rediscovery and replacement, structured Windows cleanup classification, and
+central retained cleanup debt. All four native discovery kinds share this
+policy. The original public budget remains unchanged. The portable test imports
+the actual registry on every desktop host rather than a separate implementation.
+Verification and live replay remain pending; this correction addresses premature
+close and does not claim to repair the underlying Windows descriptor delay.
+No complete-closure claim is made.

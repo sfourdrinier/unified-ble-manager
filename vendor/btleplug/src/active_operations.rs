@@ -1,5 +1,7 @@
 //! Interrupted native queries remain owned until the native operation is terminal.
 //! Cancellation requests retirement; they do not prove that service objects can close.
+//! Queries whose native cancellation is not quiescent retain their original operation
+//! without cancellation and refuse close until natural completion.
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -22,6 +24,7 @@ struct Entry<T: NativeOperation> {
     operation: T,
     stage: &'static str,
     failure: Option<T::Error>,
+    cancel_on_retirement: bool,
 }
 
 struct PoolInner<T: NativeOperation> {
@@ -44,7 +47,14 @@ impl<T: NativeOperation> Default for OperationPool<T> {
     }
 }
 impl<T: NativeOperation> OperationPool<T> {
-    pub(crate) fn admit(&self, operation: T, stage: &'static str) -> OperationGuard<T> {
+    /// `cancel_on_retirement` is false when native Cancel can publish a terminal
+    /// status before the operation releases resources needed by service close.
+    pub(crate) fn admit(
+        &self,
+        operation: T,
+        cancel_on_retirement: bool,
+        stage: &'static str,
+    ) -> OperationGuard<T> {
         let id = self.0.next.fetch_add(1, Ordering::Relaxed);
         self.0
             .entries
@@ -56,6 +66,7 @@ impl<T: NativeOperation> OperationPool<T> {
                     operation: operation.clone(),
                     stage,
                     failure: None,
+                    cancel_on_retirement,
                 },
             );
         OperationGuard {
@@ -63,6 +74,7 @@ impl<T: NativeOperation> OperationPool<T> {
             id: Some(id),
             operation,
             stage,
+            cancel_on_retirement,
         }
     }
 
@@ -82,11 +94,12 @@ impl<T: NativeOperation> OperationPool<T> {
                     entry.operation.clone(),
                     entry.stage,
                     entry.failure.take(),
+                    entry.cancel_on_retirement,
                 )
             })
             .collect();
         let mut failures = Vec::new();
-        for (id, operation, stage, failure) in entries {
+        for (id, operation, stage, failure, cancel_on_retirement) in entries {
             if let Some(failure) = failure {
                 failures.push((stage, RetirementError::Native(failure)));
             }
@@ -99,8 +112,10 @@ impl<T: NativeOperation> OperationPool<T> {
                         .remove(&id);
                 }
                 Ok(true) => {
-                    if let Err(error) = operation.cancel() {
-                        failures.push((stage, RetirementError::Native(error)));
+                    if cancel_on_retirement {
+                        if let Err(error) = operation.cancel() {
+                            failures.push((stage, RetirementError::Native(error)));
+                        }
                     }
                     failures.push((stage, RetirementError::Pending));
                 }
@@ -120,6 +135,7 @@ pub(crate) struct OperationGuard<T: NativeOperation> {
     id: Option<u64>,
     operation: T,
     stage: &'static str,
+    cancel_on_retirement: bool,
 }
 impl<T: NativeOperation> OperationGuard<T> {
     pub(crate) fn complete(mut self) {
@@ -138,6 +154,9 @@ impl<T: NativeOperation> Drop for OperationGuard<T> {
         let Some(id) = self.id.take() else {
             return;
         };
+        if !self.cancel_on_retirement {
+            return;
+        }
         let Err(error) = self.operation.cancel() else {
             return;
         };
@@ -194,10 +213,31 @@ mod tests {
     }
 
     #[test]
+    fn non_quiescent_cancellation_does_not_authorize_service_close() {
+        let pool = OperationPool::default();
+        let operation = Operation::new();
+        // WinRT Cancel can mark an operation Canceled while its characteristic
+        // initialization still owns the service. Leave the hot query running,
+        // retaining its exact owner until natural completion instead.
+        drop(pool.admit(operation.clone(), false, "characteristics"));
+        assert_eq!(operation.cancellations.load(Ordering::SeqCst), 0);
+        for _ in 0..3 {
+            assert_eq!(
+                pool.retire(),
+                Err(vec![("characteristics", RetirementError::Pending)])
+            );
+        }
+        assert_eq!(operation.cancellations.load(Ordering::SeqCst), 0);
+        operation.pending.store(false, Ordering::SeqCst);
+        assert_eq!(pool.retire(), Ok(()));
+        assert_eq!(pool.retire(), Ok(()));
+    }
+
+    #[test]
     fn interrupted_query_requests_cancel_but_cannot_close_its_service_until_terminal() {
         let pool = OperationPool::default();
         let operation = Operation::new();
-        drop(pool.admit(operation.clone(), "characteristics"));
+        drop(pool.admit(operation.clone(), true, "characteristics"));
         assert_eq!(operation.cancellations.load(Ordering::SeqCst), 1);
         assert_eq!(
             pool.retire(),
@@ -213,8 +253,8 @@ mod tests {
         let pool = OperationPool::default();
         let successful = Operation::new();
         let pending = Operation::new();
-        let guard = pool.admit(successful.clone(), "services");
-        drop(pool.admit(pending.clone(), "included-services"));
+        let guard = pool.admit(successful.clone(), true, "services");
+        drop(pool.admit(pending.clone(), true, "included-services"));
         guard.complete();
         assert_eq!(successful.cancellations.load(Ordering::SeqCst), 0);
         assert_eq!(
@@ -230,7 +270,7 @@ mod tests {
         let pool = OperationPool::default();
         let operation = Operation::new();
         operation.refuse.store(true, Ordering::SeqCst);
-        drop(pool.admit(operation.clone(), "descriptors"));
+        drop(pool.admit(operation.clone(), true, "descriptors"));
         assert_eq!(
             pool.retire(),
             Err(vec![

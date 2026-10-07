@@ -291,6 +291,15 @@ ownership for supported rows.
 
 Cancellation: an aborted `AbortSignal` cancels exactly the in-flight core operation, through a ticket the host mints before the call. An abort before admission ends the operation with `operation.aborted` and no radio call. A caller deadline crosses to the core as a relative budget. Connection acquisition without a deadline is unbounded for both intents: it waits for the native result or cancellation; other operations retain their documented liveness backstops.
 
+On Windows, abort or expiry of discovery stops the public wait while retaining
+its exact native query. The library does not call WinRT `Cancel` for these
+queries: its `Canceled` status can precede completion of internal characteristic
+initialization. While that work remains pending, disconnect and replacement
+discovery report a cleanup refusal rather than closing its service. Ownership
+remains with the connection, and cleanup can be retried after native completion.
+Windows may read descriptor metadata while materializing characteristics; the
+library does not initiate pairing or explicitly read those descriptor values.
+
 Windows admits ordinary OS-managed with-response writes up to 512 bytes;
 commands use `GattSession.MaxPduSize` − 3. Linux uses the same 512-byte request
 bound and reported MTU − 3 for commands. When BlueZ withholds MTU, it admits
@@ -324,7 +333,7 @@ Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backend
   - `resetting` / `unsupported` states;
   - `merged` scans that reach the OS duplicate filter, and LE-only BlueZ scans;
   - repeated service, characteristic and descriptor UUIDs that keep their instances;
-  - uncached WinRT service, characteristic, and descriptor discovery. Descriptors use `GetDescriptorsWithCacheModeAsync(Uncached)`. Success returns the list Windows returned, including an empty list when the peer has none. Any other status is an error. Dropping the query cancels it. This path does not pair and does not read descriptor values. It has not been compiled on macOS and has not been run on a Windows radio;
+  - uncached WinRT service, characteristic, and descriptor discovery. Descriptors use `GetDescriptorsWithCacheModeAsync(Uncached)`. Success returns the list Windows returned, including an empty list when the peer has none. Any other status is an error. An interrupted wait retains its native query and prevents premature service close, as described above. The library does not initiate pairing or explicitly read descriptor values. The Windows native target and Node live route were verified on the Windows VM with a USB radio and simulated RF peripheral; the Bun live discovery/cleanup follow-up remains open. This is not a physical H10 receipt;
   - maximum write length without discovery;
   - WinRT selection of any listed adapter, with its `deployment`;
   - the 4.x backend and adapter ids;

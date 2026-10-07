@@ -1336,13 +1336,20 @@ this source batch is pending, and no Windows physical receipt is claimed.
 The actual Windows Bun reproduction times out native discovery, then blocks
 inside `GattDeviceService.Close` during disconnect. Discovery queries now share
 one operation owner: service, characteristic, inclusion and descriptor awaits
-request cancellation when interrupted and retain each exact native operation
-until its status is terminal. Cancel failures are retained and reported during
-cleanup; pending status refuses close and allows retry. Replacement discovery
+retain each exact hot native operation when its public await is interrupted.
+The f0d0a3e8 live rerun showed that calling WinRT `Cancel` can expose a terminal
+`Canceled` status while `CompleteGetCharacteristics` still initializes a
+characteristic's user description. Service close then blocks on its critical
+section. Discovery therefore stops the public wait without calling native
+`Cancel`; a pending original query refuses close and allows retry after natural
+completion. The portable retirement regression covers repeated cleanup attempts
+without premature cancellation or release. Replacement discovery
 and native device replacement pass through the same retirement barrier. Connect
 publishes its device owner before awaiting native service discovery so a deadline
 cannot discard its cleanup lifetime. Explicit disconnect checks the barrier before
 closing native services. Portable lifetime regressions precede these changes;
-combined target and actual Windows verification is pending. This does not claim
-that every Windows operation must accept cancellation or that a cancellation
-request proves completion.
+The f0d0a3e8 combined canonical candidate passed every workflow gate, but its
+live Bun discovery/cleanup failed, so final closure remains open. Node completes
+the same scenario, and independent foreign-directory retrieval and resolution
+pass under both Node and Bun. The follow-up batch and live replay are pending.
+No COM initialization cause or physical-peripheral qualification is inferred.

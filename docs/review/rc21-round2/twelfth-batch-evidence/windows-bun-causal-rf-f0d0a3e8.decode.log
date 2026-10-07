@@ -1,0 +1,1026 @@
+Bluetooth monitor ver 5.85
+= Note: Linux version 7.0.0-34-generic (x86_64)                        0.177138
+= Note: Bluetooth subsystem version 2.22                               0.177140
+= New Index: DC:56:7B:D9:E8:A4 (Primary,USB,hci1)               [hci1] 0.177140
+= Open Index: DC:56:7B:D9:E8:A4                                 [hci1] 0.177140
+= Index Info: DC:56:7B:D9:E8:A4 (Qualcomm)                      [hci1] 0.177141
+@ MGMT Open: btmgmt version 1.23                              {0x0004} 0.177142
+@ RAW Open: bluetoothd (privileged) version 2.22       {0x0003} [hci1] 0.177142
+@ MGMT Open: bluetoothd (privileged) version 1.23             {0x0001} 0.177142
+> HCI Event: Disconnect Complete (0x05) plen 4               #1 [hci1] 2.822787
+        Status: Success (0x00)
+        Handle: 1
+        Reason: Remote User Terminated Connection (0x13)
+@ MGMT Event: Device Disconnected (0x000c) plen 8      {0x0001} [hci1] 2.822812
+        LE Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Reason: Connection terminated by remote host (0x03)
+< HCI Command: LE Set Extended Adver.. (0x08|0x0039) plen 6  #2 [hci1] 2.848384
+        Extended advertising: Enabled (0x01)
+        Number of sets: 1 (0x01)
+        Entry 0
+          Handle: 0x01
+          Duration: 0 ms (0x00)
+          Max ext adv events: 0
+> HCI Event: Command Complete (0x0e) plen 4                  #3 [hci1] 2.853620
+      LE Set Extended Advertising Enable (0x08|0x0039) ncmd 1
+        Status: Success (0x00)
+> HCI Event: LE Meta Event (0x3e) plen 31                   #4 [hci1] 19.460326
+      LE Enhanced Connection Complete (0x0a)
+        Status: Success (0x00)
+        Handle: 2
+        Role: Peripheral (0x01)
+        Peer address type: Public (0x00)
+        Peer address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Local resolvable private address: 00:00:00:00:00:00 (Non-Resolvable)
+        Peer resolvable private address: 00:00:00:00:00:00 (Non-Resolvable)
+        Connection interval: 50.00 msec (0x0028)
+        Connection latency: 0 (0x0000)
+        Supervision timeout: 9600 msec (0x03c0)
+        Central clock accuracy: 0x00
+@ MGMT Event: Device Connected (0x000b) plen 13       {0x0001} [hci1] 19.460346
+        LE Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Flags: 0x00000000
+        Data length: 0
+< HCI Command: LE Read Remote Used... (0x08|0x0016) plen 2  #5 [hci1] 19.460413
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+> HCI Event: LE Meta Event (0x3e) plen 6                    #6 [hci1] 19.471330
+      LE Advertising Set Terminated (0x12)
+        Status: Success (0x00)
+        Handle: 1
+        Connection handle: 2
+        Number of completed extended advertising events: 0
+> HCI Event: LE Meta Event (0x3e) plen 4                    #7 [hci1] 19.472328
+      LE Channel Selection Algorithm (0x14)
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Algorithm: #2 (0x01)
+> HCI Event: Command Status (0x0f) plen 4                   #8 [hci1] 19.473362
+      LE Read Remote Used Features (0x08|0x0016) ncmd 1
+        Status: Success (0x00)
+> ACL Data RX: Handle 2 flags 0x02 dlen 7                   #9 [hci1] 19.474341
+      ATT: Exchange MTU Request (0x02) len 2
+        Client RX MTU: 527
+> HCI Event: LE Meta Event (0x3e) plen 12                  #10 [hci1] 20.223315
+      LE Read Remote Used Features (0x04)
+        Status: Success (0x00)
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Features[0/0][8]: bd7ffef71e000000
+          LE Encryption
+          Extended Reject Indication
+          Peripheral-initiated Features Exchange
+          LE Ping
+          LE Data Packet Length Extension
+          Extended Scanner Filter Policies
+          LE 2M PHY
+          Stable Modulation Index - Transmitter
+          Stable Modulation Index - Receiver
+          LE Coded PHY
+          LE Extended Advertising
+          LE Periodic Advertising
+          Channel Selection Algorithm #2
+          Connection CTE Request
+          Connection CTE Response
+          Connectionless CTE Transmitter
+          Connectionless CTE Receiver
+          Antenna Switching During CTE Transmission (AoD)
+          Antenna Switching During CTE Reception (AoA)
+          Receiving Constant Tone Extensions
+          Periodic Advertising Sync Transfer - Sender
+          Periodic Advertising Sync Transfer - Recipient
+          Sleep Clock Accuracy Updates
+          Connected Isochronous Stream - Central
+          Connected Isochronous Stream - Peripheral
+          Isochronous Broadcaster
+          Synchronized Receiver
+          LE Power Control Request
+          LE Power Control Request
+          LE Path Loss Monitoring
+          Periodic Advertising ADI support
+< ACL Data TX: Handle 2 flags 0x00 dlen 7                  #11 [hci1] 20.223543
+      ATT: Exchange MTU Response (0x03) len 2
+        Server RX MTU: 517
+> HCI Event: Number of Completed Packets (0x13) plen 5     #12 [hci1] 20.322312
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #11: len 7 (0 Kb/s)
+        Latency: 98 msec (98-98 msec ~98 msec)
+> HCI Event: LE Meta Event (0x3e) plen 11                  #13 [hci1] 20.373341
+      LE Data Length Change (0x07)
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Max TX octets: 251
+        Max TX time: 2120
+        Max RX octets: 251
+        Max RX time: 2120
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #14 [hci1] 20.374346
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0001-0xffff
+        Attribute type: Database Hash (0x2b2a)
+< ACL Data TX: Handle 2 flags 0x00 dlen 24                 #15 [hci1] 20.374432
+      ATT: Read By Type Response (0x09) len 19
+        Attribute data length: 18
+        Attribute data list: 1 entry
+        Handle: 0x000f
+        Value[16]: e2a5f9b56fbbb4097bbd49a5e1ba0933
+> HCI Event: Number of Completed Packets (0x13) plen 5     #16 [hci1] 20.472306
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #15: len 24 (1 Kb/s)
+        Latency: 97 msec (97-98 msec ~98 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 9                  #17 [hci1] 20.574346
+      ATT: Write Request (0x12) len 4
+        Handle: 0x000b
+          Data[2]: 0200
+< ACL Data TX: Handle 2 flags 0x00 dlen 5                  #18 [hci1] 20.574401
+      ATT: Write Response (0x13) len 0
+> HCI Event: Number of Completed Packets (0x13) plen 5     #19 [hci1] 20.673297
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #18: len 5 (0 Kb/s)
+        Latency: 98 msec (97-98 msec ~98 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 8                  #20 [hci1] 20.724336
+      ATT: Write Request (0x12) len 3
+        Handle: 0x000d
+          Data[1]: 01
+< ACL Data TX: Handle 2 flags 0x00 dlen 5                  #21 [hci1] 20.724387
+      ATT: Write Response (0x13) len 0
+> HCI Event: Number of Completed Packets (0x13) plen 5     #22 [hci1] 20.823295
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #21: len 5 (0 Kb/s)
+        Latency: 98 msec (97-98 msec ~98 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 7                  #23 [hci1] 20.874348
+      ATT: Read Request (0x0a) len 2
+        Handle: 0x0007
+< ACL Data TX: Handle 2 flags 0x00 dlen 6                  #24 [hci1] 20.874434
+      ATT: Read Response (0x0b) len 1
+        Value[1]: 00
+> HCI Event: Number of Completed Packets (0x13) plen 5     #25 [hci1] 20.973304
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #24: len 6 (0 Kb/s)
+        Latency: 98 msec (97-98 msec ~98 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 7                  #26 [hci1] 21.024336
+      ATT: Read Request (0x0a) len 2
+        Handle: 0x0005
+< ACL Data TX: Handle 2 flags 0x00 dlen 7                  #27 [hci1] 21.024413
+      ATT: Read Response (0x0b) len 2
+        Value[2]: 0401
+> HCI Event: Number of Completed Packets (0x13) plen 5     #28 [hci1] 21.123299
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #27: len 7 (0 Kb/s)
+        Latency: 98 msec (97-98 msec ~98 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 7                  #29 [hci1] 21.174345
+      ATT: Read Request (0x0a) len 2
+        Handle: 0x0003
+< ACL Data TX: Handle 2 flags 0x00 dlen 23                 #30 [hci1] 21.174426
+      ATT: Read Response (0x0b) len 18
+        Value[18]: 53494d20506f6c6172204831302030303031
+> HCI Event: Number of Completed Packets (0x13) plen 5     #31 [hci1] 21.273281
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #30: len 23 (1 Kb/s)
+        Latency: 98 msec (97-98 msec ~98 msec)
+> HCI Event: LE Meta Event (0x3e) plen 10                  #32 [hci1] 21.343287
+      LE Connection Update Complete (0x03)
+        Status: Success (0x00)
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Connection interval: 20.00 msec (0x0010)
+        Connection latency: 0 (0x0000)
+        Supervision timeout: 9600 msec (0x03c0)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #33 [hci1] 21.344346
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0001-0xffff
+        Attribute type: Database Hash (0x2b2a)
+< ACL Data TX: Handle 2 flags 0x00 dlen 24                 #34 [hci1] 21.344425
+      ATT: Read By Type Response (0x09) len 19
+        Attribute data length: 18
+        Attribute data list: 1 entry
+        Handle: 0x000f
+        Value[16]: e2a5f9b56fbbb4097bbd49a5e1ba0933
+> HCI Event: Number of Completed Packets (0x13) plen 5     #35 [hci1] 21.383277
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #34: len 24 (5 Kb/s)
+        Latency: 38 msec (38-98 msec ~68 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #36 [hci1] 21.404346
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x0001-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 48                 #37 [hci1] 21.404409
+      ATT: Read By Group Type Response (0x11) len 43
+        Attribute data length: 6
+        Attribute group list: 7 entries
+        Handle range: 0x0001-0x0007
+        UUID: Generic Access Profile (0x1800)
+        Handle range: 0x0008-0x0011
+        UUID: Generic Attribute Profile (0x1801)
+        Handle range: 0x0020-0x0023
+        UUID: Microphone Control (0x184d)
+        Handle range: 0x0040-0x004a
+        UUID: Volume Control (0x1844)
+        Handle range: 0x004b-0x0070
+        UUID: Generic Media Control (0x1849)
+        Handle range: 0x0071-0x0079
+        UUID: Broadcast Audio Scan (0x184f)
+        Handle range: 0x007a-0x008b
+        UUID: Unknown (0x185b)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #38 [hci1] 21.443277
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #37: len 48 (10 Kb/s)
+        Latency: 38 msec (38-98 msec ~53 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #39 [hci1] 21.464345
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x008c-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 26                 #40 [hci1] 21.464400
+      ATT: Read By Group Type Response (0x11) len 21
+        Attribute data length: 20
+        Attribute group list: 1 entry
+        Handle range: 0x008c-0x0090
+        UUID: Vendor specific (03b80e5a-ede8-4b33-a751-6ce34ec4c700)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #41 [hci1] 21.503274
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #40: len 26 (5 Kb/s)
+        Latency: 38 msec (38-98 msec ~46 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #42 [hci1] 21.524337
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x0091-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 24                 #43 [hci1] 21.524371
+      ATT: Read By Group Type Response (0x11) len 19
+        Attribute data length: 6
+        Attribute group list: 3 entries
+        Handle range: 0x0091-0x0096
+        UUID: Heart Rate (0x180d)
+        Handle range: 0x0097-0x00a5
+        UUID: Device Information (0x180a)
+        Handle range: 0x00a6-0x00ae
+        UUID: Polar Electro Oy  (0xfeee)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #44 [hci1] 21.563272
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #43: len 24 (5 Kb/s)
+        Latency: 38 msec (38-98 msec ~42 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #45 [hci1] 21.584339
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x00af-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 26                 #46 [hci1] 21.584370
+      ATT: Read By Group Type Response (0x11) len 21
+        Attribute data length: 20
+        Attribute group list: 1 entry
+        Handle range: 0x00af-0x00b4
+        UUID: Vendor specific (6217ff4b-fb31-1140-ad5a-a45545d7ecf3)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #47 [hci1] 21.643270
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #46: len 26 (3 Kb/s)
+        Latency: 58 msec (38-98 msec ~50 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #48 [hci1] 21.664338
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x00b5-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 12                 #49 [hci1] 21.664404
+      ATT: Read By Group Type Response (0x11) len 7
+        Attribute data length: 6
+        Attribute group list: 1 entry
+        Handle range: 0x00b5-0x00b8
+        UUID: Battery Service (0x180f)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #50 [hci1] 21.703271
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #49: len 12 (2 Kb/s)
+        Latency: 38 msec (38-98 msec ~44 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #51 [hci1] 21.724346
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x00b9-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 26                 #52 [hci1] 21.724393
+      ATT: Read By Group Type Response (0x11) len 21
+        Attribute data length: 20
+        Attribute group list: 1 entry
+        Handle range: 0x00b9-0x00bf
+        UUID: Vendor specific (fb005c80-02e7-f387-1cad-8acd2d8df0c8)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #53 [hci1] 21.763266
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #52: len 26 (5 Kb/s)
+        Latency: 38 msec (38-98 msec ~41 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #54 [hci1] 21.784345
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x00c0-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                  #55 [hci1] 21.784418
+      ATT: Error Response (0x01) len 4
+        Read By Group Type Request (0x10)
+        Handle: 0x00c0
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #56 [hci1] 21.823270
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #55: len 9 (1 Kb/s)
+        Latency: 38 msec (38-98 msec ~40 msec)
+> HCI Event: LE Meta Event (0x3e) plen 6                   #57 [hci1] 22.202261
+      LE PHY Update Complete (0x0c)
+        Status: Success (0x00)
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        TX PHY: LE 2M (0x02)
+        RX PHY: LE 2M (0x02)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #58 [hci1] 22.405342
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x0001-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 48                 #59 [hci1] 22.405451
+      ATT: Read By Group Type Response (0x11) len 43
+        Attribute data length: 6
+        Attribute group list: 7 entries
+        Handle range: 0x0001-0x0007
+        UUID: Generic Access Profile (0x1800)
+        Handle range: 0x0008-0x0011
+        UUID: Generic Attribute Profile (0x1801)
+        Handle range: 0x0020-0x0023
+        UUID: Microphone Control (0x184d)
+        Handle range: 0x0040-0x004a
+        UUID: Volume Control (0x1844)
+        Handle range: 0x004b-0x0070
+        UUID: Generic Media Control (0x1849)
+        Handle range: 0x0071-0x0079
+        UUID: Broadcast Audio Scan (0x184f)
+        Handle range: 0x007a-0x008b
+        UUID: Unknown (0x185b)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #60 [hci1] 22.443249
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #59: len 48 (10 Kb/s)
+        Latency: 37 msec (37-98 msec ~39 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #61 [hci1] 22.464345
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x008c-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 26                 #62 [hci1] 22.464383
+      ATT: Read By Group Type Response (0x11) len 21
+        Attribute data length: 20
+        Attribute group list: 1 entry
+        Handle range: 0x008c-0x0090
+        UUID: Vendor specific (03b80e5a-ede8-4b33-a751-6ce34ec4c700)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #63 [hci1] 22.503250
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #62: len 26 (5 Kb/s)
+        Latency: 38 msec (37-98 msec ~38 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #64 [hci1] 22.524338
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x0091-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 24                 #65 [hci1] 22.524411
+      ATT: Read By Group Type Response (0x11) len 19
+        Attribute data length: 6
+        Attribute group list: 3 entries
+        Handle range: 0x0091-0x0096
+        UUID: Heart Rate (0x180d)
+        Handle range: 0x0097-0x00a5
+        UUID: Device Information (0x180a)
+        Handle range: 0x00a6-0x00ae
+        UUID: Polar Electro Oy  (0xfeee)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #66 [hci1] 22.563244
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #65: len 24 (5 Kb/s)
+        Latency: 38 msec (37-98 msec ~38 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #67 [hci1] 22.584346
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x00af-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 26                 #68 [hci1] 22.584389
+      ATT: Read By Group Type Response (0x11) len 21
+        Attribute data length: 20
+        Attribute group list: 1 entry
+        Handle range: 0x00af-0x00b4
+        UUID: Vendor specific (6217ff4b-fb31-1140-ad5a-a45545d7ecf3)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #69 [hci1] 22.623244
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #68: len 26 (5 Kb/s)
+        Latency: 38 msec (37-98 msec ~38 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #70 [hci1] 22.644346
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x00b5-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 12                 #71 [hci1] 22.644390
+      ATT: Read By Group Type Response (0x11) len 7
+        Attribute data length: 6
+        Attribute group list: 1 entry
+        Handle range: 0x00b5-0x00b8
+        UUID: Battery Service (0x180f)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #72 [hci1] 22.683242
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #71: len 12 (2 Kb/s)
+        Latency: 38 msec (37-98 msec ~38 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #73 [hci1] 22.704346
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x00b9-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 26                 #74 [hci1] 22.704397
+      ATT: Read By Group Type Response (0x11) len 21
+        Attribute data length: 20
+        Attribute group list: 1 entry
+        Handle range: 0x00b9-0x00bf
+        UUID: Vendor specific (fb005c80-02e7-f387-1cad-8acd2d8df0c8)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #75 [hci1] 22.763241
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #74: len 26 (3 Kb/s)
+        Latency: 58 msec (37-98 msec ~48 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #76 [hci1] 22.784346
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x00c0-0xffff
+        Attribute group type: Primary Service (0x2800)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                  #77 [hci1] 22.784382
+      ATT: Error Response (0x01) len 4
+        Read By Group Type Request (0x10)
+        Handle: 0x00c0
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #78 [hci1] 22.823238
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #77: len 9 (1 Kb/s)
+        Latency: 38 msec (37-98 msec ~43 msec)
+> HCI Event: LE Meta Event (0x3e) plen 10                  #79 [hci1] 22.933245
+      LE Connection Update Complete (0x03)
+        Status: Success (0x00)
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Connection interval: 15.00 msec (0x000c)
+        Connection latency: 0 (0x0000)
+        Supervision timeout: 2000 msec (0x00c8)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #80 [hci1] 23.054347
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x00b9-0x00bf
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 48                 #81 [hci1] 23.054437
+      ATT: Read By Type Response (0x09) len 43
+        Attribute data length: 21
+        Attribute data list: 2 entries
+        Handle: 0x00ba
+        Value[19]: 10bb00c8f08d2dcd8aad1c87f3e702825c00fb
+            Properties: 0x10
+              Notify (0x10)
+            Value Handle: 0x00bb
+            Value UUID: Vendor specific (fb005c82-02e7-f387-1cad-8acd2d8df0c8)
+        Handle: 0x00bd
+        Value[19]: 2abe00c8f08d2dcd8aad1c87f3e702815c00fb
+            Properties: 0x2a
+              Read (0x02)
+              Write (0x08)
+              Indicate (0x20)
+            Value Handle: 0x00be
+            Value UUID: Vendor specific (fb005c81-02e7-f387-1cad-8acd2d8df0c8)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #82 [hci1] 23.083246
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #81: len 48 (13 Kb/s)
+        Latency: 28 msec (28-98 msec ~36 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #83 [hci1] 23.114336
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x00be-0x00bf
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                  #84 [hci1] 23.114387
+      ATT: Error Response (0x01) len 4
+        Read By Type Request (0x08)
+        Handle: 0x00be
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #85 [hci1] 23.143240
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #84: len 9 (2 Kb/s)
+        Latency: 28 msec (28-98 msec ~32 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 9                  #86 [hci1] 23.205338
+      ATT: Find Information Request (0x04) len 4
+        Handle range: 0x00bf-0x00bf
+< ACL Data TX: Handle 2 flags 0x00 dlen 10                 #87 [hci1] 23.205389
+      ATT: Find Information Response (0x05) len 5
+        Format: UUID-16 (0x01)
+        Handle: 0x00bf
+        UUID: Client Characteristic Configuration (0x2902)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #88 [hci1] 23.233227
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #87: len 10 (2 Kb/s)
+        Latency: 27 msec (27-98 msec ~30 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 9                  #89 [hci1] 23.250339
+      ATT: Find Information Request (0x04) len 4
+        Handle range: 0x00bc-0x00bc
+< ACL Data TX: Handle 2 flags 0x00 dlen 10                 #90 [hci1] 23.250376
+      ATT: Find Information Response (0x05) len 5
+        Format: UUID-16 (0x01)
+        Handle: 0x00bc
+        UUID: Client Characteristic Configuration (0x2902)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #91 [hci1] 23.278227
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #90: len 10 (2 Kb/s)
+        Latency: 27 msec (27-98 msec ~29 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #92 [hci1] 23.325338
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x00b9-0x00bf
+        Attribute type: Include (0x2802)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                  #93 [hci1] 23.325384
+      ATT: Error Response (0x01) len 4
+        Read By Type Request (0x08)
+        Handle: 0x00b9
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #94 [hci1] 23.353232
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #93: len 9 (2 Kb/s)
+        Latency: 27 msec (27-98 msec ~28 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #95 [hci1] 23.414339
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x00b5-0x00b8
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 13                 #96 [hci1] 23.414386
+      ATT: Read By Type Response (0x09) len 8
+        Attribute data length: 7
+        Attribute data list: 1 entry
+        Handle: 0x00b6
+        Value[5]: 12b700192a
+            Properties: 0x12
+              Read (0x02)
+              Notify (0x10)
+            Value Handle: 0x00b7
+            Value UUID: Battery Level (0x2a19)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #97 [hci1] 23.443221
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #96: len 13 (3 Kb/s)
+        Latency: 28 msec (27-98 msec ~28 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                 #98 [hci1] 23.474346
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x00b7-0x00b8
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                  #99 [hci1] 23.474389
+      ATT: Error Response (0x01) len 4
+        Read By Type Request (0x08)
+        Handle: 0x00b7
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #100 [hci1] 23.503220
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #99: len 9 (2 Kb/s)
+        Latency: 28 msec (27-98 msec ~28 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 9                 #101 [hci1] 23.549338
+      ATT: Find Information Request (0x04) len 4
+        Handle range: 0x00b8-0x00b8
+< ACL Data TX: Handle 2 flags 0x00 dlen 10                #102 [hci1] 23.549381
+      ATT: Find Information Response (0x05) len 5
+        Format: UUID-16 (0x01)
+        Handle: 0x00b8
+        UUID: Client Characteristic Configuration (0x2902)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #103 [hci1] 23.578229
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #102: len 10 (2 Kb/s)
+        Latency: 28 msec (27-98 msec ~28 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #104 [hci1] 23.609345
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x00b5-0x00b8
+        Attribute type: Include (0x2802)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                 #105 [hci1] 23.609390
+      ATT: Error Response (0x01) len 4
+        Read By Type Request (0x08)
+        Handle: 0x00b5
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #106 [hci1] 23.653219
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #105: len 9 (1 Kb/s)
+        Latency: 43 msec (27-98 msec ~36 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #107 [hci1] 23.714346
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x00af-0x00b4
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 48                #108 [hci1] 23.714397
+      ATT: Read By Type Response (0x09) len 43
+        Attribute data length: 21
+        Attribute data list: 2 entries
+        Handle: 0x00b0
+        Value[19]: 24b100f3a1a8bdd37c2a7ed091bb914dff1762
+            Properties: 0x24
+              Write Without Response (0x04)
+              Indicate (0x20)
+            Value Handle: 0x00b1
+            Value UUID: Vendor specific (6217ff4d-91bb-91d0-7e2a-7cd3bda8a1f3)
+        Handle: 0x00b3
+        Value[19]: 02b4002d8e7086d93a8013fbb1ecc84cff1762
+            Properties: 0x02
+              Read (0x02)
+            Value Handle: 0x00b4
+            Value UUID: Vendor specific (6217ff4c-c8ec-b1fb-1380-3ad986708e2d)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #109 [hci1] 23.743213
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #108: len 48 (13 Kb/s)
+        Latency: 28 msec (27-98 msec ~32 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #110 [hci1] 23.759345
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x00b4-0x00b4
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                 #111 [hci1] 23.759396
+      ATT: Error Response (0x01) len 4
+        Read By Type Request (0x08)
+        Handle: 0x00b4
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #112 [hci1] 23.788220
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #111: len 9 (2 Kb/s)
+        Latency: 28 msec (27-98 msec ~30 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 9                 #113 [hci1] 23.864346
+      ATT: Find Information Request (0x04) len 4
+        Handle range: 0x00b2-0x00b2
+< ACL Data TX: Handle 2 flags 0x00 dlen 10                #114 [hci1] 23.864391
+      ATT: Find Information Response (0x05) len 5
+        Format: UUID-16 (0x01)
+        Handle: 0x00b2
+        UUID: Client Characteristic Configuration (0x2902)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #115 [hci1] 23.893217
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #114: len 10 (2 Kb/s)
+        Latency: 28 msec (27-98 msec ~29 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #116 [hci1] 23.924348
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x00af-0x00b4
+        Attribute type: Include (0x2802)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                 #117 [hci1] 23.924385
+      ATT: Error Response (0x01) len 4
+        Read By Type Request (0x08)
+        Handle: 0x00af
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #118 [hci1] 23.953209
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #117: len 9 (2 Kb/s)
+        Latency: 28 msec (27-98 msec ~29 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #119 [hci1] 24.014348
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x00a6-0x00ae
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 69                #120 [hci1] 24.014397
+      ATT: Read By Type Response (0x09) len 64
+        Attribute data length: 21
+        Attribute data list: 3 entries
+        Handle: 0x00a7
+        Value[19]: 1ca800c8f08d2dcd8aad1c87f3e702515c00fb
+            Properties: 0x1c
+              Write Without Response (0x04)
+              Write (0x08)
+              Notify (0x10)
+            Value Handle: 0x00a8
+            Value UUID: Vendor specific (fb005c51-02e7-f387-1cad-8acd2d8df0c8)
+        Handle: 0x00aa
+        Value[19]: 10ab00c8f08d2dcd8aad1c87f3e702525c00fb
+            Properties: 0x10
+              Notify (0x10)
+            Value Handle: 0x00ab
+            Value UUID: Vendor specific (fb005c52-02e7-f387-1cad-8acd2d8df0c8)
+        Handle: 0x00ad
+        Value[19]: 0cae00c8f08d2dcd8aad1c87f3e702535c00fb
+            Properties: 0x0c
+              Write Without Response (0x04)
+              Write (0x08)
+            Value Handle: 0x00ae
+            Value UUID: Vendor specific (fb005c53-02e7-f387-1cad-8acd2d8df0c8)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #121 [hci1] 24.043205
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #120: len 69 (19 Kb/s)
+        Latency: 28 msec (27-98 msec ~29 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #122 [hci1] 24.059336
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x00ae-0x00ae
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                 #123 [hci1] 24.059376
+      ATT: Error Response (0x01) len 4
+        Read By Type Request (0x08)
+        Handle: 0x00ae
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #124 [hci1] 24.088200
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #123: len 9 (2 Kb/s)
+        Latency: 28 msec (27-98 msec ~28 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 9                 #125 [hci1] 24.164346
+      ATT: Find Information Request (0x04) len 4
+        Handle range: 0x00a9-0x00a9
+< ACL Data TX: Handle 2 flags 0x00 dlen 10                #126 [hci1] 24.164393
+      ATT: Find Information Response (0x05) len 5
+        Format: UUID-16 (0x01)
+        Handle: 0x00a9
+        UUID: Client Characteristic Configuration (0x2902)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #127 [hci1] 24.208202
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #126: len 10 (1 Kb/s)
+        Latency: 43 msec (27-98 msec ~36 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 9                 #128 [hci1] 24.224345
+      ATT: Find Information Request (0x04) len 4
+        Handle range: 0x00ac-0x00ac
+< ACL Data TX: Handle 2 flags 0x00 dlen 10                #129 [hci1] 24.224396
+      ATT: Find Information Response (0x05) len 5
+        Format: UUID-16 (0x01)
+        Handle: 0x00ac
+        UUID: Client Characteristic Configuration (0x2902)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #130 [hci1] 24.253200
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #129: len 10 (2 Kb/s)
+        Latency: 28 msec (27-98 msec ~32 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #131 [hci1] 24.284348
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x00a6-0x00ae
+        Attribute type: Include (0x2802)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                 #132 [hci1] 24.284393
+      ATT: Error Response (0x01) len 4
+        Read By Type Request (0x08)
+        Handle: 0x00a6
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #133 [hci1] 24.313199
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #132: len 9 (2 Kb/s)
+        Latency: 28 msec (27-98 msec ~30 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #134 [hci1] 24.374339
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0097-0x00a5
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 55                #135 [hci1] 24.374383
+      ATT: Read By Type Response (0x09) len 50
+        Attribute data length: 7
+        Attribute data list: 7 entries
+        Handle: 0x0098
+        Value[5]: 029900262a
+            Properties: 0x02
+              Read (0x02)
+            Value Handle: 0x0099
+            Value UUID: Firmware Revision String (0x2a26)
+        Handle: 0x009a
+        Value[5]: 029b00242a
+            Properties: 0x02
+              Read (0x02)
+            Value Handle: 0x009b
+            Value UUID: Model Number String (0x2a24)
+        Handle: 0x009c
+        Value[5]: 029d00272a
+            Properties: 0x02
+              Read (0x02)
+            Value Handle: 0x009d
+            Value UUID: Hardware Revision String (0x2a27)
+        Handle: 0x009e
+        Value[5]: 029f00232a
+            Properties: 0x02
+              Read (0x02)
+            Value Handle: 0x009f
+            Value UUID: System ID (0x2a23)
+        Handle: 0x00a0
+        Value[5]: 02a100252a
+            Properties: 0x02
+              Read (0x02)
+            Value Handle: 0x00a1
+            Value UUID: Serial Number String (0x2a25)
+        Handle: 0x00a2
+        Value[5]: 02a300292a
+            Properties: 0x02
+              Read (0x02)
+            Value Handle: 0x00a3
+            Value UUID: Manufacturer Name String (0x2a29)
+        Handle: 0x00a4
+        Value[5]: 02a500282a
+            Properties: 0x02
+              Read (0x02)
+            Value Handle: 0x00a5
+            Value UUID: Software Revision String (0x2a28)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #136 [hci1] 24.403199
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #135: len 55 (15 Kb/s)
+        Latency: 28 msec (27-98 msec ~29 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #137 [hci1] 24.420524
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x00a5-0x00a5
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                 #138 [hci1] 24.420570
+      ATT: Error Response (0x01) len 4
+        Read By Type Request (0x08)
+        Handle: 0x00a5
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #139 [hci1] 24.448193
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #138: len 9 (2 Kb/s)
+        Latency: 27 msec (27-98 msec ~28 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #140 [hci1] 24.615337
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0097-0x00a5
+        Attribute type: Include (0x2802)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                 #141 [hci1] 24.615383
+      ATT: Error Response (0x01) len 4
+        Read By Type Request (0x08)
+        Handle: 0x0097
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #142 [hci1] 24.643190
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #141: len 9 (2 Kb/s)
+        Latency: 27 msec (27-98 msec ~28 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #143 [hci1] 24.705338
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0091-0x0096
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 20                #144 [hci1] 24.705391
+      ATT: Read By Type Response (0x09) len 15
+        Attribute data length: 7
+        Attribute data list: 2 entries
+        Handle: 0x0092
+        Value[5]: 029300382a
+            Properties: 0x02
+              Read (0x02)
+            Value Handle: 0x0093
+            Value UUID: Body Sensor Location (0x2a38)
+        Handle: 0x0094
+        Value[5]: 109500372a
+            Properties: 0x10
+              Notify (0x10)
+            Value Handle: 0x0095
+            Value UUID: Heart Rate Measurement (0x2a37)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #145 [hci1] 24.733187
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #144: len 20 (5 Kb/s)
+        Latency: 27 msec (27-98 msec ~28 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #146 [hci1] 24.780339
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0095-0x0096
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                 #147 [hci1] 24.780383
+      ATT: Error Response (0x01) len 4
+        Read By Type Request (0x08)
+        Handle: 0x0095
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #148 [hci1] 24.808183
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #147: len 9 (2 Kb/s)
+        Latency: 27 msec (27-98 msec ~27 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 9                 #149 [hci1] 24.869350
+      ATT: Find Information Request (0x04) len 4
+        Handle range: 0x0096-0x0096
+< ACL Data TX: Handle 2 flags 0x00 dlen 10                #150 [hci1] 24.869400
+      ATT: Find Information Response (0x05) len 5
+        Format: UUID-16 (0x01)
+        Handle: 0x0096
+        UUID: Client Characteristic Configuration (0x2902)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #151 [hci1] 24.898181
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #150: len 10 (2 Kb/s)
+        Latency: 28 msec (27-98 msec ~28 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #152 [hci1] 24.945340
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0091-0x0096
+        Attribute type: Include (0x2802)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                 #153 [hci1] 24.945393
+      ATT: Error Response (0x01) len 4
+        Read By Type Request (0x08)
+        Handle: 0x0091
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #154 [hci1] 24.973179
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #153: len 9 (2 Kb/s)
+        Latency: 27 msec (27-98 msec ~28 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #155 [hci1] 25.034348
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x008c-0x0090
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 27                #156 [hci1] 25.034432
+      ATT: Read By Type Response (0x09) len 22
+        Attribute data length: 21
+        Attribute data list: 1 entry
+        Handle: 0x008d
+        Value[19]: 1e8e00f36b109d66f2a9a112416838dbe57277
+            Properties: 0x1e
+              Read (0x02)
+              Write Without Response (0x04)
+              Write (0x08)
+              Notify (0x10)
+            Value Handle: 0x008e
+            Value UUID: Vendor specific (7772e5db-3868-4112-a1a9-f2669d106bf3)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #157 [hci1] 25.063182
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #156: len 27 (7 Kb/s)
+        Latency: 28 msec (27-98 msec ~28 msec)
+> ACL Data RX: Handle 2 flags 0x02 dlen 11                #158 [hci1] 25.079345
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x008e-0x0090
+        Attribute type: Characteristic (0x2803)
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                 #159 [hci1] 25.079393
+      ATT: Error Response (0x01) len 4
+        Read By Type Request (0x08)
+        Handle: 0x008e
+        Error: Attribute Not Found (0x0a)
+> HCI Event: Number of Completed Packets (0x13) plen 5    #160 [hci1] 25.108176
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #159: len 9 (2 Kb/s)
+        Latency: 28 msec (27-98 msec ~28 msec)
+> HCI Event: LE Meta Event (0x3e) plen 10                 #161 [hci1] 47.573570
+      LE Connection Update Complete (0x03)
+        Status: Success (0x00)
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Connection interval: 50.00 msec (0x0028)
+        Connection latency: 0 (0x0000)
+        Supervision timeout: 9600 msec (0x03c0)
+> ACL Data RX: Handle 2 flags 0x02 dlen 7                #162 [hci1] 107.824338
+      ATT: Read Request (0x0a) len 2
+        Handle: 0x0090
+< ACL Data TX: Handle 2 flags 0x00 dlen 9                #163 [hci1] 107.824468
+      ATT: Error Response (0x01) len 4
+        Read Request (0x0a)
+        Handle: 0x0090
+        Error: Insufficient Encryption (0x0f)
+> HCI Event: Number of Completed Packets (0x13) plen 5   #164 [hci1] 107.923915
+        Num handles: 1
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Count: 1
+        #163: len 9 (0 Kb/s)
+        Latency: 99 msec (27-99 msec ~64 msec)
+> HCI Event: Disconnect Complete (0x05) plen 4           #165 [hci1] 110.923842
+        Status: Success (0x00)
+        Handle: 2 Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Reason: Remote User Terminated Connection (0x13)
+@ MGMT Event: Device Disconnected (0x000c) plen 8    {0x0001} [hci1] 110.923869
+        LE Address: 20:E1:5D:9E:A0:7F (TP-Link Systems Inc.)
+        Reason: Connection terminated by remote host (0x03)
+< HCI Command: LE Set Extended A.. (0x08|0x0039) plen 6  #166 [hci1] 110.943397
+        Extended advertising: Enabled (0x01)
+        Number of sets: 1 (0x01)
+        Entry 0
+          Handle: 0x01
+          Duration: 0 ms (0x00)
+          Max ext adv events: 0
+> HCI Event: Command Complete (0x0e) plen 4              #167 [hci1] 110.948656
+      LE Set Extended Advertising Enable (0x08|0x0039) ncmd 1
+        Status: Success (0x00)
