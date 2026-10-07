@@ -1,0 +1,21 @@
+{
+  "runtime": "Bun 1.4.2",
+  "scope": "Actual public facade; fake internal source, no physical radio",
+  "expected": "Identical invalid all-zero sample must be rejected by both APIs",
+  "snapshot": {
+    "rejected": "protocol.violation"
+  },
+  "stream": {
+    "connectionGeneration": "generation-1",
+    "observedAtMonotonicMs": 100,
+    "source": "backend",
+    "authority": "backend-observation",
+    "limitations": [],
+    "state": "measured",
+    "intervalMs": 0,
+    "peripheralLatency": 0,
+    "supervisionTimeoutMs": 0,
+    "subrateFactor": null,
+    "connectionEventLengthMs": null
+  }
+}

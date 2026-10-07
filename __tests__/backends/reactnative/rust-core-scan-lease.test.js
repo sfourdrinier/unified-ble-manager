@@ -7,11 +7,7 @@
 // after the manager moved on (and after its destroy), bricking every later
 // scan on the session with already-active.
 
-const {
-  rustCoreHarness,
-  environment,
-  scanOptions
-} = require('../../../test-support/react-native/rust-core-harness')
+const { rustCoreHarness, environment, scanOptions } = require('../../../test-support/react-native/rust-core-harness')
 const { createReactNativeBleManagerWithEnvironment } = require('../../../src/react-native-manager')
 
 const NO_OPTIONS = Object.freeze({ signal: null, deadline: null })
@@ -21,6 +17,25 @@ async function openManager(harnessOptions = {}, overrides = {}) {
   const manager = await createReactNativeBleManagerWithEnvironment(environment(harness, overrides))
   return { harness, native: harness.native, manager, backend: manager.attachedBackend.backend }
 }
+
+test('active Android wire route forwards batching and scan PHY options', async () => {
+  const { native, manager } = await openManager({ platform: 'android' })
+  let scan
+  try {
+    scan = await manager.scan(
+      scanOptions({ platform: { kind: 'android', mode: 'balanced', reportDelayMs: 500, legacy: false, phy: 'coded' } })
+    )
+    expect(native.opsInvoked('scan.start').at(-1).platform).toEqual({
+      mode: 'balanced',
+      reportDelayMs: 500,
+      legacy: false,
+      phy: 'coded'
+    })
+  } finally {
+    await scan?.stop()
+    await manager.destroy()
+  }
+})
 
 describe('finding 185: a scan lease is never left behind', () => {
   test('a failed stop is retried by the next start instead of bricking the session', async () => {

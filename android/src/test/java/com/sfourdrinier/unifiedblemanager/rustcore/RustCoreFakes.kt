@@ -68,7 +68,7 @@ class FakeCore : MobileCorePort {
 
   override fun buildIdentityJson() = "{\"schema\":\"ubm-native-build-identity/1\"}"
   override fun contractRevision() = "C-UBM.test"
-  override fun wireRevision() = "ubm-mobile-wire/1"
+  override fun wireRevision() = "ubm-mobile-wire/2"
 
   override fun installHost(radio: MobileCoreBridge.RadioHost, wake: MobileCoreBridge.WakeListener, owner: String, adapterLabel: String) {
     installCount++
@@ -121,11 +121,15 @@ class FakeCore : MobileCorePort {
     record("writeLimits:$requestId:$withResponse:$withoutResponse")
   override fun completeRssi(requestId: Long, rssi: Int) = record("rssi:$requestId:$rssi")
   override fun completeAccepted(requestId: Long, accepted: Boolean) = record("accepted:$requestId:$accepted")
+  override fun completeSubrateStatus(requestId: Long, status: Int) = record("subrateStatus:$requestId:$status")
   override fun completePhy(requestId: Long, tx: String, rx: String) = record("phy:$requestId:$tx/$rx")
   override fun completePhyRequest(requestId: Long, accepted: Boolean, tx: String?, rx: String?) =
     record("phy-request:$requestId:$accepted:$tx/$rx")
 
   override fun completeSecurity(requestId: Long, security: SecurityFacts) = record("security:$requestId:$security")
+  override fun completeResolvedPeer(requestId: Long, peerId: String?, name: String?) = record("resolved:$requestId:$peerId:$name")
+  override fun completeConnectedPeers(requestId: Long, peerIds: Array<String>, names: Array<String?>) =
+    record("connected-peers:$requestId:${peerIds.toList()}:${names.toList()}")
   override fun completeBondedPeers(requestId: Long, peerIds: Array<String>, names: Array<String?>) =
     record("bonded:$requestId:${peerIds.toList()}:${names.toList()}")
 
@@ -164,6 +168,8 @@ class FakeCore : MobileCorePort {
   override fun ingestAdapterState(state: AdapterFacts) = ingress("adapter-state:${state.power}")
   override fun ingestScanFailed(detail: String) = ingress("scan-failed:$detail")
   override fun ingestSecurity(peerId: String, security: SecurityFacts) = ingress("security-changed:$peerId:${security.bond}")
+  override fun ingestSecurityFailure(peerId: String?, failure: RadioFailure, encryptionStatus: Int?) =
+    ingress("security-failed:$peerId:${failure.kind.wire}:$encryptionStatus")
   override fun ingestDropped(ingressClass: String, detail: String) = ingress("dropped:$ingressClass")
   override fun ingestRestored(peers: List<PresenceRestoredPeer>) =
     ingress(peers.joinToString(",") { "restored:${it.peerId}:${it.connected}" })
@@ -195,8 +201,10 @@ class FakeRadio : AndroidRadioPort {
 
   override fun adapterState() = adapter
 
-  override fun startScan(serviceUuids: List<String>, deviceAddresses: List<String>, mode: Int, callbackType: Int, legacy: Boolean) {
-    calls.add("startScan:$serviceUuids:$deviceAddresses:$mode:$callbackType:$legacy")
+  override fun startScan(serviceUuids: List<String>, deviceAddresses: List<String>, mode: Int, callbackType: Int,
+                         legacy: Boolean, reportDelayMs: Long, phy: Int?) {
+    val options = if (reportDelayMs != 0L || phy != null) ":batch=$reportDelayMs:phy=$phy" else ""
+    calls.add("startScan:$serviceUuids:$deviceAddresses:$mode:$callbackType:$legacy$options")
     startScanFailure?.let { throw it }
   }
 
@@ -206,6 +214,8 @@ class FakeRadio : AndroidRadioPort {
   }
 
   var connectPhySupported = true
+  var subrateSupported = false
+  override fun supportsSubrate(): Boolean = subrateSupported
 
   override fun supportsConnectPhy(): Boolean = connectPhySupported
 
@@ -259,6 +269,8 @@ class FakeRadio : AndroidRadioPort {
   override fun readRssi(peerId: String, onResult: (Result<Int>) -> Unit): Long = park("readRssi:$peerId", onResult)
   override fun requestConnectionPriority(peerId: String, priority: String, onResult: (Result<Boolean>) -> Unit): Long =
     park("priority:$peerId:$priority", onResult)
+  override fun requestSubrate(peerId: String, mode: String, onResult: (Result<Int>) -> Unit): Long =
+    park("subrate:$peerId:$mode", onResult)
 
   override fun readPhy(peerId: String, onResult: (Result<PhyFacts>) -> Unit): Long = park("readPhy:$peerId", onResult)
   override fun requestPhy(peerId: String, tx: String?, rx: String?, onResult: (Result<PhyFacts?>) -> Unit): Long =
@@ -272,6 +284,10 @@ class FakeRadio : AndroidRadioPort {
   override fun createBond(peerId: String, transport: String, onResult: (Result<SecurityFacts>) -> Unit) {
     park("createBond:$peerId:$transport", onResult)
   }
+
+  var connectedDirectory = emptyList<ConnectedPeerFacts>()
+  override fun resolvePeer(peerId: String): ConnectedPeerFacts? = connectedDirectory.firstOrNull { it.peerId == peerId }
+  override fun connectedPeers(): List<ConnectedPeerFacts> { calls.add("connectedPeers"); return connectedDirectory }
 
   override fun bondedPeers(): List<BondedPeerFacts> {
     calls.add("bondedPeers")

@@ -22,7 +22,7 @@ public final class TestMobile {
 
     static final class Radio implements MobileCoreBridge.RadioHost {
         public void adapterState(long id) { MobileCoreBridge.nativeCompleteAdapter(id, "available", "granted", "on", null); }
-        public void startScan(long id, String[] services, String[] addresses, String mode, String callbackType, int legacy) {
+        public void startScan(long id, String[] services, String[] addresses, String mode, String callbackType, int legacy, long reportDelayMs, String phy) {
             check(services.length == 1 && services[0].equals("0000180d-0000-1000-8000-00805f9b34fb"), "scan filter reaches the radio canonicalized");
             MobileCoreBridge.nativeCompleteUnit(id);
         }
@@ -56,11 +56,15 @@ public final class TestMobile {
         public void requestMtu(long id, String p, int mtu) { MobileCoreBridge.nativeCompleteMtu(id, mtu); }
         public void readRssi(long id, String p) { MobileCoreBridge.nativeCompleteRssi(id, -60); }
         public void requestConnectionPriority(long id, String p, String priority) { MobileCoreBridge.nativeCompleteAccepted(id, true); }
+        public boolean subrateAvailable() { return false; }
+        public void requestSubrate(long id, String p, String mode) { MobileCoreBridge.nativeCompleteSubrateStatus(id, 0); }
         public void readPhy(long id, String p) { MobileCoreBridge.nativeCompletePhy(id, "le-2m", "le-2m"); }
         public void requestPhy(long id, String p, String tx, String rx) { MobileCoreBridge.nativeCompletePhyRequest(id, true, "le-2m", "le-2m"); }
         public void securityState(long id, String p) { MobileCoreBridge.nativeCompleteSecurity(id, "not-bonded", "unknown", "unknown", "unknown", 1); }
         public void createBond(long id, String p, String transport) { MobileCoreBridge.nativeCompleteSecurity(id, "bonded", "encrypted", "unknown", "unknown", -1); }
         public void cancelBond(long id, String p) { MobileCoreBridge.nativeCompleteUnit(id); }
+        public void resolvePeer(long id, String peerId) { MobileCoreBridge.nativeCompleteResolvedPeer(id, null, null); }
+        public void connectedPeers(long id, String[] services) { MobileCoreBridge.nativeCompleteConnectedPeers(id, new String[] {"AA:BB:CC:DD:EE:FF"}, new String[] {"foreign link"}); }
         public void bondedPeers(long id) { MobileCoreBridge.nativeCompleteBondedPeers(id, new String[] {"AA:BB:CC:DD:EE:FF"}, new String[] {null}); }
         public void acquireBackground(long id, String kind, String reason) { MobileCoreBridge.nativeCompleteLease(id, "lease-1"); }
         public void releaseBackground(long id, String lease) { backgroundReleases.incrementAndGet(); MobileCoreBridge.nativeCompleteUnit(id); }
@@ -98,7 +102,7 @@ public final class TestMobile {
 
     public static void main(String[] args) throws Exception {
         BlockingQueue<Long> wakes = new ArrayBlockingQueue<>(16);
-        check(MobileCoreBridge.nativeWireRevision().equals("ubm-mobile-wire/1"), "wire revision");
+        check(MobileCoreBridge.nativeWireRevision().equals("ubm-mobile-wire/2"), "wire revision");
         check(MobileCoreBridge.nativeBuildIdentityJson().contains("\"schema\":\"ubm-native-build-identity/1\""), "build identity");
         check(MobileCoreBridge.nativeCompleteUnit(1) == MobileCoreBridge.STATUS_NO_HOST, "no host before install");
         java.nio.file.Path recordingDirectory = java.nio.file.Files.createTempDirectory("ubm-jni-offline-");
@@ -120,8 +124,8 @@ public final class TestMobile {
         } catch (MobileCoreBridge.MobileCoreException expected) {
             check(expected.code.equals("protocol.incompatible"), "foreign wire revision refused");
         }
-        String open = MobileCoreBridge.nativeOpenSession("rn", "ubm-mobile-wire/1", "jvm-module");
-        check(open.contains("\"wireRevision\":\"ubm-mobile-wire/1\""), "admission record");
+        String open = MobileCoreBridge.nativeOpenSession("rn", "ubm-mobile-wire/2", "jvm-module");
+        check(open.contains("\"wireRevision\":\"ubm-mobile-wire/2\""), "admission record");
         long session = Long.parseLong(open.replaceAll(".*\"sessionId\":(\\d+).*", "$1"));
         String adapter = call(session, "adapter.state", "{}");
         check(adapter.contains("\"ok\":true") && adapter.contains("\"power\":\"on\""), "adapter.state through the RadioHost");

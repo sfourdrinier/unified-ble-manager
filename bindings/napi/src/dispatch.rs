@@ -31,7 +31,7 @@ use napi::bindgen_prelude::{Buffer, Either, Either3, Null, Promise, Result};
 use napi::threadsafe_function::{
     ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
 };
-use napi::{Env, JsFunction};
+use napi::{Env, JsFunction, JsObject};
 use napi::{Error, Status};
 use napi_derive::napi;
 use tokio::sync::broadcast::{self, error::TryRecvError};
@@ -245,6 +245,17 @@ impl DispatchRadio {
 // `async fn` satisfies the trait's `-> impl Future` seams; each arm's
 // future is `Send`, so the combined future is too.
 impl RadioBoundary for DispatchRadio {
+    async fn acquire_gatt(
+        &self,
+        scope: &ubm_desktop::boundary::InstanceKey,
+        kind: ubm_desktop::acquired_gatt::AcquisitionKind,
+    ) -> std::result::Result<ubm_desktop::acquired_gatt::AcquiredGattTransport, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.acquire_gatt(scope, kind).await,
+            Self::Synthetic(radio) => radio.acquire_gatt(scope, kind).await,
+        }
+    }
+
     #[cfg(target_os = "linux")]
     async fn accept_physical_loss(&self, peer: &str, generation: u64, reason: u8) -> bool {
         match self {
@@ -277,6 +288,24 @@ impl RadioBoundary for DispatchRadio {
         match self {
             Self::Radio(radio) => radio.discover_scoped(peer_id).await,
             Self::Synthetic(radio) => radio.discover_scoped(peer_id).await,
+        }
+    }
+
+    async fn peer_directory_capability_limitations(
+        &self,
+    ) -> std::result::Result<(Option<&'static str>, Option<&'static str>), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.peer_directory_capability_limitations().await,
+            Self::Synthetic(radio) => radio.peer_directory_capability_limitations().await,
+        }
+    }
+
+    async fn known_directory_peers(
+        &self,
+    ) -> std::result::Result<Vec<ubm_desktop::DirectoryPeer>, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.known_directory_peers().await,
+            Self::Synthetic(radio) => radio.known_directory_peers().await,
         }
     }
 
@@ -361,6 +390,15 @@ impl RadioBoundary for DispatchRadio {
         match self {
             Self::Radio(radio) => radio.tears_down_on_adapter_loss(),
             Self::Synthetic(radio) => radio.tears_down_on_adapter_loss(),
+        }
+    }
+
+    fn connection_parameters_capability_limitation(
+        &self,
+    ) -> std::result::Result<Option<&'static str>, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.connection_parameters_capability_limitation(),
+            Self::Synthetic(radio) => radio.connection_parameters_capability_limitation(),
         }
     }
 
@@ -660,6 +698,53 @@ impl RadioBoundary for DispatchRadio {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn set_notifications_with_preference(
+        &self,
+        peer_id: &str,
+        service_uuid: &str,
+        service_occurrence: u64,
+        characteristic_uuid: &str,
+        characteristic_occurrence: u64,
+        enable: bool,
+        epoch: u64,
+        requested: Option<DeliveryMode>,
+        preferred: Option<DeliveryMode>,
+    ) -> std::result::Result<ObservedDelivery, DesktopError> {
+        match self {
+            Self::Radio(radio) => {
+                radio
+                    .set_notifications_with_preference(
+                        peer_id,
+                        service_uuid,
+                        service_occurrence,
+                        characteristic_uuid,
+                        characteristic_occurrence,
+                        enable,
+                        epoch,
+                        requested,
+                        preferred,
+                    )
+                    .await
+            }
+            Self::Synthetic(radio) => {
+                radio
+                    .set_notifications_with_preference(
+                        peer_id,
+                        service_uuid,
+                        service_occurrence,
+                        characteristic_uuid,
+                        characteristic_occurrence,
+                        enable,
+                        epoch,
+                        requested,
+                        preferred,
+                    )
+                    .await
+            }
+        }
+    }
+
     async fn mtu(&self, peer_id: &str) -> Option<u16> {
         match self {
             Self::Radio(radio) => radio.mtu(peer_id).await,
@@ -695,10 +780,41 @@ impl RadioBoundary for DispatchRadio {
         }
     }
 
+    async fn request_priority(
+        &self,
+        peer_id: &str,
+        priority: ubm_desktop::boundary::ConnectionPriority,
+    ) -> std::result::Result<bool, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.request_priority(peer_id, priority).await,
+            Self::Synthetic(radio) => radio.request_priority(peer_id, priority).await,
+        }
+    }
+
+    fn priority_capability_limitation(
+        &self,
+    ) -> std::result::Result<Option<&'static str>, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.priority_capability_limitation(),
+            Self::Synthetic(radio) => radio.priority_capability_limitation(),
+        }
+    }
+
     async fn read_rssi(&self, peer_id: &str) -> std::result::Result<i16, DesktopError> {
         match self {
             Self::Radio(radio) => radio.read_rssi(peer_id).await,
             Self::Synthetic(radio) => radio.read_rssi(peer_id).await,
+        }
+    }
+
+    async fn connection_parameters(
+        &self,
+        peer_id: &str,
+    ) -> std::result::Result<ubm_desktop::boundary::ObservedConnectionParameters, DesktopError>
+    {
+        match self {
+            Self::Radio(radio) => radio.connection_parameters(peer_id).await,
+            Self::Synthetic(radio) => radio.connection_parameters(peer_id).await,
         }
     }
 
@@ -1247,12 +1363,21 @@ pub struct ScanOptions {
     /// match stays the final filter. Absent: no OS name filter.
     #[napi(js_name = "localNamePrefix")]
     pub local_name_prefix: Option<String>,
+    pub winrt_scanning_mode: Option<String>,
+    pub winrt_allow_extended_advertisements: Option<bool>,
     #[napi(js_name = "timeoutMs")]
     pub timeout_ms: Option<u32>,
     pub ticket: Option<String>,
 }
 
 /// `scan.stop` / cleanup arguments: an optional budget and ticket.
+#[napi(object)]
+pub struct AcquiredGattStageOptions {
+    pub write: bool,
+    pub notify: bool,
+    pub mtu: u32,
+}
+
 #[napi(object)]
 pub struct ControlOptions {
     #[napi(js_name = "timeoutMs")]
@@ -1329,6 +1454,8 @@ pub struct AdvertisementInfo {
     #[napi(js_name = "peerId")]
     pub peer_id: String,
     pub address: Option<String>,
+    #[napi(js_name = "addressType")]
+    pub address_type: Either<String, Null>,
     pub rssi: Option<i32>,
     #[napi(js_name = "localName")]
     pub local_name: Option<String>,
@@ -1384,6 +1511,11 @@ fn advertisement_info(snapshot: &PeerSnapshot) -> AdvertisementInfo {
     AdvertisementInfo {
         peer_id: snapshot.id.clone(),
         address: snapshot.address.clone(),
+        address_type: snapshot
+            .extras
+            .address_type
+            .map(|kind| Either::A(kind.as_str().to_owned()))
+            .unwrap_or(Either::B(Null)),
         rssi: snapshot.rssi.map(i32::from),
         local_name: snapshot.local_name.clone(),
         service_uuids: snapshot.service_uuids.clone(),
@@ -1442,6 +1574,29 @@ pub struct LeaseOptions {
     pub ticket: Option<String>,
 }
 
+/// Parameters distinguish a snapshot from observation-source acquisition.
+#[napi(object)]
+pub struct ConnectionParameterOptions {
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    pub lease: String,
+    #[napi(js_name = "timeoutMs")]
+    pub timeout_ms: Option<u32>,
+    pub ticket: Option<String>,
+    #[napi(js_name = "observationWatch")]
+    pub observation_watch: Option<bool>,
+}
+
+/// Discovery report: the paths the whole snapshot registered. A snapshot
+#[napi(object)]
+pub struct PriorityOptions {
+    pub peer_id: String,
+    pub lease: String,
+    pub priority: String,
+    pub timeout_ms: Option<u32>,
+    pub ticket: Option<String>,
+}
+
 /// Discovery report: the paths the whole snapshot registered. A snapshot
 /// registers whole or the discovery fails with a typed error (finding 95);
 /// no entry is ever skipped.
@@ -1454,6 +1609,8 @@ pub struct DiscoveryInfo {
 /// One registered discovery path in the current snapshot.
 #[napi(object)]
 pub struct PathInfo {
+    pub service_primary: Option<bool>,
+    pub included_services: Option<Vec<IncludedServiceInfo>>,
     #[napi(js_name = "serviceUuid")]
     pub service_uuid: String,
     #[napi(js_name = "serviceOccurrence")]
@@ -1476,6 +1633,12 @@ pub struct PathInfo {
     /// keep the service identity.
     #[napi(js_name = "serviceAccess")]
     pub service_access: Option<String>,
+}
+
+#[napi(object)]
+pub struct IncludedServiceInfo {
+    pub uuid: String,
+    pub occurrence: u32,
 }
 
 /// Wire form of [`CharacteristicAccess`].
@@ -1552,6 +1715,22 @@ fn path_info(
         .map(|value| count_wire(value, operation))
         .transpose()?;
     Ok(PathInfo {
+        service_primary: path.service_primary,
+        included_services: path
+            .included_services
+            .as_ref()
+            .map(|references| {
+                references
+                    .iter()
+                    .map(|reference| {
+                        Ok(IncludedServiceInfo {
+                            uuid: reference.uuid.clone(),
+                            occurrence: count_wire(reference.occurrence, operation)?,
+                        })
+                    })
+                    .collect::<std::result::Result<Vec<_>, DispatchError>>()
+            })
+            .transpose()?,
         service_uuid: path.service_uuid.clone(),
         service_occurrence: count_wire(path.service_occurrence, operation)?,
         characteristic_uuid: path.characteristic_uuid.clone(),
@@ -1614,6 +1793,31 @@ pub struct ReadOptions {
     pub ticket: Option<String>,
 }
 
+#[napi(object)]
+pub struct AcquiredOptions {
+    pub handle: String,
+    pub lease: String,
+    #[napi(js_name = "timeoutMs")]
+    pub timeout_ms: Option<u32>,
+    pub ticket: Option<String>,
+}
+#[napi(object)]
+pub struct AcquiredWriteOptions {
+    #[napi(js_name = "peerId")]
+    pub peer_id: String,
+    pub handle: String,
+    pub lease: String,
+    pub value: Buffer,
+    #[napi(js_name = "timeoutMs")]
+    pub timeout_ms: Option<u32>,
+    pub ticket: Option<String>,
+}
+#[napi(object)]
+pub struct AcquiredInfo {
+    pub handle: String,
+    pub mtu: u32,
+}
+
 /// `gatt.write` arguments. `mode` is `with-response` (default) or
 /// `without-response`.
 #[napi(object)]
@@ -1668,6 +1872,8 @@ pub struct SubscribeOptions {
     pub consumer: String,
     #[napi(js_name = "deliveryMode")]
     pub delivery_mode: Option<String>,
+    #[napi(js_name = "preferredDeliveryMode")]
+    pub preferred_delivery_mode: Option<String>,
     /// The consumer's overflow policy (`error` by default): what the core
     /// does when values outrun the consumer or are lost upstream
     /// (finding 131).
@@ -1691,6 +1897,31 @@ pub struct ConsumerCountersInfo {
     #[napi(js_name = "upstreamLost")]
     pub upstream_lost: i64,
     pub terminated: bool,
+}
+
+/// Live native resources, independent of JavaScript wrapper counts.
+#[napi(object)]
+pub struct ResourceCountersInfo {
+    #[napi(js_name = "nativeGattAdmissions")]
+    pub native_gatt_admissions: i64,
+    #[napi(js_name = "acquiredGattTransports")]
+    pub acquired_gatt_transports: i64,
+    #[napi(js_name = "pendingGattAcquisitions")]
+    pub pending_gatt_acquisitions: i64,
+    #[napi(js_name = "routedSubscriptions")]
+    pub routed_subscriptions: i64,
+    #[napi(js_name = "pendingDisables")]
+    pub pending_disables: i64,
+    #[napi(js_name = "retainedEnablements")]
+    pub retained_enablements: i64,
+    #[napi(js_name = "liveOperations")]
+    pub live_operations: i64,
+    #[napi(js_name = "liveConnections")]
+    pub live_connections: i64,
+    #[napi(js_name = "liveConsumers")]
+    pub live_consumers: i64,
+    #[napi(js_name = "scanOwned")]
+    pub scan_owned: bool,
 }
 
 /// What the radio reported for one enablement: `notification`,
@@ -2150,6 +2381,7 @@ pub struct ConnectionParametersEventInfo {
     #[napi(js_name = "supervisionTimeoutUs")]
     pub supervision_timeout_us: Option<u32>,
     pub missed: Option<i64>,
+    pub error: Option<String>,
 }
 
 /// One write-without-response readiness report (`state`) or a gap marker.
@@ -2354,6 +2586,8 @@ pub struct StageAdvertisementInput {
     #[napi(js_name = "peerId")]
     pub peer_id: String,
     pub address: Option<String>,
+    #[napi(js_name = "addressType")]
+    pub address_type: Option<Either<String, Null>>,
     pub rssi: Option<i32>,
     #[napi(js_name = "localName")]
     pub local_name: Option<String>,
@@ -2439,6 +2673,15 @@ fn staged_snapshot(
         service_data,
         tx_power_level: tx_power,
         extras: AdvertisementExtras {
+            address_type: input
+                .address_type
+                .as_ref()
+                .and_then(|value| match value {
+                    Either::A(value) => Some(value.as_str()),
+                    Either::B(_) => None,
+                })
+                .map(parse_address_type)
+                .transpose()?,
             solicited_service_uuids: input.solicited_service_uuids.clone(),
             overflow_service_uuids: input.overflow_service_uuids.clone(),
             connectable: input.connectable,
@@ -2494,6 +2737,8 @@ pub struct StageCharacteristic {
 /// Synthetic staged service.
 #[napi(object)]
 pub struct StageService {
+    pub primary: Option<Either<bool, Null>>,
+    pub included_services: Option<Either<Vec<IncludedServiceInfo>, Null>>,
     pub uuid: String,
     pub occurrence: u32,
     pub characteristics: Vec<StageCharacteristic>,
@@ -2503,6 +2748,26 @@ fn staged_services(services: &[StageService]) -> Vec<ServiceSnapshot> {
     services
         .iter()
         .map(|service| ServiceSnapshot {
+            primary: service.primary.as_ref().and_then(|primary| match primary {
+                Either::A(value) => Some(*value),
+                Either::B(_) => None,
+            }),
+            included_services: service.included_services.as_ref().and_then(|references| {
+                let Either::A(references) = references else {
+                    return None;
+                };
+                Some(
+                    references
+                        .iter()
+                        .map(
+                            |reference| ubm_desktop::boundary::IncludedServiceReference {
+                                uuid: reference.uuid.clone(),
+                                occurrence: u64::from(reference.occurrence),
+                            },
+                        )
+                        .collect(),
+                )
+            }),
             uuid: service.uuid.clone(),
             occurrence: u64::from(service.occurrence),
             characteristics: service
@@ -2683,6 +2948,7 @@ fn fault_op(name: &str) -> std::result::Result<FaultOp, DispatchError> {
         "discover" => Ok(FaultOp::Discover),
         "read" => Ok(FaultOp::Read),
         "write" => Ok(FaultOp::Write),
+        "write-readiness" => Ok(FaultOp::WriteReadiness),
         "subscribe" => Ok(FaultOp::Subscribe),
         "unsubscribe" => Ok(FaultOp::Unsubscribe),
         "mtu" => Ok(FaultOp::Mtu),
@@ -2715,6 +2981,12 @@ fn fault_op(name: &str) -> std::result::Result<FaultOp, DispatchError> {
 /// arrives before core admission is recorded and the op ends
 /// `operation.aborted` without a radio call; after admission it cancels
 /// exactly that one core operation.
+struct TicketRegistration {
+    ticket: OpTicket,
+    received: tokio::time::Instant,
+    admission: Option<ubm_desktop::GattAdmission>,
+}
+
 #[napi]
 pub struct UbmCentral {
     central: DesktopCentral<DispatchRadio>,
@@ -2726,7 +2998,7 @@ pub struct UbmCentral {
     connection_parameters: AsyncMutex<broadcast::Receiver<ConnectionParametersEvent>>,
     scan_terminals: AsyncMutex<broadcast::Receiver<ScanTerminalEvent>>,
     adapter_resets: AsyncMutex<broadcast::Receiver<AdapterResetEvent>>,
-    tickets: StdMutex<HashMap<String, OpTicket>>,
+    tickets: StdMutex<HashMap<String, TicketRegistration>>,
     next_ticket: AtomicU64,
     counters: DispatchCounters,
     generation: StdMutex<Option<Arc<dyn PairingGenerationController>>>,
@@ -2824,8 +3096,10 @@ impl UbmCentral {
     fn tickets(
         &self,
         operation: &'static str,
-    ) -> std::result::Result<std::sync::MutexGuard<'_, HashMap<String, OpTicket>>, DispatchError>
-    {
+    ) -> std::result::Result<
+        std::sync::MutexGuard<'_, HashMap<String, TicketRegistration>>,
+        DispatchError,
+    > {
         self.tickets.lock().map_err(|_| {
             DispatchError::new(
                 BleErrorCode::LifecycleInvariantViolation.as_str(),
@@ -2844,19 +3118,78 @@ impl UbmCentral {
         ticket: Option<&str>,
         operation: &'static str,
     ) -> std::result::Result<OpControl, DispatchError> {
-        let budget = budget_of(timeout_ms);
-        let ticket = match ticket {
-            None => OpTicket::new(),
-            Some(id) => self.tickets(operation)?.get(id).cloned().ok_or_else(|| {
-                DispatchError::new(
-                    BleErrorCode::ArgumentInvalid.as_str(),
-                    BleErrorDomain::Core.as_str(),
-                    operation,
-                    format!("unknown ticket {id:?}"),
-                )
-            })?,
-        };
-        Ok(OpControl::new(budget, ticket))
+        match ticket {
+            None => Ok(OpControl::new(budget_of(timeout_ms), OpTicket::new())),
+            Some(id) => {
+                let mut tickets = self.tickets(operation)?;
+                let registration = tickets.get_mut(id).ok_or_else(|| {
+                    DispatchError::new(
+                        BleErrorCode::ArgumentInvalid.as_str(),
+                        BleErrorDomain::Core.as_str(),
+                        operation,
+                        format!("unknown ticket {id:?}"),
+                    )
+                })?;
+                let budget = timeout_ms.map_or_else(Budget::unbounded, |ms| {
+                    Budget::from_ms_at(registration.received, u64::from(ms))
+                });
+                let ctl = OpControl::new(budget, registration.ticket.clone());
+                Ok(match registration.admission.take() {
+                    Some(admission) => ctl.with_gatt_admission(admission),
+                    None => ctl,
+                })
+            }
+        }
+    }
+
+    fn prepare_write(
+        &self,
+        options: WriteOptions,
+        wait_ready: bool,
+    ) -> Result<impl std::future::Future<Output = Result<()>> + Send + 'static> {
+        let selector = selector_of(&options.selector).map_err(to_napi)?;
+        let mode = write_mode(options.mode.as_deref()).map_err(to_napi)?;
+        if wait_ready && mode != "without-response" {
+            return Err(fail(DesktopError::new(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Gatt,
+                "dispatch.write-when-ready.mode",
+            )));
+        }
+        let ctl = self
+            .control(
+                options.timeout_ms,
+                options.ticket.as_deref(),
+                "dispatch.write",
+            )
+            .map_err(to_napi)?
+            .with_connection_lease(options.lease);
+        let ctl = self
+            .central
+            .bind_gatt_admission(&options.peer_id, ctl)
+            .map_err(fail)?;
+        let value = options.value.as_ref().to_vec();
+        let peer = options.peer_id;
+        let central = self.central.clone();
+        bump(&self.counters.write);
+        Ok(async move {
+            if wait_ready {
+                central
+                    .write_when_ready(&peer, &selector, value, ctl)
+                    .await
+                    .map_err(fail)
+            } else {
+                central
+                    .write(&peer, &selector, value, mode, ctl)
+                    .await
+                    .map_err(fail)
+            }
+        })
+    }
+
+    #[cfg(test)]
+    async fn write(&self, options: WriteOptions) -> Result<()> {
+        self.prepare_write(options, false)?.await
     }
 }
 
@@ -3009,12 +3342,25 @@ impl UbmCentral {
     /// the ticket exists before the operation is called, so an abort racing
     /// the call is recorded, never lost.
     #[napi(catch_unwind)]
-    pub fn create_ticket(&self) -> Result<String> {
+    pub fn create_ticket(&self, peer_id: Option<String>) -> Result<String> {
+        let received = tokio::time::Instant::now();
+        let admission = peer_id
+            .as_deref()
+            .map(|peer| self.central.admit_gatt(peer))
+            .transpose()
+            .map_err(fail)?;
         let ordinal = self.next_ticket.fetch_add(1, Ordering::Relaxed);
         let id = format!("ticket-{ordinal}");
         self.tickets("dispatch.create-ticket")
             .map_err(to_napi)?
-            .insert(id.clone(), OpTicket::new());
+            .insert(
+                id.clone(),
+                TicketRegistration {
+                    ticket: OpTicket::new(),
+                    received,
+                    admission,
+                },
+            );
         Ok(id)
     }
 
@@ -3026,7 +3372,7 @@ impl UbmCentral {
             .tickets("dispatch.cancel-ticket")
             .map_err(to_napi)?
             .get(&ticket)
-            .cloned()
+            .map(|registration| registration.ticket.clone())
             .ok_or_else(|| {
                 to_napi(DispatchError::new(
                     BleErrorCode::ArgumentInvalid.as_str(),
@@ -3563,12 +3909,36 @@ impl UbmCentral {
             .collect())
     }
 
+    #[napi(catch_unwind)]
+    pub async fn request_priority(&self, options: PriorityOptions) -> Result<bool> {
+        use ubm_desktop::boundary::ConnectionPriority;
+        const OP: &str = "dispatch.request-priority";
+        let priority = match options.priority.as_str() {
+            "balanced" => ConnectionPriority::Balanced,
+            "high-throughput" => ConnectionPriority::HighThroughput,
+            "low-power" => ConnectionPriority::LowPower,
+            _ => {
+                return Err(fail(
+                    DesktopError::new(BleErrorCode::ArgumentInvalid, BleErrorDomain::Core, OP)
+                        .with_detail("unknown connection priority"),
+                ))
+            }
+        };
+        let ctl = self
+            .control(options.timeout_ms, options.ticket.as_deref(), OP)
+            .map_err(to_napi)?;
+        self.central
+            .request_priority(&options.peer_id, &options.lease, priority, ctl)
+            .await
+            .map_err(fail)
+    }
+
     /// Observed connection parameters for the lease's link. Interval and
     /// supervision timeout are microseconds.
     #[napi(catch_unwind)]
     pub async fn connection_parameters(
         &self,
-        options: LeaseOptions,
+        options: ConnectionParameterOptions,
     ) -> Result<ConnectionParametersInfo> {
         let ctl = self
             .control(
@@ -3577,11 +3947,16 @@ impl UbmCentral {
                 "dispatch.connection-parameters",
             )
             .map_err(to_napi)?;
-        let params = self
-            .central
-            .connection_parameters(&options.peer_id, &options.lease, ctl)
-            .await
-            .map_err(fail)?;
+        let params = if options.observation_watch.unwrap_or(false) {
+            self.central
+                .connection_parameters_watch_initial(&options.peer_id, &options.lease, ctl)
+                .await
+        } else {
+            self.central
+                .connection_parameters(&options.peer_id, &options.lease, ctl)
+                .await
+        }
+        .map_err(fail)?;
         Ok(ConnectionParametersInfo {
             interval_us: params.interval_us,
             latency: u32::from(params.latency),
@@ -3605,17 +3980,34 @@ impl UbmCentral {
             latency: None,
             supervision_timeout_us: None,
             missed,
+            error: None,
         };
         match receiver.try_recv() {
             Ok(event) => Ok(Some(ConnectionParametersEventInfo {
-                kind: "state".to_owned(),
+                kind: if event.error.is_some() {
+                    "source-failed"
+                } else if event.missed != 0 {
+                    "lagged"
+                } else {
+                    "state"
+                }
+                .to_owned(),
                 sequence: Some(number_wire(event.sequence, OP).map_err(to_napi)?),
                 peer_id: Some(event.peer_id),
                 connection_generation: event.connection_generation,
-                interval_us: Some(event.interval_us),
-                latency: Some(u32::from(event.latency)),
-                supervision_timeout_us: Some(event.supervision_timeout_us),
-                missed: None,
+                interval_us: (event.error.is_none() && event.missed == 0)
+                    .then_some(event.interval_us),
+                latency: (event.error.is_none() && event.missed == 0)
+                    .then_some(u32::from(event.latency)),
+                supervision_timeout_us: (event.error.is_none() && event.missed == 0)
+                    .then_some(event.supervision_timeout_us),
+                missed: (event.missed != 0)
+                    .then(|| number_wire(event.missed, OP))
+                    .transpose()
+                    .map_err(to_napi)?,
+                error: event
+                    .error
+                    .map(|error| DispatchError::from(error).wire_message()),
             })),
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Lagged(missed)) => Ok(Some(gap(
@@ -3728,6 +4120,23 @@ impl UbmCentral {
     }
 
     #[napi(catch_unwind)]
+    pub async fn known_directory_peers(
+        &self,
+        options: Option<ControlOptions>,
+    ) -> Result<Vec<DirectoryPeerInfo>> {
+        let (timeout, ticket) =
+            options.map_or((None, None), |options| (options.timeout_ms, options.ticket));
+        let ctl = self
+            .control(timeout, ticket.as_deref(), "dispatch.peers-known")
+            .map_err(to_napi)?;
+        self.central
+            .known_directory_peers(ctl)
+            .await
+            .map(|peers| peers.into_iter().map(DirectoryPeerInfo::from).collect())
+            .map_err(fail)
+    }
+
+    #[napi(catch_unwind)]
     pub async fn connected_peers(
         &self,
         options: ConnectedPeersOptions,
@@ -3800,6 +4209,30 @@ impl UbmCentral {
     /// Start a scan; the session carries the backing core op id.
     #[napi(catch_unwind)]
     pub async fn start_scan(&self, options: ScanOptions) -> Result<ScanSessionInfo> {
+        use ubm_desktop::boundary::{WindowsScanOptions, WindowsScanningMode};
+        let windows = if options.winrt_scanning_mode.is_some()
+            || options.winrt_allow_extended_advertisements.is_some()
+        {
+            Some(WindowsScanOptions {
+                mode: match options.winrt_scanning_mode.as_deref().unwrap_or("active") {
+                    "active" => WindowsScanningMode::Active,
+                    "passive" => WindowsScanningMode::Passive,
+                    "none" => WindowsScanningMode::None,
+                    _ => {
+                        return Err(fail(DesktopError::new(
+                            BleErrorCode::ArgumentInvalid,
+                            BleErrorDomain::Scan,
+                            "dispatch.scan-mode",
+                        )))
+                    }
+                },
+                allow_extended_advertisements: options
+                    .winrt_allow_extended_advertisements
+                    .unwrap_or(false),
+            })
+        } else {
+            None
+        };
         let ctl = self
             .control(
                 options.timeout_ms,
@@ -3814,11 +4247,12 @@ impl UbmCentral {
         bump(&self.counters.scan_start);
         let session = self
             .central
-            .start_scan_matching(
+            .start_scan_platform(
                 &options.owner,
                 &refs,
                 duplicates,
                 options.local_name_prefix.as_deref(),
+                windows,
                 ctl,
             )
             .await
@@ -4182,28 +4616,116 @@ impl UbmCentral {
         })
     }
 
-    /// GATT write through a validated path.
+    /// Admit and copy a GATT write synchronously before starting its worker.
+    #[napi(js_name = "write", catch_unwind)]
+    pub fn write_owned(&self, env: Env, options: WriteOptions) -> Result<JsObject> {
+        env.execute_tokio_future(self.prepare_write(options, false)?, |_, ()| Ok(()))
+    }
+
+    /// Native-owned readiness wait, payload and queue position.
     #[napi(catch_unwind)]
-    pub async fn write(&self, options: WriteOptions) -> Result<()> {
+    pub fn write_when_ready(&self, env: Env, options: WriteOptions) -> Result<JsObject> {
+        env.execute_tokio_future(self.prepare_write(options, true)?, |_, ()| Ok(()))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn acquire_gatt(&self, env: Env, options: ReadOptions, kind: String) -> Result<JsObject> {
+        let kind = match kind.as_str() {
+            "write" => ubm_desktop::acquired_gatt::AcquisitionKind::Write,
+            "notify" => ubm_desktop::acquired_gatt::AcquisitionKind::Notify,
+            _ => {
+                return Err(fail(DesktopError::new(
+                    BleErrorCode::ArgumentInvalid,
+                    BleErrorDomain::Gatt,
+                    "dispatch.acquire-gatt.kind",
+                )))
+            }
+        };
         let selector = selector_of(&options.selector).map_err(to_napi)?;
-        let mode = write_mode(options.mode.as_deref()).map_err(to_napi)?;
         let ctl = self
             .control(
                 options.timeout_ms,
                 options.ticket.as_deref(),
-                "dispatch.write",
+                "dispatch.acquire-gatt",
             )
             .map_err(to_napi)?
             .with_connection_lease(options.lease);
-        bump(&self.counters.write);
-        self.central
-            .write(
-                &options.peer_id,
-                &selector,
-                options.value.as_ref().to_vec(),
-                mode,
-                ctl,
+        let ctl = self
+            .central
+            .bind_gatt_admission(&options.peer_id, ctl)
+            .map_err(fail)?;
+        let central = self.central.clone();
+        env.execute_tokio_future(
+            async move {
+                central
+                    .acquire_gatt(&options.peer_id, &selector, kind, ctl)
+                    .await
+                    .map(|handle| AcquiredInfo {
+                        handle: handle.handle,
+                        mtu: u32::from(handle.mtu),
+                    })
+                    .map_err(fail)
+            },
+            |_, value| Ok(value),
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub fn acquired_write(&self, env: Env, options: AcquiredWriteOptions) -> Result<JsObject> {
+        let ctl = self
+            .control(
+                options.timeout_ms,
+                options.ticket.as_deref(),
+                "dispatch.acquired-write",
             )
+            .map_err(to_napi)?
+            .with_connection_lease(options.lease);
+        let ctl = self
+            .central
+            .bind_gatt_admission(&options.peer_id, ctl)
+            .map_err(fail)?;
+        let value = options.value.as_ref().to_vec();
+        let central = self.central.clone();
+        env.execute_tokio_future(
+            async move {
+                central
+                    .acquired_write(&options.handle, value, ctl)
+                    .await
+                    .map_err(fail)
+            },
+            |_, ()| Ok(()),
+        )
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn acquired_receive(&self, options: AcquiredOptions) -> Result<Buffer> {
+        let ctl = self
+            .control(
+                options.timeout_ms,
+                options.ticket.as_deref(),
+                "dispatch.acquired-receive",
+            )
+            .map_err(to_napi)?
+            .with_connection_lease(options.lease);
+        self.central
+            .acquired_receive(&options.handle, ctl)
+            .await
+            .map(Buffer::from)
+            .map_err(fail)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn close_acquired(&self, options: AcquiredOptions) -> Result<()> {
+        let ctl = self
+            .control(
+                options.timeout_ms,
+                options.ticket.as_deref(),
+                "dispatch.acquired-close",
+            )
+            .map_err(to_napi)?
+            .with_connection_lease(options.lease);
+        self.central
+            .close_acquired(&options.handle, ctl)
             .await
             .map_err(fail)
     }
@@ -4259,6 +4781,8 @@ impl UbmCentral {
     pub async fn subscribe(&self, options: SubscribeOptions) -> Result<SubscribeInfo> {
         let selector = selector_of(&options.selector).map_err(to_napi)?;
         let delivery = delivery_mode(options.delivery_mode.as_deref()).map_err(to_napi)?;
+        let preference =
+            delivery_mode(options.preferred_delivery_mode.as_deref()).map_err(to_napi)?;
         let policy = match options.overflow_policy.as_deref() {
             None => OverflowPolicy::Error,
             Some(name) => OverflowPolicy::from_str(name).ok_or_else(|| {
@@ -4277,7 +4801,8 @@ impl UbmCentral {
                 "dispatch.subscribe",
             )
             .map_err(to_napi)?
-            .with_connection_lease(options.lease);
+            .with_connection_lease(options.lease)
+            .with_delivery_preference(preference);
         bump(&self.counters.subscribe);
         let observed: ObservedDelivery = self
             .central
@@ -4326,6 +4851,31 @@ impl UbmCentral {
             "dispatch.ingress-notification-drops",
         )
         .map_err(to_napi)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn resource_counters(&self) -> Result<ResourceCountersInfo> {
+        const OP: &str = "dispatch.resource-counters";
+        let counters = self.central.resource_counters().await;
+        let count = |value: usize| {
+            number_wire(
+                u64::try_from(value).map_err(|_| to_napi(overflow_error(OP)))?,
+                OP,
+            )
+            .map_err(to_napi)
+        };
+        Ok(ResourceCountersInfo {
+            native_gatt_admissions: count(counters.native_gatt_admissions)?,
+            acquired_gatt_transports: count(counters.acquired_gatt_transports)?,
+            pending_gatt_acquisitions: count(counters.pending_gatt_acquisitions)?,
+            routed_subscriptions: count(counters.routed_subscriptions)?,
+            pending_disables: count(counters.pending_disables)?,
+            retained_enablements: count(counters.retained_enablements)?,
+            live_operations: count(counters.core.live_operations)?,
+            live_connections: count(counters.core.live_connections)?,
+            live_consumers: count(counters.core.live_consumers)?,
+            scan_owned: counters.scan_owned,
+        })
     }
 
     /// One consumer's cumulative stream accounting (`null` when the core
@@ -4465,6 +5015,26 @@ impl UbmCentral {
     }
 
     /// Stage OS-directory records on the explicit synthetic boundary only.
+    #[napi(catch_unwind)]
+    pub fn stage_known_directory_peers(&self, peers: Vec<StageDirectoryPeer>) -> Result<()> {
+        let radio = self
+            .central
+            .boundary()
+            .synthetic("dispatch.stage-known-directory")
+            .map_err(to_napi)?;
+        radio.set_known_directory_peers(
+            peers
+                .into_iter()
+                .map(|peer| ubm_desktop::DirectoryPeer {
+                    peer_id: peer.peer_id,
+                    name: peer.name,
+                    connection: "unknown",
+                })
+                .collect(),
+        );
+        Ok(())
+    }
+
     #[napi(catch_unwind)]
     pub fn stage_directory_peers(&self, peers: Vec<StageDirectoryPeer>) -> Result<()> {
         let radio = self
@@ -5051,6 +5621,97 @@ impl UbmCentral {
         staged_gatt_accesses(radio).map_err(to_napi)
     }
 
+    #[napi(catch_unwind)]
+    pub async fn stage_acquired_gatt(
+        &self,
+        peer_id: String,
+        options: AcquiredGattStageOptions,
+    ) -> Result<()> {
+        let radio = self
+            .central
+            .boundary()
+            .synthetic("dispatch.stage-acquired-gatt")
+            .map_err(to_napi)?;
+        let mtu = u16::try_from(options.mtu)
+            .map_err(|_| napi::Error::from_reason("acquired MTU exceeds u16"))?;
+        radio
+            .acquired_gatt()
+            .configure(
+                &peer_id,
+                ubm_desktop::acquired_gatt::synthetic::SyntheticAcquisition {
+                    write: options.write,
+                    notify: options.notify,
+                    mtu,
+                },
+            )
+            .map_err(fail)
+    }
+    #[napi(catch_unwind)]
+    pub async fn stage_acquired_backpressure(&self, blocked: bool) -> Result<()> {
+        self.central
+            .boundary()
+            .synthetic("dispatch.stage-acquired-backpressure")
+            .map_err(to_napi)?
+            .acquired_gatt()
+            .block(blocked);
+        Ok(())
+    }
+    #[napi(catch_unwind)]
+    pub async fn staged_acquired_write_values(&self) -> Result<Vec<Buffer>> {
+        Ok(self
+            .central
+            .boundary()
+            .synthetic("dispatch.staged-acquired-values")
+            .map_err(to_napi)?
+            .acquired_gatt()
+            .writes()
+            .into_iter()
+            .map(Buffer::from)
+            .collect())
+    }
+    #[napi(catch_unwind)]
+    pub async fn staged_acquired_gatt_count(&self) -> Result<u32> {
+        self.central
+            .boundary()
+            .synthetic("dispatch.staged-acquired-count")
+            .map_err(to_napi)?
+            .acquired_gatt()
+            .active()
+            .try_into()
+            .map_err(|_| napi::Error::from_reason("acquired resource count exceeds u32"))
+    }
+    #[napi(catch_unwind)]
+    pub async fn stage_acquired_notification(&self, value: Buffer) -> Result<()> {
+        self.central
+            .boundary()
+            .synthetic("dispatch.stage-acquired-notification")
+            .map_err(to_napi)?
+            .acquired_gatt()
+            .notify(value.to_vec());
+        Ok(())
+    }
+    #[napi(catch_unwind)]
+    pub async fn stage_acquired_hup(&self) -> Result<()> {
+        self.central
+            .boundary()
+            .synthetic("dispatch.stage-acquired-hup")
+            .map_err(to_napi)?
+            .acquired_gatt()
+            .hup();
+        Ok(())
+    }
+
+    /// Owned write payloads accepted by the explicit synthetic radio.
+    #[napi(catch_unwind)]
+    pub async fn staged_write_values(&self) -> Result<Vec<Buffer>> {
+        let radio = self
+            .central
+            .boundary()
+            .synthetic("dispatch.staged-write-values")
+            .map_err(to_napi)?;
+        Ok(radio.write_values().into_iter().map(Buffer::from).collect())
+    }
+
     /// Stage the synthetic write-without-response readiness for a peer;
     /// with `announce` the radio also reports it as an OS event (synthetic
     /// only).
@@ -5070,6 +5731,87 @@ impl UbmCentral {
         if announce.unwrap_or(false) {
             radio.push_event(RadioEvent::WriteReadiness { peer_id, ready });
         }
+        Ok(())
+    }
+
+    /// Stage an observed parameter snapshot and optional later report on
+    /// the explicit synthetic radio. Production centrals reject staging.
+    #[napi(catch_unwind)]
+    pub async fn stage_connection_parameters(
+        &self,
+        peer_id: String,
+        interval_us: u32,
+        latency: u32,
+        supervision_timeout_us: u32,
+        announce: Option<bool>,
+    ) -> Result<()> {
+        let radio = self
+            .central
+            .boundary()
+            .synthetic("dispatch.stage-connection-parameters")
+            .map_err(to_napi)?;
+        let latency = u16::try_from(latency).map_err(|_| {
+            to_napi(DispatchError::new(
+                BleErrorCode::ArgumentInvalid.as_str(),
+                BleErrorDomain::Core.as_str(),
+                "dispatch.stage-connection-parameters",
+                "latency out of range",
+            ))
+        })?;
+        radio.set_connection_parameters(
+            &peer_id,
+            ubm_desktop::boundary::ObservedConnectionParameters {
+                interval_us,
+                latency,
+                supervision_timeout_us,
+            },
+        );
+        if announce.unwrap_or(false) {
+            radio.push_event(RadioEvent::ConnectionParameters {
+                peer_id,
+                interval_us,
+                latency,
+                supervision_timeout_us,
+            });
+        }
+        Ok(())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn stage_connection_parameter_failure(
+        &self,
+        peer_id: String,
+        hresult: String,
+    ) -> Result<()> {
+        let radio = self
+            .central
+            .boundary()
+            .synthetic("dispatch.stage-parameter-failure")
+            .map_err(to_napi)?;
+        let error = DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Platform,
+            "connection.parameters",
+        )
+        .with_platform(
+            PlatformDetail::new("winrt", "hresult")
+                .with_metadata("hresult", PlatformValue::Text(hresult)),
+        );
+        radio.push_event(RadioEvent::ConnectionParameterSourceFailed { peer_id, error });
+        Ok(())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn stage_connection_parameter_gap(&self, peer_id: String, missed: u32) -> Result<()> {
+        let radio = self
+            .central
+            .boundary()
+            .synthetic("dispatch.stage-parameter-gap")
+            .map_err(to_napi)?;
+        radio.push_event(RadioEvent::ConnectionParameterGap {
+            peer_id,
+            missed: u64::from(missed),
+        });
         Ok(())
     }
 
@@ -5101,6 +5843,47 @@ impl UbmCentral {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn connection_parameters_dispatch_uses_the_inner_radio_answer() {
+        let radio = FakeRadio::new();
+        let measured = ubm_desktop::boundary::ObservedConnectionParameters {
+            interval_us: 30_000,
+            latency: 4,
+            supervision_timeout_us: 2_000_000,
+        };
+        radio.set_connection_parameters("peer", measured);
+        let dispatch = DispatchRadio::Synthetic(Box::new(radio));
+        assert_eq!(
+            dispatch.connection_parameters("peer").await.unwrap(),
+            measured
+        );
+        assert!(dispatch.connection_parameters("other").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn priority_dispatch_reaches_the_synthetic_radio_for_every_preset() {
+        use ubm_desktop::boundary::ConnectionPriority;
+        let dispatch = DispatchRadio::Synthetic(Box::new(FakeRadio::new()));
+        for priority in [
+            ConnectionPriority::Balanced,
+            ConnectionPriority::HighThroughput,
+            ConnectionPriority::LowPower,
+        ] {
+            assert!(dispatch.request_priority("peer", priority).await.unwrap());
+        }
+        let DispatchRadio::Synthetic(radio) = &dispatch else {
+            panic!("synthetic fixture");
+        };
+        assert_eq!(
+            radio.priority_requests(),
+            vec![
+                ("peer".to_owned(), ConnectionPriority::Balanced),
+                ("peer".to_owned(), ConnectionPriority::HighThroughput),
+                ("peer".to_owned(), ConnectionPriority::LowPower),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn disconnect_dispatch_preserves_and_consumes_own_native_observation() {
         let radio = FakeRadio::new();
@@ -5650,6 +6433,7 @@ mod tests {
             "discover",
             "read",
             "write",
+            "write-readiness",
             "subscribe",
             "unsubscribe",
             "mtu",
@@ -5696,6 +6480,7 @@ mod tests {
             service_data: Vec::new(),
             tx_power_level: Some(-4),
             extras: AdvertisementExtras {
+                address_type: None,
                 solicited_service_uuids: Some(vec![HRM_SERVICE.to_owned()]),
                 overflow_service_uuids: None,
                 connectable: Some(true),
@@ -5707,6 +6492,7 @@ mod tests {
         let info = advertisement_info(&snapshot);
         assert_eq!(info.peer_id, "peer-1");
         assert_eq!(info.address, None);
+        assert!(matches!(info.address_type, Either::B(Null)));
         assert_eq!(info.rssi, None);
         assert_eq!(info.local_name, Some(String::new()));
         assert!(info.service_uuids.is_empty());
@@ -5731,6 +6517,7 @@ mod tests {
     #[test]
     fn staged_snapshot_validates_ranges() {
         let input = StageAdvertisementInput {
+            address_type: None,
             peer_id: "peer-1".to_owned(),
             address: None,
             rssi: Some(100_000),
@@ -5759,8 +6546,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn staged_service_graph_preserves_explicit_null_as_unknown() {
+        let mut services = hrm_services();
+        services[0].primary = Some(Either::B(Null));
+        services[0].included_services = Some(Either::B(Null));
+        let graph = staged_services(&services);
+        assert_eq!(graph[0].primary, None);
+        assert_eq!(graph[0].included_services, None);
+        services[0].primary = Some(Either::A(false));
+        services[0].included_services = Some(Either::A(Vec::new()));
+        let graph = staged_services(&services);
+        assert_eq!(graph[0].primary, Some(false));
+        assert_eq!(graph[0].included_services, Some(Vec::new()));
+    }
+
     fn hrm_services() -> Vec<StageService> {
         vec![StageService {
+            primary: Some(Either::A(true)),
+            included_services: Some(Either::A(Vec::new())),
             uuid: HRM_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: vec![StageCharacteristic {
@@ -5960,6 +6764,8 @@ mod tests {
                 owner: "dispatch-test-a".to_owned(),
                 duplicate_policy: None,
                 local_name_prefix: None,
+                winrt_scanning_mode: None,
+                winrt_allow_extended_advertisements: None,
                 service_uuids: None,
                 timeout_ms: Some(5000),
                 ticket: None,
@@ -5969,6 +6775,7 @@ mod tests {
         assert!(!session.operation_id.is_empty());
         central
             .stage_advertisement(StageAdvertisementInput {
+                address_type: None,
                 peer_id: "peer-1".to_owned(),
                 address: None,
                 rssi: Some(-60),
@@ -6074,6 +6881,7 @@ mod tests {
                 selector: selector_input(),
                 consumer: "app".to_owned(),
                 delivery_mode: None,
+                preferred_delivery_mode: None,
                 overflow_policy: None,
                 timeout_ms: Some(5000),
                 ticket: None,
@@ -6140,6 +6948,7 @@ mod tests {
             .expect("open");
         central
             .stage_advertisement(StageAdvertisementInput {
+                address_type: None,
                 peer_id: "peer-9".to_owned(),
                 address: None,
                 rssi: Some(-70),
@@ -6196,6 +7005,8 @@ mod tests {
                 owner: "dispatch-test-b".to_owned(),
                 duplicate_policy: None,
                 local_name_prefix: None,
+                winrt_scanning_mode: None,
+                winrt_allow_extended_advertisements: None,
                 service_uuids: None,
                 timeout_ms: Some(100),
                 ticket: None,
@@ -6222,6 +7033,8 @@ mod tests {
                 owner: "dispatch-test-c".to_owned(),
                 duplicate_policy: None,
                 local_name_prefix: None,
+                winrt_scanning_mode: None,
+                winrt_allow_extended_advertisements: None,
                 service_uuids: None,
                 timeout_ms: Some(5000),
                 ticket: None,
@@ -6240,6 +7053,8 @@ mod tests {
                 owner: "dispatch-test-c".to_owned(),
                 duplicate_policy: None,
                 local_name_prefix: None,
+                winrt_scanning_mode: None,
+                winrt_allow_extended_advertisements: None,
                 service_uuids: None,
                 timeout_ms: Some(5000),
                 ticket: None,
@@ -6270,6 +7085,7 @@ mod tests {
             .expect("open");
         central
             .stage_advertisement(StageAdvertisementInput {
+                address_type: None,
                 peer_id: "peer-1".to_owned(),
                 address: None,
                 rssi: Some(-60),
@@ -6375,6 +7191,7 @@ mod tests {
                     selector: selector_input(),
                     consumer: "unowned-consumer".to_owned(),
                     delivery_mode: None,
+                    preferred_delivery_mode: None,
                     overflow_policy: None,
                     timeout_ms: Some(5000),
                     ticket: None,
@@ -6464,6 +7281,7 @@ mod tests {
                     selector: selector_input(),
                     consumer: consumer.to_owned(),
                     delivery_mode: None,
+                    preferred_delivery_mode: None,
                     overflow_policy: None,
                     timeout_ms: Some(5000),
                     ticket: None,
@@ -6623,7 +7441,7 @@ mod tests {
     #[tokio::test]
     async fn ticket_cancel_before_admission_aborts_without_a_radio_call() {
         let central = connected_synthetic("dispatch-test-ticket").await;
-        let ticket = central.create_ticket().expect("ticket");
+        let ticket = central.create_ticket(None).expect("ticket");
         let ack = central.cancel_ticket(ticket.clone()).await.expect("cancel");
         assert_eq!(ack.outcome, "recorded-before-admission");
         let error = match central
@@ -6666,7 +7484,7 @@ mod tests {
             .block_radio_op("read".to_owned())
             .await
             .expect("block");
-        let ticket = central.create_ticket().expect("ticket");
+        let ticket = central.create_ticket(None).expect("ticket");
         let reader = {
             let central = std::sync::Arc::clone(&central);
             let ticket = ticket.clone();
@@ -6824,6 +7642,7 @@ mod tests {
                 selector: selector_input(),
                 consumer: "app".to_owned(),
                 delivery_mode: Some("notification".to_owned()),
+                preferred_delivery_mode: None,
                 overflow_policy: None,
                 timeout_ms: Some(5000),
                 ticket: None,

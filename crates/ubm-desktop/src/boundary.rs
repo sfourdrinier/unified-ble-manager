@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use tokio::sync::Notify;
+use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
 
 use crate::errors::DesktopError;
 
@@ -35,6 +36,9 @@ pub enum FaultOp {
     Rssi,
     /// Effective ATT MTU read (`read_effective_mtu()` fails or holds).
     EffectiveMtu,
+    WriteReadiness,
+    ConnectionParameters,
+    RequestPriority,
     /// Adapter power-state read (`adapter_state()` fails or holds).
     AdapterState,
     /// Adapter authorization read (`adapter_authorization()` fails or holds).
@@ -494,6 +498,21 @@ pub struct ScanFilterSpec {
     /// pattern also matches an address prefix, so it only narrows; the host
     /// still filters by name. Radios without a name filter ignore it.
     pub name_prefix: Option<String>,
+    pub windows: Option<WindowsScanOptions>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WindowsScanningMode {
+    Passive,
+    #[default]
+    Active,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WindowsScanOptions {
+    pub mode: WindowsScanningMode,
+    pub allow_extended_advertisements: bool,
 }
 
 impl Default for ScanFilterSpec {
@@ -503,6 +522,7 @@ impl Default for ScanFilterSpec {
             service_uuids: Vec::new(),
             duplicates: ubm_core::central::ScanDuplicatePolicy::All,
             name_prefix: None,
+            windows: None,
         }
     }
 }
@@ -585,6 +605,8 @@ pub struct PeerSnapshot {
 /// does not report it; `Some(vec![])` is a carried field with no entries.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AdvertisementExtras {
+    /// Address type belonging to this observation's native identity.
+    pub address_type: Option<AddressType>,
     /// Solicited service UUIDs (canonical strings).
     pub solicited_service_uuids: Option<Vec<String>>,
     /// Overflow-area service UUIDs (canonical strings; CoreBluetooth
@@ -815,9 +837,18 @@ pub enum ServiceAccess {
 
 /// One service snapshot with occurrence index.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncludedServiceReference {
+    pub uuid: String,
+    pub occurrence: u64,
+}
+
+/// One service snapshot with observed graph metadata; unavailable is not empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceSnapshot {
     pub uuid: String,
     pub occurrence: u64,
+    pub primary: Option<bool>,
+    pub included_services: Option<Vec<IncludedServiceReference>>,
     pub characteristics: Vec<CharacteristicSnapshot>,
     /// `Open` when the radio listed the service normally.
     pub access: ServiceAccess,
@@ -879,6 +910,14 @@ pub enum RadioEvent {
         interval_us: u32,
         latency: u16,
         supervision_timeout_us: u32,
+    },
+    ConnectionParameterSourceFailed {
+        peer_id: String,
+        error: DesktopError,
+    },
+    ConnectionParameterGap {
+        peer_id: String,
+        missed: u64,
     },
     /// The OS stopped the scan on its own (WinRT watcher `Stopped` without
     /// a stop request): `aborted` when it reported an error, with the OS's
@@ -965,6 +1004,14 @@ pub struct DirectoryPeer {
     pub connection: &'static str,
 }
 
+/// Preferred OS connection preset; request acceptance is not an observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionPriority {
+    Balanced,
+    HighThroughput,
+    LowPower,
+}
+
 /// The OS-radio seam. Implementations are `Send + Sync` and shareable: the
 /// central holds one `Arc`-capable boundary for the executor lifetime, and
 /// every future is `Send` so scan loops and op drivers can move across the
@@ -1015,6 +1062,24 @@ pub trait RadioBoundary: Send + Sync + 'static {
         async {
             let services = self.discover(peer_id).await?;
             Ok((services, self.gatt_snapshot_identity(peer_id)?))
+        }
+    }
+
+    fn peer_directory_capability_limitations(
+        &self,
+    ) -> impl Future<Output = Result<(Option<&'static str>, Option<&'static str>), DesktopError>> + Send
+    {
+        async { Ok((None, None)) }
+    }
+
+    fn known_directory_peers(
+        &self,
+    ) -> impl Future<Output = Result<Vec<DirectoryPeer>, DesktopError>> + Send {
+        async {
+            Err(unsupported(
+                "peers.known",
+                "unrestricted OS-known enumeration is unavailable",
+            ))
         }
     }
 
@@ -1122,6 +1187,25 @@ pub trait RadioBoundary: Send + Sync + 'static {
         &'a self,
         peer_id: &'a str,
     ) -> impl Future<Output = Result<Vec<ServiceSnapshot>, DesktopError>> + Send + 'a;
+    /// Explicit optional acquired transport; no ordinary-operation fallback.
+    fn acquire_gatt<'a>(
+        &'a self,
+        _scope: &'a InstanceKey,
+        kind: crate::acquired_gatt::AcquisitionKind,
+    ) -> impl Future<Output = Result<crate::acquired_gatt::AcquiredGattTransport, DesktopError>>
+    + Send
+    + 'a {
+        async move {
+            Err(unsupported(
+                match kind {
+                    crate::acquired_gatt::AcquisitionKind::Write => "gatt.acquire-write",
+                    crate::acquired_gatt::AcquisitionKind::Notify => "gatt.acquire-notify",
+                },
+                "this native boundary has no acquired transport",
+            ))
+        }
+    }
+
     /// Read one characteristic instance. Occurrence selects among
     /// duplicate UUIDs under the service instance (0-based per-UUID
     /// count); UUID alone never identifies the instance.
@@ -1193,6 +1277,32 @@ pub trait RadioBoundary: Send + Sync + 'static {
         epoch: u64,
         requested: Option<DeliveryMode>,
     ) -> impl Future<Output = Result<ObservedDelivery, DesktopError>> + Send + 'a;
+    /// Enable with an independent soft preference. Radios whose platform
+    /// cannot choose a mode keep their ordinary supported selection.
+    #[allow(clippy::too_many_arguments)]
+    fn set_notifications_with_preference<'a>(
+        &'a self,
+        peer_id: &'a str,
+        service_uuid: &'a str,
+        service_occurrence: u64,
+        characteristic_uuid: &'a str,
+        characteristic_occurrence: u64,
+        enable: bool,
+        epoch: u64,
+        requested: Option<DeliveryMode>,
+        _preferred: Option<DeliveryMode>,
+    ) -> impl Future<Output = Result<ObservedDelivery, DesktopError>> + Send + 'a {
+        self.set_notifications(
+            peer_id,
+            service_uuid,
+            service_occurrence,
+            characteristic_uuid,
+            characteristic_occurrence,
+            enable,
+            epoch,
+            requested,
+        )
+    }
     /// OS-reported ATT MTU for one peer, or `None` when the OS withholds
     /// it. An unmeasured MTU is never defaulted: the adapter fails writes
     /// closed with `capability.unavailable` instead of guessing 23.
@@ -1284,6 +1394,27 @@ pub trait RadioBoundary: Send + Sync + 'static {
     ) -> impl Future<Output = Option<WriteLimits>> + Send + 'a {
         async move { self.mtu(peer_id).await.and_then(WriteLimits::from_mtu) }
     }
+    /// Request an OS preferred preset. Acceptance never reports that the
+    /// link adopted it; the radio owns the closeable request until replaced
+    /// or disconnected.
+    fn request_priority<'a>(
+        &'a self,
+        peer_id: &'a str,
+        priority: ConnectionPriority,
+    ) -> impl Future<Output = Result<bool, DesktopError>> + Send + 'a {
+        let _ = (peer_id, priority);
+        async {
+            Err(unsupported(
+                "connection.request-priority",
+                "this radio offers no preferred-parameter control",
+            ))
+        }
+    }
+
+    fn priority_capability_limitation(&self) -> Result<Option<&'static str>, DesktopError> {
+        Ok(None)
+    }
+
     /// Observed LE connection parameters for `peer_id`. Interval and
     /// supervision timeout are microseconds. Changes arrive as
     /// [`RadioEvent::ConnectionParameters`]. Platforms without the API
@@ -1414,6 +1545,13 @@ pub trait RadioBoundary: Send + Sync + 'static {
     ) -> Option<(ubm_core::central::CapabilityState, &'static str)> {
         None
     }
+    /// Probe the instantiated connection-parameter API before registering its
+    /// capability. A failed platform probe remains an error, never an absence.
+    fn connection_parameters_capability_limitation(
+        &self,
+    ) -> Result<Option<&'static str>, DesktopError> {
+        Ok(None)
+    }
     /// Whether an adapter loss tears down live work on this radio (finding
     /// 57): the desktop OS radios do, as their legacy backends did. Default:
     /// the loss is reported as a state change only.
@@ -1469,6 +1607,7 @@ const FAKE_CONTROL_CAP: usize = 64;
 /// call is recorded so tests can assert cleanup ordering (e.g. stop-scan
 /// after start failure never fires twice).
 pub struct FakeRadio {
+    acquired: crate::acquired_gatt::synthetic::SyntheticAcquiredGatt,
     state: StdMutex<FakeInner>,
     notify: Arc<Notify>,
     calls_changed: tokio::sync::watch::Sender<()>,
@@ -1528,6 +1667,9 @@ struct FakeInner {
     physical_generations: HashMap<String, u64>,
     directory_peers: Option<Vec<DirectoryPeer>>,
     bonded_directory_peers: Option<Vec<DirectoryPeer>>,
+    known_directory_peers: Option<Vec<DirectoryPeer>>,
+    directory_capability_limitations:
+        Result<(Option<&'static str>, Option<&'static str>), DesktopError>,
     directory_unblocked_reads: usize,
     canonical_peer_ids: HashMap<String, String>,
     faults: HashMap<FaultOp, VecDeque<(String, Option<crate::errors::PlatformDetail>)>>,
@@ -1582,6 +1724,7 @@ struct FakeInner {
     /// Observed characteristic writes: addressed instance plus the
     /// response mode the adapter selected (`true` = with-response).
     writes: Vec<(InstanceKey, bool)>,
+    write_values: Vec<Vec<u8>>,
     /// Observed descriptor reads/writes: addressed descriptor keys.
     descriptor_reads: Vec<DescriptorKey>,
     descriptor_writes: Vec<DescriptorKey>,
@@ -1590,6 +1733,7 @@ struct FakeInner {
     enable_epochs: Vec<(InstanceKey, u64)>,
     /// Delivery requirement carried by each enable, in enable order.
     delivery_requests: Vec<Option<DeliveryMode>>,
+    delivery_preferences: Vec<Option<DeliveryMode>>,
     /// Scripted connected RSSI per peer (unset: unmeasured).
     rssi: HashMap<String, i16>,
     /// Scripted effective ATT MTU per peer (unset: the OS withholds it).
@@ -1625,6 +1769,9 @@ struct FakeInner {
     write_readiness: HashMap<String, bool>,
     /// Scripted per-peer connection parameters (unset: unsupported).
     connection_parameters: HashMap<String, ObservedConnectionParameters>,
+    priority_requests: Vec<(String, ConnectionPriority)>,
+    connection_parameters_capability: Result<Option<&'static str>, DesktopError>,
+    priority_capability: Result<Option<&'static str>, DesktopError>,
 }
 
 impl Default for FakeRadio {
@@ -1634,6 +1781,31 @@ impl Default for FakeRadio {
 }
 
 impl FakeRadio {
+    pub fn set_priority_capability_limitation(
+        &self,
+        limitation: Result<Option<&'static str>, DesktopError>,
+    ) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .priority_capability = limitation;
+    }
+    pub fn priority_requests(&self) -> Vec<(String, ConnectionPriority)> {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .priority_requests
+            .clone()
+    }
+    pub fn set_connection_parameters_capability_limitation(
+        &self,
+        result: Result<Option<&'static str>, DesktopError>,
+    ) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .connection_parameters_capability = result;
+    }
     /// Retain a separately owned cleanup refusal after confirmed link release.
     pub fn set_disconnect_cleanup_failure(&self, peer: &str, error: DesktopError) {
         self.state
@@ -1705,12 +1877,15 @@ impl FakeRadio {
 
     pub fn new() -> Self {
         Self {
+            acquired: crate::acquired_gatt::synthetic::SyntheticAcquiredGatt::default(),
             state: StdMutex::new(FakeInner {
                 disconnect_observations: HashMap::new(),
                 disconnect_cleanup_failures: HashMap::new(),
                 disconnect_cleanup_retire_on_finish: std::collections::HashSet::new(),
                 directory_peers: None,
                 bonded_directory_peers: None,
+                known_directory_peers: None,
+                directory_capability_limitations: Ok((None, None)),
                 directory_unblocked_reads: 0,
                 canonical_peer_ids: HashMap::new(),
                 #[cfg(target_os = "linux")]
@@ -1742,10 +1917,12 @@ impl FakeRadio {
                 live: HashSet::new(),
                 close_failures: Vec::new(),
                 writes: Vec::new(),
+                write_values: Vec::new(),
                 descriptor_reads: Vec::new(),
                 descriptor_writes: Vec::new(),
                 enable_epochs: Vec::new(),
                 delivery_requests: Vec::new(),
+                delivery_preferences: Vec::new(),
                 rssi: HashMap::new(),
                 effective_mtu: HashMap::new(),
                 adapter_state: None,
@@ -1761,6 +1938,9 @@ impl FakeRadio {
                 access: HashMap::new(),
                 write_readiness: HashMap::new(),
                 connection_parameters: HashMap::new(),
+                priority_requests: Vec::new(),
+                priority_capability: Ok(None),
+                connection_parameters_capability: Ok(None),
             }),
             notify: Arc::new(Notify::new()),
             calls_changed: tokio::sync::watch::channel(()).0,
@@ -1776,9 +1956,30 @@ impl FakeRadio {
         state.teardown = teardown;
     }
 
+    pub fn acquired_gatt(&self) -> &crate::acquired_gatt::synthetic::SyntheticAcquiredGatt {
+        &self.acquired
+    }
+
     /// Explicit opt-in deterministic directory; never a production fallback.
     pub fn set_directory_peers(&self, peers: Vec<DirectoryPeer>) {
         self.state.lock().expect("fake radio state").directory_peers = Some(peers);
+    }
+
+    pub fn set_directory_capability_limitations(
+        &self,
+        limitations: Result<(Option<&'static str>, Option<&'static str>), DesktopError>,
+    ) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .directory_capability_limitations = limitations;
+    }
+
+    pub fn set_known_directory_peers(&self, peers: Vec<DirectoryPeer>) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .known_directory_peers = Some(peers);
     }
 
     pub fn set_bonded_directory_peers(&self, peers: Vec<DirectoryPeer>) {
@@ -2095,6 +2296,15 @@ impl FakeRadio {
             .clone()
     }
 
+    /// Soft preferences entering the native boundary, independent of requirements.
+    pub fn delivery_preferences(&self) -> Vec<Option<DeliveryMode>> {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .delivery_preferences
+            .clone()
+    }
+
     /// Script the delivery mode later enables report as observed (models a
     /// radio that wrote a different mode than requested, or none).
     pub fn script_observed_delivery(&self, observed: ObservedDelivery) {
@@ -2143,6 +2353,15 @@ impl FakeRadio {
     /// plus the response mode (`true` = with-response).
     pub fn writes(&self) -> Vec<(InstanceKey, bool)> {
         self.state.lock().expect("fake radio state").writes.clone()
+    }
+
+    /// Owned bytes actually accepted by the explicit synthetic radio.
+    pub fn write_values(&self) -> Vec<Vec<u8>> {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .write_values
+            .clone()
     }
 
     /// Observed descriptor reads in order: addressed descriptor keys.
@@ -2319,6 +2538,60 @@ fn descriptor_key(
 }
 
 impl RadioBoundary for FakeRadio {
+    async fn acquire_gatt(
+        &self,
+        scope: &InstanceKey,
+        kind: crate::acquired_gatt::AcquisitionKind,
+    ) -> Result<crate::acquired_gatt::AcquiredGattTransport, DesktopError> {
+        self.record(match kind {
+            crate::acquired_gatt::AcquisitionKind::Write => "acquire_write",
+            crate::acquired_gatt::AcquisitionKind::Notify => "acquire_notify",
+        });
+        self.acquired.acquire(scope, kind)
+    }
+
+    fn priority_capability_limitation(&self) -> Result<Option<&'static str>, DesktopError> {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .priority_capability
+            .clone()
+    }
+    async fn request_priority(
+        &self,
+        peer_id: &str,
+        priority: ConnectionPriority,
+    ) -> Result<bool, DesktopError> {
+        self.record("request_priority");
+        self.gate(FaultOp::RequestPriority).await;
+        if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::RequestPriority)
+        {
+            return Err(scripted(
+                DesktopError::new(
+                    ubm_core::contracts::BleErrorCode::PlatformFailure,
+                    ubm_core::contracts::BleErrorDomain::Platform,
+                    "connection.request-priority",
+                )
+                .with_detail(detail),
+                platform,
+            ));
+        }
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .priority_requests
+            .push((peer_id.to_owned(), priority));
+        Ok(true)
+    }
+    fn connection_parameters_capability_limitation(
+        &self,
+    ) -> Result<Option<&'static str>, DesktopError> {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .connection_parameters_capability
+            .clone()
+    }
     #[cfg(target_os = "linux")]
     async fn accept_physical_loss(&self, peer: &str, generation: u64, _reason: u8) -> bool {
         let mut state = self.state.lock().expect("fake radio state");
@@ -2345,6 +2618,27 @@ impl RadioBoundary for FakeRadio {
             return Ok(identity);
         }
         Ok(state.gatt_identities.get(peer_id).cloned())
+    }
+
+    async fn peer_directory_capability_limitations(
+        &self,
+    ) -> Result<(Option<&'static str>, Option<&'static str>), DesktopError> {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .directory_capability_limitations
+            .clone()
+    }
+
+    async fn known_directory_peers(&self) -> Result<Vec<DirectoryPeer>, DesktopError> {
+        self.record("known_directory_peers");
+        self.directory_gate().await;
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .known_directory_peers
+            .clone()
+            .ok_or_else(|| unsupported("peers.known", "directory not scripted"))
     }
 
     async fn connected_peers(
@@ -2375,11 +2669,11 @@ impl RadioBoundary for FakeRadio {
     async fn resolve_peer(&self, peer_id: &str) -> Result<Option<DirectoryPeer>, DesktopError> {
         self.record("resolve_peer");
         self.directory_gate().await;
-        self.state
-            .lock()
-            .expect("fake radio state")
-            .directory_peers
+        let state = self.state.lock().expect("fake radio state");
+        state
+            .known_directory_peers
             .as_ref()
+            .or(state.directory_peers.as_ref())
             .map(|peers| {
                 peers
                     .iter()
@@ -2586,7 +2880,7 @@ impl RadioBoundary for FakeRadio {
         service_occurrence: u64,
         characteristic_uuid: &str,
         characteristic_occurrence: u64,
-        _value: Vec<u8>,
+        value: Vec<u8>,
         with_response: bool,
     ) -> Result<(), DesktopError> {
         self.record("write_characteristic");
@@ -2594,7 +2888,9 @@ impl RadioBoundary for FakeRadio {
             return Err(scripted(DesktopError::write_failed(detail), platform));
         }
         self.gate(FaultOp::Write).await;
-        self.state.lock().expect("fake radio state").writes.push((
+        let mut state = self.state.lock().expect("fake radio state");
+        state.write_values.push(value);
+        state.writes.push((
             (
                 peer_id.to_owned(),
                 service_uuid.to_owned(),
@@ -2717,6 +3013,39 @@ impl RadioBoundary for FakeRadio {
             None => ObservedDelivery::Unknown,
         });
         Ok(observed)
+    }
+
+    async fn set_notifications_with_preference(
+        &self,
+        peer_id: &str,
+        service_uuid: &str,
+        service_occurrence: u64,
+        characteristic_uuid: &str,
+        characteristic_occurrence: u64,
+        enable: bool,
+        epoch: u64,
+        requested: Option<DeliveryMode>,
+        preferred: Option<DeliveryMode>,
+    ) -> Result<ObservedDelivery, DesktopError> {
+        if enable {
+            self.state
+                .lock()
+                .expect("fake radio state")
+                .delivery_preferences
+                .push(preferred);
+        }
+        // Scripted radio reports its own answer; preference is not an observed outcome.
+        self.set_notifications(
+            peer_id,
+            service_uuid,
+            service_occurrence,
+            characteristic_uuid,
+            characteristic_occurrence,
+            enable,
+            epoch,
+            requested,
+        )
+        .await
     }
 
     async fn next_event(&self) -> Option<RadioEvent> {
@@ -3090,6 +3419,20 @@ impl RadioBoundary for FakeRadio {
         peer_id: &str,
     ) -> Result<ObservedConnectionParameters, DesktopError> {
         self.record("connection_parameters");
+        self.gate(FaultOp::ConnectionParameters).await;
+        if let Some(ScriptedFault { detail, platform }) =
+            self.take_fault(FaultOp::ConnectionParameters)
+        {
+            return Err(scripted(
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Platform,
+                    "connection.parameters",
+                )
+                .with_detail(detail),
+                platform,
+            ));
+        }
         let scripted = self
             .state
             .lock()
@@ -3104,6 +3447,18 @@ impl RadioBoundary for FakeRadio {
 
     async fn write_without_response_ready(&self, peer_id: &str) -> Result<bool, DesktopError> {
         self.record("write_without_response_ready");
+        self.gate(FaultOp::WriteReadiness).await;
+        if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::WriteReadiness) {
+            return Err(scripted(
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Platform,
+                    "gatt.write-readiness",
+                )
+                .with_detail(detail),
+                platform,
+            ));
+        }
         let scripted = self
             .state
             .lock()

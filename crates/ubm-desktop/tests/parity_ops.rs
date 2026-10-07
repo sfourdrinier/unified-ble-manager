@@ -37,6 +37,8 @@ fn advertisement(peer_id: &str) -> RadioEvent {
 
 fn control_service() -> ServiceSnapshot {
     ServiceSnapshot {
+        primary: None,
+        included_services: None,
         uuid: HRM_SERVICE.to_owned(),
         occurrence: 0,
         characteristics: vec![CharacteristicSnapshot {
@@ -756,6 +758,8 @@ const HRM_MEASUREMENT: &str = "00002a37-0000-1000-8000-00805f9b34fb";
 
 fn notify_service() -> ServiceSnapshot {
     ServiceSnapshot {
+        primary: None,
+        included_services: None,
         uuid: HRM_SERVICE.to_owned(),
         occurrence: 0,
         characteristics: vec![CharacteristicSnapshot {
@@ -902,6 +906,7 @@ async fn advertisement_extras_reach_the_host_verbatim() {
         .await
         .expect("scan");
     let extras = ubm_desktop::AdvertisementExtras {
+        address_type: None,
         solicited_service_uuids: Some(vec![HRM_SERVICE.to_owned()]),
         overflow_service_uuids: Some(Vec::new()),
         connectable: None,
@@ -1312,4 +1317,79 @@ async fn a_link_loss_answer_is_connection_lost_through_the_central() {
         assert_eq!(discover.code_str(), "connection.lost", "{platform:?}");
         assert_eq!(discover.platform(), Some(platform));
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn watch_probe_refuses_a_preexisting_failed_source_without_refusing_an_ordinary_snapshot() {
+    let central = open().await;
+    connected_peer(&central, "peer-source").await;
+    central.boundary().set_connection_parameters(
+        "peer-source",
+        ubm_desktop::ObservedConnectionParameters {
+            interval_us: 30_000,
+            latency: 2,
+            supervision_timeout_us: 4_000_000,
+        },
+    );
+    let mut reports = central.connection_parameter_events();
+    let original = ubm_desktop::DesktopError::new(
+        ubm_core::contracts::BleErrorCode::StreamClosed,
+        ubm_core::contracts::BleErrorDomain::Stream,
+        "native.parameter-source",
+    );
+    central
+        .boundary()
+        .push_event(RadioEvent::ConnectionParameterSourceFailed {
+            peer_id: "peer-source".into(),
+            error: original,
+        });
+    tokio::time::timeout(Duration::from_secs(2), reports.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let error = central
+        .connection_parameters_watch_initial("peer-source", "lease-a", OpControl::budget_ms(1000))
+        .await
+        .unwrap_err();
+    assert_eq!(error.operation(), "native.parameter-source");
+    assert_eq!(error.code_str(), "stream.closed");
+    assert_eq!(
+        central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| call.as_str() == "connection_parameters")
+            .count(),
+        0
+    );
+    assert_eq!(
+        central
+            .connection_parameters("peer-source", "lease-a", OpControl::budget_ms(1000))
+            .await
+            .unwrap()
+            .interval_us,
+        30_000
+    );
+    central
+        .boundary()
+        .push_event(RadioEvent::ConnectionParameters {
+            peer_id: "peer-source".into(),
+            interval_us: 60_000,
+            latency: 2,
+            supervision_timeout_us: 4_000_000,
+        });
+    tokio::time::timeout(Duration::from_secs(2), reports.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        central
+            .connection_parameters_watch_initial(
+                "peer-source",
+                "lease-a",
+                OpControl::budget_ms(1000)
+            )
+            .await
+            .is_ok()
+    );
 }

@@ -1457,6 +1457,15 @@ const manager = await createBleManagerFromProvider(
             </p>
             <h3>Connection and GATT recovery</h3>
             <p>
+              Eligible Linux <code>acquireWrite()</code> and <code>acquireNotifications()</code> calls cross the
+              trusted-main route to the same native central used by Node. Renderers receive opaque handles and copied
+              packets. The
+              <a href="NODE.md#explicit-bluez-acquired-gatt-transports">acquired transport contract</a> applies to MTU
+              limits, backpressure, cancellation and commit uncertainty. Iterator return closes an acquired notification
+              transport. Main retains failed close ownership through rediscovery, connection release, renderer reload
+              and admission rollback; another renderer lease cannot use or close the handle.
+            </p>
+            <p>
               The shared IPC client used by Electron and Tauri invalidates a GATT generation and publishes its change
               cause before waiting for subscription cleanup. Its handles become unusable immediately; an unsubscribe
               failure cannot restore validity. Subscriptions admitted during early-event replay remain owned until their
@@ -1618,8 +1627,8 @@ function recorderForMain(central: DesktopRustCoreCentral) {
               result.
             </p>
             <p>
-              The renderer and main negotiate the IPC protocol at bootstrap; both offer exactly version 5. Version 5
-              adds security routes, address targeting, connection intent and platform scan-option forwarding. A
+              The renderer and main negotiate the IPC protocol at bootstrap; both offer exactly version 6. Version 5
+              added security routes, address targeting, connection intent and platform scan-option forwarding. A
               capability still describes the instantiated backend's implementation; transport support does not invent
               native support. The caller's deadline crosses as a relative <code>budgetMs</code> that main admits against
               its own monotonic clock at receipt (the renderer's <code>performance.now()</code> instant has a different
@@ -1712,6 +1721,11 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
               package digest, OS/runtime/ABI, hardware, scenario, limitations, and proof level. See
               <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a> and the controlling
               <a href="README.md#current-50-authority">Current 5.0 authority</a>.
+            </p>
+            <p>
+              IPC version 6 requires nullable observed service graph facts and the native readiness/acquired-GATT route
+              contract. Version-5 peers are refused during bootstrap, before a renderer lease or radio effect is
+              created.
             </p>
           </section>
         </div>

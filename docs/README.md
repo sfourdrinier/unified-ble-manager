@@ -92,7 +92,7 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 | [`NATIVE_CAPABILITY_AUDIT.md`](NATIVE_CAPABILITY_AUDIT.md)                                                   | Active native operation boundaries, chooser mechanisms and durable intake evidence limits                                    | Current    |
 | [`ACCESSORY_CHOOSER_QUALIFICATION.md`](ACCESSORY_CHOOSER_QUALIFICATION.md)                                   | ASK/CDM reference setup and bounded physical qualification procedure; not a receipt                                          | Current    |
 | [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)                           | Historical clean-baseline architecture and migration plan; not current 5.0 authority                                         | Historical |
-| [`MOBILE_RUST_WIRE.md`](MOBILE_RUST_WIRE.md)                                                                 | React Native Rust owner: process host, session leases, `ubm-mobile-wire/1` op table, drain records, platform radio interface | Current    |
+| [`MOBILE_RUST_WIRE.md`](MOBILE_RUST_WIRE.md)                                                                 | React Native Rust owner: process host, session leases, `ubm-mobile-wire/2` op table, drain records, platform radio interface | Current    |
 | [`BACKEND_AUTHORING.md`](BACKEND_AUTHORING.md)                                                               | Authoring a third-party backend against `unified-ble-manager/backend-sdk`                                                    | Current    |
 | [`TCK.md`](TCK.md)                                                                                           | Backend TCK: required scenarios and running `runBackendAuthorTck` externally                                                 | Current    |
 | [`DISCOVERY_AND_PROFILES.md`](DISCOVERY_AND_PROFILES.md)                                                     | Discovery helpers and the profile subpath import map (inherited helpers marked transitional)                                 | Current    |
@@ -122,6 +122,13 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 | [`NATIVE_ARTIFACTS.md`](NATIVE_ARTIFACTS.md)                                                                           | Precompiled Rust artifact lifecycle: status, one-command refresh, and where the checks run         | Current    |
 
 ## Policy, security, and process
+
+| Document                                                                                       | What it is                                                   | Status     |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------- |
+| [`review/RC21_REMEDIATION.md`](review/RC21_REMEDIATION.md)                                     | PR #251 second-review remediation and verification ledger    | Current    |
+| [`review/RC21_BLUEZ_LIVE_QUALIFICATION_PLAN.md`](review/RC21_BLUEZ_LIVE_QUALIFICATION_PLAN.md) | Prepared lab daemon activation, rollback and live-test scope | Current    |
+| [`review/rc21-round2/REVIEW.md`](review/rc21-round2/REVIEW.md)                                 | Immutable second-review findings at b80542f3                 | Historical |
+| [`review/rc21-round2/AGENT_HANDOFF.md`](review/rc21-round2/AGENT_HANDOFF.md)                   | Immutable second-review implementation handoff               | Historical |
 
 | Document                                                                               | What it is                                                                                                                        | Status     |
 | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------- |

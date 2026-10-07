@@ -13,6 +13,7 @@ import type { DesktopRustCoreDirectoryPeer } from './desktop-rust-core-binding'
 export interface DesktopPeerDirectoryHooks {
   readonly backendId: string
   generation(): number
+  known?(options: BackendPeerQuery): Promise<readonly DesktopRustCoreDirectoryPeer[]>
   connected(services: readonly string[], options: BackendPeerQuery): Promise<readonly DesktopRustCoreDirectoryPeer[]>
   resolve(peerId: string, options: BackendPeerQuery): Promise<DesktopRustCoreDirectoryPeer | null>
   bonded?(options: BackendPeerQuery): Promise<readonly DesktopRustCoreDirectoryPeer[]>
@@ -28,7 +29,11 @@ const BLUEZ = /^hci[0-9]+\/dev_(?:[0-9A-F]{2}_){5}[0-9A-F]{2}$/u
 /** Native OS directory semantics, independent of connection ownership. */
 export function createDesktopPeerDirectory(hooks: DesktopPeerDirectoryHooks): PeerDirectoryBackend<string> {
   const nativeIdentifier = (value: string): string | null => {
-    if (hooks.backendId === 'unified-ble:winrt') return ADDRESS.test(value) ? value.toUpperCase() : null
+    if (hooks.backendId === 'unified-ble:winrt') {
+      const split = /^(public|random|unknown):(.+)$/u.exec(value)
+      if (split !== null) return ADDRESS.test(split[2] ?? '') ? `${split[1]}:${split[2]?.toUpperCase()}` : null
+      return ADDRESS.test(value) ? value.toUpperCase() : null
+    }
     if (hooks.backendId === 'unified-ble:bluez-dbus') return BLUEZ.test(value) ? value : null
     return GUID.test(value) ? value.toLowerCase() : null
   }
@@ -75,7 +80,12 @@ export function createDesktopPeerDirectory(hooks: DesktopPeerDirectoryHooks): Pe
       state: Object.freeze({
         reachability: 'unknown',
         connection: record.connection,
-        bond: source === 'system-bonded' ? 'bonded' : 'unsupported',
+        bond:
+          source === 'system-bonded'
+            ? 'bonded'
+            : hooks.backendId === 'unified-ble:corebluetooth'
+              ? 'unsupported'
+              : 'unknown',
         lastSeenAtMonotonicMs: null
       })
     })
@@ -110,6 +120,21 @@ export function createDesktopPeerDirectory(hooks: DesktopPeerDirectoryHooks): Pe
     known: async (options: BackendPeerQuery) => {
       const operation = 'peers.known'
       const assertCurrent = admit(operation, options)
+      if (hooks.known !== undefined) {
+        if (options.services !== undefined && options.services.length > 0) return unsupported(`${operation}.services`)
+        const references =
+          options.references === undefined ? null : new Set(options.references.map(ref => identifier(ref, operation)))
+        const records = await hooks.known(options)
+        assertCurrent()
+        if (!Array.isArray(records)) throw contractError('protocol.malformed', 'platform', operation)
+        for (const record of records) validateRecord(record, operation)
+        return Object.freeze(
+          records
+            .filter(record => references === null || references.has(nativeIdentifier(record.peerId) ?? ''))
+            .filter(() => options.sources === undefined || options.sources.includes('backend-cache'))
+            .map(record => map(record, 'backend-cache'))
+        )
+      }
       if (hooks.resolveFromBonded === true) return unsupported(operation)
       if (options.references === undefined) return unsupported(`${operation}.references-required`)
       if (options.services !== undefined && options.services.length > 0) return unsupported(`${operation}.services`)
@@ -126,9 +151,12 @@ export function createDesktopPeerDirectory(hooks: DesktopPeerDirectoryHooks): Pe
     connected: async (options: BackendPeerQuery) => {
       const operation = 'peers.connected'
       const assertCurrent = admit(operation, options)
-      if (options.services === undefined || options.services.length === 0)
+      const apple = hooks.backendId === 'unified-ble:corebluetooth'
+      if (apple && (options.services === undefined || options.services.length === 0))
         return unsupported(`${operation}.services-required`)
-      const services = [...new Set(options.services.map(canonicalUuid))]
+      if (!apple && options.services !== undefined && options.services.length > 0)
+        return unsupported(`${operation}.services`)
+      const services = [...new Set((options.services ?? []).map(canonicalUuid))]
       const references =
         options.references === undefined ? null : new Set(options.references.map(ref => identifier(ref, operation)))
       const records = await hooks.connected(services, options)

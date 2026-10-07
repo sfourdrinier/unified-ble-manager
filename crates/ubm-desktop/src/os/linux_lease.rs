@@ -378,24 +378,13 @@ impl<C: LeaseClient> Ledger<C> {
             match receipt.scope {
                 Scope::Physical if receipt.generation != 0 => {}
                 Scope::Reservation if receipt.generation == 0 && token.generation.is_none() => {}
-                // Another owner still holds the link. This token is retired.
-                // There is no physical generation, no disconnect, and no
-                // AckLease: the daemon did not end the ACL.
+                // The daemon retains a generation-scoped cleanup obligation
+                // when this logical token is ACKed. This reports no ACL end.
                 Scope::Protected
                     if receipt.generation != 0
                         && token.generation == Some(receipt.generation)
                         && receipt.disconnect_reason.is_none() =>
-                {
-                    *state = State::Released(ReleaseObservation::default());
-                    let mut entries = self.entries.lock().expect("lease ledger");
-                    if entries
-                        .get(peer)
-                        .is_some_and(|owned| Arc::ptr_eq(owned, entry))
-                    {
-                        entries.remove(peer);
-                    }
-                    return Ok(ReleaseObservation::default());
-                }
+                {}
                 _ => return Err(failed("daemon did not confirm physical or uneffected reservation release; lease remains owned")
                     .with_platform(PlatformDetail::new("bluez-le-lease", receipt.scope.native_name())
                         .with_metadata("token", PlatformValue::Text(receipt.token.to_string()))
@@ -423,6 +412,11 @@ impl<C: LeaseClient> Ledger<C> {
             .lock()
             .expect("lease maintenance")
             .insert(entry.reservation, Arc::clone(&acknowledgment));
+        if reason.physical_generation.is_none() {
+            // A protected logical release transfers reconciliation to the
+            // daemon; it is not a retained observation of physical loss.
+            entry.physical_generation.store(0, Ordering::Release);
+        }
         self.retire(peer, entry);
         let reservation = entry.reservation;
         drop(self.start_acknowledgment(reservation, &acknowledgment));
@@ -1224,8 +1218,9 @@ mod tests {
         );
         assert_eq!(owner_a.len(), 0);
         assert_eq!(owner_a.terminal_facts_len(), 0);
+        assert!(owner_a.retry_maintenance().await.is_empty());
         assert_eq!(owner_a.maintenance_len(), 0);
-        assert!(client_a.acknowledgments.lock().unwrap().is_empty());
+        assert_eq!(*client_a.acknowledgments.lock().unwrap(), vec![41]);
         assert_eq!(owner_b.len(), 1);
         assert!(!owner_a.physical_lost("peer", 73).await);
         client_b.receipts.lock().unwrap().push_back(Ok(Receipt {
@@ -1245,6 +1240,46 @@ mod tests {
         );
         assert!(!owner_a.physical_lost("peer", 73).await);
         assert!(owner_b.physical_lost("peer", 73).await);
+    }
+
+    #[tokio::test]
+    async fn protected_release_ack_failure_remains_owned_without_repeating_link_release() {
+        let ledger = Ledger::default();
+        let client = Client::new();
+        client.reserve.add_permits(1);
+        client.connect.add_permits(1);
+        client
+            .acknowledgment_failures
+            .lock()
+            .unwrap()
+            .push_back(failed("protected ACK refused"));
+        ledger
+            .clone()
+            .connect("peer".into(), client.clone())
+            .await
+            .unwrap();
+        client.receipts.lock().unwrap().push_back(Ok(Receipt {
+            token: 41,
+            generation: 73,
+            scope: Scope::Protected,
+            disconnect_reason: None,
+        }));
+        assert_eq!(
+            ledger
+                .clone()
+                .release_with_observation("peer")
+                .await
+                .unwrap(),
+            ReleaseObservation::default()
+        );
+        settled().await;
+        assert_eq!(ledger.len(), 0);
+        assert_eq!(ledger.terminal_facts_len(), 0);
+        assert_eq!(ledger.maintenance_len(), 1);
+        assert!(ledger.retry_maintenance().await.is_empty());
+        assert_eq!(ledger.maintenance_len(), 0);
+        assert_eq!(*client.acknowledgments.lock().unwrap(), vec![41, 41]);
+        assert_eq!(client.calls.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

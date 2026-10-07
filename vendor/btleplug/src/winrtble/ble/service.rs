@@ -16,6 +16,7 @@ pub struct BLEService {
     pub instance: u64,
     pub characteristics: HashMap<AttributeKey, BLECharacteristic>,
     pub access: ServiceRestriction,
+    pub included_services: Option<Vec<crate::api::IncludedService>>,
 }
 
 impl BLEService {
@@ -34,7 +35,8 @@ impl BLEService {
         Service {
             uuid: self.uuid,
             instance: self.instance,
-            primary: true,
+            primary: None,
+            included_services: self.included_services.clone(),
             characteristics,
         }
     }

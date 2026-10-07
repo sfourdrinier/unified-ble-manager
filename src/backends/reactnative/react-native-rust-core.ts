@@ -1,7 +1,7 @@
 // src/backends/reactnative/react-native-rust-core.ts
 //
 // The React Native seam over the process-owned Rust mobile host
-// (docs/MOBILE_RUST_WIRE.md, wire `ubm-mobile-wire/1`). The production
+// (docs/MOBILE_RUST_WIRE.md, wire `ubm-mobile-wire/2`). The production
 // implementation is `createReactNativeRustCoreBinding` over the
 // `UnifiedBleRustCore` TurboModule; tests inject a binding built by the same
 // function over a deterministic native module, so every byte crosses the real

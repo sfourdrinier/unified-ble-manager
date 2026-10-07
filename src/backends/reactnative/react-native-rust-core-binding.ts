@@ -2,7 +2,7 @@
 //
 // The production binding over the `UnifiedBleRustCore` TurboModule
 // (src/NativeUnifiedBleRustCore.ts). Session operations cross the strict
-// `ubm-mobile-wire/1` codec in ./rust-core-wire. OS accessory setup and the
+// `ubm-mobile-wire/2` codec in ./rust-core-wire. OS accessory setup and the
 // `ubm-accessory-authorized/1` saved directory are separate versioned native
 // controls, not Rust session envelopes. Neither path guesses a peer identity.
 //

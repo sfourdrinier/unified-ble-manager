@@ -36,15 +36,29 @@ beforeEach(() => {
   mockTurboModule = null
 })
 
-test.each(['android', 'apple'])('trusted %s host controls can verify identity without acquiring a session', async platform => {
-  const native = new DeterministicRustCoreNative({ platform })
-  const binding = createReactNativeRustCoreBinding({ platform, native })
-  await expect(binding.verifyNativeIdentity()).resolves.toBeUndefined()
-  expect(counts(native)).toEqual({ open: 0, close: 0, invoke: 0 })
-  native.identity = { ...native.identity, sourceDigest: '0'.repeat(64) }
-  await expect(failure(binding.verifyNativeIdentity())).resolves.toMatchObject({ code: 'protocol.incompatible' })
-  expect(counts(native)).toEqual({ open: 0, close: 0, invoke: 0 })
-})
+test.each(['android', 'apple'])(
+  'the previous %s mobile wire is refused before any native session or effect',
+  async platform => {
+    const native = new DeterministicRustCoreNative({ platform })
+    native.wireRevisionAnswer = 'ubm-mobile-wire/1'
+    const binding = createReactNativeRustCoreBinding({ platform, native })
+    await expect(failure(binding.verifyNativeIdentity())).resolves.toMatchObject({ code: 'protocol.incompatible' })
+    expect(counts(native)).toEqual({ open: 0, close: 0, invoke: 0 })
+  }
+)
+
+test.each(['android', 'apple'])(
+  'trusted %s host controls can verify identity without acquiring a session',
+  async platform => {
+    const native = new DeterministicRustCoreNative({ platform })
+    const binding = createReactNativeRustCoreBinding({ platform, native })
+    await expect(binding.verifyNativeIdentity()).resolves.toBeUndefined()
+    expect(counts(native)).toEqual({ open: 0, close: 0, invoke: 0 })
+    native.identity = { ...native.identity, sourceDigest: '0'.repeat(64) }
+    await expect(failure(binding.verifyNativeIdentity())).resolves.toMatchObject({ code: 'protocol.incompatible' })
+    expect(counts(native)).toEqual({ open: 0, close: 0, invoke: 0 })
+  }
+)
 
 test('offline recording controls verify identity without opening a BLE session and preserve receivers', async () => {
   const native = new DeterministicRustCoreNative({ platform: 'android' })
@@ -146,7 +160,7 @@ describe('PR210-18 runtime identity is checked before any session or radio op', 
     const binding = createReactNativeRustCoreBinding({ platform: 'android', native })
     const error = await failure(binding.openSession('owner-a'))
     expect(error.platform.metadata.fields).toEqual(['wireRevision()'])
-    native.wireRevisionAnswer = 'ubm-mobile-wire/1'
+    native.wireRevisionAnswer = 'ubm-mobile-wire/2'
     native.contractRevisionAnswer = 'C-UBM.0.0.0'
     expect((await failure(binding.openSession('owner-a'))).platform.metadata.fields).toEqual(['contractRevision()'])
     expect(counts(native).open).toBe(0)
@@ -178,7 +192,7 @@ describe('PR210-15 every bootstrap failure closes the lease it opened', () => {
       JSON.stringify({
         sessionId: id,
         contractRevision: EXPECTED_NATIVE_BUILD_IDENTITY.contractRevision,
-        wireRevision: 'ubm-mobile-wire/1',
+        wireRevision: 'ubm-mobile-wire/2',
         buildIdentity: { ...native.identity, rustc: 'rustc 0.0.0 (other build)' }
       })
     const binding = createReactNativeRustCoreBinding({ platform: 'android', native })
@@ -194,7 +208,7 @@ describe('PR210-15 every bootstrap failure closes the lease it opened', () => {
       JSON.stringify({
         sessionId: id,
         contractRevision: 'C-UBM.0.0.0',
-        wireRevision: 'ubm-mobile-wire/1',
+        wireRevision: 'ubm-mobile-wire/2',
         buildIdentity: native.identity
       })
     const binding = createReactNativeRustCoreBinding({ platform: 'android', native })
@@ -208,7 +222,7 @@ describe('PR210-15 every bootstrap failure closes the lease it opened', () => {
       JSON.stringify({
         sessionId: id,
         contractRevision: 'C-UBM.0.0.0',
-        wireRevision: 'ubm-mobile-wire/1',
+        wireRevision: 'ubm-mobile-wire/2',
         buildIdentity: native.identity
       })
     native.failNext('closeSession', 'lifecycle.invalid-state', 'cleanup', 'rust-core.close-session', 'release-failed')

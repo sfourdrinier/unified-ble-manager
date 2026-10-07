@@ -58,6 +58,8 @@ async fn live_link(central: &DesktopCentral<FakeRadio>, peer_id: &str, lease: &s
     central.boundary().set_services(
         peer_id,
         vec![ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: HRM_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: vec![CharacteristicSnapshot {

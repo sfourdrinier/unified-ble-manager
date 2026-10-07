@@ -211,7 +211,27 @@ export class WinRtGattDatabase implements GattDatabase<string, string, string> {
         serviceUuid: canonicalUuid(service.uuid),
         serviceOccurrence: opaqueId(String(service.occurrence), 'service-occurrence', String(this.path.databaseId))
       })
-      services.push(Object.freeze({ path: servicePath, primary: true, includedServices: Object.freeze([]) }))
+      services.push(
+        Object.freeze({
+          path: servicePath,
+          primary: service.primary ?? null,
+          includedServices:
+            service.includedServices == null
+              ? null
+              : Object.freeze(
+                  service.includedServices.map(reference =>
+                    Object.freeze({
+                      uuid: canonicalUuid(reference.uuid),
+                      occurrence: opaqueId(
+                        String(reference.occurrence),
+                        'service-occurrence',
+                        String(this.path.databaseId)
+                      )
+                    })
+                  )
+                )
+        })
+      )
       for (const characteristic of service.characteristics) {
         const characteristicPath: CharacteristicPath<string, string, string, string, string, 'current'> = Object.freeze(
           {

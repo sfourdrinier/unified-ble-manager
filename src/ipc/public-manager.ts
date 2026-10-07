@@ -9,6 +9,7 @@ import {
   type NormalizedBleError
 } from '../backend-contract/errors'
 import type { ConnectionLifecycleCause } from '../backend-contract/connection-lifecycle'
+import { assertConnectionParameterValues } from '../backend-contract/connection-parameter-validation'
 import type { BoundedAsyncStream, StreamTerminalNotice } from '../backend-contract/streams'
 import type {
   PortableBoundedAsyncStream,
@@ -786,16 +787,7 @@ function ipcParameterStream(
             const streamItem = item.value
             if (streamItem.kind === 'value' && streamItem.value !== undefined) {
               const measured = streamItem.value
-              if (
-                !Number.isFinite(measured.intervalUs) ||
-                measured.intervalUs <= 0 ||
-                !Number.isInteger(measured.latency) ||
-                measured.latency < 0 ||
-                !Number.isFinite(measured.supervisionTimeoutUs) ||
-                measured.supervisionTimeoutUs <= 0
-              ) {
-                throw contractError('protocol.violation', 'connection', 'ipc-public-manager.controls.parameter-events')
-              }
+              assertConnectionParameterValues(measured, 'ipc-public-manager.controls.parameter-events')
               return {
                 done: false,
                 value: Object.freeze({
@@ -979,6 +971,10 @@ class UnsupportedIpcControlIterator<Value> implements AsyncIterator<Value> {
 
 function createIpcConnectionControls(
   connection: Pick<IpcConnection, 'readRssi' | 'effectiveMtu' | 'maximumWriteLength'> & {
+    requestPriority?(
+      priority: ConnectionPriority,
+      options?: { signal?: AbortSignal; deadline?: number | null }
+    ): Promise<boolean>
     parameters?(options?: { signal?: AbortSignal; deadline?: number | null }): Promise<{
       readonly intervalUs: number
       readonly latency: number
@@ -1093,9 +1089,28 @@ function createIpcConnectionControls(
       unsupportedPromise('ipc-public-manager.controls.request-mtu'),
     maximumWriteLength,
     requestPriority: (
-      _priority: ConnectionPriority,
-      _options: OperationOptions = {}
-    ): Promise<ConnectionPriorityResult> => unsupportedPromise('ipc-public-manager.controls.request-priority'),
+      priority: ConnectionPriority,
+      options: OperationOptions = {}
+    ): Promise<ConnectionPriorityResult> =>
+      runIpcControl(async () => {
+        const operation = 'ipc-public-manager.controls.request-priority'
+        if (priority !== 'balanced' && priority !== 'low-power' && priority !== 'high-throughput')
+          throw contractError('argument.invalid', 'connection', operation)
+        const descriptor = requireIpcControlCapability(capabilities, BUILT_IN_FEATURE_IDS.connectionPriority, operation)
+        if (connection.requestPriority === undefined)
+          throw contractError('capability.unsupported', 'connection', operation)
+        const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
+        const accepted = await connection.requestPriority(priority, {
+          signal: normalized.signal ?? undefined,
+          deadline: normalized.deadline
+        })
+        if (typeof accepted !== 'boolean') throw contractError('protocol.violation', 'connection', operation)
+        return Object.freeze({
+          ...ipcControlMetadata(generation, descriptor, globalThis.performance.now()),
+          state: accepted ? ('accepted' as const) : ('rejected' as const),
+          requested: priority
+        })
+      }),
     readPhy: (_options: OperationOptions = {}): Promise<PhyObservation> =>
       unsupportedPromise('ipc-public-manager.controls.read-phy'),
     requestPhy: (_preference: PhyPreference, _options: OperationOptions = {}): Promise<PhyUpdateResult> =>
@@ -1114,16 +1129,7 @@ function createIpcConnectionControls(
           )
         }
         const measured = await connection.parameters()
-        if (
-          !Number.isFinite(measured.intervalUs) ||
-          measured.intervalUs <= 0 ||
-          !Number.isInteger(measured.latency) ||
-          measured.latency < 0 ||
-          !Number.isFinite(measured.supervisionTimeoutUs) ||
-          measured.supervisionTimeoutUs <= 0
-        ) {
-          throw contractError('protocol.violation', 'connection', 'ipc-public-manager.controls.parameters.result')
-        }
+        assertConnectionParameterValues(measured, 'ipc-public-manager.controls.parameters.result')
         return Object.freeze({
           ...ipcControlMetadata(generation, descriptor, globalThis.performance.now()),
           state: 'measured' as const,
@@ -1188,6 +1194,49 @@ function createIpcGattSource(
       database.readReceipt(path, options),
     write: async (path: PortableCurrentCharacteristicPath, value: Readonly<Uint8Array>, options: PortableWritePolicy) =>
       toPortableWriteReceipt(await database.write(path, value, options)),
+    writeWhenReady: async (
+      path: PortableCurrentCharacteristicPath,
+      value: Readonly<Uint8Array>,
+      options: PortableWritePolicy
+    ) => toPortableWriteReceipt(await database.writeWhenReady(path, value, options)),
+    acquireWrite: async (path, options) => {
+      const writer = await database.acquireWrite(path, options)
+      return {
+        mtuBytes: writer.mtuBytes,
+        write: async (value, policy) => toPortableWriteReceipt(await writer.write(value, policy)),
+        close: () => writer.close().then(toPublicCleanupRecord)
+      }
+    },
+    acquireNotifications: async (path, options) => {
+      const notifications = await database.acquireNotifications(path, options)
+      if (notifications.mtuBytes === null)
+        throw contractError('protocol.violation', 'gatt', 'ipc.acquired-notifications.mtu')
+      const source = notifications.values
+      const values: BoundedAsyncStream<IpcNotificationValue> = {
+        limits: source.limits,
+        overflowPolicy: source.overflowPolicy,
+        close: () => notifications.remove(),
+        [Symbol.asyncIterator]() {
+          const iterator = source[Symbol.asyncIterator]()
+          return {
+            next: () => iterator.next(),
+            return: async () => {
+              const cleanup = await notifications.remove()
+              if (cleanup.state === 'release-failed') throw new BleCleanupError(cleanup)
+              return iterator.return()
+            },
+            [Symbol.asyncIterator]() {
+              return this
+            }
+          }
+        }
+      }
+      return {
+        mtuBytes: notifications.mtuBytes,
+        values: toPortableNotificationStream(values),
+        close: () => notifications.remove().then(toPublicCleanupRecord)
+      }
+    },
     maximumWriteLength: async () => {
       throw contractError('capability.unsupported', 'gatt', 'ipc-public-manager.gatt.maximum-write-length')
     },

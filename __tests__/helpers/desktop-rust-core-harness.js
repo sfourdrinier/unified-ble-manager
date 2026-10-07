@@ -88,7 +88,10 @@ function realBinding(platform) {
       openSynthetic,
       async openProduction(options) {
         productionRequests.push(options)
-        return openSynthetic(options.owner, options.pairingGeneration === true ? { pairingGeneration: true } : undefined)
+        return openSynthetic(
+          options.owner,
+          options.pairingGeneration === true ? { pairingGeneration: true } : undefined
+        )
       },
       async listAdapters() {
         return [{ index: 0, label: 'synthetic-adapter', error: null, displayName: null, default: true }]
@@ -302,6 +305,11 @@ const DISPATCH_METHODS = new Set([
   'discover',
   'read',
   'write',
+  'writeWhenReady',
+  'acquireGatt',
+  'acquiredWrite',
+  'acquiredReceive',
+  'closeAcquired',
   'readDescriptor',
   'writeDescriptor',
   'subscribe',

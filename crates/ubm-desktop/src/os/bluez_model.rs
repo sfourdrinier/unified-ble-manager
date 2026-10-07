@@ -96,6 +96,24 @@ pub fn peer_id_for_path(path: &str) -> Option<&str> {
     (parts.next().is_none() && !adapter.is_empty() && device.starts_with("dev_")).then_some(rest)
 }
 
+/// Selected-adapter cached Device1 identity, independent of bond/ownership.
+#[must_use]
+pub fn known_peer_id<'a>(path: &'a str, adapter_path: &str) -> Option<&'a str> {
+    let id = peer_id_for_path(path)?;
+    (adapter_path_of_peer(id).as_deref() == Some(adapter_path)).then_some(id)
+}
+
+/// Aggregate Classic connectivity cannot prove an LE bearer is connected.
+#[must_use]
+pub fn directory_le_connection(aggregate: Option<bool>, le: Option<bool>) -> &'static str {
+    match le {
+        Some(true) => "connected",
+        Some(false) => "disconnected",
+        None if aggregate == Some(false) => "disconnected",
+        None => "unknown",
+    }
+}
+
 /// A bonded inventory contains only Device1 objects on the selected adapter
 /// whose current native facts prove a bond. Nested GATT objects are not peers.
 #[must_use]
@@ -266,6 +284,34 @@ pub fn access_for_instances(
     services: &HashMap<String, String>,
     characteristics: &[BluezCharacteristic],
 ) -> HashMap<InstanceKey, CharacteristicAccess> {
+    characteristic_instances(peer_id, services, characteristics)
+        .into_iter()
+        .map(|(key, characteristic)| (key, access_from_flags(&characteristic.flags)))
+        .collect()
+}
+
+/// Resolve the exact native characteristic path using the same instance
+/// inventory as discovery access facts. Duplicate keys fail closed.
+pub fn characteristic_for_instance<'a>(
+    scope: &InstanceKey,
+    services: &HashMap<String, String>,
+    characteristics: &'a [BluezCharacteristic],
+) -> Option<&'a BluezCharacteristic> {
+    let mut matches = characteristic_instances(&scope.0, services, characteristics)
+        .into_iter()
+        .filter(|(key, _)| key == scope);
+    let (_, characteristic) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(characteristic)
+}
+
+fn characteristic_instances<'a>(
+    peer_id: &str,
+    services: &HashMap<String, String>,
+    characteristics: &'a [BluezCharacteristic],
+) -> Vec<(InstanceKey, &'a BluezCharacteristic)> {
     let mut service_handles: HashMap<&str, Vec<u64>> = HashMap::new();
     for (path, uuid) in services {
         if let Some(handle) = gatt_handle(path) {
@@ -287,7 +333,7 @@ pub fn access_for_instances(
                 .push(handle);
         }
     }
-    let mut out = HashMap::new();
+    let mut out = Vec::new();
     for characteristic in characteristics {
         let Some(service_uuid) = services.get(&characteristic.service_path) else {
             continue;
@@ -307,7 +353,7 @@ pub fn access_for_instances(
                 characteristic.uuid.as_str(),
             ))
             .map_or(0, |handles| rank(handles, handle));
-        out.insert(
+        out.push((
             (
                 peer_id.to_owned(),
                 service_uuid.clone(),
@@ -315,8 +361,8 @@ pub fn access_for_instances(
                 characteristic.uuid.clone(),
                 characteristic_occurrence,
             ),
-            access_from_flags(&characteristic.flags),
-        );
+            characteristic,
+        ));
     }
     out
 }
@@ -331,6 +377,34 @@ pub fn link_mtu(characteristics: &[BluezCharacteristic]) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn known_inventory_is_adapter_scoped_and_le_state_does_not_borrow_classic_connectivity() {
+        let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
+        assert_eq!(
+            super::known_peer_id(path, "/org/bluez/hci0"),
+            Some("hci0/dev_AA_BB_CC_DD_EE_FF")
+        );
+        assert_eq!(super::known_peer_id(path, "/org/bluez/hci1"), None);
+        assert_eq!(
+            super::known_peer_id(&format!("{path}/service0010"), "/org/bluez/hci0"),
+            None
+        );
+        assert_eq!(super::directory_le_connection(Some(true), None), "unknown");
+        assert_eq!(
+            super::directory_le_connection(Some(true), Some(false)),
+            "disconnected"
+        );
+        assert_eq!(
+            super::directory_le_connection(Some(true), Some(true)),
+            "connected"
+        );
+        assert_eq!(
+            super::directory_le_connection(Some(false), None),
+            "disconnected"
+        );
+        assert_eq!(super::directory_le_connection(None, None), "unknown");
+    }
+
     #[test]
     fn bonded_inventory_uses_native_bond_and_selected_adapter_identity() {
         let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
@@ -356,8 +430,8 @@ mod tests {
     use super::{
         BluezCharacteristic, PAIRING_POSSIBLE, PairFailure, access_for_instances,
         access_from_flags, adapter_id_from_info, adapter_path_of_peer, bond_state,
-        cancel_error_proves_terminal, classify_pair_error, device_path, device_path_for_address,
-        is_unknown_method, link_mtu, peer_id_for_path,
+        cancel_error_proves_terminal, characteristic_for_instance, classify_pair_error,
+        device_path, device_path_for_address, is_unknown_method, link_mtu, peer_id_for_path,
     };
     use crate::boundary::BondState;
 
@@ -589,6 +663,16 @@ mod tests {
             "service occurrence 0 is handle 0x20"
         );
         assert_eq!(access[&key("svc-b", 1, "char-3", 0)].broadcast, Some(false));
+        assert_eq!(
+            characteristic_for_instance(&key("svc-a", 0, "char-2", 1), &services, &characteristics)
+                .unwrap()
+                .path,
+            format!("{dev}/service0010/char0018")
+        );
+        assert!(
+            characteristic_for_instance(&key("svc-a", 0, "char-2", 9), &services, &characteristics)
+                .is_none()
+        );
         assert_eq!(link_mtu(&characteristics), Some(247));
         assert_eq!(link_mtu(&characteristics[1..]), None);
     }

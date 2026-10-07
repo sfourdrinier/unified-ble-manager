@@ -55,6 +55,7 @@ class OwnedRadioPort(
       }
     }
     radio.onSecurityState = { deviceId, state -> events.onSecurity(deviceId, securityFacts(state)) }
+    radio.onSecurityFailure = { deviceId, error -> events.onSecurityFailure(deviceId, error) }
     radio.onScanFailed = { errorCode -> events.onScanFailed(errorCode) }
     radio.onAdapterState = { _ -> events.onAdapterState(adapterFacts(radio.currentProtocolAdapterState())) }
     radio.onCleanupFailure = { failure ->
@@ -87,7 +88,8 @@ class OwnedRadioPort(
     }
   }
 
-  override fun startScan(serviceUuids: List<String>, deviceAddresses: List<String>, mode: Int, callbackType: Int, legacy: Boolean) {
+  override fun startScan(serviceUuids: List<String>, deviceAddresses: List<String>, mode: Int, callbackType: Int,
+                         legacy: Boolean, reportDelayMs: Long, phy: Int?) {
     requireRadioReady()
     try {
       radio.startScan(
@@ -96,7 +98,9 @@ class OwnedRadioPort(
         callbackType = callbackType,
         legacyScan = legacy,
         allowDuplicates = true,
-        deviceAddresses = deviceAddresses.toTypedArray()
+        deviceAddresses = deviceAddresses.toTypedArray(),
+        reportDelayMs = reportDelayMs,
+        scanPhy = phy
       )
     } catch (error: IllegalArgumentException) {
       throw RadioPortFailure(RadioFailureKind.UNSUPPORTED, error.message ?: "scan settings unsupported", cause = error)
@@ -106,6 +110,10 @@ class OwnedRadioPort(
   override fun stopScan(): Throwable? = radio.stopScan()?.throwable
 
   override fun supportsConnectPhy(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+  override fun supportsSubrate(): Boolean = radio.subrateAvailable()
+
+  override fun requestSubrate(peerId: String, mode: String, onResult: (Result<Int>) -> Unit): Long =
+    radio.requestSubrate(peerId, mode, onResult)
 
   override fun connect(peerId: String, autoConnect: Boolean, phyMask: Int) {
     requireRadioReady()
@@ -124,7 +132,8 @@ class OwnedRadioPort(
       if (failure != null) {
         onResult(Result.failure(failure))
       } else {
-        onResult(Result.success(radio.services(peerId).map { service ->
+        val services = radio.services(peerId)
+        onResult(runCatching { services.map { service ->
           GattServiceNode(
             service.uuid.toString(),
             service.characteristics.map { characteristic ->
@@ -133,9 +142,19 @@ class OwnedRadioPort(
                 characteristic.properties,
                 characteristic.descriptors.map { descriptor -> GattDescriptorNode(descriptor.uuid.toString()) }
               )
+            },
+            primary = when (service.type) {
+              android.bluetooth.BluetoothGattService.SERVICE_TYPE_PRIMARY -> true
+              android.bluetooth.BluetoothGattService.SERVICE_TYPE_SECONDARY -> false
+              else -> throw IllegalStateException("Android reported an unknown service type")
+            },
+            includedServices = service.includedServices.map { target ->
+              val index = services.indexOfFirst { it === target }
+              require(index >= 0) { "An included service is absent from the current graph" }
+              GattIncludedServiceNode(target.uuid.toString(), services.take(index).count { it.uuid == target.uuid }.toLong())
             }
           )
-        }))
+        } })
       }
     }
 
@@ -230,7 +249,11 @@ class OwnedRadioPort(
     ) { result -> onResult(result.map { phy -> phy?.let { PhyFacts(wirePhy(it.txPhy), wirePhy(it.rxPhy)) } }) }
   }
 
-  override fun securityState(peerId: String): SecurityFacts = securityFacts(radio.securityState(peerId))
+  override fun securityState(peerId: String): SecurityFacts = try { securityFacts(radio.securityState(peerId)) }
+  catch (error: SecurityException) {
+    throw RadioPortFailure(RadioFailureKind.PERMISSION_DENIED, error.message ?: "Bluetooth security observation denied",
+      cause = error, nativeCode = error.javaClass.name)
+  }
 
   override fun createBond(peerId: String, transport: String, onResult: (Result<SecurityFacts>) -> Unit) {
     requireRadioReady()
@@ -247,6 +270,16 @@ class OwnedRadioPort(
         )
       }
     }
+  }
+
+  override fun resolvePeer(peerId: String): ConnectedPeerFacts? {
+    requireRadioReady()
+    return radio.resolveDirectoryPeer(peerId)?.let { ConnectedPeerFacts(it.nativePeerId, it.displayName) }
+  }
+
+  override fun connectedPeers(): List<ConnectedPeerFacts> {
+    requireRadioReady()
+    return radio.connectedPeerSnapshots().map { ConnectedPeerFacts(it.nativePeerId, it.displayName) }
   }
 
   override fun bondedPeers(): List<BondedPeerFacts> {
@@ -322,8 +355,8 @@ class OwnedRadioPort(
       AdapterFacts(state.availability, state.authorization, state.power, state.safeReason)
 
     /**
-     * Android reports the bond state only; link encryption, authentication and
-     * Secure Connections have no public API, so they are `unsupported`.
+     * Bond and runtime-available encryption observations are native facts.
+     * Encryption never implies authentication or Secure Connections.
      */
     internal fun securityFacts(state: OwnedAndroidSecurityState) = SecurityFacts(
       bond = when (state.bond) {
@@ -332,7 +365,7 @@ class OwnedRadioPort(
         "notBonded" -> "not-bonded"
         else -> "unknown"
       },
-      encryption = "unsupported",
+      encryption = state.encryption,
       authentication = "unsupported",
       secureConnections = "unsupported",
       pairingPossible = state.pairingPossible

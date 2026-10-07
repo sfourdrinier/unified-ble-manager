@@ -286,9 +286,7 @@ impl BtleplugDispatcher {
                     "tauri.write-readiness-duplicate",
                 ));
             }
-            if owner.write_readiness_watches.len() + owner.write_readiness_releases.len()
-                >= MAX_PENDING_EVENTS
-            {
+            if owner.write_readiness_watches.len() >= MAX_PENDING_EVENTS {
                 return Err(DispatchError::new(
                     BleErrorCode::StreamQuota,
                     "stream",

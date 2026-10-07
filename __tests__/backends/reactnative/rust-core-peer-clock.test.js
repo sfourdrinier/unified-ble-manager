@@ -23,16 +23,16 @@ test.each(['android', 'apple'])(
         const observed = await scan.observations[Symbol.asyncIterator]().next()
         await scan.stop()
         const connection = await manager.connect(observed.value.value.device.id, options)
-        const raw = await backend.peers.connected(options)
+        const raw = await backend.peers.known(options)
         expect(raw).toHaveLength(1)
         const directory = createPublicPeerDirectory(backend.peers, () => 900000)
-        const connected = await directory.connected()
+        const listed = await directory.known()
         expect(raw[0].clockScope).toEqual(expect.any(String))
         expect(raw[0].clockScope.length).toBeGreaterThan(0)
         scopes.push(raw[0].clockScope)
         const known = await directory.known()
         const resolved = await directory.resolve(raw[0].reference)
-        for (const peer of [connected[0], known[0], resolved]) {
+        for (const peer of [listed[0], known[0], resolved]) {
           expect(peer).toMatchObject({ name: 'Observed clock peer', rssi: -42, state: { lastSeenAtMonotonicMs: 1234 } })
         }
         expect((await backend.peers.known(options))[0].clockScope).toBe(raw[0].clockScope)

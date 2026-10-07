@@ -163,7 +163,7 @@ Do not reintroduce the legacy 3.x `BleManager`/`Device`/`Service`/
 
 **React Native** uses explicit manager construction. The production factory
 resolves the `UnifiedBleRustCore` TurboModule and speaks the versioned
-`ubm-mobile-wire/1` session protocol. The historical
+`ubm-mobile-wire/2` session protocol. The historical
 `UnifiedBleProtocolControl` boundary remains only where legacy protocol
 artifacts and their compatibility tests still name it; it is not the active
 factory route. The modernization floor is React Native 0.86+; Expo integration

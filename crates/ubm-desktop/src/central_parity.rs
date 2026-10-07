@@ -70,6 +70,8 @@ pub struct ConnectionParametersEvent {
     pub interval_us: u32,
     pub latency: u16,
     pub supervision_timeout_us: u32,
+    pub error: Option<DesktopError>,
+    pub missed: u64,
 }
 
 /// A scan the OS ended without a stop request (legacy WinRT
@@ -113,6 +115,21 @@ pub(super) async fn publish_connection_parameters<B>(
     latency: u16,
     supervision_timeout_us: u32,
 ) {
+    if interval_us == 0 || supervision_timeout_us == 0 {
+        publish_connection_parameter_source(
+            inner,
+            peer_id,
+            Some(DesktopError::new(
+                BleErrorCode::ProtocolViolation,
+                BleErrorDomain::Connection,
+                "connection.parameters.event",
+            )),
+            0,
+        )
+        .await;
+        return;
+    }
+    lock_std(&inner.parameter_source_failures).remove(peer_id);
     let peer_key = inner.peers.lock().await.get(peer_id).cloned();
     let connection_generation = match peer_key {
         Some(peer_key) => inner.core.lock().await.connection_generation(&peer_key),
@@ -129,6 +146,44 @@ pub(super) async fn publish_connection_parameters<B>(
         interval_us,
         latency,
         supervision_timeout_us,
+        error: None,
+        missed: 0,
+    };
+    let _ = inner.connection_parameters.send(event.clone());
+    inner.signal(CentralSignal::ConnectionParameters(event));
+}
+
+pub(super) async fn publish_connection_parameter_source<B>(
+    inner: &Inner<B>,
+    peer_id: &str,
+    error: Option<DesktopError>,
+    missed: u64,
+) {
+    let peer_key = inner.peers.lock().await.get(peer_id).cloned();
+    let connection_generation = match peer_key {
+        Some(peer_key) => inner.core.lock().await.connection_generation(&peer_key),
+        None => None,
+    };
+    if let Some(error) = &error
+        && connection_generation.is_some()
+    {
+        lock_std(&inner.parameter_source_failures).insert(
+            peer_id.to_owned(),
+            (connection_generation.clone(), error.clone()),
+        );
+    }
+    let event = ConnectionParametersEvent {
+        sequence: inner
+            .connection_parameters_sequence
+            .fetch_add(1, Ordering::SeqCst)
+            + 1,
+        peer_id: peer_id.to_owned(),
+        connection_generation,
+        interval_us: 0,
+        latency: 0,
+        supervision_timeout_us: 0,
+        error,
+        missed,
     };
     let _ = inner.connection_parameters.send(event.clone());
     inner.signal(CentralSignal::ConnectionParameters(event));
@@ -410,6 +465,42 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     #[must_use]
     pub fn connection_parameter_events(&self) -> broadcast::Receiver<ConnectionParametersEvent> {
         self.inner.connection_parameters.subscribe()
+    }
+
+    /// A failed observation source is not recovered by a snapshot getter.
+    /// Fresh native events or a new connection generation can recover it.
+    pub async fn connection_parameter_source_failure(&self, peer: &str) -> Option<DesktopError> {
+        let key = self.inner.peers.lock().await.get(peer).cloned()?;
+        let current = self.inner.core.lock().await.connection_generation(&key);
+        lock_std(&self.inner.parameter_source_failures)
+            .get(peer)
+            .filter(|(generation, _)| generation.is_some() && *generation == current)
+            .map(|(_, error)| error.clone())
+    }
+
+    /// The watch's snapshot cannot recover an already failed native event
+    /// source. Keep this admission in Rust so early failures do not depend on
+    /// whether the host has published its connection wrapper yet.
+    pub async fn connection_parameters_watch_initial(
+        &self,
+        peer_id: &str,
+        lease: &str,
+        ctl: OpControl,
+    ) -> Result<crate::boundary::ObservedConnectionParameters, DesktopError> {
+        let ticket = ctl.ticket.clone();
+        let _settle = SettleOnDrop(&ticket);
+        self.precheck(&ctl, "connection.parameters")?;
+        let key = self.known_peer_key(peer_id).await?;
+        self.require_connected_lease(&key, lease, "connection.parameters")
+            .await?;
+        if let Some(error) = self.connection_parameter_source_failure(peer_id).await {
+            return Err(error);
+        }
+        let measured = self.connection_parameters(peer_id, lease, ctl).await?;
+        if let Some(error) = self.connection_parameter_source_failure(peer_id).await {
+            return Err(error);
+        }
+        Ok(measured)
     }
 
     /// Observed connection parameters for the lease holding `peer_id`.
@@ -1052,6 +1143,51 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             Wait::Cancelled => Err(classify(
                 ctl.ticket.interruption("connection.effective-mtu"),
                 OpKind::Read,
+                true,
+            )),
+        }
+    }
+
+    /// Request a preferred preset under the connected lease and original budget.
+    pub async fn request_priority(
+        &self,
+        peer_id: &str,
+        lease: &str,
+        priority: crate::boundary::ConnectionPriority,
+        ctl: OpControl,
+    ) -> Result<bool, DesktopError> {
+        const OPERATION: &str = "connection.request-priority";
+        let _settle = SettleOnDrop(&ctl.ticket);
+        self.precheck(&ctl, OPERATION)?;
+        self.inner
+            .core
+            .lock()
+            .await
+            .check_capability("connection:priority", OPERATION)
+            .map_err(DesktopError::from)?;
+        let window = ctl.budget.window(LIVENESS_OP);
+        let peer_key = self.known_peer_key(peer_id).await?;
+        self.require_connected_lease(&peer_key, lease, OPERATION)
+            .await?;
+        match drive_link(
+            &self.inner,
+            peer_id,
+            OPERATION,
+            &ctl.ticket,
+            window,
+            self.inner.boundary.request_priority(peer_id, priority),
+        )
+        .await
+        {
+            Wait::Done(Ok(accepted)) => Ok(accepted),
+            Wait::Done(Err(error)) => {
+                self.name_link_end(&peer_key, Err(classify(error, OpKind::Write, true)))
+                    .await
+            }
+            Wait::Expired => Err(classify(timed_out(OPERATION, window), OpKind::Write, true)),
+            Wait::Cancelled => Err(classify(
+                ctl.ticket.interruption(OPERATION),
+                OpKind::Write,
                 true,
             )),
         }

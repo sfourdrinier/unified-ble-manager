@@ -45,12 +45,16 @@ function singletonVersionRange<Axis extends ProtocolAxis>(axis: Axis, value: num
  * subscriptions and connection-lifecycle events. Version 4 adds the host's
  * attachment rebind after an adapter loss (`IPC_ATTACHMENT_STREAM_ID`). Version
  * 5 carries address targets, connection policy and platform scan options, and
- * adds scoped security routes. Both ends offer exactly version 5: older hosts
- * must not silently ignore these new fields on existing connect/scan routes.
+ * adds scoped security routes. Version 6 carries nullable observed GATT graph
+ * facts, native readiness helpers and owned acquired GATT routes. Both ends offer
+ * exactly version 6: older hosts must not silently ignore these fields or routes.
  * Bootstrap capability descriptors describe which native mechanisms the
  * instantiated host actually implements; protocol parity does not invent them.
+ * Optional acquired GATT routes use opaque renderer-owned handles, a returned
+ * MTU and copied packets. Only a host with the native mechanism advertises the
+ * acquired capability; descriptors never cross this protocol.
  */
-export const IPC_PROTOCOL_VERSION = 5
+export const IPC_PROTOCOL_VERSION = 6
 
 /**
  * The reserved stream on which the host announces that it rebound a renderer

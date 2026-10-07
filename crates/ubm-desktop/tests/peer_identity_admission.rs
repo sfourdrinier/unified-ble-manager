@@ -17,6 +17,8 @@ async fn aliases_are_refused_before_ownership_and_native_events_retire_the_canon
     radio.set_services(
         CANONICAL,
         vec![ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: service.into(),
             occurrence: 0,
             characteristics: vec![CharacteristicSnapshot {

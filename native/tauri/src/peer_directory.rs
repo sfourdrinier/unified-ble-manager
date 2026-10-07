@@ -4,13 +4,11 @@ use super::*;
 
 const BACKEND: &str = "unified-ble:corebluetooth";
 
-fn bonded_backend() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "unified-ble:winrt"
-    } else if cfg!(target_os = "linux") {
-        "unified-ble:bluez-dbus"
-    } else {
-        BACKEND
+fn directory_backend(os: ubm_desktop::DesktopOs) -> &'static str {
+    match os {
+        ubm_desktop::DesktopOs::Windows => "unified-ble:winrt",
+        ubm_desktop::DesktopOs::Linux => "unified-ble:bluez-dbus",
+        ubm_desktop::DesktopOs::MacOs => BACKEND,
     }
 }
 
@@ -47,7 +45,11 @@ mod reference_tests {
 fn native_identifier(value: &str, backend: &str, op: &str) -> Result<String, DispatchError> {
     match backend {
         "unified-ble:winrt" => {
-            let parts = value.split(':').collect::<Vec<_>>();
+            let (kind, address) = match value.split_once(':') {
+                Some((kind @ ("public" | "random" | "unknown"), address)) => (Some(kind), address),
+                _ => (None, value),
+            };
+            let parts = address.split(':').collect::<Vec<_>>();
             if parts.len() != 6
                 || parts.iter().any(|part| {
                     part.len() != 2 || !part.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -55,7 +57,9 @@ fn native_identifier(value: &str, backend: &str, op: &str) -> Result<String, Dis
             {
                 return Err(malformed(op));
             }
-            Ok(value.to_uppercase())
+            Ok(kind
+                .map(|kind| format!("{kind}:{}", address.to_uppercase()))
+                .unwrap_or_else(|| address.to_uppercase()))
         }
         "unified-ble:bluez-dbus" => {
             let (adapter, device) = value.split_once('/').ok_or_else(|| malformed(op))?;
@@ -187,12 +191,11 @@ fn strings(value: Option<&IpcValue>, op: &str) -> Result<Option<Vec<String>>, Di
         .transpose()
 }
 
-fn record(peer: ubm_desktop::DirectoryPeer, source: &str) -> Result<IpcValue, DispatchError> {
-    let backend = if source == "system-bonded" {
-        bonded_backend()
-    } else {
-        BACKEND
-    };
+fn record(
+    peer: ubm_desktop::DirectoryPeer,
+    source: &str,
+    backend: &str,
+) -> Result<IpcValue, DispatchError> {
     let id = native_identifier(&peer.peer_id, backend, "peers.record")?;
     if !matches!(peer.connection, "connected" | "disconnected" | "unknown") {
         return Err(malformed("peers.record"));
@@ -220,8 +223,10 @@ fn record(peer: ubm_desktop::DirectoryPeer, source: &str) -> Result<IpcValue, Di
                     "bond",
                     string(if source == "system-bonded" {
                         "bonded"
-                    } else {
+                    } else if backend == BACKEND {
                         "unsupported"
+                    } else {
+                        "unknown"
                     }),
                 ),
                 ("lastSeenAtMonotonicMs", IpcValue::Null),
@@ -321,11 +326,8 @@ impl BtleplugDispatcher {
             _ => return Err(unsupported(command)),
         };
         let resolving_bonded = resolving && capability == "peer:bonded";
-        let reference_backend = if command == "peers.bonded" || resolving_bonded {
-            bonded_backend()
-        } else {
-            BACKEND
-        };
+        let reference_backend = directory_backend(authority.directory_os());
+        let apple_directory = reference_backend == BACKEND;
         let references = reference_values
             .map(|values| {
                 values
@@ -353,11 +355,14 @@ impl BtleplugDispatcher {
             _ => return Err(unsupported(command)),
         }
         match command {
-            "peers.connected" if services.is_empty() => {
+            "peers.connected" if apple_directory && services.is_empty() => {
                 return Err(unsupported("peers.connected.services-required"));
             }
-            "peers.known" if references.is_none() => {
+            "peers.known" if apple_directory && references.is_none() => {
                 return Err(unsupported("peers.known.references-required"));
+            }
+            "peers.connected" if !apple_directory && !services.is_empty() => {
+                return Err(unsupported("peers.connected.services"));
             }
             "peers.known" if !services.is_empty() => {
                 return Err(unsupported("peers.known.services"));
@@ -373,6 +378,8 @@ impl BtleplugDispatcher {
             "system-connected"
         } else if command == "peers.bonded" || resolving_bonded {
             "system-bonded"
+        } else if command == "peers.known" && !apple_directory {
+            "backend-cache"
         } else {
             "app-reference"
         };
@@ -388,10 +395,22 @@ impl BtleplugDispatcher {
                     if peer.connection != "connected" {
                         return Err(malformed("peers.connected.record"));
                     }
-                    let id = uuid(&peer.peer_id, "peers.record")?;
+                    let id = native_identifier(&peer.peer_id, reference_backend, "peers.record")?;
                     if references.as_ref().is_none_or(|refs| refs.contains(&id)) && seen.insert(id)
                     {
-                        records.push(record(peer, source)?);
+                        records.push(record(peer, source, reference_backend)?);
+                    }
+                }
+            } else if command == "peers.known" && !apple_directory {
+                let peers = authority
+                    .known_peers(ctl.clone())
+                    .await
+                    .map_err(|error| DispatchError::from_core(&error))?;
+                for peer in peers {
+                    let id = native_identifier(&peer.peer_id, reference_backend, "peers.record")?;
+                    if references.as_ref().is_none_or(|refs| refs.contains(&id)) && seen.insert(id)
+                    {
+                        records.push(record(peer, source, reference_backend)?);
                     }
                 }
             } else if command == "peers.bonded" || resolving_bonded {
@@ -400,10 +419,10 @@ impl BtleplugDispatcher {
                     .await
                     .map_err(|error| DispatchError::from_core(&error))?;
                 for peer in peers {
-                    let id = native_identifier(&peer.peer_id, bonded_backend(), "peers.record")?;
+                    let id = native_identifier(&peer.peer_id, reference_backend, "peers.record")?;
                     if references.as_ref().is_none_or(|refs| refs.contains(&id)) && seen.insert(id)
                     {
-                        records.push(record(peer, source)?);
+                        records.push(record(peer, source, reference_backend)?);
                     }
                 }
             } else {
@@ -422,7 +441,7 @@ impl BtleplugDispatcher {
                         if peer.peer_id != id {
                             return Err(malformed("peers.resolve.identity"));
                         }
-                        records.push(record(peer, source)?);
+                        records.push(record(peer, source, reference_backend)?);
                     }
                 }
             }

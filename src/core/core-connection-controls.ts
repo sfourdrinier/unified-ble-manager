@@ -8,6 +8,8 @@ import {
   type ConnectionPhyObservation,
   type ConnectionPhyRequest,
   type ConnectionPriorityRequest,
+  type ConnectionSubrateRequest,
+  type ConnectionSubrateMode,
   type ConnectionParametersMeasurement,
   type ConnectionParametersWatch,
   type ConnectionWriteReadinessWatch,
@@ -44,6 +46,11 @@ export interface CoreConnectionControls<Attachment extends string, Identity exte
     priority: ConnectionPriority,
     options: PublicOperationOptions
   ): Promise<ConnectionPriorityRequest<Attachment, string>>
+  requestSubrate(
+    connection: CoreConnection<Attachment, Identity>,
+    mode: ConnectionSubrateMode,
+    options: PublicOperationOptions
+  ): Promise<ConnectionSubrateRequest<Attachment, string>>
   readPhy(
     connection: CoreConnection<Attachment, Identity>,
     options: PublicOperationOptions
@@ -101,6 +108,14 @@ export function createCoreConnectionControls<Attachment extends string, Identity
     ) => {
       assertReady('request-priority')
       return requestCorePriority(backend, operationCoordinator, connection, priority, options)
+    },
+    requestSubrate: (
+      connection: CoreConnection<Attachment, Identity>,
+      mode: ConnectionSubrateMode,
+      options: PublicOperationOptions
+    ) => {
+      assertReady('request-subrate')
+      return requestCoreSubrate(backend, operationCoordinator, connection, mode, options)
     },
     readPhy: (connection: CoreConnection<Attachment, Identity>, options: PublicOperationOptions) =>
       readCorePhy(backend, operationCoordinator, connection, options),
@@ -162,6 +177,35 @@ export async function requestCorePriority<Attachment extends string, Identity ex
     }
   })
   return requireOperationValue(result, 'unified-core.request-priority')
+}
+
+export async function requestCoreSubrate<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  backend: BleCentralBackend<Attachment, Identity>,
+  operationCoordinator: CoreOperationCoordinator<Attachment>,
+  connection: CoreConnection<Attachment, Identity>,
+  mode: ConnectionSubrateMode,
+  options: PublicOperationOptions
+): Promise<ConnectionSubrateRequest<Attachment, string>> {
+  const requestSubrate = backend.connections.requestSubrate
+  if (requestSubrate === undefined) {
+    throw contractError('capability.unsupported', 'connection', 'unified-core.request-subrate')
+  }
+  connection.assertCurrent()
+  const result = await operationCoordinator.run({
+    queueKey: String(connection.resource.connectionId),
+    fairnessKey: 'control',
+    options,
+    mayCommit: false,
+    dispatch: correlation => {
+      connection.assertCurrent()
+      const dispatch = requestSubrate(connection.resource, {
+        operation: { ...options, correlation },
+        mode
+      })
+      return coreDispatch(dispatch, correlation, value => value.terminal)
+    }
+  })
+  return requireOperationValue(result, 'unified-core.request-subrate')
 }
 
 export async function readCorePhy<Attachment extends string, Identity extends BackendIdentity<Attachment>>(

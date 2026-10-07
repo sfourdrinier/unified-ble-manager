@@ -24,7 +24,12 @@ function scriptedStream(items) {
   }
 }
 
-function capabilities(readinessState = 'unsupported', deferredState, parametersState = 'unsupported') {
+function capabilities(
+  readinessState = 'unsupported',
+  deferredState,
+  parametersState = 'unsupported',
+  priorityState = 'unsupported'
+) {
   const descriptors = new Map([
     ['connection:direct', descriptor('connection:direct', 'supported')],
     [
@@ -40,7 +45,7 @@ function capabilities(readinessState = 'unsupported', deferredState, parametersS
     ['gatt:maximum-write-length', descriptor('gatt:maximum-write-length', 'limited')],
     ['connection:effective-mtu', descriptor('connection:effective-mtu', 'unsupported')],
     ['connection:request-mtu', descriptor('connection:request-mtu', 'unsupported')],
-    ['connection:priority', descriptor('connection:priority', 'unsupported')],
+    ['connection:priority', descriptor('connection:priority', priorityState)],
     ['connection:phy', descriptor('connection:phy', 'unsupported')],
     ['connection:parameters', descriptor('connection:parameters', parametersState)],
     ['connection:subrate', descriptor('connection:subrate', 'unsupported')],
@@ -110,8 +115,8 @@ function database(generation) {
   }
 }
 
-function setup(readinessState, deferredState, parametersState) {
-  const capabilitySnapshot = capabilities(readinessState, deferredState, parametersState)
+function setup(readinessState, deferredState, parametersState, priorityState) {
+  const capabilitySnapshot = capabilities(readinessState, deferredState, parametersState, priorityState)
   let discoveryCount = 0
   const calls = []
   const base = {
@@ -122,6 +127,10 @@ function setup(readinessState, deferredState, parametersState) {
     ownerLeaseId: 'lease-1',
     connectionGeneration: 'connection-generation-1',
     events: emptyEvents(),
+    requestPriority: async (priority, options) => {
+      calls.push({ kind: 'requestPriority', priority, options })
+      return true
+    },
     readRssi: async options => {
       calls.push({ kind: 'readRssi', options })
       return -42
@@ -173,6 +182,23 @@ function setup(readinessState, deferredState, parametersState) {
   })
   return { manager, calls, ipc }
 }
+
+test('IPC public priority uses the supported host route and preserves request truth', async () => {
+  const { manager, calls } = setup(undefined, undefined, undefined, 'limited')
+  const connection = await manager.connect({ id: 'peer-1' })
+  for (const priority of ['balanced', 'low-power', 'high-throughput']) {
+    await expect(connection.controls.requestPriority(priority)).resolves.toMatchObject({
+      state: 'accepted',
+      requested: priority
+    })
+  }
+  await expect(connection.controls.requestPriority('invalid')).rejects.toMatchObject({ code: 'argument.invalid' })
+  expect(calls.filter(call => call.kind === 'requestPriority').map(call => call.priority)).toEqual([
+    'balanced',
+    'low-power',
+    'high-throughput'
+  ])
+})
 
 describe('IPC public connection controls', () => {
   test.each([

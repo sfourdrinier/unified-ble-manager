@@ -108,14 +108,27 @@ const FIVE_ZERO_STATES = Object.freeze({
 })
 
 describe.each([
-  ['android', ['discovery:continuous-scan', 'security:cancel-pairing', ...CONTINUATION_IDS]],
+  [
+    'android',
+    [
+      'discovery:continuous-scan',
+      'security:cancel-pairing',
+      ...CONTINUATION_IDS,
+      'peer:known',
+      'peer:system-connected',
+      'connection:subrate'
+    ]
+  ],
   [
     'apple',
     [
       'discovery:continuous-scan',
       'connection:when-available',
       'gatt:write-without-response-readiness',
-      ...CONTINUATION_IDS
+      ...CONTINUATION_IDS,
+      'peer:known',
+      'peer:system-connected',
+      'connection:subrate'
     ]
   ]
 ])('%s: the Rust route registers every legacy capability in the same state', (platform, extras) => {
@@ -366,18 +379,17 @@ describe('Apple: RSSI and unobserved MTU work; controls CoreBluetooth lacks are 
   })
 })
 
-describe('Android scan platform options the legacy boundary refused (139, AN-1)', () => {
+describe('Android scan batching and PHY options reach the native owner', () => {
   test.each([
-    ['phy', { phy: 'le-coded' }],
+    ['phy', { phy: 'le-coded', legacy: false }],
     ['reportDelayMs', { reportDelayMs: 500 }]
-  ])('an Android scan %s is capability.unsupported with no owner call', async (_name, extra) => {
+  ])('forwards the supported Android scan %s without substituting defaults', async (_name, extra) => {
     const { native, manager } = await rustManager('android')
-    const error = await failure(
-      manager.scan(scanOptions({ platform: { kind: 'android', mode: 'balanced', ...extra } }))
-    )
-    expect(error.code).toBe('capability.unsupported')
-    expect(error.domain).toBe('scan')
-    expect(native.opsInvoked('scan.start')).toHaveLength(0)
+    const scan = await manager.scan(scanOptions({ platform: { kind: 'android', mode: 'balanced', ...extra } }))
+    expect(native.opsInvoked('scan.start')).toHaveLength(1)
+    expect(native.opsInvoked('scan.start')[0]).toMatchObject({ platform: { mode: 'balanced', ...extra } })
+    await scan.stop()
+    expect(native.opsInvoked('scan.stop')).toHaveLength(1)
     await manager.destroy()
   })
 })

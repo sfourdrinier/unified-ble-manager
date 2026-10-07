@@ -2,7 +2,11 @@
 
 const { advertisementMatchesFilter } = require('../../src/backend-contract/advertisement')
 const { canonicalUuid, capacity, monotonicTimestamp, opaqueId } = require('../../src/backend-contract/primitives')
-const { ScanEvidenceSession, SCAN_EVIDENCE_WINDOW_MS } = require('../../src/backend-contract/scan-evidence')
+const {
+  ScanEvidenceSession,
+  SCAN_EVIDENCE_WINDOW_MS,
+  SCAN_EVIDENCE_PEER_CAPACITY
+} = require('../../src/backend-contract/scan-evidence')
 const { filterScanObservations } = require('../../src/public/ble-manager')
 const { normalizeScanQuery } = require('../../src/public/scan-query')
 
@@ -16,14 +20,22 @@ function present(value) {
   return Object.freeze({ state: 'present', value, provenance: 'observed' })
 }
 
-function packet({ address, name = null, services = null, at = 0, session = 'scan-1' }) {
+function packet({
+  address,
+  addressType = 'public',
+  name = null,
+  services = null,
+  at = 0,
+  session = 'scan-1',
+  backend = 'backend'
+}) {
   return Object.freeze({
     device: Object.freeze({
       id: opaqueId(`peer-${address}`, 'peer', 'test'),
-      backendInstanceId: opaqueId('backend', 'backend', 'test'),
+      backendInstanceId: opaqueId(backend, 'backend', 'test'),
       scope: 'backend',
       stableAcrossRestarts: false,
-      address: Object.freeze({ value: address, type: 'public' })
+      address: Object.freeze({ value: address, type: addressType })
     }),
     provenance: 'platform-raw',
     origin: 'advertisement',
@@ -57,6 +69,115 @@ function keep(session, observation) {
 }
 
 describe('split advertisement evidence', () => {
+  test('downstream filtering does not turn an upstream merged projection into fresh radio facts', () => {
+    const upstream = new ScanEvidenceSession()
+    const downstream = new ScanEvidenceSession()
+    keep(upstream, packet({ address: 'projection-peer', name: 'Polar H10 0001', at: 0 }))
+    const merged = keep(upstream, packet({ address: 'projection-peer', services: [canonicalUuid(HEART)], at: 9_000 }))
+    expect(keep(downstream, merged)).not.toBeNull()
+    expect(
+      keep(downstream, packet({ address: 'projection-peer', services: [canonicalUuid(HEART)], at: 15_000 }))
+    ).toBeNull()
+  })
+
+  test('IPC merged projections do not renew facts in a later filtering cache', () => {
+    const session = new ScanEvidenceSession()
+    const base = {
+      peerId: 'projection-peer',
+      address: 'A0:00:00:00:00:01',
+      addressType: 'public',
+      localName: 'Polar H10 0001',
+      serviceUuids: [HEART],
+      manufacturerData: [],
+      serviceData: [],
+      rssi: -50
+    }
+    const matches = candidate => candidate.localName?.startsWith('Polar H10') && candidate.serviceUuids.includes(HEART)
+    expect(session.matchIpc({ ...base, provenance: 'core-merged' }, 9_000, 'scan', matches)).not.toBeNull()
+    expect(session.matchIpc({ ...base, localName: null }, 15_000, 'scan', matches)).toBeNull()
+  })
+
+  test('an unexpired peer capacity refusal is explicit and does not replace retained peers', () => {
+    const session = new ScanEvidenceSession()
+    for (let index = 0; index < SCAN_EVIDENCE_PEER_CAPACITY; index += 1) {
+      keep(session, packet({ address: `live-${index}`, name: 'Polar H10 0001', at: 0 }))
+    }
+    expect(() => keep(session, packet({ address: 'overflow', at: 1 }))).toThrow(
+      expect.objectContaining({ normalized: expect.objectContaining({ code: 'stream.quota' }) })
+    )
+    expect(session.advertisements.size).toBe(SCAN_EVIDENCE_PEER_CAPACITY)
+    expect(keep(session, packet({ address: 'live-0', services: [canonicalUuid(HEART)], at: 1 }))).not.toBeNull()
+    session.clear()
+    expect(session.advertisements.size).toBe(0)
+  })
+
+  test('in-window service lists union even when the newest packet carries a nonempty list', () => {
+    const session = new ScanEvidenceSession()
+    const battery = canonicalUuid('0000180f-0000-1000-8000-00805f9b34fb')
+    const matches = observation =>
+      observation.serviceUuids.state === 'present' &&
+      [canonicalUuid(HEART), battery].every(service => observation.serviceUuids.value.includes(service))
+    expect(
+      session.matchAdvertisement(packet({ address: 'same', services: [canonicalUuid(HEART)], at: 0 }), matches)
+    ).toBeNull()
+    const matched = session.matchAdvertisement(packet({ address: 'same', services: [battery], at: 1 }), matches)
+    expect(matched.serviceUuids.value).toEqual([canonicalUuid(HEART), battery])
+    expect(matched.serviceUuids.provenance).toBe('derived')
+  })
+
+  test('unrelated packets do not renew an old name or service fact', () => {
+    const session = new ScanEvidenceSession()
+    keep(session, packet({ address: 'same', name: 'Polar H10 0001', at: 0 }))
+    for (const at of [5_000, 10_000, 15_000, 20_000]) {
+      const matched = keep(session, packet({ address: 'same', services: [canonicalUuid(HEART)], at }))
+      expect(matched !== null).toBe(at <= SCAN_EVIDENCE_WINDOW_MS)
+    }
+  })
+
+  test.each([{ addressType: 'random' }, { backend: 'other-backend' }, { session: 'other-scan' }])(
+    'peer scope prevents evidence borrowing: %j',
+    identity => {
+      const session = new ScanEvidenceSession()
+      keep(session, packet({ address: 'same', name: 'Polar H10 0001', at: 0 }))
+      expect(
+        keep(session, packet({ address: 'same', services: [canonicalUuid(HEART)], at: 1, ...identity }))
+      ).toBeNull()
+    }
+  )
+
+  test('receipt progress expires inactive peers globally', () => {
+    const session = new ScanEvidenceSession()
+    for (let index = 0; index < 2_000; index += 1) {
+      keep(session, packet({ address: `peer-${index}`, name: 'Polar H10 0001', at: 0 }))
+    }
+    keep(session, packet({ address: 'new', at: 60_000 }))
+    expect(session.advertisements.size).toBe(1)
+    expect(keep(session, packet({ address: 'peer-0', services: [canonicalUuid(HEART)], at: 60_001 }))).toBeNull()
+  })
+
+  test('IPC list evidence unions by key and each key expires independently', () => {
+    const session = new ScanEvidenceSession()
+    const base = {
+      peerId: 'peer',
+      address: 'same',
+      addressType: 'public',
+      localName: null,
+      rssi: null,
+      txPowerLevel: null,
+      serviceUuids: [],
+      manufacturerData: [],
+      serviceData: []
+    }
+    const matches = candidate =>
+      candidate.manufacturerData.some(entry => entry.companyId === 1) &&
+      candidate.manufacturerData.some(entry => entry.companyId === 2)
+    const first = { ...base, manufacturerData: [{ companyId: 1, data: new Uint8Array([1]) }] }
+    const second = { ...base, manufacturerData: [{ companyId: 2, data: new Uint8Array([2]) }] }
+    expect(session.matchIpc(first, 0, 'scan', matches)).toBeNull()
+    expect(session.matchIpc(second, 1, 'scan', matches).manufacturerData).toHaveLength(2)
+    expect(session.matchIpc(second, SCAN_EVIDENCE_WINDOW_MS + 1, 'scan', matches)).toBeNull()
+  })
+
   test('a service packet and a later name packet match together, and the raw packet stays raw', () => {
     const session = new ScanEvidenceSession()
     const services = packet({

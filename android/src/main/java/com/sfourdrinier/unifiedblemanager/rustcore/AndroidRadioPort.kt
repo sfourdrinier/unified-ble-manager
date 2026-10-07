@@ -18,13 +18,15 @@ interface AndroidRadioPort {
   fun adapterState(): AdapterFacts
 
   /** Starts the one physical scan; throws when the OS refuses. `mode`/`callbackType` are `ScanSettings` values. */
-  fun startScan(serviceUuids: List<String>, deviceAddresses: List<String>, mode: Int, callbackType: Int, legacy: Boolean)
+  fun startScan(serviceUuids: List<String>, deviceAddresses: List<String>, mode: Int, callbackType: Int,
+                legacy: Boolean, reportDelayMs: Long, phy: Int?)
 
   /** Stops the scan; the returned failure keeps scan ownership for a retry. */
   fun stopScan(): Throwable?
 
   /** Whether the OS can establish a link on caller-chosen PHYs (`connectGatt(…, phy)`, API 26+). */
   fun supportsConnectPhy(): Boolean
+  fun supportsSubrate(): Boolean
 
   /**
    * Opens the link; the outcome arrives through [RadioPortEvents.onConnection].
@@ -53,6 +55,7 @@ interface AndroidRadioPort {
   fun requestMtu(peerId: String, mtu: Int, onResult: (Result<Int>) -> Unit): Long
   fun readRssi(peerId: String, onResult: (Result<Int>) -> Unit): Long
   fun requestConnectionPriority(peerId: String, priority: String, onResult: (Result<Boolean>) -> Unit): Long
+  fun requestSubrate(peerId: String, mode: String, onResult: (Result<Int>) -> Unit): Long
   fun readPhy(peerId: String, onResult: (Result<PhyFacts>) -> Unit): Long
 
   /** `tx`/`rx` are wire PHY names or null (no preference). The observation is null when the OS reported none. */
@@ -64,6 +67,8 @@ interface AndroidRadioPort {
   fun createBond(peerId: String, transport: String, onResult: (Result<SecurityFacts>) -> Unit)
 
   fun bondedPeers(): List<BondedPeerFacts>
+  fun connectedPeers(): List<ConnectedPeerFacts>
+  fun resolvePeer(peerId: String): ConnectedPeerFacts?
 
   /** Cancels a queued/running driver operation; false when it is no longer cancellable. */
   fun cancel(operationId: Long): Boolean
@@ -78,6 +83,7 @@ interface RadioPortEvents {
   fun onAdapterState(state: AdapterFacts)
   fun onScanFailed(errorCode: Int)
   fun onSecurity(peerId: String, security: SecurityFacts)
+  fun onSecurityFailure(peerId: String?, error: Throwable)
 
   /** A platform fact the driver could not translate (never silently dropped). */
   fun onDropped(ingressClass: String, detail: String)
@@ -143,7 +149,13 @@ data class CharacteristicFacts(val properties: Int, val hasCccd: Boolean)
 
 data class GattDescriptorNode(val uuid: String)
 data class GattCharacteristicNode(val uuid: String, val properties: Int, val descriptors: List<GattDescriptorNode>)
-data class GattServiceNode(val uuid: String, val characteristics: List<GattCharacteristicNode>)
+data class GattIncludedServiceNode(val uuid: String, val occurrence: Long)
+data class GattServiceNode(
+  val uuid: String,
+  val characteristics: List<GattCharacteristicNode>,
+  val primary: Boolean? = null,
+  val includedServices: List<GattIncludedServiceNode>? = null
+)
 
 data class AdapterFacts(val availability: String, val authorization: String, val power: String, val safeReason: String?)
 
@@ -155,6 +167,8 @@ data class SecurityFacts(
   val secureConnections: String,
   val pairingPossible: Boolean?
 )
+
+data class ConnectedPeerFacts(val peerId: String, val name: String?)
 
 data class BondedPeerFacts(val peerId: String, val name: String?)
 

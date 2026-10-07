@@ -116,10 +116,85 @@ impl BtleplugDispatcher {
         let authority = self.ensure_authority().await?;
         let mut receiver = authority.connection_parameter_events();
         let mut lifecycle = authority.lifecycle_events();
-        let measured = authority
+        if let Some(error) = authority
+            .connection_parameter_source_failure(&connection.peer_id)
+            .await
+        {
+            return Err(DispatchError::from_core(&error));
+        }
+        let mut measured = authority
             .connection_parameters(&connection.peer_id, &connection.lease, ctl)
             .await
             .map_err(|error| DispatchError::from_core(&error))?;
+        // The receiver existed before the probe. Its newer observations win
+        // over a delayed getter; loss requires a live re-read, never zeros.
+        let mut opening_events = 0usize;
+        let mut opening_values = VecDeque::new();
+        loop {
+            let next = receiver.try_recv();
+            if matches!(&next, Err(broadcast::error::TryRecvError::Empty)) {
+                break;
+            }
+            opening_events += 1;
+            if opening_events > MAX_PENDING_EVENTS {
+                return Err(DispatchError::new(
+                    BleErrorCode::StreamQuota,
+                    "stream",
+                    "tauri.parameters.opening-continuity",
+                ));
+            }
+            match next {
+                Ok(event)
+                    if event.peer_id == connection.peer_id
+                        && event.connection_generation.as_deref()
+                            == Some(connection.core_generation.as_str()) =>
+                {
+                    if let Some(error) = event.error {
+                        return Err(DispatchError::from_core(&error));
+                    }
+                    if event.missed != 0 {
+                        opening_values.clear();
+                        measured = authority
+                            .connection_parameters(
+                                &connection.peer_id,
+                                &connection.lease,
+                                OpControl::unbounded(),
+                            )
+                            .await
+                            .map_err(|error| DispatchError::from_core(&error))?;
+                    } else {
+                        opening_values.push_back(ubm_desktop::ObservedConnectionParameters {
+                            interval_us: event.interval_us,
+                            latency: event.latency,
+                            supervision_timeout_us: event.supervision_timeout_us,
+                        });
+                    }
+                }
+                Ok(_) => {}
+                Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                    opening_values.clear();
+                    measured = authority
+                        .connection_parameters(
+                            &connection.peer_id,
+                            &connection.lease,
+                            OpControl::unbounded(),
+                        )
+                        .await
+                        .map_err(|error| DispatchError::from_core(&error))?;
+                }
+                Err(broadcast::error::TryRecvError::Closed) => {
+                    return Err(DispatchError::new(
+                        BleErrorCode::StreamClosed,
+                        "stream",
+                        "tauri.parameters.opening-source",
+                    ))
+                }
+                Err(broadcast::error::TryRecvError::Empty) => break,
+            }
+        }
+        if let Some(first) = opening_values.pop_front() {
+            measured = first;
+        }
         let observed_at = self
             .started_at
             .elapsed()
@@ -138,6 +213,7 @@ impl BtleplugDispatcher {
             (owner.lease_id.clone(), owner.lease_generation.clone())
         };
         let peer_id = connection.peer_id.clone();
+        let native_lease = connection.lease.clone();
         let connection_id = connection.connection_id.clone();
         let response_connection_id = connection_id.clone();
         let connection_generation = connection.core_generation.clone();
@@ -182,13 +258,55 @@ impl BtleplugDispatcher {
             }
             loop {
                 tokio::select! {
-                    received = receiver.recv() => {
+                    received = async {
+                        if let Some(measured) = opening_values.pop_front() {
+                            return Ok(ubm_desktop::ConnectionParametersEvent {
+                                sequence: 0, peer_id: peer_id.clone(),
+                                connection_generation: Some(connection_generation.clone()),
+                                interval_us: measured.interval_us, latency: measured.latency,
+                                supervision_timeout_us: measured.supervision_timeout_us, error: None, missed: 0,
+                            });
+                        }
+                        match receiver.recv().await {
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                                Ok(ubm_desktop::ConnectionParametersEvent {
+                                    sequence: 0, peer_id: peer_id.clone(),
+                                    connection_generation: Some(connection_generation.clone()),
+                                    interval_us: 0, latency: 0, supervision_timeout_us: 0,
+                                    error: None, missed,
+                                })
+                            }
+                            answer => answer,
+                        }
+                    } => {
                         match received {
                             Ok(event)
                                 if event.peer_id == peer_id
                                     && event.connection_generation.as_deref()
                                         == Some(connection_generation.as_str()) =>
                             {
+                                if let Some(error) = &event.error {
+                                    let failure = DispatchError::from_core(error);
+                                    let _ = dispatcher.terminal(&task_key, (&lease.0, &lease.1), &stream,
+                                        "source-failed", Some(&failure)).await;
+                                    break;
+                                }
+                                let measured = if event.missed != 0 {
+                                    match authority.connection_parameters(&peer_id, &native_lease, OpControl::unbounded()).await {
+                                        Ok(measured) => measured,
+                                        Err(error) => {
+                                            let failure = DispatchError::from_core(&error);
+                                            let _ = dispatcher.terminal(&task_key, (&lease.0, &lease.1), &stream,
+                                                "source-failed", Some(&failure)).await;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    ubm_desktop::boundary::ObservedConnectionParameters {
+                                        interval_us: event.interval_us, latency: event.latency,
+                                        supervision_timeout_us: event.supervision_timeout_us,
+                                    }
+                                };
                                 sequence = match sequence.checked_add(1) {
                                     Some(next) if next <= MAX_SAFE_INTEGER => next,
                                     _ => {
@@ -220,9 +338,9 @@ impl BtleplugDispatcher {
                                     connection_id: &connection_id,
                                     connection_generation: &public_generation,
                                     sequence,
-                                    interval_us: event.interval_us,
-                                    latency: event.latency,
-                                    supervision_timeout_us: event.supervision_timeout_us,
+                                    interval_us: measured.interval_us,
+                                    latency: measured.latency,
+                                    supervision_timeout_us: measured.supervision_timeout_us,
                                     observed_at: observed,
                                 });
                                 if let Err(error) = dispatcher
@@ -249,16 +367,16 @@ impl BtleplugDispatcher {
                             Ok(_) => {}
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                                 let failure = DispatchError::new(
-                                    BleErrorCode::StreamQuota,
+                                    BleErrorCode::LifecycleInvariantViolation,
                                     "stream",
-                                    "tauri.connection-parameters-lag",
+                                    "tauri.connection-parameters-unreconciled-lag",
                                 );
                                 let _ = dispatcher
                                     .terminal(
                                         &task_key,
                                         (&lease.0, &lease.1),
                                         &stream,
-                                        "overflow",
+                                        "source-failed",
                                         Some(&failure),
                                     )
                                     .await;
@@ -341,8 +459,7 @@ impl BtleplugDispatcher {
                     "tauri.connection-parameters-duplicate",
                 ));
             }
-            if owner.parameter_watches.len() + owner.parameter_releases.len() >= MAX_PENDING_EVENTS
-            {
+            if owner.parameter_watches.len() >= MAX_PENDING_EVENTS {
                 return Err(DispatchError::new(
                     BleErrorCode::StreamQuota,
                     "stream",

@@ -66,7 +66,6 @@ pub(crate) fn transport_restriction(id: &str) -> Option<&'static str> {
         "discovery:advertisement-watch" => Some("tauri-advertisement-watch-route-unavailable"),
         "peer:origin-authorized" => Some("tauri-origin-authorized-directory-unavailable"),
         "gatt:reliable-write" => Some("tauri-reliable-write-route-unavailable"),
-        "gatt:high-throughput-acquire" => Some("tauri-throughput-acquire-route-unavailable"),
         "lifecycle:page-persistence" => Some("tauri-rebind-releases-prior-lease"),
         _ => None,
     }

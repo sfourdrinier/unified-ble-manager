@@ -21,12 +21,8 @@ const {
   DRAIN_MAX_ITEMS,
   DRAIN_BOUNDARY_ITEMS
 } = require('../../../src/backends/reactnative/react-native-rust-core-drain')
-const {
-  createReactNativeRustCoreBinding
-} = require('../../../src/backends/reactnative/react-native-rust-core-binding')
-const {
-  DeterministicRustCoreNative
-} = require('../../../test-support/react-native/deterministic-rust-core-native')
+const { createReactNativeRustCoreBinding } = require('../../../src/backends/reactnative/react-native-rust-core-binding')
+const { DeterministicRustCoreNative } = require('../../../test-support/react-native/deterministic-rust-core-native')
 const {
   rustCoreHarness,
   environment,
@@ -34,9 +30,7 @@ const {
   subscribeOptions
 } = require('../../../test-support/react-native/rust-core-harness')
 const { DEFAULT_PEER } = require('../../../test-support/react-native/deterministic-rust-core-native')
-const {
-  createReactNativeBleManagerWithEnvironment
-} = require('../../../src/react-native-manager')
+const { createReactNativeBleManagerWithEnvironment } = require('../../../src/react-native-manager')
 
 const NO_OPTIONS = Object.freeze({ signal: null, deadline: null })
 
@@ -108,7 +102,7 @@ async function stopDrained(router, controlled) {
 describe('the deterministic owner wakes every armed arrival (arm, empty, record in between)', () => {
   test('a record arriving during an in-flight drain wakes exactly once and drains next', async () => {
     const native = new DeterministicRustCoreNative({ platform: 'android', drainResolution: 'native-task' })
-    const admission = JSON.parse(await native.openSession('owner-a', 'ubm-mobile-wire/1'))
+    const admission = JSON.parse(await native.openSession('owner-a', 'ubm-mobile-wire/2'))
     const sessionId = String(admission.sessionId)
     const session = native.sessions.get(sessionId)
     native.push(session, { t: 'value', consumer: 'c0', valueB64: 'AA==', delivery: 'notification' })
@@ -137,7 +131,7 @@ describe('the deterministic owner wakes every armed arrival (arm, empty, record 
 
   test('an empty drain arms; a later push disarms and wakes', async () => {
     const native = new DeterministicRustCoreNative({ platform: 'android' })
-    const admission = JSON.parse(await native.openSession('owner-b', 'ubm-mobile-wire/1'))
+    const admission = JSON.parse(await native.openSession('owner-b', 'ubm-mobile-wire/2'))
     const sessionId = String(admission.sessionId)
     const session = native.sessions.get(sessionId)
     const drained = JSON.parse(await native.drain(sessionId, 256, 65536))
@@ -156,7 +150,7 @@ describe('the deterministic owner wakes every armed arrival (arm, empty, record 
 
   test('a synchronous burst wakes once; every record drains in ordinal order', async () => {
     const native = new DeterministicRustCoreNative({ platform: 'android' })
-    const admission = JSON.parse(await native.openSession('owner-c', 'ubm-mobile-wire/1'))
+    const admission = JSON.parse(await native.openSession('owner-c', 'ubm-mobile-wire/2'))
     const sessionId = String(admission.sessionId)
     const session = native.sessions.get(sessionId)
     let wakes = 0
@@ -260,11 +254,7 @@ describe('the drain router never strands a woken record', () => {
     // call takes the burst; while a backlog remains each call is the task
     // boundary and takes one record — the same count as legacy's one native
     // event per record.
-    expect(controlled.calls.map(call => call[0])).toEqual([
-      DRAIN_MAX_ITEMS,
-      DRAIN_BOUNDARY_ITEMS,
-      DRAIN_BOUNDARY_ITEMS
-    ])
+    expect(controlled.calls.map(call => call[0])).toEqual([DRAIN_MAX_ITEMS, DRAIN_BOUNDARY_ITEMS, DRAIN_BOUNDARY_ITEMS])
     expect(DRAIN_MAX_ITEMS).toBe(256)
     expect(DRAIN_BOUNDARY_ITEMS).toBe(1)
     await stopDrained(router, controlled)
@@ -329,21 +319,20 @@ describe('concurrent notification streams share the drain fairly', () => {
         expect(warmup.done).toBe(false)
         expect(warmup.value.kind).toBe('value')
       }
-      const readers = subscriptions.map(
-        subscription =>
-          (async () => {
-            // iterator.next() reports {done, value}; for-await unwraps to
-            // the stream entry {kind, value: {value: bytes, delivery}}.
-            const items = []
-            const iterator = subscription.values[Symbol.asyncIterator]()
-            for (let turn = 0; turn < COUNT * 50 + 500 && items.length < COUNT; turn += 1) {
-              const outcome = await iterator.next()
-              if (outcome.done) break
-              if (outcome.value.kind !== 'value') break
-              items.push(outcome.value.value.value[0])
-            }
-            return items
-          })()
+      const readers = subscriptions.map(subscription =>
+        (async () => {
+          // iterator.next() reports {done, value}; for-await unwraps to
+          // the stream entry {kind, value: {value: bytes, delivery}}.
+          const items = []
+          const iterator = subscription.values[Symbol.asyncIterator]()
+          for (let turn = 0; turn < COUNT * 50 + 500 && items.length < COUNT; turn += 1) {
+            const outcome = await iterator.next()
+            if (outcome.done) break
+            if (outcome.value.kind !== 'value') break
+            items.push(outcome.value.value.value[0])
+          }
+          return items
+        })()
       )
       const payload = new Uint8Array(20)
       for (let index = 0; index < COUNT; index += 1) {

@@ -104,6 +104,14 @@ the renderer retains its remote release ownership until cleanup succeeds.
 
 ### Connection and GATT recovery
 
+Eligible Linux `acquireWrite()` and `acquireNotifications()` calls cross the
+trusted-main route to the same native central used by Node. Renderers receive
+opaque handles and copied packets. The [acquired transport contract](NODE.md#explicit-bluez-acquired-gatt-transports)
+applies to MTU limits, backpressure, cancellation and commit uncertainty.
+Iterator return closes an acquired notification transport. Main retains failed
+close ownership through rediscovery, connection release, renderer reload and
+admission rollback; another renderer lease cannot use or close the handle.
+
 The shared IPC client used by Electron and Tauri invalidates a GATT generation
 and publishes its change cause before waiting for subscription cleanup. Its
 handles become unusable immediately; an unsubscribe failure cannot restore
@@ -260,7 +268,7 @@ denied. Permissions authorize a route; the attached native backend still
 determines capability and reports the operation's actual result.
 
 The renderer and main negotiate the IPC protocol at bootstrap; both offer
-exactly version 5. Version 5 adds security routes, address targeting, connection
+exactly version 6. Version 5 added security routes, address targeting, connection
 intent and platform scan-option forwarding. A capability still describes the
 instantiated backend's implementation; transport support does not invent native
 support. The caller's deadline crosses as a relative `budgetMs` that
@@ -366,3 +374,7 @@ records state the exact backend, package digest, OS/runtime/ABI, hardware,
 scenario, limitations, and proof level.
 See [`PLATFORMS.md`](PLATFORMS.md) and the controlling
 [Current 5.0 authority](README.md#current-50-authority).
+
+IPC version 6 requires nullable observed service graph facts and the native
+readiness/acquired-GATT route contract. Version-5 peers are refused during
+bootstrap, before a renderer lease or radio effect is created.

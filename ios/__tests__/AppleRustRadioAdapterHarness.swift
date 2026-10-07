@@ -208,6 +208,15 @@ final class ScriptedDriver: UnifiedBleRustRadioDriver {
     }
   }
 
+  var connectedInventory = [MobilePeerName(peerId: "FOREIGN", name: "other app link")]
+  var connectedQueries = [[String]]()
+  func resolveDirectoryPeer(peerIdentifier: String, completion: @escaping (MobilePeerName?, NSError?) -> Void) {
+    workQueue.async { completion(self.connectedInventory.first { $0.peerId == peerIdentifier }, nil) }
+  }
+  func connectedPeerSnapshots(services: [String], completion: @escaping ([MobilePeerName]?, NSError?) -> Void) {
+    workQueue.async { self.connectedQueries.append(services); completion(self.connectedInventory, nil) }
+  }
+
   func restoredPeerSnapshots(completion: @escaping ([NSDictionary]) -> Void) {
     workQueue.async { completion(self.restored) }
   }
@@ -485,6 +494,12 @@ final class Harness {
     check(admission["sessionId"] is NSNumber, "admission sessionId is not a JSON number")
     sessionId = String((admission["sessionId"] as! NSNumber).uint64Value)
     check(admission["wireRevision"] as? String == mobileWireRevision(), "admission wire revision")
+
+    let foreignPeers = ok("peers.connected", ["services": ["180d"], "operationId": "foreign-directory"]) as? [[String: Any]] ?? []
+    check(foreignPeers.count == 1 && foreignPeers[0]["peerId"] as? String == "FOREIGN", "system inventory must include a foreign link")
+    check(foreignPeers[0]["connection"] as? String == "connected", "native inventory connection fact")
+    check(foreignPeers[0]["source"] as? String == "system-connected", "native inventory source")
+    check(!(ok("peers.known", [:]) as? [[String: Any]] ?? []).contains { $0["peerId"] as? String == "FOREIGN" }, "directory read must not add owner cache state")
 
     // Adapter state is read from the platform, authorization included.
     let state = ok("adapter.state", [:]) as? [String: Any]
@@ -1252,6 +1267,34 @@ final class Harness {
       ["availability": "available", "authorization": "notDetermined", "power": "unknown", "safeReason": "not yet"]
     )
     check(snapshot.authorization == "not-determined", "authorization vocabulary: \(snapshot)")
+    // Native callback reservations survive cancellation until the exact
+    // objects finish; duplicate/foreign callbacks cannot retire another slot.
+    let discoveryService = CBMutableService(type: CBUUID(string: "180D"), primary: true)
+    let foreignService = CBMutableService(type: CBUUID(string: "180D"), primary: false)
+    var discovery = PendingDiscovery(operationIdentifier: "old-discovery", completion: { _, _ in })
+    discovery.awaitingServices = false
+    discovery.includeCallbacks.insert(ObjectIdentifier(discoveryService))
+    discovery.characteristicCallbacks.insert(ObjectIdentifier(discoveryService))
+    discovery.cancelled = true
+    check(!discovery.consumeIncludes(foreignService), "foreign inclusion callback has no admission")
+    check(discovery.consumeIncludes(discoveryService), "exact canceled inclusion callback retires")
+    check(!discovery.consumeIncludes(discoveryService), "duplicate callback cannot retire twice")
+    check(!discovery.isDrained, "characteristic callback still owns discovery")
+    check(discovery.consumeCharacteristics(discoveryService), "exact characteristic callback retires")
+    check(discovery.isDrained, "canceled discovery releases only after all callback owners finish")
+    let graph = UnifiedBleRustRadioAdapter.services(["services": [
+      ["uuid": hrService, "occurrence": 0, "primary": true,
+       "includedServices": [["uuid": hrService, "occurrence": 1]], "characteristics": []],
+      ["uuid": hrService, "occurrence": 1, "primary": false,
+       "includedServices": [], "characteristics": []],
+      ["uuid": "0000180f-0000-1000-8000-00805f9b34fb", "occurrence": 0,
+       "primary": NSNull(), "includedServices": NSNull(), "characteristics": []]
+    ]] as NSDictionary)
+    check(graph?.count == 3, "graph service occurrences")
+    check(graph?[0].primary == true, "primary service observed")
+    check(graph?[0].includedServices?.first?.occurrence == 1, "duplicate UUID inclusion identity")
+    check(graph?[1].primary == false && graph?[1].includedServices?.count == 0, "secondary and observed empty")
+    check(graph?[2].primary == nil && graph?[2].includedServices == nil, "unknown graph facts")
     func readinessKind(_ authorization: String, _ power: String, _ availability: String = "available") -> String? {
       let adapter = MobileAdapterSnapshot(availability: availability, authorization: authorization, power: power, safeReason: nil)
       guard case let .failed(kind, _, _, _, _, dispatched)? = UnifiedBleRustRadioAdapter.readinessFailure(adapter) else { return nil }

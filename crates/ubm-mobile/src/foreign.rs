@@ -248,6 +248,11 @@ fn instance_of(
 
 impl ForeignRadio {
     #[must_use]
+    pub fn connection_subrate_available(&self) -> bool {
+        self.shared.mobile_platform == MobilePlatform::Android
+            && self.shared.platform.connection_subrate_available()
+    }
+    #[must_use]
     pub fn new(
         platform: Arc<dyn PlatformRadio>,
         mobile_platform: MobilePlatform,

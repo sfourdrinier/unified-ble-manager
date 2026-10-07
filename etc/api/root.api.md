@@ -16,9 +16,17 @@ export interface BleManager {
   find(options?: FindOptions): Promise<BlePeer>
   choose(options?: ChooseOptions): Promise<BlePeer>
   connect(peer: BlePeer | string | PeerReference, options?: ConnectOptions): Promise<BleConnection>
-  withConnection<T>(peer: BlePeer | string | PeerReference, options: ConnectOptions, action: (connection: BleConnection) => Promise<T>): Promise<T>
+  withConnection<T>(
+    peer: BlePeer | string | PeerReference,
+    options: ConnectOptions,
+    action: (connection: BleConnection) => Promise<T>
+  ): Promise<T>
   withScan<T>(options: ScanOptions, action: (scan: ScanSession) => Promise<T>): Promise<T>
-  withDiscoveredConnection<T>(peer: BlePeer | string | PeerReference, options: ConnectOptions, action: (scope: { connection: BleConnection; gatt: GattDatabase }) => Promise<T>): Promise<T>
+  withDiscoveredConnection<T>(
+    peer: BlePeer | string | PeerReference,
+    options: ConnectOptions,
+    action: (scope: { connection: BleConnection; gatt: GattDatabase }) => Promise<T>
+  ): Promise<T>
 }
 
 export interface BlePeer {
@@ -68,22 +76,75 @@ export interface GattCharacteristic {
   withSubscription<T>(options: GattSubscribeOptions, action: (subscription: GattSubscription) => Promise<T>): Promise<T>
   descriptor(uuid: UuidInput, selector?: OccurrenceSelector): GattDescriptor
 }
-export interface RediscoverGattOptions extends OperationOptions { readonly reason: 'service-changed' | 'manual' }
+export interface RediscoverGattOptions extends OperationOptions {
+  readonly reason: 'service-changed' | 'manual'
+}
 export type ConnectionPriority = 'low-power' | 'balanced' | 'high-throughput'
 export type WriteMode = 'with-response' | 'without-response'
-export interface RssiObservation extends BleControlObservationMetadata { readonly state: 'measured' | 'unavailable' | 'unsupported'; readonly rssi: number | null }
-export interface MtuObservation extends BleControlObservationMetadata { readonly state: 'measured' | 'unavailable' | 'unsupported'; readonly attMtu: number | null; readonly payloadBytes: number | null; readonly platformPduBytes: number | null }
-export interface MtuNegotiation extends BleControlObservationMetadata { readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'; readonly requestedMtu: number; readonly observation: MtuObservation | null }
-export interface MaximumWriteLengthObservation extends BleControlObservationMetadata { readonly state: 'measured' | 'unavailable' | 'unsupported'; readonly mode: WriteMode; readonly maximumWriteLength: number | null }
-export interface ConnectionPriorityResult extends BleControlObservationMetadata { readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'; readonly requested: ConnectionPriority }
-export interface PhyPreference { readonly tx?: BlePhy; readonly rx?: BlePhy }
-export interface PhyObservation extends BleControlObservationMetadata { readonly state: 'measured' | 'unavailable' | 'unsupported'; readonly tx: BlePhy | null; readonly rx: BlePhy | null }
-export interface PhyUpdateResult extends BleControlObservationMetadata { readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'; readonly requested: PhyPreference; readonly observation: PhyObservation | null }
-export interface ConnectionParametersObservation extends BleControlObservationMetadata { readonly state: 'measured' | 'unavailable' | 'unsupported'; readonly intervalMs: number | null; readonly peripheralLatency: number | null; readonly supervisionTimeoutMs: number | null; readonly subrateFactor: number | null; readonly connectionEventLengthMs: number | null }
+export interface RssiObservation extends BleControlObservationMetadata {
+  readonly state: 'measured' | 'unavailable' | 'unsupported'
+  readonly rssi: number | null
+}
+export interface MtuObservation extends BleControlObservationMetadata {
+  readonly state: 'measured' | 'unavailable' | 'unsupported'
+  readonly attMtu: number | null
+  readonly payloadBytes: number | null
+  readonly platformPduBytes: number | null
+}
+export interface MtuNegotiation extends BleControlObservationMetadata {
+  readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'
+  readonly requestedMtu: number
+  readonly observation: MtuObservation | null
+}
+export interface MaximumWriteLengthObservation extends BleControlObservationMetadata {
+  readonly state: 'measured' | 'unavailable' | 'unsupported'
+  readonly mode: WriteMode
+  readonly maximumWriteLength: number | null
+}
+export interface ConnectionPriorityResult extends BleControlObservationMetadata {
+  readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'
+  readonly requested: ConnectionPriority
+}
+export interface PhyPreference {
+  readonly tx?: BlePhy
+  readonly rx?: BlePhy
+}
+export interface PhyObservation extends BleControlObservationMetadata {
+  readonly state: 'measured' | 'unavailable' | 'unsupported'
+  readonly tx: BlePhy | null
+  readonly rx: BlePhy | null
+}
+export interface PhyUpdateResult extends BleControlObservationMetadata {
+  readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'
+  readonly requested: PhyPreference
+  readonly observation: PhyObservation | null
+}
+export interface ConnectionParametersObservation extends BleControlObservationMetadata {
+  readonly state: 'measured' | 'unavailable' | 'unsupported'
+  readonly intervalMs: number | null
+  readonly peripheralLatency: number | null
+  readonly supervisionTimeoutMs: number | null
+  readonly subrateFactor: number | null
+  readonly connectionEventLengthMs: number | null
+}
 export type SubrateMode = 'default' | 'low-latency' | 'low-power'
-export interface SubrateResult extends BleControlObservationMetadata { readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'; readonly requested: SubrateMode; readonly observation: ConnectionParametersObservation | null }
-export interface WriteReadinessEvent extends BleControlObservationMetadata { readonly state: 'measured' | 'unavailable' | 'unsupported'; readonly mode: 'without-response'; readonly ready: boolean | null }
-export interface BleControlObservationMetadata { readonly connectionGeneration: string; readonly observedAtMonotonicMs: number; readonly source: BleObservationSource; readonly authority: string; readonly limitations: readonly Limitation[] }
+export interface SubrateResult extends BleControlObservationMetadata {
+  readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'
+  readonly requested: SubrateMode
+  readonly observation: ConnectionParametersObservation | null
+}
+export interface WriteReadinessEvent extends BleControlObservationMetadata {
+  readonly state: 'measured' | 'unavailable' | 'unsupported'
+  readonly mode: 'without-response'
+  readonly ready: boolean | null
+}
+export interface BleControlObservationMetadata {
+  readonly connectionGeneration: string
+  readonly observedAtMonotonicMs: number
+  readonly source: BleObservationSource
+  readonly authority: string
+  readonly limitations: readonly Limitation[]
+}
 export type BleObservationSource = 'backend' | 'platform' | 'core' | 'unknown'
 export interface ScanSession {
   readonly plan: ScanPlan | null
@@ -94,22 +155,87 @@ export interface ScanSession {
 }
 export type DiscoveryEvent =
   | { readonly kind: 'observed'; readonly peer: BlePeer }
-  | { readonly kind: 'lost'; readonly peer: BlePeer; readonly lastObservedAt: number; readonly derivedAt: number; readonly reason: 'observation-timeout' }
-  | { readonly kind: 'presence-tracking-overflow'; readonly guarantee: 'reportLostAfterMs-completeness'; readonly droppedEntries: number; readonly droppedBytes: number }
-export type ScanPlatformOptions = AndroidScanPlatformOptions | { readonly kind: 'corebluetooth' } | { readonly kind: 'winrt' } | { readonly kind: 'web' } | { readonly kind: 'electron' } | { readonly kind: 'tauri' }
-export interface AndroidScanPlatformOptions { readonly kind: 'android'; readonly mode?: 'low-power' | 'balanced' | 'low-latency' | 'opportunistic'; readonly callbackType?: 'all-matches' | 'first-match' | 'match-lost'; readonly reportDelayMs?: number; readonly legacy?: boolean; readonly phy?: 'all-supported' | '1m' | 'coded' }
-export interface BleAdapter { readonly id: string | null; state(): Promise<BleAdapterState>; waitUntilReady(options?: AdapterReadinessOptions): Promise<BleAdapterState> }
-export interface BleDiscoveryInfo { readonly kind: 'continuous-scan' | 'system-chooser' | 'hybrid' }
-export interface OperationOptions { readonly signal?: AbortSignal; readonly timeoutMs?: number }
-export interface ScanOptions extends OperationOptions { readonly query?: ScanQuery; readonly duplicates?: 'coalesced' | 'all'; readonly delivery?: StreamPolicy; readonly observation?: { readonly reportLostAfterMs?: number; readonly includeRawAdvertisement?: boolean }; readonly platform?: ScanPlatformOptions }
-export interface FindOptions extends OperationOptions { readonly query?: ScanQuery; readonly select?: 'first' | ((peer: BlePeer) => boolean) }
-export interface ChooseOptions extends OperationOptions { readonly filters?: readonly ChooseFilter[]; readonly optionalServices?: readonly (string | number)[]; readonly acceptAllDevices?: boolean }
-export type { GattDatabase, GattService, GattCharacteristic, GattDescriptor, GattSubscription, GattValueEvent, GattWriteReceipt, GattSubscribeOptions } from './gatt'
+  | {
+      readonly kind: 'lost'
+      readonly peer: BlePeer
+      readonly lastObservedAt: number
+      readonly derivedAt: number
+      readonly reason: 'observation-timeout'
+    }
+  | {
+      readonly kind: 'presence-tracking-overflow'
+      readonly guarantee: 'reportLostAfterMs-completeness'
+      readonly droppedEntries: number
+      readonly droppedBytes: number
+    }
+export type ScanPlatformOptions =
+  | AndroidScanPlatformOptions
+  | { readonly kind: 'corebluetooth' }
+  | { readonly kind: 'winrt' }
+  | { readonly kind: 'web' }
+  | { readonly kind: 'electron' }
+  | { readonly kind: 'tauri' }
+export interface AndroidScanPlatformOptions {
+  readonly kind: 'android'
+  readonly mode?: 'low-power' | 'balanced' | 'low-latency' | 'opportunistic'
+  readonly callbackType?: 'all-matches' | 'first-match' | 'match-lost'
+  readonly reportDelayMs?: number
+  readonly legacy?: boolean
+  readonly phy?: 'all-supported' | '1m' | 'coded'
+}
+export interface BleAdapter {
+  readonly id: string | null
+  state(): Promise<BleAdapterState>
+  waitUntilReady(options?: AdapterReadinessOptions): Promise<BleAdapterState>
+}
+export interface BleDiscoveryInfo {
+  readonly kind: 'continuous-scan' | 'system-chooser' | 'hybrid'
+}
+export interface OperationOptions {
+  readonly signal?: AbortSignal
+  readonly timeoutMs?: number
+}
+export interface ScanOptions extends OperationOptions {
+  readonly query?: ScanQuery
+  readonly duplicates?: 'coalesced' | 'all'
+  readonly delivery?: StreamPolicy
+  readonly observation?: { readonly reportLostAfterMs?: number; readonly includeRawAdvertisement?: boolean }
+  readonly platform?: ScanPlatformOptions
+}
+export interface FindOptions extends OperationOptions {
+  readonly query?: ScanQuery
+  readonly select?: 'first' | ((peer: BlePeer) => boolean)
+}
+export interface ChooseOptions extends OperationOptions {
+  readonly filters?: readonly ChooseFilter[]
+  readonly optionalServices?: readonly (string | number)[]
+  readonly acceptAllDevices?: boolean
+}
+export type {
+  GattDatabase,
+  GattService,
+  GattCharacteristic,
+  GattDescriptor,
+  GattSubscription,
+  GattValueEvent,
+  GattWriteReceipt,
+  GattSubscribeOptions
+} from './gatt'
 export type { BleCapabilities, CapabilityDescriptor, FeatureId } from './capabilities'
 export type { BleDiagnostics, BleDiagnosticsSnapshot } from './diagnostics'
 export type { BlePeerDirectory, PeerReference, PeerReferenceScope, PeerSource } from './peer-directory'
-export class BleError extends Error { readonly code: BleErrorCode; readonly domain: BleErrorDomain; readonly operation: string; readonly platform: PublicPlatformErrorDetail | null; readonly recovery: BleRecovery }
-export function createConnectionSupervisor<Session = undefined>(manager: BleManager, peer: BlePeer | string | PeerReference, options: ConnectionSupervisorOptions<Session>): ConnectionSupervisor<Session>
+export class BleError extends Error {
+  readonly code: BleErrorCode
+  readonly domain: BleErrorDomain
+  readonly operation: string
+  readonly platform: PublicPlatformErrorDetail | null
+  readonly recovery: BleRecovery
+}
+export function createConnectionSupervisor<Session = undefined>(
+  manager: BleManager,
+  peer: BlePeer | string | PeerReference,
+  options: ConnectionSupervisorOptions<Session>
+): ConnectionSupervisor<Session>
 export type {
   ConnectionGate,
   ConnectionGateContext,
@@ -146,7 +272,7 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `BleCapabilities :: { supports(id: BuiltInFeatureId): boolean; get(id: '${string}:${string}'): CapabilityDescriptor | undefined; require(id: BuiltInFeatureId): CapabilityDescriptor; list(): readonly CapabilityDescriptor[] }`
 - `BleCommitUncertainty :: "not-dispatched" | "uncertain"`
 - `BleConnection :: { readonly peer: BlePeer; readonly connectionGeneration: string; readonly lifecycleEvents: AsyncIterable<BleConnectionEvent>; readonly controls: BleConnectionControls; readonly discover: (options?: OperationOptions | undefined) => Promise<GattDatabase>; readonly rediscoverGatt: (options: RediscoverGattOptions) => Promise<GattDatabase>; readonly disconnect: () => Promise<CleanupRecord>; readonly release: () => Promise<CleanupRecord> }`
-- `BleConnectionControls :: { readRssi(options?: OperationOptions | undefined): Promise<RssiObservation>; effectiveMtu(options?: OperationOptions | undefined): Promise<MtuObservation>; requestMtu(mtu: number, options?: OperationOptions | undefined): Promise<MtuNegotiation>; maximumWriteLength(mode: WriteMode): Promise<MaximumWriteLengthObservation>; requestPriority(priority: ConnectionPriority, options?: OperationOptions | undefined): Promise<ConnectionPriorityResult>; readPhy(options?: OperationOptions | undefined): Promise<PhyObservation>; requestPhy(preference: Readonly<{ readonly tx?: BlePhy | undefined; readonly rx?: BlePhy | undefined; }>, options?: OperationOptions | undefined): Promise<PhyUpdateResult>; parameters(): Promise<ConnectionParametersObservation>; parameterEvents(): AsyncIterable<ConnectionParametersObservation>; requestSubrate(mode: SubrateMode, options?: OperationOptions | undefined): Promise<SubrateResult>; writeReadiness(mode: "without-response"): AsyncIterable<WriteReadinessEvent> }`
+- `BleConnectionControls :: { readRssi(options?: OperationOptions | undefined): Promise<RssiObservation>; effectiveMtu(options?: OperationOptions | undefined): Promise<MtuObservation>; requestMtu(mtu: number, options?: OperationOptions | undefined): Promise<MtuNegotiation>; maximumWriteLength(mode: WriteMode): Promise<MaximumWriteLengthObservation>; requestPriority(priority: ConnectionPriority, options?: OperationOptions | undefined): Promise<ConnectionPriorityResult>; readPhy(options?: OperationOptions | undefined): Promise<PhyObservation>; requestPhy(preference: Readonly<{ readonly tx?: BlePhy | undefined; readonly rx?: BlePhy | undefined; }>, options?: OperationOptions | undefined): Promise<PhyUpdateResult>; parameters(): Promise<ConnectionParametersObservation>; parameterEvents(): AsyncIterable<ConnectionParametersObservation>; requestSubrate(mode: ConnectionSubrateMode, options?: OperationOptions | undefined): Promise<SubrateResult>; writeReadiness(mode: "without-response"): AsyncIterable<WriteReadinessEvent> }`
 - `BleConnectionEvent :: { readonly kind: "connection-lifecycle"; readonly previous: ConnectionState; readonly current: ConnectionState; readonly cause: ConnectionLifecycleCause; readonly connectionGeneration: string; readonly sequence: number; readonly platform?: PublicPlatformErrorDetail | undefined }`
 - `BleControlObservationMetadata :: { readonly connectionGeneration: string; readonly observedAtMonotonicMs: number; readonly source: BleObservationSource; readonly authority: string; readonly limitations: readonly Limitation[] }`
 - `BleControlObservationState :: "measured" | "unavailable" | "unsupported"`
@@ -204,7 +330,9 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `FeatureId :: '${Namespace}:${Name}'`
 - `FindOptions :: { readonly query?: ScanQuery | undefined; readonly select?: "first" | ((peer: BlePeer) => boolean) | undefined; readonly duplicates?: "coalesced" | "all" | undefined; readonly delivery?: StreamPolicy | undefined; readonly platform?: ScanPlatformOptions | undefined; readonly signal?: AbortSignal | undefined; readonly timeoutMs?: number | undefined }`
 - `GattAccessRequirements :: { readonly read: "unknown" | "none" | "encrypted" | "authenticated" | "authorized"; readonly write: "unknown" | "none" | "encrypted" | "authenticated" | "authorized" }`
-- `GattCharacteristic :: { readonly uuid: string; readonly occurrence: number; readonly service: GattService; readonly properties: GattCharacteristicProperties; readonly access: GattAccessRequirements; readonly descriptors: readonly GattDescriptor[]; read(options?: OperationOptions | undefined): Promise<Uint8Array<ArrayBufferLike>>; readReceipt(options?: OperationOptions | undefined): Promise<PortableReadReceipt>; write(value: Uint8Array<ArrayBufferLike>, options?: GattWriteOptions | undefined): Promise<PortableWriteReceipt>; writeWhenReady(value: Uint8Array<ArrayBufferLike>, options?: OperationOptions | undefined): Promise<PortableWriteReceipt>; writeLong(value: Uint8Array<ArrayBufferLike>, options?: LongWriteOptions | undefined): Promise<PortableLongWriteReceipt>; subscribe(options?: GattSubscribeOptions | undefined): Promise<GattSubscription>; withSubscription<T>(options: GattSubscribeOptions, action: (subscription: GattSubscription) => Promise<T>): Promise<T>; descriptor(uuid: UuidInput, selector?: OccurrenceSelector | undefined): GattDescriptor }`
+- `GattAcquiredNotifications :: { readonly mtuBytes: number; readonly values: PublicBoundedAsyncStream<GattValueEvent>; close(): Promise<CleanupRecord> }`
+- `GattAcquiredWriter :: { readonly mtuBytes: number; write(value: Uint8Array<ArrayBufferLike>, options?: OperationOptions | undefined): Promise<PortableWriteReceipt>; close(): Promise<CleanupRecord> }`
+- `GattCharacteristic :: { readonly uuid: string; readonly occurrence: number; readonly service: GattService; readonly properties: GattCharacteristicProperties; readonly access: GattAccessRequirements; readonly descriptors: readonly GattDescriptor[]; read(options?: OperationOptions | undefined): Promise<Uint8Array<ArrayBufferLike>>; readReceipt(options?: OperationOptions | undefined): Promise<PortableReadReceipt>; write(value: Uint8Array<ArrayBufferLike>, options?: GattWriteOptions | undefined): Promise<PortableWriteReceipt>; writeWhenReady(value: Uint8Array<ArrayBufferLike>, options?: OperationOptions | undefined): Promise<PortableWriteReceipt>; acquireWrite(options?: OperationOptions | undefined): Promise<GattAcquiredWriter>; acquireNotifications(options?: (OperationOptions & { readonly stream?: StreamPolicy | undefined; }) | undefined): Promise<GattAcquiredNotifications>; writeLong(value: Uint8Array<ArrayBufferLike>, options?: LongWriteOptions | undefined): Promise<PortableLongWriteReceipt>; subscribe(options?: GattSubscribeOptions | undefined): Promise<GattSubscription>; withSubscription<T>(options: GattSubscribeOptions, action: (subscription: GattSubscription) => Promise<T>): Promise<T>; descriptor(uuid: UuidInput, selector?: OccurrenceSelector | undefined): GattDescriptor }`
 - `GattCharacteristicProperties :: { readonly broadcast: boolean; readonly read: boolean; readonly writeWithResponse: boolean; readonly writeWithoutResponse: boolean; readonly authenticatedSignedWrites: boolean; readonly notify: boolean; readonly indicate: boolean; readonly extendedProperties: boolean; readonly reliableWrite: boolean; readonly writableAuxiliaries: boolean; readonly availability: GattCharacteristicPropertyAvailability }`
 - `GattDatabase :: { readonly generation: string; readonly services: readonly GattService[]; readonly changed: PublicBoundedAsyncStream<GattDatabaseChangedEvent>; service(uuid: UuidInput, selector?: OccurrenceSelector | undefined): GattService; servicesByUuid(uuid: UuidInput): readonly GattService[]; characteristic(serviceUuid: UuidInput, characteristicUuid: UuidInput, selector?: GattPathSelector | undefined): GattCharacteristic; snapshot(): GattDatabaseSnapshot }`
 - `GattDatabaseChangedEvent :: { readonly previousGeneration: string; readonly reason: "service-changed" | "reconnect" | "backend-reset" | "manual-rediscovery"; readonly affectedHandleRange: { readonly start: number; readonly end: number; } | null }`
@@ -214,7 +342,7 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `GattPathSelector :: { readonly serviceOccurrence?: number | undefined; readonly characteristicOccurrence?: number | undefined }`
 - `GattReadProvenance :: "read-response" | "read-or-notification"`
 - `GattReadReceipt :: { readonly value: Uint8Array<ArrayBufferLike>; readonly provenance: "read-response" | "read-or-notification" }`
-- `GattService :: { readonly uuid: string; readonly occurrence: number; readonly primary: boolean; readonly includedServices: readonly GattServiceReference[]; readonly restriction?: GattServiceRestriction | undefined; readonly characteristics: readonly GattCharacteristic[]; characteristic(uuid: UuidInput, selector?: OccurrenceSelector | undefined): GattCharacteristic; characteristicsByUuid(uuid: UuidInput): readonly GattCharacteristic[] }`
+- `GattService :: { readonly uuid: string; readonly occurrence: number; readonly primary: boolean | null; readonly includedServices: readonly GattServiceReference[] | null; readonly restriction?: GattServiceRestriction | undefined; readonly characteristics: readonly GattCharacteristic[]; characteristic(uuid: UuidInput, selector?: OccurrenceSelector | undefined): GattCharacteristic; characteristicsByUuid(uuid: UuidInput): readonly GattCharacteristic[] }`
 - `GattServiceReference :: { readonly uuid: string; readonly occurrence: number }`
 - `GattSubscribeOptions :: { readonly delivery?: "prefer-notification" | "prefer-indication" | "require-notification" | "require-indication" | undefined; readonly stream?: StreamPolicy | undefined; readonly signal?: AbortSignal | undefined; readonly timeoutMs?: number | undefined }`
 - `GattSubscription :: { readonly requestedDelivery: "prefer-notification" | "prefer-indication" | "require-notification" | "require-indication" | undefined; readonly effectiveDelivery: GattDelivery; readonly values: GattValueStream; remove(): Promise<CleanupRecord> }`
@@ -270,10 +398,10 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `ScanClause :: { readonly peers?: readonly PeerReference[] | undefined; readonly addresses?: readonly string[] | undefined; readonly services?: { readonly any?: readonly (string | number)[] | undefined; readonly all?: readonly (string | number)[] | undefined; } | undefined; readonly names?: { readonly exact?: readonly string[] | undefined; readonly prefixes?: readonly string[] | undefined; } | undefined; readonly manufacturerData?: { readonly any?: readonly ManufacturerDataPattern[] | undefined; readonly all?: readonly ManufacturerDataPattern[] | undefined; } | undefined; readonly serviceData?: { readonly any?: readonly ServiceDataPattern[] | undefined; readonly all?: readonly ServiceDataPattern[] | undefined; } | undefined; readonly rssi?: { readonly minimum?: number | undefined; readonly maximum?: number | undefined; } | undefined; readonly connectable?: boolean | undefined }`
 - `ScanOptions :: { readonly query?: ScanQuery | undefined; readonly duplicates?: "coalesced" | "all" | undefined; readonly delivery?: StreamPolicy | undefined; readonly observation?: { readonly reportLostAfterMs?: number | undefined; readonly includeRawAdvertisement?: boolean | undefined; } | undefined; readonly platform?: ScanPlatformOptions | undefined; readonly signal?: AbortSignal | undefined; readonly timeoutMs?: number | undefined }`
 - `ScanPlan :: { readonly sourceQuery: NormalizedScanQuery; readonly queryDigest: string; readonly residualQueryDigest: string; readonly nativeGuarantee: "exact" | "safe-superset"; readonly native: ScanPlanProjection; readonly residual: ScanPlanResidualProjection; readonly unavailable: readonly ScanPredicateDescription[]; readonly limitations: readonly ScanPlanLimitation[]; readonly estimatedCost: "native-only" | "low" | "moderate" | "high" }`
-- `ScanPlatformOptions :: AndroidScanPlatformOptions | { readonly kind: "corebluetooth"; } | { readonly kind: "winrt"; } | { readonly kind: "web"; } | { readonly kind: "electron"; } | { readonly kind: "tauri"; }`
+- `ScanPlatformOptions :: AndroidScanPlatformOptions | WinRtScanPlatformOptions | { readonly kind: "corebluetooth"; } | { readonly kind: "web"; } | { readonly kind: "electron"; } | { readonly kind: "tauri"; }`
 - `ScanQuery :: { readonly anyOf?: readonly ScanClause[] | undefined; readonly exclude?: readonly ScanClause[] | undefined }`
 - `ScanSession :: { readonly plan: ScanPlan | null; readonly stop: () => Promise<CleanupRecord>; readonly observations: PublicBoundedAsyncStream<PublicScanObservation>; readonly events?: AsyncIterable<DiscoveryEvent> | undefined; readonly state: AsyncIterable<ScanStateEvent> }`
-- `ScanStateEvent :: { readonly state: "starting" | "active" | "stopping" | "stopped" | "failed"; readonly reason?: string | undefined }`
+- `ScanStateEvent :: { readonly state: "active" | "starting" | "stopping" | "stopped" | "failed"; readonly reason?: string | undefined }`
 - `SecureConnectionsState :: "unknown" | "unsupported" | "yes" | "no"`
 - `SecurityAuthenticationState :: "unknown" | "unsupported" | "authenticated" | "unauthenticated"`
 - `SecurityBondState :: "unknown" | "unsupported" | "bonded" | "not-bonded" | "bonding"`
@@ -283,10 +411,11 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `ServiceDataPattern :: { readonly service: string | number; readonly dataPrefix?: Readonly<Uint8Array<ArrayBufferLike>> | undefined; readonly mask?: Readonly<Uint8Array<ArrayBufferLike>> | undefined }`
 - `StreamPolicy :: "balanced" | "latest" | "lossless-bounded" | { readonly preset: "custom"; readonly budget: CustomStreamBudget; }`
 - `StreamPreset :: "balanced" | "latest" | "lossless-bounded" | "custom"`
-- `SubrateMode :: "low-power" | "default" | "low-latency"`
-- `SubrateResult :: { readonly state: "unavailable" | "unsupported" | "accepted" | "rejected"; readonly requested: SubrateMode; readonly observation: ConnectionParametersObservation | null; readonly connectionGeneration: string; readonly observedAtMonotonicMs: number; readonly source: BleObservationSource; readonly authority: string; readonly limitations: readonly Limitation[] }`
+- `SubrateMode :: "low-power" | "high-throughput" | "default" | "low-latency"`
+- `SubrateResult :: { readonly state: "unavailable" | "unsupported" | "accepted" | "rejected"; readonly requested: ConnectionSubrateMode; readonly observation: ConnectionParametersObservation | null; readonly connectionGeneration: string; readonly observedAtMonotonicMs: number; readonly source: BleObservationSource; readonly authority: string; readonly limitations: readonly Limitation[] }`
 - `UnpairResult :: { readonly outcome: "unsupported" | "unpaired" | "already-unpaired" }`
 - `UuidInput :: string | number`
+- `WinRtScanPlatformOptions :: { readonly kind: "winrt"; readonly mode?: "active" | "passive" | "none" | undefined; readonly allowExtendedAdvertisements?: boolean | undefined }`
 - `WriteMode :: "with-response" | "without-response"`
 - `WriteReadinessEvent :: { readonly state: BleControlObservationState; readonly mode: "without-response"; readonly ready: boolean | null; readonly connectionGeneration: string; readonly observedAtMonotonicMs: number; readonly source: BleObservationSource; readonly authority: string; readonly limitations: readonly Limitation[] }`
 - `createConnectionSupervisor :: <Session = undefined>(manager: BleManager, peer: string | BlePeer | PeerReference, options: ConnectionSupervisorOptions<Session>) => ConnectionSupervisor<Session>`

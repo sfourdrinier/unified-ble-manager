@@ -48,9 +48,12 @@ interface MobileCorePort {
   fun completeWriteLimits(requestId: Long, withResponse: Int, withoutResponse: Int): Int
   fun completeRssi(requestId: Long, rssi: Int): Int
   fun completeAccepted(requestId: Long, accepted: Boolean): Int
+  fun completeSubrateStatus(requestId: Long, status: Int): Int
   fun completePhy(requestId: Long, tx: String, rx: String): Int
   fun completePhyRequest(requestId: Long, accepted: Boolean, tx: String?, rx: String?): Int
   fun completeSecurity(requestId: Long, security: SecurityFacts): Int
+  fun completeResolvedPeer(requestId: Long, peerId: String?, name: String?): Int
+  fun completeConnectedPeers(requestId: Long, peerIds: Array<String>, names: Array<String?>): Int
   fun completeBondedPeers(requestId: Long, peerIds: Array<String>, names: Array<String?>): Int
   fun completeLease(requestId: Long, leaseId: String): Int
   fun completeCompanionList(
@@ -81,6 +84,7 @@ interface MobileCorePort {
   fun ingestScanFailed(detail: String): Int
   fun ingestRestored(peers: List<PresenceRestoredPeer>): Int
   fun ingestSecurity(peerId: String, security: SecurityFacts): Int
+  fun ingestSecurityFailure(peerId: String?, failure: RadioFailure, encryptionStatus: Int?): Int
   fun ingestDropped(ingressClass: String, detail: String): Int
 }
 
@@ -157,6 +161,7 @@ object JniMobileCorePort : MobileCorePort {
     MobileCoreBridge.nativeCompleteWriteLimits(requestId, withResponse, withoutResponse)
   override fun completeRssi(requestId: Long, rssi: Int): Int = MobileCoreBridge.nativeCompleteRssi(requestId, rssi)
   override fun completeAccepted(requestId: Long, accepted: Boolean): Int = MobileCoreBridge.nativeCompleteAccepted(requestId, accepted)
+  override fun completeSubrateStatus(requestId: Long, status: Int): Int = MobileCoreBridge.nativeCompleteSubrateStatus(requestId, status)
   override fun completePhy(requestId: Long, tx: String, rx: String): Int = MobileCoreBridge.nativeCompletePhy(requestId, tx, rx)
   override fun completePhyRequest(requestId: Long, accepted: Boolean, tx: String?, rx: String?): Int =
     MobileCoreBridge.nativeCompletePhyRequest(requestId, accepted, tx, rx)
@@ -170,6 +175,10 @@ object JniMobileCorePort : MobileCorePort {
       security.secureConnections,
       tristate(security.pairingPossible)
     )
+
+  override fun completeResolvedPeer(requestId: Long, peerId: String?, name: String?): Int = MobileCoreBridge.nativeCompleteResolvedPeer(requestId, peerId, name)
+  override fun completeConnectedPeers(requestId: Long, peerIds: Array<String>, names: Array<String?>): Int =
+    MobileCoreBridge.nativeCompleteConnectedPeers(requestId, peerIds, names)
 
   override fun completeBondedPeers(requestId: Long, peerIds: Array<String>, names: Array<String?>): Int =
     MobileCoreBridge.nativeCompleteBondedPeers(requestId, peerIds, names)
@@ -257,6 +266,9 @@ object JniMobileCorePort : MobileCorePort {
       peers.map { it.name }.toTypedArray(),
       peers.map { it.connected }.toBooleanArray()
     )
+
+  override fun ingestSecurityFailure(peerId: String?, failure: RadioFailure, encryptionStatus: Int?): Int =
+    MobileCoreBridge.nativeIngestSecurityFailure(peerId, failure.kind.wire, encryptionStatus ?: MobileCoreBridge.ABSENT_INT, failure.detail)
 
   override fun ingestSecurity(peerId: String, security: SecurityFacts): Int =
     MobileCoreBridge.nativeIngestSecurity(

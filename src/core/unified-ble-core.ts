@@ -958,7 +958,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     cause: ConnectionLifecycleTerminalCause
   ): Promise<CleanupRecord> {
     const key = String(connection.resource.connectionId)
-    this.operationCoordinator.cancelQueue(key, 'disconnected')
+    this.operationCoordinator.cancelQueue(key, cause === 'adapter-loss' ? 'reset' : 'disconnected')
     const quarantine: CleanupRecord = this.operationCoordinator.hasPendingDrain(key)
       ? await this.awaitQuarantineDrain(key)
       : { state: 'released', failures: [] }

@@ -18,7 +18,16 @@ const { BleError } = require('../src/public/errors')
 
 const CCCD = '2902'
 
-const H10_SERVICES = ['1800', '1801', '180d', '180a', '180f', '6217ff4b-fb31-1140-ad5a-a45545d7ecf3', 'fb005c80-02e7-f387-1cad-8acd2d8df0c8', 'feee']
+const H10_SERVICES = [
+  '1800',
+  '1801',
+  '180d',
+  '180a',
+  '180f',
+  '6217ff4b-fb31-1140-ad5a-a45545d7ecf3',
+  'fb005c80-02e7-f387-1cad-8acd2d8df0c8',
+  'feee'
+]
 
 // [serviceUuid, characteristicUuid, properties, descriptorUuids]
 const H10_CHARACTERISTICS = [
@@ -298,7 +307,7 @@ describe('Tauri/Electron H10 GATT database (finding 182)', () => {
           capabilitySchema: negotiated('capability-schema'),
           eventSchema: negotiated('event-schema'),
           traceFormat: negotiated('trace-format'),
-          ipcProtocol: negotiated('ipc-protocol', 5)
+          ipcProtocol: negotiated('ipc-protocol', 6)
         },
         capabilities: {
           schemaVersion: 2,

@@ -55,7 +55,7 @@ test('BlueZ derivative source assets retain exact upstream provenance and licens
     linkedIntoPackageNativeLibraries: false,
     deployment: 'external-explicit-host-action',
     automaticInstallOrLaunch: false,
-    linuxAuthorityContract: [1, 2, 1],
+    linuxAuthorityContract: [1, 3, 1],
     release: '5.87-ubm.10'
   })
   const patch = readFileSync(new URL(manifest.patch.file, directory), 'utf8')
@@ -67,7 +67,7 @@ test('BlueZ derivative source assets retain exact upstream provenance and licens
   ]) {
     assert.ok(patch.includes(`+++ b/${path}`), `missing production authority source: ${path}`)
   }
-  assert.match(patch, /protocol = 1, lease = 2, gatt = 1/)
+  assert.match(patch, /protocol = 1, lease = 3, gatt = 1/)
   assert.match(patch, /GDBUS_METHOD\("RecoverLease"/)
   assert.match(patch, /GDBUS_METHOD\("AckLease"/)
   assert.match(patch, /"reason", "y"/)

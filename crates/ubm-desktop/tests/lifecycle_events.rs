@@ -35,6 +35,8 @@ fn advertisement(peer_id: &str) -> RadioEvent {
 
 fn hrm_service() -> ServiceSnapshot {
     ServiceSnapshot {
+        primary: None,
+        included_services: None,
         uuid: HRM_SERVICE.to_owned(),
         occurrence: 0,
         characteristics: vec![CharacteristicSnapshot {

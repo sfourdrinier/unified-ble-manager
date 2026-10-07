@@ -177,6 +177,22 @@ pub(crate) struct WinRt {
     adapter_watch: StdMutex<Option<AdapterWatch>>,
 }
 
+#[derive(Clone, Copy)]
+enum DirectoryQuery {
+    Known,
+    Connected,
+    Bonded,
+}
+impl DirectoryQuery {
+    fn operation(self) -> &'static str {
+        match self {
+            Self::Known => "peers.known",
+            Self::Connected => "peers.connected",
+            Self::Bonded => "peers.bonded",
+        }
+    }
+}
+
 impl WinRt {
     /// The WinRT state of a radio opened on `adapter_id`, watching that
     /// adapter's presence. A watch that cannot start fails the open: the
@@ -187,6 +203,7 @@ impl WinRt {
         events: tokio::sync::mpsc::Sender<RadioEvent>,
     ) -> Result<Self, DesktopError> {
         cleanup_result(retry_failed_watches(adapter_id))?;
+        cleanup_result(retry_directory_devices(adapter_id))?;
         Ok(Self {
             adapter: adapter.clone(),
             adapter_id: adapter_id.to_owned(),
@@ -203,9 +220,8 @@ impl WinRt {
         operation: &str,
     ) -> Result<BluetoothLEDevice, DesktopError> {
         let id = peer_id
-            .parse::<btleplug::api::BDAddr>()
-            .map_err(|error| winrt_text(operation, error))?
-            .into();
+            .parse::<btleplug::platform::PeripheralId>()
+            .map_err(|error| winrt_text(operation, error))?;
         let peripheral = self
             .adapter
             .add_peripheral(&id)
@@ -265,7 +281,17 @@ impl WinRt {
             || found.Close().map_err(|error| winrt(operation, error)),
         )?;
         self.register_target(peer_id, kind, operation).await?;
-        Ok(peer_id.to_owned())
+        let address = peer_id
+            .parse::<btleplug::api::BDAddr>()
+            .map_err(|error| winrt_text(operation, error))?;
+        Ok(btleplug::platform::PeripheralId::with_address_type(
+            address,
+            Some(match kind {
+                crate::boundary::AddressType::Public => btleplug::api::AddressType::Public,
+                crate::boundary::AddressType::Random => btleplug::api::AddressType::Random,
+            }),
+        )
+        .to_string())
     }
 
     async fn register_target(
@@ -291,26 +317,93 @@ impl WinRt {
         Ok(())
     }
 
-    pub(crate) async fn bonded_peers(
+    pub(crate) async fn directory_capability_limitations(
         &self,
+    ) -> Result<(Option<&'static str>, Option<&'static str>), DesktopError> {
+        const OP: &str = "peers.directory.capability";
+        let adapter = BluetoothAdapter::GetDefaultAsync()
+            .map_err(|error| winrt(OP, error))?
+            .await
+            .map_err(|error| winrt(OP, error))?;
+        if adapter
+            .DeviceId()
+            .map_err(|error| winrt(OP, error))?
+            .to_string()
+            != self.adapter_id
+        {
+            return Ok((
+                Some("winrt-directory-requires-default-adapter"),
+                Some("winrt-directory-requires-default-adapter"),
+            ));
+        }
+        let type_name = HSTRING::from("Windows.Devices.Bluetooth.BluetoothLEDevice");
+        let known = windows::Foundation::Metadata::ApiInformation::IsMethodPresent(
+            &type_name,
+            &HSTRING::from("GetDeviceSelector"),
+        )
+        .map_err(|error| winrt(OP, error))?;
+        let connected = windows::Foundation::Metadata::ApiInformation::IsMethodPresent(
+            &type_name,
+            &HSTRING::from("GetDeviceSelectorFromConnectionStatus"),
+        )
+        .map_err(|error| winrt(OP, error))?;
+        Ok((
+            (!known).then_some("winrt-known-directory-api-unavailable"),
+            (!connected).then_some("winrt-connected-directory-api-unavailable"),
+        ))
+    }
+
+    async fn directory_peers(
+        &self,
+        kind: DirectoryQuery,
     ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
-        let operation = "peers.bonded";
-        let selector = BluetoothLEDevice::GetDeviceSelectorFromPairingState(true)
-            .map_err(|error| winrt(operation, error))?;
+        let operation = kind.operation();
+        cleanup_result(self.retry_directory_cleanup())?;
+        let (known_limit, connected_limit) = self.directory_capability_limitations().await?;
+        let limitation = if matches!(kind, DirectoryQuery::Connected) {
+            connected_limit
+        } else {
+            known_limit
+        };
+        if let Some(limitation) = limitation {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityUnavailable,
+                BleErrorDomain::Capability,
+                operation,
+            )
+            .with_detail(limitation));
+        }
+        let selector = match kind {
+            DirectoryQuery::Bonded => BluetoothLEDevice::GetDeviceSelectorFromPairingState(true),
+            DirectoryQuery::Known => BluetoothLEDevice::GetDeviceSelector(),
+            DirectoryQuery::Connected => BluetoothLEDevice::GetDeviceSelectorFromConnectionStatus(
+                BluetoothConnectionStatus::Connected,
+            ),
+        }
+        .map_err(|error| winrt(operation, error))?;
         let devices = DeviceInformation::FindAllAsyncAqsFilter(&selector)
             .map_err(|error| winrt(operation, error))?
             .await
             .map_err(|error| winrt(operation, error))?;
         let devices: Vec<_> = devices.into_iter().collect();
+        if devices.len() > 4096 {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityLimited,
+                BleErrorDomain::Capability,
+                operation,
+            )
+            .with_detail("the native peer directory exceeds its 4096-record bound"));
+        }
         let mut peers = Vec::new();
         for information in devices {
             // Read the current OS fact as well as the enumeration selector;
             // a concurrently unpaired device no longer belongs in this set.
-            if !information
-                .Pairing()
-                .map_err(|error| winrt(operation, error))?
-                .IsPaired()
-                .map_err(|error| winrt(operation, error))?
+            if matches!(kind, DirectoryQuery::Bonded)
+                && !information
+                    .Pairing()
+                    .map_err(|error| winrt(operation, error))?
+                    .IsPaired()
+                    .map_err(|error| winrt(operation, error))?
             {
                 continue;
             }
@@ -320,7 +413,7 @@ impl WinRt {
             .map_err(|error| winrt(operation, error))?
             .await
             .map_err(|error| winrt(operation, error))?;
-            let (kind, peer) = super::winrt_cleanup::inspect_transient(
+            let (address_type, mut peer) = super::winrt_cleanup::inspect_transient(
                 || {
                     let native_address = device
                         .BluetoothAddress()
@@ -362,14 +455,56 @@ impl WinRt {
                         },
                     ))
                 },
-                || device.Close().map_err(|error| winrt(operation, error)),
+                || match device.Close() {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        DIRECTORY_DEVICES.push(&self.adapter_id, device.clone());
+                        Err(winrt(operation, error))
+                    }
+                },
             )?;
-            self.register_target(&peer.peer_id, kind, operation).await?;
+            if matches!(kind, DirectoryQuery::Connected) && peer.connection != "connected" {
+                continue;
+            }
+            self.register_target(&peer.peer_id, address_type, operation)
+                .await?;
+            let address = peer
+                .peer_id
+                .parse::<btleplug::api::BDAddr>()
+                .map_err(|error| winrt_text(operation, error))?;
+            peer.peer_id = btleplug::platform::PeripheralId::with_address_type(
+                address,
+                Some(match address_type {
+                    crate::boundary::AddressType::Public => btleplug::api::AddressType::Public,
+                    crate::boundary::AddressType::Random => btleplug::api::AddressType::Random,
+                }),
+            )
+            .to_string();
             peers.push(peer);
         }
         peers.sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
         peers.dedup_by(|left, right| left.peer_id == right.peer_id);
         Ok(peers)
+    }
+
+    pub(crate) async fn bonded_peers(
+        &self,
+    ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        self.directory_peers(DirectoryQuery::Bonded).await
+    }
+    pub(crate) async fn known_peers(
+        &self,
+    ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        self.directory_peers(DirectoryQuery::Known).await
+    }
+    pub(crate) async fn connected_peers(
+        &self,
+    ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        self.directory_peers(DirectoryQuery::Connected).await
+    }
+
+    fn retry_directory_cleanup(&self) -> Vec<DesktopError> {
+        retry_directory_devices(&self.adapter_id)
     }
 
     /// Stop the adapter presence watch (radio close). Stopping twice is
@@ -385,6 +520,7 @@ impl WinRt {
         }
         drop(watch);
         failures.extend(retry_failed_watches(&self.adapter_id));
+        failures.extend(self.retry_directory_cleanup());
         failures
     }
 
@@ -944,6 +1080,23 @@ pub(crate) struct AdapterWatch {
 
 // Failed open has no radio owner to return. Retain its exact native watch
 // until the next open or explicit radio close retries it; no background loop.
+// Directory reads acquire no connection lease. A refused Close keeps the
+// exact object owned across radio drop, and only the same adapter retries it.
+static DIRECTORY_DEVICES: RetryVault<BluetoothLEDevice> = RetryVault::new();
+fn retry_directory_devices(adapter_id: &str) -> Vec<DesktopError> {
+    DIRECTORY_DEVICES
+        .retry(adapter_id, |device| match device.Close() {
+            Ok(()) => Vec::new(),
+            Err(error) => vec![winrt("peers.directory.cleanup", error)],
+        })
+        .unwrap_or_else(|()| {
+            vec![winrt_text(
+                "peers.directory.cleanup",
+                "native directory cleanup is still in flight; retry is required",
+            )]
+        })
+}
+
 static FAILED_WATCHES: RetryVault<AdapterWatch> = RetryVault::new();
 
 fn retry_failed_watches(adapter_id: &str) -> Vec<DesktopError> {

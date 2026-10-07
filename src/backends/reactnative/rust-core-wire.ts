@@ -1,6 +1,6 @@
 // src/backends/reactnative/rust-core-wire.ts
 //
-// TS half of wire revision `ubm-mobile-wire/1` (the Rust half is
+// TS half of wire revision `ubm-mobile-wire/2` (the Rust half is
 // `crates/ubm-mobile/src/wire.rs`). Pure functions over JSON text and
 // values: no host globals, no Node APIs, no mutation of inputs. Every
 // exported function returns a `WireResult`; a malformed input yields a
@@ -31,7 +31,7 @@ import {
   type RecordingControlOperation
 } from '../../backend-contract/continuation-recording-bounds'
 
-export const WIRE_REVISION = 'ubm-mobile-wire/1'
+export const WIRE_REVISION = 'ubm-mobile-wire/2'
 /** Frozen C-UBM per-operation byte ceiling (`contracts/src/bounds.ts`, `ubm_core::contracts`). */
 export const MAX_OPERATION_BYTES = 524288
 /** Longest padded base64 text that can encode `MAX_OPERATION_BYTES`. */
@@ -66,6 +66,8 @@ export const WIRE_OPS = Object.freeze([
   'connection.effective-mtu',
   'connection.request-mtu',
   'connection.request-priority',
+  'connection.request-subrate',
+  'connection.control-capabilities',
   'connection.read-phy',
   'connection.request-phy',
   'connection.maximum-write-length',
@@ -85,6 +87,7 @@ export const WIRE_OPS = Object.freeze([
   'gatt.read',
   'gatt.read-descriptor',
   'gatt.write',
+  'gatt.write-when-ready',
   'gatt.write-descriptor',
   'gatt.subscribe',
   'gatt.unsubscribe',
@@ -94,7 +97,7 @@ export const WIRE_OPS = Object.freeze([
 ] as const)
 export type WireOp = (typeof WIRE_OPS)[number]
 
-const WRITE_OPS: readonly WireOp[] = Object.freeze(['gatt.write', 'gatt.write-descriptor'])
+const WRITE_OPS: readonly WireOp[] = Object.freeze(['gatt.write', 'gatt.write-when-ready', 'gatt.write-descriptor'])
 
 export const DELIVERY_KINDS = Object.freeze(['notification', 'indication', 'unknown'] as const)
 export type WireDelivery = (typeof DELIVERY_KINDS)[number]
@@ -242,6 +245,9 @@ export interface WireCounters {
   readonly process: {
     readonly counters: WireResourceCounters
     readonly native: {
+      readonly nativeGattAdmissions: number
+      readonly acquiredGattTransports: number
+      readonly pendingGattAcquisitions: number
       readonly pendingRadioRequests: number
       readonly lateRadioCompletions: number
       readonly ingressDrops: { readonly advertisement: number; readonly notification: number; readonly control: number }
@@ -327,6 +333,7 @@ export interface WireReconcile {
   readonly links: readonly WireReconcileLink[]
   readonly subscriptions: readonly WireReconcileSubscription[]
   readonly security: readonly { readonly peerId: string; readonly state: WireSecurityState }[]
+  readonly securityFailures: readonly { readonly peerId: string | null; readonly error: WireRemoteFailure }[]
   readonly restored: readonly WireRestoredPeer[]
   /** This session's scan membership, or `null` when it holds none. */
   readonly scan: string | null
@@ -359,6 +366,8 @@ export interface WireCharacteristic {
 }
 
 export interface WireService {
+  readonly primary: boolean | null
+  readonly includedServices: readonly WireDescriptor[] | null
   readonly uuid: string
   readonly occurrence: number
   readonly characteristics: readonly WireCharacteristic[]
@@ -401,6 +410,8 @@ export interface WireOpResults {
   readonly 'connection.effective-mtu': { readonly mtu: number | null }
   readonly 'connection.request-mtu': { readonly mtu: number }
   readonly 'connection.request-priority': { readonly accepted: boolean }
+  readonly 'connection.request-subrate': { readonly accepted: boolean }
+  readonly 'connection.control-capabilities': { readonly subrate: boolean }
   readonly 'connection.read-phy': WirePhyObservation
   readonly 'connection.request-phy': { readonly accepted: boolean; readonly observation: WirePhyObservation | null }
   /** The platform's largest single write in the requested mode, bounded by the ATT maximum attribute value. */
@@ -432,6 +443,7 @@ export interface WireOpResults {
   readonly 'gatt.read': { readonly value: Uint8Array; readonly provenance: ReadProvenance }
   readonly 'gatt.read-descriptor': { readonly value: Uint8Array }
   readonly 'gatt.write': { readonly commitState: WireWriteCommitState }
+  readonly 'gatt.write-when-ready': { readonly commitState: WireWriteCommitState }
   readonly 'gatt.write-descriptor': { readonly commitState: WireWriteCommitState }
   readonly 'gatt.subscribe': { readonly consumer: string; readonly delivery: WireDelivery }
   readonly 'gatt.unsubscribe': { readonly state: 'released'; readonly physicalDisabled: boolean }
@@ -508,6 +520,12 @@ export type WireDrainRecord =
       readonly count: number
     }
   | { readonly t: 'security'; readonly ordinal: number; readonly peerId: string; readonly state: WireSecurityState }
+  | {
+      readonly t: 'security-failed'
+      readonly ordinal: number
+      readonly peerId: string | null
+      readonly error: WireRemoteFailure
+    }
   | {
       readonly t: 'readiness'
       readonly ordinal: number
@@ -1206,7 +1224,16 @@ function countersOrThrow(value: unknown, path: string): WireCounters {
   const processNativePath = `${processPath}.native`
   const processNative = exactObject(
     owner.get('native'),
-    ['pendingRadioRequests', 'lateRadioCompletions', 'ingressDrops', 'connectSections', 'liveOps'],
+    [
+      'nativeGattAdmissions',
+      'acquiredGattTransports',
+      'pendingGattAcquisitions',
+      'pendingRadioRequests',
+      'lateRadioCompletions',
+      'ingressDrops',
+      'connectSections',
+      'liveOps'
+    ],
     processNativePath
   )
   const dropsPath = `${processNativePath}.ingressDrops`
@@ -1221,6 +1248,18 @@ function countersOrThrow(value: unknown, path: string): WireCounters {
     process: Object.freeze({
       counters: resourceCountersOrThrow(owner.get('counters'), `${processPath}.counters`),
       native: Object.freeze({
+        nativeGattAdmissions: nonNegative(
+          processNative.get('nativeGattAdmissions'),
+          `${processNativePath}.nativeGattAdmissions`
+        ),
+        acquiredGattTransports: nonNegative(
+          processNative.get('acquiredGattTransports'),
+          `${processNativePath}.acquiredGattTransports`
+        ),
+        pendingGattAcquisitions: nonNegative(
+          processNative.get('pendingGattAcquisitions'),
+          `${processNativePath}.pendingGattAcquisitions`
+        ),
         pendingRadioRequests: nonNegative(
           processNative.get('pendingRadioRequests'),
           `${processNativePath}.pendingRadioRequests`
@@ -1307,10 +1346,14 @@ function characteristicOrThrow(value: unknown, path: string): WireCharacteristic
 }
 
 function serviceOrThrow(value: unknown, path: string): WireService {
-  const fields = exactObject(value, ['uuid', 'occurrence', 'characteristics'], path)
+  const fields = exactObject(value, ['uuid', 'occurrence', 'primary', 'includedServices', 'characteristics'], path)
   const characteristics = arrayOf(fields.get('characteristics'), `${path}.characteristics`, characteristicOrThrow)
   assertUniqueInstances(characteristics, `${path}.characteristics`)
   return Object.freeze({
+    primary: nullable(fields.get('primary'), `${path}.primary`, booleanOrThrow),
+    includedServices: nullable(fields.get('includedServices'), `${path}.includedServices`, (references, fieldPath) =>
+      arrayOf(references, fieldPath, descriptorOrThrow)
+    ),
     uuid: uuidOrThrow(fields.get('uuid'), `${path}.uuid`),
     occurrence: integerOrThrow(fields.get('occurrence'), NON_NEGATIVE, `${path}.occurrence`),
     characteristics
@@ -1321,6 +1364,12 @@ function discoveryOrThrow(value: unknown, path: string): WireDiscovery {
   const fields = exactObject(value, ['connectionGeneration', 'databaseGeneration', 'services'], path)
   const services = arrayOf(fields.get('services'), `${path}.services`, serviceOrThrow)
   assertUniqueInstances(services, `${path}.services`)
+  for (const service of services) {
+    for (const included of service.includedServices ?? []) {
+      if (!services.some(target => target.uuid === included.uuid && target.occurrence === included.occurrence))
+        throw malformed(`${path}.included-service-unresolved`)
+    }
+  }
   return Object.freeze({
     connectionGeneration: stringOrThrow(fields.get('connectionGeneration'), `${path}.connectionGeneration`),
     databaseGeneration: stringOrThrow(fields.get('databaseGeneration'), `${path}.databaseGeneration`),
@@ -1441,7 +1490,11 @@ function reconcileSubscriptionOrThrow(value: unknown, path: string): WireReconci
 }
 
 function reconcileOrThrow(value: unknown, path: string): WireReconcile {
-  const fields = exactObject(value, ['adapter', 'links', 'subscriptions', 'security', 'restored', 'scan'], path)
+  const fields = exactObject(
+    value,
+    ['adapter', 'links', 'subscriptions', 'security', 'securityFailures', 'restored', 'scan'],
+    path
+  )
   return Object.freeze({
     adapter: adapterStateOrThrow(fields.get('adapter'), `${path}.adapter`),
     links: arrayOf(fields.get('links'), `${path}.links`, reconcileLinkOrThrow),
@@ -1451,6 +1504,13 @@ function reconcileOrThrow(value: unknown, path: string): WireReconcile {
       return Object.freeze({
         peerId: stringOrThrow(peer.get('peerId'), `${entryPath}.peerId`),
         state: securityStateOrThrow(peer.get('state'), `${entryPath}.state`)
+      })
+    }),
+    securityFailures: arrayOf(fields.get('securityFailures'), `${path}.securityFailures`, (entry, entryPath) => {
+      const peer = exactObject(entry, ['peerId', 'error'], entryPath)
+      return Object.freeze({
+        peerId: nullable(peer.get('peerId'), `${entryPath}.peerId`, stringOrThrow),
+        error: remoteFailureOrThrow(peer.get('error'), `${entryPath}.error`)
       })
     }),
     restored: arrayOf(fields.get('restored'), `${path}.restored`, restoredPeerOrThrow),
@@ -1494,6 +1554,14 @@ const OP_PARSERS: OpParsers = Object.freeze({
   'connection.request-priority': (value: unknown, path: string) => {
     const fields = exactObject(value, ['accepted'], path)
     return Object.freeze({ accepted: booleanOrThrow(fields.get('accepted'), `${path}.accepted`) })
+  },
+  'connection.request-subrate': (value: unknown, path: string) => {
+    const fields = exactObject(value, ['accepted'], path)
+    return Object.freeze({ accepted: booleanOrThrow(fields.get('accepted'), `${path}.accepted`) })
+  },
+  'connection.control-capabilities': (value: unknown, path: string) => {
+    const fields = exactObject(value, ['subrate'], path)
+    return Object.freeze({ subrate: booleanOrThrow(fields.get('subrate'), `${path}.subrate`) })
   },
   'connection.read-phy': phyObservationOrThrow,
   'connection.request-phy': (value: unknown, path: string) => {
@@ -1600,6 +1668,7 @@ const OP_PARSERS: OpParsers = Object.freeze({
   'gatt.read': characteristicReadOrThrow,
   'gatt.read-descriptor': readValueOrThrow,
   'gatt.write': writeReceiptOrThrow,
+  'gatt.write-when-ready': writeReceiptOrThrow,
   'gatt.write-descriptor': writeReceiptOrThrow,
   'gatt.subscribe': (value: unknown, path: string) => {
     const fields = exactObject(value, ['consumer', 'delivery'], path)
@@ -1660,6 +1729,7 @@ const DRAIN_RECORD_TYPES = Object.freeze([
   'db-changed',
   'ingress-drop',
   'security',
+  'security-failed',
   'readiness',
   'restored'
 ] as const)
@@ -1821,6 +1891,15 @@ function drainRecordOrThrow(value: unknown, path: string): WireDrainRecord {
         ordinal,
         peerId: stringOrThrow(fields.get('peerId'), `${recordPath}.peerId`),
         state: securityStateOrThrow(fields.get('state'), `${recordPath}.state`)
+      })
+    }
+    case 'security-failed': {
+      const { fields, ordinal } = read(['peerId', 'error'])
+      return Object.freeze({
+        t: type,
+        ordinal,
+        peerId: nullable(fields.get('peerId'), `${recordPath}.peerId`, stringOrThrow),
+        error: remoteFailureOrThrow(fields.get('error'), `${recordPath}.error`)
       })
     }
     case 'readiness': {

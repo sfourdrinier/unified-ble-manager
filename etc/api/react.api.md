@@ -13,7 +13,10 @@ export function getBleReadiness(manager: Pick<ExpoBleManager, 'readiness'>): Pro
 export function useBleReadiness(): UseBleReadinessResult
 export function useDiscoveredPeers(options?: ScanOptions): UseDiscoveredPeersResult
 export function useConnectionState(connection: BleConnection | null): UseConnectionStateResult
-export function useCharacteristicValue(characteristic: GattCharacteristic | null, options?: GattSubscribeOptions): UseCharacteristicValueResult
+export function useCharacteristicValue(
+  characteristic: GattCharacteristic | null,
+  options?: GattSubscribeOptions
+): UseCharacteristicValueResult
 export function BleProvider(props: BleProviderProps): React.ReactElement
 ```
 ## Verified exported symbols
@@ -32,7 +35,7 @@ export function BleProvider(props: BleProviderProps): React.ReactElement
 - `UseBleReadinessResult :: { readonly readiness: BleReadiness | null; readonly loading: boolean; readonly error: Error | null }`
 - `UseCharacteristicValueResult :: { readonly value: GattValueEvent | null; readonly loading: boolean; readonly error: Error | null }`
 - `UseConnectionStateResult :: { readonly state: ConnectionState | null; readonly loading: boolean; readonly error: Error | null }`
-- `UseDiscoveredPeersResult :: { readonly peers: readonly BlePeer[]; readonly state: "starting" | "active" | "stopped" | "failed" | "idle"; readonly error: Error | null }`
+- `UseDiscoveredPeersResult :: { readonly peers: readonly BlePeer[]; readonly state: "active" | "starting" | "stopped" | "failed" | "idle"; readonly error: Error | null }`
 - `getAdapterState :: (manager: Pick<BleManager, "adapter">) => Promise<BleAdapterState>`
 - `getBleCapability :: (manager: Pick<BleManager, "capabilities">, id: '${string}:${string}') => CapabilityDescriptor | undefined`
 - `getBleReadiness :: (manager: Pick<ExpoBleManager, "readiness">) => Promise<BleReadiness>`

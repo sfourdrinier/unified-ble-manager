@@ -599,6 +599,14 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     _clientId: ClientId<string, string>
   ): Promise<ScanLease<string, string>> {
     this.assertOperational('direct-gatt.scan.start')
+    if (options.platform?.kind === 'winrt') {
+      throw contractError('capability.unsupported', 'scan', 'direct-gatt.scan.start', {
+        domain: 'corebluetooth',
+        code: 'foreign-scan-options',
+        safeMessage: 'WinRT scan options require the WinRT backend',
+        metadata: {}
+      })
+    }
     assertScanFilter(options.filter, 'direct-gatt.scan.start')
     const nativeFilter = trustedServiceUuidFilter(options, planCoreBluetoothScan, 'direct-gatt.scan')
     const serviceUuids = nativeFilter.serviceUuids

@@ -237,9 +237,15 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         id: "scan:platform-options",
         verdict: CapabilityVerdict::NarrowOsAdapterNeeded,
         scenario: "scan.platform-options",
-        note: "Active/passive/PHY scan knobs need per-OS adapters; scans use the legacy OS defaults (WinRT passive) and BlueZ narrows by name prefix.",
+        note: "Per-OS scan controls. WinRT defaults active, with extended advertisements disabled; BlueZ narrows by name prefix.",
         limitation: None,
-        per_os: &[],
+        per_os: &[OsOverride {
+            os: DesktopOs::Windows,
+            verdict: CapabilityVerdict::OsAdapterProvides,
+            limitation: Some("winrt-versioned-scan-options"),
+            note: "Active/passive and versioned None reception; optional extended advertisement reception requires runtime API and default-adapter support. The watcher is system-wide, not adapter-targeted.",
+            needs_pairing_generation_controller: false,
+        }],
     },
     DesktopCapability {
         id: "peer:resolve-reference",
@@ -272,10 +278,20 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         scenario: "peer.known-peers",
         note: "OS-known peer lookup is platform-specific; CoreBluetooth resolves explicit identifiers, not an unrestricted OS peer inventory.",
         limitation: None,
-        per_os: &[OsOverride::adapter(
-            DesktopOs::MacOs,
-            "Read-only retrievePeripheralsWithIdentifiers on the existing manager; explicit identifiers only, no connection ownership.",
-        )],
+        per_os: &[
+            OsOverride::adapter(
+                DesktopOs::MacOs,
+                "Read-only retrievePeripheralsWithIdentifiers on the existing manager; explicit identifiers only, no connection ownership.",
+            ),
+            OsOverride::adapter(
+                DesktopOs::Linux,
+                "Daemon-owner-fenced selected-adapter Device1 cache, including unbonded records; OS visibility only, no local lease.",
+            ),
+            OsOverride::adapter(
+                DesktopOs::Windows,
+                "OS-visible LE DeviceInformation selector on the default adapter; cached/paired visibility only, no local lease.",
+            ),
+        ],
     },
     DesktopCapability {
         id: "peer:system-connected",
@@ -283,10 +299,20 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         scenario: "peer.system-connected",
         note: "System-connected retrieval does not acquire a local connection lease.",
         limitation: None,
-        per_os: &[OsOverride::adapter(
-            DesktopOs::MacOs,
-            "Read-only retrieveConnectedPeripheralsWithServices; nonempty service filters required; local connection state is independent.",
-        )],
+        per_os: &[
+            OsOverride::adapter(
+                DesktopOs::MacOs,
+                "Read-only retrieveConnectedPeripheralsWithServices; nonempty service filters required; local connection state is independent.",
+            ),
+            OsOverride::adapter(
+                DesktopOs::Linux,
+                "Selected-adapter Device1 inventory with positive org.bluez.Bearer.LE1 connected evidence; aggregate Classic connectivity is not substituted.",
+            ),
+            OsOverride::adapter(
+                DesktopOs::Windows,
+                "Read-only connected LE selector and current connection status on the default adapter; service filters unavailable, no local connection ownership.",
+            ),
+        ],
     },
     DesktopCapability {
         id: "peer:bonded",
@@ -411,7 +437,13 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         scenario: "connection.priority",
         note: "Connection-priority control needs a per-OS adapter.",
         limitation: None,
-        per_os: &[],
+        per_os: &[OsOverride {
+            os: DesktopOs::Windows,
+            verdict: CapabilityVerdict::OsAdapterProvides,
+            limitation: Some("winrt-preferred-parameters-22000"),
+            note: "WinRT preferred presets; acceptance is not an observed outcome. The connection owns the request until replacement or teardown. Runtime API presence is required.",
+            needs_pairing_generation_controller: false,
+        }],
     },
     DesktopCapability {
         id: "connection:parameters",
@@ -632,11 +664,17 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
     },
     DesktopCapability {
         id: "gatt:high-throughput-acquire",
-        verdict: CapabilityVerdict::LimitationCandidate,
+        verdict: CapabilityVerdict::NarrowOsAdapterNeeded,
         scenario: "gatt.high-throughput",
-        note: "No burst/throughput negotiation path; bounded sequential ops only.",
-        limitation: Some("bounded-sequential-only"),
-        per_os: &[],
+        note: "Explicit acquired packet transports require an OS mechanism; ordinary writes and notifications are not a substitute.",
+        limitation: None,
+        per_os: &[OsOverride {
+            os: DesktopOs::Linux,
+            verdict: CapabilityVerdict::OsAdapterProvides,
+            limitation: Some("optional-eligible-characteristic-acquired-fd"),
+            note: "AcquireWrite/AcquireNotify are optional per characteristic. Native flags, method presence, conflicts and the returned MTU govern admission. Physical acquired-FD qualification remains separate.",
+            needs_pairing_generation_controller: false,
+        }],
     },
     DesktopCapability {
         id: "background:desktop-maintain-connection",
@@ -781,6 +819,39 @@ const NOT_IMPLEMENTED: &str = "not-implemented";
 /// does not implement the versioned lifecycle/lease/GATT authority contract.
 pub const BLUEZ_LE_AUTHORITY_REQUIRED: &str = "bluez-linux-authority-contract-required";
 
+pub(crate) fn apply_connection_parameters_capability_limitation(
+    core: &mut Central,
+    reason: Option<&str>,
+) -> Result<(), CoreError> {
+    apply_control_capability_limitation(core, "connection:parameters", reason)
+}
+
+pub(crate) fn apply_control_capability_limitation(
+    core: &mut Central,
+    id: &str,
+    reason: Option<&str>,
+) -> Result<(), CoreError> {
+    let Some(reason) = reason else {
+        return Ok(());
+    };
+    let capability = DESKTOP_CAPABILITIES
+        .iter()
+        .find(|row| row.id == id)
+        .expect("registered parameter capability");
+    core.register_capability(CapabilityDescriptor::new(
+        capability.id,
+        CapabilityState::Unavailable,
+        &[],
+        &[reason],
+        "ubm-desktop-instance-connection-parameters",
+        EvidenceLevel::Blocked,
+        env!("CARGO_PKG_VERSION"),
+        "ubm-desktop-instance-capability-v1",
+        &[capability.scenario],
+    )?)?;
+    Ok(())
+}
+
 pub(crate) fn apply_when_available_capability_limitation(
     core: &mut Central,
     reason: Option<(CapabilityState, &str)>,
@@ -841,6 +912,45 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{DESKTOP_CAPABILITIES, register_desktop_capabilities};
+
+    #[test]
+    fn parameter_capability_uses_the_instantiated_api_refusal() {
+        let mut core = test_core();
+        super::register_desktop_capabilities_for(&mut core, Some(super::DesktopOs::Windows), false)
+            .unwrap();
+        super::apply_connection_parameters_capability_limitation(
+            &mut core,
+            Some("test-runtime-api-absent"),
+        )
+        .unwrap();
+        let states = core.registered_capability_states();
+        assert_eq!(
+            states
+                .iter()
+                .find(|(id, _)| id == "connection:parameters")
+                .unwrap()
+                .1,
+            ubm_core::central::CapabilityState::Unavailable
+        );
+        assert_ne!(
+            states
+                .iter()
+                .find(|(id, _)| id == "connection:rssi")
+                .unwrap()
+                .1,
+            ubm_core::central::CapabilityState::Unavailable
+        );
+        let mut supported = test_core();
+        super::register_desktop_capabilities_for(
+            &mut supported,
+            Some(super::DesktopOs::Windows),
+            false,
+        )
+        .unwrap();
+        let before = supported.registered_capability_states();
+        super::apply_connection_parameters_capability_limitation(&mut supported, None).unwrap();
+        assert_eq!(supported.registered_capability_states(), before);
+    }
 
     #[test]
     fn instance_le_availability_refusal_does_not_disable_direct_connection() {

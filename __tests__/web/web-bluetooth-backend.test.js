@@ -132,6 +132,67 @@ function createBoundary(options = {}) {
 }
 
 describe('WebBluetoothBackend', () => {
+  test('preserves included secondary instances and distinguishes an unavailable inclusion getter', async () => {
+    const mock = createBoundary()
+    const secondary = {
+      uuid: HEART_RATE_SERVICE,
+      primary: false,
+      getCharacteristics: async () => [],
+      getIncludedServices: async () => []
+    }
+    const primary = {
+      uuid: HEART_RATE_SERVICE,
+      primary: true,
+      getCharacteristics: async () => [],
+      getIncludedServices: async () => [secondary]
+    }
+    const unknown = { uuid: CLIENT_CONFIGURATION, getCharacteristics: async () => [] }
+    mock.device.gatt.getPrimaryServices = async () => [primary, unknown]
+    const { backend } = await createAttachedWebBackend(mock.boundary)
+    try {
+      const chosen = await backend.choose({ filters: [], acceptAllDevices: true, optionalServices: [] }, noDeadline())
+      const lease = await backend.connections.connect(chosen.peerId, 'graph-client', noDeadline())
+      const database = await backend.gatt.discover(lease.connection, noDeadline())
+      const graph = await database.snapshot()
+      expect(graph.services[0].primary).toBe(true)
+      expect(String(graph.services[0].includedServices[0].occurrence)).toBe('1')
+      expect(graph.services[1].primary).toBe(true) // getPrimaryServices is itself a primary observation.
+      expect(graph.services[1].includedServices).toBeNull()
+      expect(graph.services[2].primary).toBe(false)
+      expect(graph.services[2].includedServices).toEqual([])
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test.each(['roots', 'includes'])('bounds %s service discovery without publishing a partial graph', async source => {
+    const mock = createBoundary()
+    const children = Array.from({ length: 4097 }, () => ({
+      uuid: HEART_RATE_SERVICE,
+      getCharacteristics: jest.fn(async () => [])
+    }))
+    const root = {
+      uuid: CLIENT_CONFIGURATION,
+      getCharacteristics: jest.fn(async () => []),
+      getIncludedServices: jest.fn(async () => children)
+    }
+    mock.device.gatt.getPrimaryServices = async () => (source === 'roots' ? children : [root])
+    const { backend } = await createAttachedWebBackend(mock.boundary)
+    try {
+      const chosen = await backend.choose({ filters: [], acceptAllDevices: true, optionalServices: [] }, noDeadline())
+      const lease = await backend.connections.connect(chosen.peerId, 'graph-capacity', noDeadline())
+      await expect(backend.gatt.discover(lease.connection, noDeadline())).rejects.toMatchObject({
+        normalized: {
+          code: 'stream.quota'
+        }
+      })
+      expect(root.getCharacteristics).not.toHaveBeenCalled()
+      expect(children.every(child => child.getCharacteristics.mock.calls.length === 0)).toBe(true)
+    } finally {
+      await backend.destroy()
+    }
+  })
+
   test('exposes origin-authorized devices through the backend peer directory contract', async () => {
     const mock = createBoundary({ authorizedDevices: [] })
     mock.boundary.getAuthorizedDevices = async () => [mock.device]

@@ -170,7 +170,11 @@ async function observedPeerId(backend) {
 
 async function connectedDatabase(backend) {
   const peerId = await observedPeerId(backend)
-  const lease = await backend.connections.connect(peerId, opaqueId('client-1', 'client', 'bluez:public-gatt'), operation())
+  const lease = await backend.connections.connect(
+    peerId,
+    opaqueId('client-1', 'client', 'bluez:public-gatt'),
+    operation()
+  )
   const database = await backend.gatt.discover(lease.connection, operation())
   return { lease, database }
 }
@@ -242,8 +246,18 @@ describe('BlueZ public GATT occurrences', () => {
     expect(snapshot.services).toHaveLength(2)
     expect(snapshot.services[0].path.serviceUuid).toBe(snapshot.services[1].path.serviceUuid)
 
-    boundary.onCall(characteristic0Path, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'ReadValue', async () => new Uint8Array([12, 13]))
-    boundary.onCall(characteristic1Path, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'ReadValue', async () => new Uint8Array([22, 23]))
+    boundary.onCall(
+      characteristic0Path,
+      BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
+      'ReadValue',
+      async () => new Uint8Array([12, 13])
+    )
+    boundary.onCall(
+      characteristic1Path,
+      BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
+      'ReadValue',
+      async () => new Uint8Array([22, 23])
+    )
 
     const publicDatabase = await createPublicGattDatabase(publicSourceFromBluezDatabase(database))
     expectDecimalOccurrence(snapshot.services[0].path.serviceOccurrence)
@@ -257,9 +271,7 @@ describe('BlueZ public GATT occurrences', () => {
     expectDecimalOccurrence(snapshot.descriptors[0].path.descriptorOccurrence)
 
     expect(publicDatabase.servicesByUuid(serviceUuid).map(service => service.occurrence)).toEqual([0, 1])
-    expect(() => publicDatabase.service(serviceUuid)).toThrow(
-      expect.objectContaining({ code: 'gatt.ambiguous-path' })
-    )
+    expect(() => publicDatabase.service(serviceUuid)).toThrow(expect.objectContaining({ code: 'gatt.ambiguous-path' }))
     const first = publicDatabase.service(serviceUuid, { occurrence: 0 })
     const second = publicDatabase.service(serviceUuid, { occurrence: 1 })
     expect(first.occurrence).toBe(0)
@@ -283,20 +295,14 @@ describe('BlueZ public GATT occurrences', () => {
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
-  test('keeps in-snapshot included-service links and omits links outside the snapshot', async () => {
+  test('rejects an unresolved included-service target instead of dropping its edge', async () => {
     const objects = managedObjects().map(object =>
       object.path === service0Path
         ? serviceObject(service0Path, [service1Path, `${devicePath}/service_not_resolved`])
         : object
     )
     const { backend } = await backendFixture(objects)
-    const { database } = await connectedDatabase(backend)
-    const snapshot = await database.snapshot()
-    expect(snapshot.services).toHaveLength(2)
-    expect(snapshot.services[0].includedServices).toHaveLength(1)
-    expect(snapshot.services[0].includedServices[0].uuid).toBe(serviceUuid)
-    expect(String(snapshot.services[0].includedServices[0].occurrence)).toBe('1')
-    expect(snapshot.services[1].includedServices).toHaveLength(0)
+    await expect(connectedDatabase(backend)).rejects.toMatchObject({ normalized: { code: 'protocol.violation' } })
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 

@@ -24,8 +24,8 @@ use crate::{
     Error, Result,
     api::{
         self, AddressType, BDAddr, CentralEvent, Characteristic, ConnectionParameterPreset,
-        ConnectionParameters, Descriptor, Peripheral as ApiPeripheral, PeripheralProperties,
-        Service, ValueNotification, WriteType,
+        ConnectionParameters, ConnectionParametersReport, Descriptor, Peripheral as ApiPeripheral,
+        PeripheralProperties, Service, ValueNotification, WriteType,
     },
     common::{adapter_manager::AdapterManager, util::notifications_stream_from_broadcast_receiver},
 };
@@ -60,9 +60,27 @@ use windows::Devices::Bluetooth::{Advertisement::*, BluetoothAddressType};
     serde(crate = "serde_cr")
 )]
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PeripheralId(BDAddr);
+pub struct PeripheralId(BDAddr, u8);
 
 impl PeripheralId {
+    pub fn with_address_type(address: BDAddr, kind: Option<AddressType>) -> Self {
+        Self(
+            address,
+            match kind {
+                None => 0,
+                Some(AddressType::Public) => 1,
+                Some(AddressType::Random) => 2,
+            },
+        )
+    }
+
+    pub fn address_type(&self) -> Option<AddressType> {
+        match self.1 {
+            1 => Some(AddressType::Public),
+            2 => Some(AddressType::Random),
+            _ => None,
+        }
+    }
     /// UBM patch (UBM_PATCHES.md #19): the peripheral's Bluetooth address.
     pub(crate) fn address(&self) -> BDAddr {
         self.0
@@ -71,7 +89,31 @@ impl PeripheralId {
 
 impl Display for PeripheralId {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        Display::fmt(&self.0, f)
+        let kind = match self.1 {
+            1 => "public",
+            2 => "random",
+            _ => "unknown",
+        };
+        write!(f, "{kind}:{}", self.0)
+    }
+}
+
+impl std::str::FromStr for PeripheralId {
+    type Err = &'static str;
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        let (raw, kind) = if let Some(raw) = value.strip_prefix("public:") {
+            (raw, Some(AddressType::Public))
+        } else if let Some(raw) = value.strip_prefix("random:") {
+            (raw, Some(AddressType::Random))
+        } else if let Some(raw) = value.strip_prefix("unknown:") {
+            (raw, None)
+        } else {
+            (value, None)
+        };
+        let address = raw
+            .parse::<BDAddr>()
+            .map_err(|_| "invalid WinRT peer address")?;
+        Ok(Self::with_address_type(address, kind))
     }
 }
 
@@ -82,6 +124,7 @@ pub struct Peripheral {
 }
 
 struct Shared {
+    identity: PeripheralId,
     device: tokio::sync::Mutex<Option<BLEDevice>>,
     adapter: Weak<AdapterManager<Peripheral>>,
     address: BDAddr,
@@ -93,7 +136,7 @@ struct Shared {
     notifications_channel: broadcast::Sender<ValueNotification>,
     /// Observed WinRT connection parameters. The sender outlives the
     /// device so a subscriber can see the channel close on disconnect.
-    connection_parameters: broadcast::Sender<ConnectionParameters>,
+    connection_parameters: broadcast::Sender<ConnectionParametersReport>,
 
     // Mutable, advertised, state...
     address_type: RwLock<Option<AddressType>>,
@@ -112,7 +155,7 @@ impl Peripheral {
     /// Observed connection-parameter changes for this peer. Lagged
     /// receivers report the gap; the channel closes when the peripheral
     /// is dropped.
-    pub fn connection_parameter_events(&self) -> broadcast::Receiver<ConnectionParameters> {
+    pub fn connection_parameter_events(&self) -> broadcast::Receiver<ConnectionParametersReport> {
         self.shared.connection_parameters.subscribe()
     }
 
@@ -135,11 +178,14 @@ impl Peripheral {
         Ok(())
     }
 
-    pub(crate) fn new(adapter: Weak<AdapterManager<Self>>, address: BDAddr) -> Self {
+    pub(crate) fn new_with_id(adapter: Weak<AdapterManager<Self>>, identity: PeripheralId) -> Self {
+        let address = identity.address();
+        let address_type = identity.address_type();
         let (broadcast_sender, _) = broadcast::channel(crate::ubm::EVENT_CAPACITY);
         let (connection_parameters, _) = broadcast::channel(crate::ubm::EVENT_CAPACITY);
         Peripheral {
             shared: Arc::new(Shared {
+                identity,
                 adapter,
                 device: tokio::sync::Mutex::new(None),
                 address,
@@ -148,7 +194,7 @@ impl Peripheral {
                 ble_services: DashMap::new(),
                 notifications_channel: broadcast_sender,
                 connection_parameters,
-                address_type: RwLock::new(None),
+                address_type: RwLock::new(address_type),
                 explicit_address_type: RwLock::new(None),
                 local_name: RwLock::new(None),
                 advertisement_name: RwLock::new(None),
@@ -195,6 +241,7 @@ impl Peripheral {
     /// properties.
     pub(crate) fn advertisement_report(
         args: &BluetoothLEAdvertisementReceivedEventArgs,
+        address_type: Option<AddressType>,
     ) -> windows::core::Result<api::AdvertisementReport> {
         let advertisement = args.Advertisement()?;
         let local_name = advertisement
@@ -225,6 +272,7 @@ impl Peripheral {
             .ok()
             .and_then(|reference| reference.Value().ok());
         Ok(api::AdvertisementReport {
+            address_type,
             source: api::ReportSource::Advertisement,
             local_name,
             rssi: Some(args.RawSignalStrengthInDBm()?),
@@ -278,7 +326,7 @@ impl Peripheral {
 
                 // Emit event of newly received advertisement
                 self.emit_event(CentralEvent::ManufacturerDataAdvertisement {
-                    id: self.shared.address.into(),
+                    id: self.id(),
                     manufacturer_data: manufacturer_data_guard.clone(),
                 });
             }
@@ -316,7 +364,7 @@ impl Peripheral {
 
                 // Emit event of newly received advertisement
                 self.emit_event(CentralEvent::ServiceDataAdvertisement {
-                    id: self.shared.address.into(),
+                    id: self.id(),
                     service_data: service_data_guard.clone(),
                 });
             }
@@ -352,7 +400,7 @@ impl Peripheral {
                 }
 
                 self.emit_event(CentralEvent::ServicesAdvertisement {
-                    id: self.shared.address.into(),
+                    id: self.id(),
                     services: services_guard.iter().copied().collect(),
                 });
             }
@@ -385,7 +433,7 @@ impl Peripheral {
             // Emit RssiUpdate event when RSSI changes
             if old_rssi != Some(rssi) {
                 self.emit_event(CentralEvent::RssiUpdate {
-                    id: self.shared.address.into(),
+                    id: self.id(),
                     rssi,
                 });
             }
@@ -454,10 +502,10 @@ impl Peripheral {
                     ble_characteristic.deregister(token)
                 })
             {
-                return Err(Error::Other(
-                    format!("{error}; removing the ValueChanged handler also failed: {rollback}")
-                        .into(),
-                ));
+                return Err(Error::WithCleanup {
+                    primary: Box::new(error),
+                    cleanup: Box::new(rollback),
+                });
             }
             return Err(error);
         }
@@ -691,7 +739,7 @@ impl Debug for Peripheral {
 #[async_trait]
 impl ApiPeripheral for Peripheral {
     fn id(&self) -> PeripheralId {
-        PeripheralId(self.shared.address)
+        self.shared.identity.clone()
     }
 
     /// Returns the address of the peripheral.
@@ -744,7 +792,7 @@ impl ApiPeripheral for Peripheral {
     /// a time. Operations that attempt to communicate with a device will fail until it is connected.
     async fn connect(&self) -> Result<()> {
         let adapter_clone = self.shared.adapter.clone();
-        let address = self.shared.address;
+        let identity = self.id();
 
         let connection_status_changed = Box::new({
             let shared_clone = Arc::downgrade(&self.shared);
@@ -755,7 +803,7 @@ impl ApiPeripheral for Peripheral {
 
                 if !is_connected {
                     if let Some(adapter) = adapter_clone.upgrade() {
-                        adapter.emit(CentralEvent::DeviceDisconnected(address.into()));
+                        adapter.emit(CentralEvent::DeviceDisconnected(identity.clone()));
                     }
                 }
             }
@@ -803,19 +851,23 @@ impl ApiPeripheral for Peripheral {
         let mut d = self.shared.device.lock().await;
         *d = Some(device);
         self.shared.connected.store(true, Ordering::Relaxed);
-        self.emit_event(CentralEvent::DeviceConnected(self.shared.address.into()));
+        self.emit_event(CentralEvent::DeviceConnected(self.id()));
         Ok(())
     }
 
     /// Terminates a connection to the device. This is a synchronous operation.
     async fn disconnect(&self) -> Result<()> {
+        let mut device = self.shared.device.lock().await;
+        // Explicit failure preserves this owner for the caller's cleanup retry.
+        if let Some(device) = device.as_mut() {
+            device.close_preferred_request()?;
+        }
         // We need to clear the services because if this device is re-connected,
         // the cached service objects will no longer be valid (they must be refreshed).
         self.shared.ble_services.clear();
-        let mut device = self.shared.device.lock().await;
         *device = None;
         self.shared.connected.store(false, Ordering::Relaxed);
-        self.emit_event(CentralEvent::DeviceDisconnected(self.shared.address.into()));
+        self.emit_event(CentralEvent::DeviceDisconnected(self.id()));
         Ok(())
     }
 
@@ -835,10 +887,41 @@ impl ApiPeripheral for Peripheral {
         let Some(device) = device.as_mut() else {
             return Err(Error::NotConnected);
         };
-        let gatt_services = device.discover_services().await?;
+        let mut gatt_services = device.discover_services().await?;
         let mut discovered = Vec::with_capacity(gatt_services.len());
-        for service in gatt_services {
-            discovered.push(discover_service(service).await?);
+        let mut visited = HashSet::new();
+        while let Some(service) = gatt_services.pop() {
+            let key = (
+                utils::to_uuid(&service.Uuid()?),
+                u64::from(service.AttributeHandle()?),
+            );
+            if !visited.insert(key) {
+                continue;
+            }
+            let mut graph_service = discover_service(service.clone()).await?;
+            if graph_service.access == gatt_model::ServiceRestriction::Open {
+                if let Some(included) = BLEDevice::get_included_services(&service)
+                    .await
+                    .map_err(|error| annotate_attribute("service", key.0, key.1, error))?
+                {
+                    for target in &included {
+                        device.retain_included_service(target);
+                    }
+                    graph_service.included_services = Some(
+                        included
+                            .iter()
+                            .map(|target| {
+                                Ok(crate::api::IncludedService {
+                                    uuid: utils::to_uuid(&target.Uuid()?),
+                                    instance: u64::from(target.AttributeHandle()?),
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                    );
+                    gatt_services.extend(included);
+                }
+            }
+            discovered.push(graph_service);
         }
         let table = index_unique(
             discovered
@@ -940,8 +1023,8 @@ impl ApiPeripheral for Peripheral {
     }
 
     async fn request_connection_parameters(&self, preset: ConnectionParameterPreset) -> Result<()> {
-        let device = self.shared.device.lock().await;
-        match &*device {
+        let mut device = self.shared.device.lock().await;
+        match device.as_mut() {
             Some(device) => device.request_connection_parameters(preset),
             None => Err(Error::NotConnected),
         }
@@ -950,7 +1033,28 @@ impl ApiPeripheral for Peripheral {
 
 impl From<BDAddr> for PeripheralId {
     fn from(address: BDAddr) -> Self {
-        PeripheralId(address)
+        Self::with_address_type(address, None)
+    }
+}
+
+#[cfg(test)]
+mod peer_identity_tests {
+    use super::PeripheralId;
+    use crate::api::{AddressType, BDAddr};
+    #[test]
+    fn equal_address_bits_have_distinct_immutable_native_peer_identities() {
+        let address: BDAddr = "AA:BB:CC:DD:EE:FF".parse().unwrap();
+        let public = PeripheralId::with_address_type(address, Some(AddressType::Public));
+        let random = PeripheralId::with_address_type(address, Some(AddressType::Random));
+        let unknown = PeripheralId::from(address);
+        assert_ne!(public, random);
+        assert_ne!(public, unknown);
+        assert_ne!(random, unknown);
+        for id in [public, random, unknown] {
+            assert_eq!(id.to_string().parse::<PeripheralId>().unwrap(), id);
+            assert_eq!(id.address(), address);
+        }
+        assert!("invalid:AA:BB:CC:DD:EE:FF".parse::<PeripheralId>().is_err());
     }
 }
 
@@ -970,6 +1074,10 @@ fn annotate_attribute(kind: &str, uuid: Uuid, handle: u64, error: Error) -> Erro
                 .with("uuid", uuid.to_string())
                 .with("handle", handle.to_string()),
         ),
+        Error::WithCleanup { primary, cleanup } => Error::WithCleanup {
+            primary: Box::new(annotate_attribute(kind, uuid, handle, *primary)),
+            cleanup,
+        },
         other => Error::Other(format!("{kind} {uuid} (handle {handle}): {other}").into()),
     }
 }
@@ -984,6 +1092,7 @@ fn restricted_service(
         instance,
         characteristics: HashMap::new(),
         access,
+        included_services: None,
     }
 }
 
@@ -1037,6 +1146,7 @@ async fn discover_service(service: GattDeviceService) -> Result<BLEService> {
         instance,
         characteristics,
         access: gatt_model::ServiceRestriction::Open,
+        included_services: None,
     })
 }
 

@@ -54,6 +54,28 @@ pub enum BothPropertiesRule {
     Undocumented,
 }
 
+/// Apply a soft preference only where the adapter controls the CCCD mode.
+/// Single-property characteristics still use their supported mode; a hard
+/// requirement remains the independent input to `plan_delivery`.
+#[must_use]
+pub fn with_delivery_preference(
+    rule: BothPropertiesRule,
+    preference: Option<DeliveryMode>,
+) -> BothPropertiesRule {
+    match (rule, preference) {
+        (
+            BothPropertiesRule::AdapterSelects {
+                platform_writes, ..
+            },
+            Some(preferred),
+        ) => BothPropertiesRule::AdapterSelects {
+            platform_writes,
+            preferred,
+        },
+        _ => rule,
+    }
+}
+
 /// How one enable proceeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryPlan {
@@ -201,7 +223,38 @@ pub fn plan_delivery(
 mod tests {
     use super::{
         BothPropertiesRule, DeliveryPlan, plan_delivery, plan_delivery_for_os, platform_rule,
+        with_delivery_preference,
     };
+
+    #[test]
+    fn a_soft_preference_selects_supported_modes_without_becoming_a_requirement() {
+        let preferred = with_delivery_preference(WINDOWS, Some(DeliveryMode::Indication));
+        assert_eq!(
+            plan_delivery(props(true, true), None, preferred).expect("preferred indication"),
+            DeliveryPlan::Platform(ObservedDelivery::Indication)
+        );
+        assert_eq!(
+            plan_delivery(props(true, false), None, preferred)
+                .expect("fallback to only supported mode"),
+            DeliveryPlan::Platform(ObservedDelivery::Notification)
+        );
+        assert_eq!(
+            plan_delivery(
+                props(true, true),
+                Some(DeliveryMode::Notification),
+                preferred
+            )
+            .expect("hard requirement overrides preference"),
+            DeliveryPlan::AdapterWrites {
+                mode: DeliveryMode::Notification,
+                platform_writes: DeliveryMode::Indication
+            }
+        );
+        assert_eq!(
+            with_delivery_preference(NOTIFY_FIRST, Some(DeliveryMode::Indication)),
+            NOTIFY_FIRST
+        );
+    }
     use crate::boundary::{DeliveryMode, ObservedDelivery, PropertyFlags};
 
     fn props(notify: bool, indicate: bool) -> PropertyFlags {

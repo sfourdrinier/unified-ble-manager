@@ -1,0 +1,802 @@
+{
+  "reviewedHead": "b80542f39144949738b04dc7d19b4a7ee52cc8c6",
+  "remediationBaseline": "a94bee1e3c875c3471000f26b42555776d74f5b3",
+  "bundleSha256": "ca1df6321cebe8a740925847ce1b4913c58f1d8fb86fa147c11b8333afee355b",
+  "items": [
+    {
+      "id": "R2-01",
+      "references": [
+        {
+          "path": "__tests__/native-protocol/AppleNativeProtocolV2.test.js",
+          "reviewBlob": "5d7f448831ff793a9830e17fcf8a479b79c18236",
+          "baselineBlob": "5d7f448831ff793a9830e17fcf8a479b79c18236",
+          "identical": true
+        },
+        {
+          "path": "__tests__/ElectronIpcBoundary.test.js",
+          "reviewBlob": "a3fc442e0017fbf051075fe34cece6712ee3b0d2",
+          "baselineBlob": "a3fc442e0017fbf051075fe34cece6712ee3b0d2",
+          "identical": true
+        },
+        {
+          "path": "native/tauri/src/btleplug_dispatcher.rs",
+          "reviewBlob": "d0cdb723d62d823ece9742c7cf4bc96193a07c63",
+          "baselineBlob": "b0b585fcfc5f3a1220fd7e288cff551977759810",
+          "identical": false
+        },
+        {
+          "path": "crates/ubm-mobile/tests/recording_peer_scope.rs",
+          "reviewBlob": "56e50ab02abfa6be841fa5aefcb4fee57d9b28bd",
+          "baselineBlob": "56e50ab02abfa6be841fa5aefcb4fee57d9b28bd",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-02",
+      "references": [
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "reviewBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "baselineBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "identical": true
+        },
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "reviewBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "baselineBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "identical": true
+        },
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "reviewBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "baselineBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-03",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/os/linux_lease.rs",
+          "reviewBlob": "eed9e6a50727b3bf2980d6a94c5c8e1abe7a9178",
+          "baselineBlob": "eed9e6a50727b3bf2980d6a94c5c8e1abe7a9178",
+          "identical": true
+        },
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "reviewBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "baselineBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "identical": true
+        },
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "reviewBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "baselineBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-04",
+      "references": [
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "reviewBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "baselineBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-05",
+      "references": [
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "reviewBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "baselineBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-06",
+      "references": [
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "reviewBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "baselineBlob": "068f452b14b1439c413e2cc15bd075b6ad425e1a",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-07",
+      "references": [
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-manager.ts",
+          "reviewBlob": "548ce4c0331bb81e85abf569dbb0dafa66ccd69b",
+          "baselineBlob": "548ce4c0331bb81e85abf569dbb0dafa66ccd69b",
+          "identical": true
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-manager.ts",
+          "reviewBlob": "548ce4c0331bb81e85abf569dbb0dafa66ccd69b",
+          "baselineBlob": "548ce4c0331bb81e85abf569dbb0dafa66ccd69b",
+          "identical": true
+        },
+        {
+          "path": "docs/UNIFIED_SEMANTICS.md",
+          "reviewBlob": "638eb22ca49e4ae6295166df23fb30928c1851f9",
+          "baselineBlob": "638eb22ca49e4ae6295166df23fb30928c1851f9",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-08",
+      "references": [
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "reviewBlob": "df2805e9f3f77a9656ca25f3422dcada58165dbb",
+          "baselineBlob": "df2805e9f3f77a9656ca25f3422dcada58165dbb",
+          "identical": true
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "reviewBlob": "df2805e9f3f77a9656ca25f3422dcada58165dbb",
+          "baselineBlob": "df2805e9f3f77a9656ca25f3422dcada58165dbb",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-09",
+      "references": [
+        {
+          "path": "src/ipc/public-manager.ts",
+          "reviewBlob": "eea6a391dc7bbbd2f0f7f3319ecd597c46af0a27",
+          "baselineBlob": "eea6a391dc7bbbd2f0f7f3319ecd597c46af0a27",
+          "identical": true
+        },
+        {
+          "path": "src/public/gatt.ts",
+          "reviewBlob": "58e45c90166671d38e8038a3f8d7a5562b000435",
+          "baselineBlob": "58e45c90166671d38e8038a3f8d7a5562b000435",
+          "identical": true
+        },
+        {
+          "path": "docs/UNIFIED_SEMANTICS.md",
+          "reviewBlob": "638eb22ca49e4ae6295166df23fb30928c1851f9",
+          "baselineBlob": "638eb22ca49e4ae6295166df23fb30928c1851f9",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-11",
+      "references": [
+        {
+          "path": "native/tauri/src/write_readiness.rs",
+          "reviewBlob": "5a6f2c835571e9e5023580ef21794fd075a9c85b",
+          "baselineBlob": "5a6f2c835571e9e5023580ef21794fd075a9c85b",
+          "identical": true
+        },
+        {
+          "path": "native/tauri/src/write_readiness.rs",
+          "reviewBlob": "5a6f2c835571e9e5023580ef21794fd075a9c85b",
+          "baselineBlob": "5a6f2c835571e9e5023580ef21794fd075a9c85b",
+          "identical": true
+        },
+        {
+          "path": "native/tauri/src/connection_parameters.rs",
+          "reviewBlob": "98913fb04fe80f2ee372fa439b8f49759e615fa7",
+          "baselineBlob": "98913fb04fe80f2ee372fa439b8f49759e615fa7",
+          "identical": true
+        },
+        {
+          "path": "native/tauri/src/connection_parameters.rs",
+          "reviewBlob": "98913fb04fe80f2ee372fa439b8f49759e615fa7",
+          "baselineBlob": "98913fb04fe80f2ee372fa439b8f49759e615fa7",
+          "identical": true
+        },
+        {
+          "path": "native/tauri/src/btleplug_dispatcher.rs",
+          "reviewBlob": "d0cdb723d62d823ece9742c7cf4bc96193a07c63",
+          "baselineBlob": "b0b585fcfc5f3a1220fd7e288cff551977759810",
+          "identical": false
+        }
+      ]
+    },
+    {
+      "id": "R2-12",
+      "references": [
+        {
+          "path": "src/backend-contract/scan-evidence.ts",
+          "reviewBlob": "7223d501657213413be69dba09ca73c666815f1f",
+          "baselineBlob": "7223d501657213413be69dba09ca73c666815f1f",
+          "identical": true
+        },
+        {
+          "path": "src/backend-contract/scan-evidence.ts",
+          "reviewBlob": "7223d501657213413be69dba09ca73c666815f1f",
+          "baselineBlob": "7223d501657213413be69dba09ca73c666815f1f",
+          "identical": true
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/watcher.rs",
+          "reviewBlob": "736ddfa9a7bfd06e3241faf8c1f04584fec05052",
+          "baselineBlob": "736ddfa9a7bfd06e3241faf8c1f04584fec05052",
+          "identical": true
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/watcher.rs",
+          "reviewBlob": "736ddfa9a7bfd06e3241faf8c1f04584fec05052",
+          "baselineBlob": "736ddfa9a7bfd06e3241faf8c1f04584fec05052",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-13",
+      "references": [
+        {
+          "path": "src/backend-contract/scan-evidence.ts",
+          "reviewBlob": "7223d501657213413be69dba09ca73c666815f1f",
+          "baselineBlob": "7223d501657213413be69dba09ca73c666815f1f",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-14",
+      "references": [
+        {
+          "path": "src/backend-contract/scan-evidence.ts",
+          "reviewBlob": "7223d501657213413be69dba09ca73c666815f1f",
+          "baselineBlob": "7223d501657213413be69dba09ca73c666815f1f",
+          "identical": true
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/watcher.rs",
+          "reviewBlob": "736ddfa9a7bfd06e3241faf8c1f04584fec05052",
+          "baselineBlob": "736ddfa9a7bfd06e3241faf8c1f04584fec05052",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-15",
+      "references": [
+        {
+          "path": "src/backend-contract/scan-evidence.ts",
+          "reviewBlob": "7223d501657213413be69dba09ca73c666815f1f",
+          "baselineBlob": "7223d501657213413be69dba09ca73c666815f1f",
+          "identical": true
+        },
+        {
+          "path": "src/backend-contract/scan-evidence.ts",
+          "reviewBlob": "7223d501657213413be69dba09ca73c666815f1f",
+          "baselineBlob": "7223d501657213413be69dba09ca73c666815f1f",
+          "identical": true
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/watcher.rs",
+          "reviewBlob": "736ddfa9a7bfd06e3241faf8c1f04584fec05052",
+          "baselineBlob": "736ddfa9a7bfd06e3241faf8c1f04584fec05052",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-16",
+      "references": [
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "reviewBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "baselineBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "identical": true
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "reviewBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "baselineBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-17",
+      "references": [
+        {
+          "path": "src/public/ble-manager.ts",
+          "reviewBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "baselineBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "identical": true
+        },
+        {
+          "path": "src/public/ble-manager.ts",
+          "reviewBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "baselineBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "identical": true
+        },
+        {
+          "path": "src/public/ble-manager.ts",
+          "reviewBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "baselineBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "identical": true
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/device.rs",
+          "reviewBlob": "daaab9ce2dc75a591018f828f687cf5841c5226b",
+          "baselineBlob": "daaab9ce2dc75a591018f828f687cf5841c5226b",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-18",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/errors.rs",
+          "reviewBlob": "de4ab206936a84c64cfd7d31c7c5ea12a2e2b5b7",
+          "baselineBlob": "de4ab206936a84c64cfd7d31c7c5ea12a2e2b5b7",
+          "identical": true
+        },
+        {
+          "path": "crates/ubm-desktop/src/central_parity.rs",
+          "reviewBlob": "0879717e1dfaadcc8e08c160517c8ffe3975b534",
+          "baselineBlob": "0879717e1dfaadcc8e08c160517c8ffe3975b534",
+          "identical": true
+        },
+        {
+          "path": "crates/ubm-desktop/src/btleplug_backend.rs",
+          "reviewBlob": "b481775294cbf3287fda8076d508c15d8d0a9801",
+          "baselineBlob": "b481775294cbf3287fda8076d508c15d8d0a9801",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-19",
+      "references": [
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "reviewBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "baselineBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "identical": true
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "reviewBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "baselineBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "identical": true
+        },
+        {
+          "path": "crates/ubm-desktop/src/delivery.rs",
+          "reviewBlob": "1038cd59a46bf933e8bdfbd9f08fc352de282208",
+          "baselineBlob": "1038cd59a46bf933e8bdfbd9f08fc352de282208",
+          "identical": true
+        },
+        {
+          "path": "crates/ubm-mobile/src/session.rs",
+          "reviewBlob": "8e2000a8a8f91d61edb4940e05d1da9c76193681",
+          "baselineBlob": "8e2000a8a8f91d61edb4940e05d1da9c76193681",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-20",
+      "references": [
+        {
+          "path": "vendor/btleplug/src/winrtble/peripheral.rs",
+          "reviewBlob": "f7a72c11061f94059a2de0080656f497f991bed5",
+          "baselineBlob": "f7a72c11061f94059a2de0080656f497f991bed5",
+          "identical": true
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/device.rs",
+          "reviewBlob": "daaab9ce2dc75a591018f828f687cf5841c5226b",
+          "baselineBlob": "daaab9ce2dc75a591018f828f687cf5841c5226b",
+          "identical": true
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/utils.rs",
+          "reviewBlob": "ec8c2875db66aaf88595cd536941409f24ea4d05",
+          "baselineBlob": "ec8c2875db66aaf88595cd536941409f24ea4d05",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-22",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/boundary.rs",
+          "reviewBlob": "ad83310084d7d3a764b5aa8753618e26a021ea41",
+          "baselineBlob": "ad83310084d7d3a764b5aa8753618e26a021ea41",
+          "identical": true
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "reviewBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "baselineBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "identical": true
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "reviewBlob": "df2805e9f3f77a9656ca25f3422dcada58165dbb",
+          "baselineBlob": "df2805e9f3f77a9656ca25f3422dcada58165dbb",
+          "identical": true
+        },
+        {
+          "path": "native/tauri/src/btleplug_dispatcher.rs",
+          "reviewBlob": "d0cdb723d62d823ece9742c7cf4bc96193a07c63",
+          "baselineBlob": "b0b585fcfc5f3a1220fd7e288cff551977759810",
+          "identical": false
+        },
+        {
+          "path": "src/public/gatt.ts",
+          "reviewBlob": "58e45c90166671d38e8038a3f8d7a5562b000435",
+          "baselineBlob": "58e45c90166671d38e8038a3f8d7a5562b000435",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-23",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "reviewBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "baselineBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "identical": true
+        },
+        {
+          "path": "src/core/core-connection-controls.ts",
+          "reviewBlob": "56e23871be659b16f0127f499a7ca4f965a3aefc",
+          "baselineBlob": "56e23871be659b16f0127f499a7ca4f965a3aefc",
+          "identical": true
+        },
+        {
+          "path": "src/public/ble-manager.ts",
+          "reviewBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "baselineBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "identical": true
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/device.rs",
+          "reviewBlob": "daaab9ce2dc75a591018f828f687cf5841c5226b",
+          "baselineBlob": "daaab9ce2dc75a591018f828f687cf5841c5226b",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-24",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "reviewBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "baselineBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "identical": true
+        },
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "reviewBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "baselineBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "identical": true
+        },
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "reviewBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "baselineBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "identical": true
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/device.rs",
+          "reviewBlob": "daaab9ce2dc75a591018f828f687cf5841c5226b",
+          "baselineBlob": "daaab9ce2dc75a591018f828f687cf5841c5226b",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-25",
+      "references": [
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/device.rs",
+          "reviewBlob": "daaab9ce2dc75a591018f828f687cf5841c5226b",
+          "baselineBlob": "daaab9ce2dc75a591018f828f687cf5841c5226b",
+          "identical": true
+        },
+        {
+          "path": "crates/ubm-desktop/src/btleplug_backend.rs",
+          "reviewBlob": "b481775294cbf3287fda8076d508c15d8d0a9801",
+          "baselineBlob": "b481775294cbf3287fda8076d508c15d8d0a9801",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-26",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "reviewBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "baselineBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "identical": true
+        },
+        {
+          "path": "src/backends/desktop/desktop-peer-directory.ts",
+          "reviewBlob": "8146291746179949d658c95affd03199fe4f409d",
+          "baselineBlob": "8146291746179949d658c95affd03199fe4f409d",
+          "identical": true
+        },
+        {
+          "path": "crates/ubm-desktop/src/btleplug_backend.rs",
+          "reviewBlob": "b481775294cbf3287fda8076d508c15d8d0a9801",
+          "baselineBlob": "b481775294cbf3287fda8076d508c15d8d0a9801",
+          "identical": true
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "reviewBlob": "df2805e9f3f77a9656ca25f3422dcada58165dbb",
+          "baselineBlob": "df2805e9f3f77a9656ca25f3422dcada58165dbb",
+          "identical": true
+        },
+        {
+          "path": "crates/ubm-mobile/src/session.rs",
+          "reviewBlob": "8e2000a8a8f91d61edb4940e05d1da9c76193681",
+          "baselineBlob": "8e2000a8a8f91d61edb4940e05d1da9c76193681",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-27",
+      "references": [
+        {
+          "path": "src/tck/first-party/desktop-rust-core-tck-registration.ts",
+          "reviewBlob": "98e03f5e72f7f522ba60af7d5901d87a295d45ca",
+          "baselineBlob": "98e03f5e72f7f522ba60af7d5901d87a295d45ca",
+          "identical": true
+        },
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "reviewBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "baselineBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "identical": true
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "reviewBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "baselineBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-28",
+      "references": [
+        {
+          "path": "src/public/ble-manager.ts",
+          "reviewBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "baselineBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "identical": true
+        },
+        {
+          "path": "src/public/ble-manager.ts",
+          "reviewBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "baselineBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "identical": true
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-features.ts",
+          "reviewBlob": "5990d71d611b46e5ed1be411b36f89e8435bff0c",
+          "baselineBlob": "5990d71d611b46e5ed1be411b36f89e8435bff0c",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-29",
+      "references": [
+        {
+          "path": "android/src/main/java/com/sfourdrinier/unifiedblemanager/rustcore/OwnedRadioPort.kt",
+          "reviewBlob": "be1ea5685f7117bae00f6c698f5f9017a8dd0fd4",
+          "baselineBlob": "be1ea5685f7117bae00f6c698f5f9017a8dd0fd4",
+          "identical": true
+        },
+        {
+          "path": "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+          "reviewBlob": "fb48ffe0b4b172ad6e580906a72b2307ad915744",
+          "baselineBlob": "fb48ffe0b4b172ad6e580906a72b2307ad915744",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-30",
+      "references": [
+        {
+          "path": "src/public/ble-manager.ts",
+          "reviewBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "baselineBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "identical": true
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "reviewBlob": "df2805e9f3f77a9656ca25f3422dcada58165dbb",
+          "baselineBlob": "df2805e9f3f77a9656ca25f3422dcada58165dbb",
+          "identical": true
+        },
+        {
+          "path": "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+          "reviewBlob": "fb48ffe0b4b172ad6e580906a72b2307ad915744",
+          "baselineBlob": "fb48ffe0b4b172ad6e580906a72b2307ad915744",
+          "identical": true
+        },
+        {
+          "path": "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+          "reviewBlob": "fb48ffe0b4b172ad6e580906a72b2307ad915744",
+          "baselineBlob": "fb48ffe0b4b172ad6e580906a72b2307ad915744",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-31",
+      "references": [
+        {
+          "path": "src/public/ble-manager.ts",
+          "reviewBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "baselineBlob": "e8e97bebc8d4371bf2d9b8a536ccb775d2b72a62",
+          "identical": true
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "reviewBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "baselineBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "identical": true
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/watcher.rs",
+          "reviewBlob": "736ddfa9a7bfd06e3241faf8c1f04584fec05052",
+          "baselineBlob": "736ddfa9a7bfd06e3241faf8c1f04584fec05052",
+          "identical": true
+        },
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "reviewBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "baselineBlob": "52e097778b82e5ddda3fb32a2db443505afe5c48",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-32",
+      "references": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "reviewBlob": "6bfa1c6a0a0157f053a6f6aa8aae5c8c8e70d66c",
+          "baselineBlob": "6bfa1c6a0a0157f053a6f6aa8aae5c8c8e70d66c",
+          "identical": true
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "reviewBlob": "6bfa1c6a0a0157f053a6f6aa8aae5c8c8e70d66c",
+          "baselineBlob": "6bfa1c6a0a0157f053a6f6aa8aae5c8c8e70d66c",
+          "identical": true
+        },
+        {
+          "path": "scripts/ci/bun-packed-desktop-acceptance.js",
+          "reviewBlob": "06078a35f0393b0acaad4b4c9d498d5be6d32d5f",
+          "baselineBlob": "06078a35f0393b0acaad4b4c9d498d5be6d32d5f",
+          "identical": true
+        },
+        {
+          "path": "scripts/ci/bun-packed-desktop-acceptance.js",
+          "reviewBlob": "06078a35f0393b0acaad4b4c9d498d5be6d32d5f",
+          "baselineBlob": "06078a35f0393b0acaad4b4c9d498d5be6d32d5f",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-33",
+      "references": [
+        {
+          "path": "vendor/btleplug/src/winrtble/gatt_model.rs",
+          "reviewBlob": "d1fe1f201a071c9d4cffac98aba776fb2c50e9cc",
+          "baselineBlob": "d1fe1f201a071c9d4cffac98aba776fb2c50e9cc",
+          "identical": true
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/peripheral.rs",
+          "reviewBlob": "f7a72c11061f94059a2de0080656f497f991bed5",
+          "baselineBlob": "f7a72c11061f94059a2de0080656f497f991bed5",
+          "identical": true
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "reviewBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "baselineBlob": "f8ae37bac6991752554568366947e0373a04cae5",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-34",
+      "references": [
+        {
+          "path": "bindings/napi/src/dispatch.rs",
+          "reviewBlob": "ecab4d0e57ad4e993d6eaad1e456959257b48559",
+          "baselineBlob": "ecab4d0e57ad4e993d6eaad1e456959257b48559",
+          "identical": true
+        },
+        {
+          "path": "bindings/napi/src/dispatch.rs",
+          "reviewBlob": "ecab4d0e57ad4e993d6eaad1e456959257b48559",
+          "baselineBlob": "ecab4d0e57ad4e993d6eaad1e456959257b48559",
+          "identical": true
+        },
+        {
+          "path": "bindings/napi/src/dispatch.rs",
+          "reviewBlob": "ecab4d0e57ad4e993d6eaad1e456959257b48559",
+          "baselineBlob": "ecab4d0e57ad4e993d6eaad1e456959257b48559",
+          "identical": true
+        },
+        {
+          "path": "crates/ubm-desktop/src/boundary.rs",
+          "reviewBlob": "ad83310084d7d3a764b5aa8753618e26a021ea41",
+          "baselineBlob": "ad83310084d7d3a764b5aa8753618e26a021ea41",
+          "identical": true
+        },
+        {
+          "path": "crates/ubm-desktop/src/central_parity.rs",
+          "reviewBlob": "0879717e1dfaadcc8e08c160517c8ffe3975b534",
+          "baselineBlob": "0879717e1dfaadcc8e08c160517c8ffe3975b534",
+          "identical": true
+        }
+      ]
+    },
+    {
+      "id": "R2-35",
+      "references": [
+        {
+          "path": "src/manager/ble-manager.ts",
+          "reviewBlob": "24c2bf2e8876c5124148058de88e35937681ba91",
+          "baselineBlob": "24c2bf2e8876c5124148058de88e35937681ba91",
+          "identical": true
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-manager.ts",
+          "reviewBlob": "548ce4c0331bb81e85abf569dbb0dafa66ccd69b",
+          "baselineBlob": "548ce4c0331bb81e85abf569dbb0dafa66ccd69b",
+          "identical": true
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-manager.ts",
+          "reviewBlob": "548ce4c0331bb81e85abf569dbb0dafa66ccd69b",
+          "baselineBlob": "548ce4c0331bb81e85abf569dbb0dafa66ccd69b",
+          "identical": true
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-manager.ts",
+          "reviewBlob": "548ce4c0331bb81e85abf569dbb0dafa66ccd69b",
+          "baselineBlob": "548ce4c0331bb81e85abf569dbb0dafa66ccd69b",
+          "identical": true
+        },
+        {
+          "path": "src/react-native.ts",
+          "reviewBlob": "caf419e5d77b35ccf9d0b93f2cdf7a8a036caf92",
+          "baselineBlob": "caf419e5d77b35ccf9d0b93f2cdf7a8a036caf92",
+          "identical": true
+        }
+      ]
+    }
+  ]
+}

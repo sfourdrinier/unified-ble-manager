@@ -87,7 +87,9 @@ class RustRadioHostAdapter(
     deviceAddresses: Array<String>?,
     scanMode: String?,
     callbackType: String?,
-    legacy: Int
+    legacy: Int,
+    reportDelayMs: Long,
+    phy: String?
   ) = perform(requestId) {
     val mode = when (scanMode) {
       null, "low-latency" -> SCAN_MODE_LOW_LATENCY
@@ -101,12 +103,27 @@ class RustRadioHostAdapter(
       "first-match" -> CALLBACK_TYPE_FIRST_MATCH
       else -> throw RadioPortFailure(RadioFailureKind.UNSUPPORTED, "scan callback type '$callbackType' is not supported")
     }
+    if (reportDelayMs < 0 || reportDelayMs > Int.MAX_VALUE) {
+      throw RadioPortFailure(RadioFailureKind.UNSUPPORTED, "scan report delay is outside the wire range")
+    }
+    val scanPhy = when (phy) {
+      null -> null
+      "all-supported" -> SCAN_PHY_ALL_SUPPORTED
+      "1m" -> SCAN_PHY_LE_1M
+      "coded" -> SCAN_PHY_LE_CODED
+      else -> throw RadioPortFailure(RadioFailureKind.UNSUPPORTED, "scan PHY '$phy' is not an Android scan PHY")
+    }
+    if (scanPhy != null && legacy != 0) {
+      throw RadioPortFailure(RadioFailureKind.UNSUPPORTED, "scan PHY selection requires legacy=false")
+    }
     radio.startScan(
       serviceUuids?.toList() ?: emptyList(),
       deviceAddresses?.toList() ?: emptyList(),
       mode,
       callback,
-      legacy != 0
+      legacy != 0,
+      reportDelayMs,
+      scanPhy
     )
     answer(requestId, "unit") { core.completeUnit(requestId) }
   }
@@ -380,6 +397,24 @@ class RustRadioHostAdapter(
     })
   }
 
+  override fun subrateAvailable(): Boolean = radio.supportsSubrate()
+
+  override fun requestSubrate(requestId: Long, peerId: String, mode: String) = perform(requestId) {
+    if (!radio.supportsSubrate()) {
+      throw RadioPortFailure(RadioFailureKind.UNSUPPORTED, "Android subrate requests require SDK 36.1")
+    }
+    if (mode !in setOf("default", "low-latency", "low-power", "high-throughput")) {
+      throw IllegalArgumentException("unknown subrate request mode '$mode'")
+    }
+    requireConnected(peerId)
+    track(requestId, radio.requestSubrate(peerId, mode) { result ->
+      result.fold(
+        onSuccess = { status -> answer(requestId, "subrate-status") { core.completeSubrateStatus(requestId, status) } },
+        onFailure = { error -> fail(requestId, error) }
+      )
+    })
+  }
+
   override fun readPhy(requestId: Long, peerId: String) = perform(requestId) {
     requirePhy()
     requireConnected(peerId)
@@ -426,6 +461,17 @@ class RustRadioHostAdapter(
       RadioFailureKind.UNSUPPORTED,
       "Android exposes no public bonding cancellation before API 37 for $peerId"
     )
+  }
+
+  override fun resolvePeer(requestId: Long, peerId: String) = perform(requestId) {
+    val peer = radio.resolvePeer(peerId)
+    answer(requestId, "resolve-peer") { core.completeResolvedPeer(requestId, peer?.peerId, peer?.name) }
+  }
+
+  override fun connectedPeers(requestId: Long, services: Array<String>) = perform(requestId) {
+    if (services.isNotEmpty()) throw RadioPortFailure(RadioFailureKind.UNSUPPORTED, "Android system GATT inventory has no service-filter query")
+    val peers = radio.connectedPeers()
+    answer(requestId, "connected-peers") { core.completeConnectedPeers(requestId, peers.map { it.peerId }.toTypedArray(), peers.map { it.name }.toTypedArray()) }
   }
 
   override fun bondedPeers(requestId: Long) = perform(requestId) {
@@ -820,6 +866,10 @@ class RustRadioHostAdapter(
     override fun onSecurity(peerId: String, security: SecurityFacts) =
       recordIngress("security", core.ingestSecurity(peerId, security))
 
+    override fun onSecurityFailure(peerId: String?, error: Throwable) =
+      recordIngress("security-failed", core.ingestSecurityFailure(peerId, classify(error),
+        if (error is com.sfourdrinier.unifiedblemanager.radio.AndroidEncryptionFailure) error.status else null))
+
     override fun onDropped(ingressClass: String, detail: String) =
       recordIngress("dropped", core.ingestDropped(ingressClass, detail))
   }
@@ -851,6 +901,10 @@ class RustRadioHostAdapter(
     const val SCAN_MODE_LOW_LATENCY = 2
     const val CALLBACK_TYPE_ALL_MATCHES = 1
     const val CALLBACK_TYPE_FIRST_MATCH = 2
+    /** ScanSettings/BluetoothDevice scan PHY values, distinct from connect masks. */
+    const val SCAN_PHY_ALL_SUPPORTED = 255
+    const val SCAN_PHY_LE_1M = 1
+    const val SCAN_PHY_LE_CODED = 3
     const val GATT_SUCCESS = 0
     const val PROPERTY_NOTIFY = 0x10
     const val PROPERTY_INDICATE = 0x20
@@ -935,7 +989,9 @@ class RustRadioHostAdapter(
       }
       val serviceCounts = HashMap<String, Long>()
       for (service in services) {
-        emit(0, service.uuid, nextOccurrence(serviceCounts, service.uuid), 0)
+        val facts = (when (service.primary) { true -> 1; false -> 2; null -> 0 }) or
+          (if (service.includedServices == null) 0 else 4)
+        emit(0, service.uuid, nextOccurrence(serviceCounts, service.uuid), facts)
         val characteristicCounts = HashMap<String, Long>()
         for (characteristic in service.characteristics) {
           emit(1, characteristic.uuid, nextOccurrence(characteristicCounts, characteristic.uuid), characteristic.properties)
@@ -944,6 +1000,7 @@ class RustRadioHostAdapter(
             emit(2, descriptor.uuid, nextOccurrence(descriptorCounts, descriptor.uuid), 0)
           }
         }
+        service.includedServices?.forEach { included -> emit(3, included.uuid, included.occurrence, 0) }
       }
       return DiscoveryTree(levels.toIntArray(), uuids.toTypedArray(), occurrences.toLongArray(), properties.toIntArray())
     }

@@ -94,6 +94,11 @@ pub mod api;
 mod bluez;
 #[cfg(not(target_os = "linux"))]
 mod common;
+pub mod connection_parameters_source;
+#[cfg(any(target_os = "macos", target_os = "ios", test))]
+mod discovery_reservations;
+#[cfg(any(target_os = "windows", test))]
+mod request_lifetime;
 
 /// UBM patch (UBM_PATCHES.md #10): the notification stream every platform
 /// peripheral hands out, exported so the desktop core's tests drive the
@@ -111,6 +116,10 @@ pub mod ubm {
     /// that still falls this far behind is told what it lost (patch 10).
     pub const EVENT_CAPACITY: usize = 4096;
 
+    #[cfg(target_os = "windows")]
+    pub use crate::winrtble::ble::device::connection_parameters_api_present;
+    #[cfg(target_os = "windows")]
+    pub use crate::winrtble::ble::device::preferred_parameters_api_present;
     /// UBM patch (UBM_PATCHES.md #15): the legacy WinRT addon's HRESULT
     /// code (`0x` and eight upper-case hex digits), for hosts that meet a
     /// WinRT error outside btleplug.
@@ -220,6 +229,14 @@ pub enum Error {
     /// UBM patch (UBM_PATCHES.md #15): the platform's own answer.
     #[error("{}", _0)]
     Platform(PlatformError),
+
+    /// The operation's primary refusal and an independent failed rollback.
+    /// The resource stays owned for a later cleanup attempt.
+    #[error("{primary}; cleanup also failed: {cleanup}")]
+    WithCleanup {
+        primary: Box<Error>,
+        cleanup: Box<Error>,
+    },
 
     #[error("Permission denied")]
     PermissionDenied,

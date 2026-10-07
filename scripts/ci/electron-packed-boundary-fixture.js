@@ -58,7 +58,7 @@ function createBootstrapResponse() {
         capabilitySchema: negotiated('capability-schema', 1),
         eventSchema: negotiated('event-schema', 1),
         traceFormat: negotiated('trace-format', 1),
-        ipcProtocol: negotiated('ipc-protocol', 5)
+        ipcProtocol: negotiated('ipc-protocol', 6)
       }),
       capabilities: Object.freeze({
         schemaVersion: 2,

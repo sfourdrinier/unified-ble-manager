@@ -122,8 +122,7 @@ function stateMatches(state, generation) {
 
 function eventMatches(state, generation) {
   if (generation === undefined) return value => value.kind === 'state' && value.state === state
-  return value =>
-    value.kind === 'state' && value.state === state && value.connectionGeneration === generation
+  return value => value.kind === 'state' && value.state === state && value.connectionGeneration === generation
 }
 
 function waitForSupervisorState(tap, supervisor, state, describe, generation = undefined) {
@@ -141,12 +140,9 @@ function waitForSupervisorConnectedGeneration(tap, supervisor, excludedGeneratio
     tap,
     supervisor,
     {
-      snapshot: snapshot =>
-        snapshot.state === 'connected' && snapshot.connectionGeneration !== excludedGeneration,
+      snapshot: snapshot => snapshot.state === 'connected' && snapshot.connectionGeneration !== excludedGeneration,
       event: value =>
-        value.kind === 'state' &&
-        value.state === 'connected' &&
-        value.connectionGeneration !== excludedGeneration
+        value.kind === 'state' && value.state === 'connected' && value.connectionGeneration !== excludedGeneration
     },
     describe,
     'supervisor reconnection on a new generation'
@@ -264,7 +260,7 @@ async function open(platform) {
 
 describe('Electron main <-> renderer: adapter off and on', () => {
   test('speaks IPC protocol 4', () => {
-    expect(IPC_PROTOCOL_VERSION).toBe(5)
+    expect(IPC_PROTOCOL_VERSION).toBe(6)
     expect(IPC_ATTACHMENT_STREAM_ID).toBe('attachment')
   })
 

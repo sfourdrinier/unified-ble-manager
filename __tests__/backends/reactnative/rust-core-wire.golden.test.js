@@ -1,6 +1,6 @@
 // __tests__/backends/reactnative/rust-core-wire.golden.test.js
 //
-// PR210-12: golden vectors bind the two halves of `ubm-mobile-wire/1`.
+// PR210-12: golden vectors bind the two halves of `ubm-mobile-wire/2`.
 // `crates/ubm-mobile/golden/wire-vectors.json` holds envelope and drain
 // text produced by the Rust owner itself (crates/ubm-mobile/tests/golden.rs,
 // checked by `cargo test -p ubm-mobile`); every vector must parse through
@@ -34,7 +34,7 @@ function ok(result, what) {
   return result.value
 }
 
-describe('ubm-mobile-wire/1 golden vectors (Rust-generated)', () => {
+describe('ubm-mobile-wire/2 golden vectors (Rust-generated)', () => {
   it('speaks the same wire revision', () => {
     expect(golden.wireRevision).toBe(wire.WIRE_REVISION)
   })

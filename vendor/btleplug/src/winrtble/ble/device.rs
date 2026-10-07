@@ -20,7 +20,7 @@ use log::{debug, trace};
 use windows::{
     Devices::Bluetooth::{
         BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice,
-        BluetoothLEPreferredConnectionParameters,
+        BluetoothLEPreferredConnectionParameters, BluetoothLEPreferredConnectionParametersRequest,
         GenericAttributeProfile::{
             GattCharacteristic, GattCommunicationStatus, GattDescriptor, GattDeviceService,
             GattDeviceServicesResult, GattSession,
@@ -43,7 +43,7 @@ fn discovery_status(stage: &str, service_result: &GattDeviceServicesResult) -> R
 
 pub type ConnectedEventHandler = Box<dyn Fn(bool) + Send>;
 pub type MaxPduSizeChangedEventHandler = Box<dyn Fn(u16) + Send>;
-pub type ConnectionParametersHandler = Box<dyn Fn(crate::api::ConnectionParameters) + Send>;
+pub type ConnectionParametersHandler = Box<dyn Fn(crate::api::ConnectionParametersReport) + Send>;
 
 pub struct BLEDevice {
     device: BluetoothLEDevice,
@@ -53,32 +53,59 @@ pub struct BLEDevice {
     /// Present only when this OS exposes `ConnectionParametersChanged`.
     connection_parameters_token: Option<i64>,
     services: Vec<GattDeviceService>,
+    preferred_request:
+        crate::request_lifetime::RequestLifetime<BluetoothLEPreferredConnectionParametersRequest>,
 }
 
 /// `GetConnectionParameters` exists from Windows 11 build 22000. Older
 /// Windows is a real limitation, not an empty success.
-fn connection_parameters_api_present() -> bool {
-    windows::Foundation::Metadata::ApiInformation::IsMethodPresent(
-        &windows::core::HSTRING::from("Windows.Devices.Bluetooth.BluetoothLEDevice"),
+pub fn connection_parameters_api_present() -> Result<bool> {
+    let device = windows::core::HSTRING::from("Windows.Devices.Bluetooth.BluetoothLEDevice");
+    let getter = windows::Foundation::Metadata::ApiInformation::IsMethodPresent(
+        &device,
         &windows::core::HSTRING::from("GetConnectionParameters"),
     )
-    .unwrap_or(false)
+    .map_err(Error::from)?;
+    let events = windows::Foundation::Metadata::ApiInformation::IsEventPresent(
+        &device,
+        &windows::core::HSTRING::from("ConnectionParametersChanged"),
+    )
+    .map_err(Error::from)?;
+    Ok(getter && events)
+}
+
+pub fn preferred_parameters_api_present() -> Result<bool> {
+    use windows::Foundation::Metadata::ApiInformation;
+    use windows::core::HSTRING;
+    let device = HSTRING::from("Windows.Devices.Bluetooth.BluetoothLEDevice");
+    let presets =
+        HSTRING::from("Windows.Devices.Bluetooth.BluetoothLEPreferredConnectionParameters");
+    if !ApiInformation::IsMethodPresent(
+        &device,
+        &HSTRING::from("RequestPreferredConnectionParameters"),
+    )? {
+        return Ok(false);
+    }
+    for property in ["Balanced", "ThroughputOptimized", "PowerOptimized"] {
+        if !ApiInformation::IsPropertyPresent(&presets, &HSTRING::from(property))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn connection_parameters_unavailable() -> Error {
-    Error::Platform(
-        crate::PlatformError::new(
-            "winrt",
-            "winrt-connection-parameters-requires-windows-11-22000",
-            "GetConnectionParameters is absent; Windows 11 build 22000 or newer is required",
-        ),
-    )
+    Error::Platform(crate::PlatformError::new(
+        "winrt",
+        "winrt-connection-parameters-requires-windows-11-22000",
+        "GetConnectionParameters is absent; Windows 11 build 22000 or newer is required",
+    ))
 }
 
 fn read_connection_parameters(
     device: &BluetoothLEDevice,
 ) -> Result<crate::api::ConnectionParameters> {
-    if !connection_parameters_api_present() {
+    if !connection_parameters_api_present()? {
         return Err(connection_parameters_unavailable());
     }
     let winrt_error = Error::from;
@@ -112,6 +139,8 @@ impl BLEDevice {
         max_pdu_size_changed: MaxPduSizeChangedEventHandler,
         connection_parameters_changed: ConnectionParametersHandler,
     ) -> Result<Self> {
+        // Probe before any event registration acquires a native token.
+        let parameter_api_present = connection_parameters_api_present()?;
         let async_op = match address_type {
             Some(kind) => BluetoothLEDevice::FromBluetoothAddressWithBluetoothAddressTypeAsync(
                 address.into(),
@@ -161,14 +190,20 @@ impl BLEDevice {
             .MaxPduSizeChanged(&max_pdu_size_changed_handler)
             .map_err(|_| Error::Other("Could not add max pdu size changed handler".into()))?;
 
-        let connection_parameters_token = if connection_parameters_api_present() {
+        let connection_parameters_token = if parameter_api_present {
             let parameters_handler =
                 TypedEventHandler::<BluetoothLEDevice, _>::new(move |sender, _| {
-                    if let Some(sender) = sender.as_ref()
-                        && let Ok(params) = read_connection_parameters(sender)
-                    {
-                        connection_parameters_changed(params);
-                    }
+                    let report = crate::connection_parameters_source::callback_answer(|| {
+                        match sender.as_ref() {
+                            Some(sender) => read_connection_parameters(sender),
+                            None => Err(Error::Platform(crate::PlatformError::new(
+                                "winrt",
+                                "connection-parameter-source-missing",
+                                "ConnectionParametersChanged supplied no device",
+                            ))),
+                        }
+                    });
+                    connection_parameters_changed(report);
                     Ok(())
                 });
             Some(
@@ -189,6 +224,7 @@ impl BLEDevice {
             pdu_change_token,
             connection_parameters_token,
             services: vec![],
+            preferred_request: Default::default(),
         })
     }
 
@@ -224,7 +260,7 @@ impl BLEDevice {
             .SetMaintainConnection(true)
             .map_err(Error::from)?;
         let mut service_result = self.get_gatt_services(BluetoothCacheMode::Uncached).await?;
-        let mut status = service_result.Status().map_err(|_| Error::DeviceNotFound)?;
+        let status = service_result.Status().map_err(Error::from)?;
         // The first query can answer Unreachable while the link is already
         // up (the peripheral accepted the connection and a notification).
         // One more uncached query on the held session sees that link. A
@@ -232,15 +268,11 @@ impl BLEDevice {
         // caller gives up, so it runs only when the link is already up.
         if status == GattCommunicationStatus::Unreachable && self.is_connected().await? {
             service_result = self.get_gatt_services(BluetoothCacheMode::Uncached).await?;
-            status = service_result.Status().map_err(|_| Error::DeviceNotFound)?;
         }
         // UBM patch (UBM_PATCHES.md #15): a device the connect could not
         // reach is the platform's answer (`gatt-status` `unreachable`), so
         // the host can tell a link that was not established from a refusal.
-        if status == GattCommunicationStatus::Unreachable {
-            return Err(utils::gatt_status_error("connect", status, None));
-        }
-        utils::to_error(status)
+        discovery_status("connect", &service_result)
     }
 
     async fn is_connected(&self) -> Result<bool> {
@@ -276,6 +308,27 @@ impl BLEDevice {
             }
             gatt_model::CharacteristicDiscovery::Failed => Err(utils::gatt_status_error(
                 "characteristic discovery",
+                status,
+                att_error,
+            )),
+        }
+    }
+
+    pub async fn get_included_services(
+        service: &GattDeviceService,
+    ) -> Result<Option<Vec<GattDeviceService>>> {
+        let result = service
+            .GetIncludedServicesWithCacheModeAsync(BluetoothCacheMode::Uncached)?
+            .await?;
+        let status = result.Status()?;
+        let att_error = utils::protocol_att_error(result.ProtocolError());
+        match gatt_model::characteristic_discovery(status.0, att_error) {
+            gatt_model::CharacteristicDiscovery::Continue => {
+                Ok(Some(result.Services()?.into_iter().collect()))
+            }
+            gatt_model::CharacteristicDiscovery::AccessDenied => Ok(None),
+            gatt_model::CharacteristicDiscovery::Failed => Err(utils::gatt_status_error(
+                "included service discovery",
                 status,
                 att_error,
             )),
@@ -335,9 +388,17 @@ impl BLEDevice {
     }
 
     pub fn request_connection_parameters(
-        &self,
+        &mut self,
         preset: crate::api::ConnectionParameterPreset,
     ) -> Result<()> {
+        if !preferred_parameters_api_present()? {
+            return Err(Error::Platform(crate::PlatformError::new(
+                "winrt",
+                "winrt-preferred-parameters-requires-windows-11-22000",
+                "WinRT preferred connection parameters are absent on this runtime",
+            )));
+        }
+        self.close_preferred_request()?;
         let winrt_error = Error::from;
         let params = match preset {
             crate::api::ConnectionParameterPreset::Balanced => {
@@ -355,7 +416,11 @@ impl BLEDevice {
             .device
             .RequestPreferredConnectionParameters(&params)
             .map_err(winrt_error)?;
-        let status = result.Status().map_err(winrt_error)?;
+        self.preferred_request.retain(result.clone());
+        let status = match result.Status() {
+            Ok(status) => status,
+            Err(error) => return Err(self.retire_failed_preference(Error::from(error))),
+        };
         // BluetoothLEPreferredConnectionParametersRequestStatus:
         //   Unspecified = 0, Success = 1, DeviceNotAvailable = 2, AccessDenied = 3
         let code = match status.0 {
@@ -364,14 +429,30 @@ impl BLEDevice {
             3 => "access-denied",
             _ => "unspecified",
         };
-        Err(Error::Platform(
+        let error = Error::Platform(
             crate::PlatformError::new(
                 "winrt",
                 code,
                 format!("RequestPreferredConnectionParameters status {}", status.0),
             )
             .with("requestStatus", status.0.to_string()),
-        ))
+        );
+        Err(self.retire_failed_preference(error))
+    }
+
+    pub fn close_preferred_request(&mut self) -> Result<()> {
+        self.preferred_request
+            .close(|request| request.Close().map_err(Error::from))
+    }
+
+    fn retire_failed_preference(&mut self, primary: Error) -> Error {
+        match self.close_preferred_request() {
+            Ok(()) => primary,
+            Err(cleanup) => Error::WithCleanup {
+                primary: Box::new(primary),
+                cleanup: Box::new(cleanup),
+            },
+        }
     }
 
     /// UBM patch (`winrt-uncached-discovery`): the device's primary
@@ -387,10 +468,19 @@ impl BLEDevice {
         self.services = services.clone();
         Ok(services)
     }
+
+    pub fn retain_included_service(&mut self, service: &GattDeviceService) {
+        if !self.services.contains(service) {
+            self.services.push(service.clone());
+        }
+    }
 }
 
 impl Drop for BLEDevice {
     fn drop(&mut self) {
+        if let Err(error) = self.close_preferred_request() {
+            log::error!("Drop: preferred-parameter request cleanup failed: {error}");
+        }
         // Release the hold taken in `connect` before the device is closed.
         // The desktop session releases its own hold as well; this one must
         // not keep the link up after disconnect.

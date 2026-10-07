@@ -3435,6 +3435,10 @@ data class MobileGattService (
     ,
     var `occurrence`: kotlin.ULong
     ,
+    var `primary`: kotlin.Boolean?
+    ,
+    var `includedServices`: List<MobileGattDescriptor>?
+    ,
     var `characteristics`: List<MobileGattCharacteristic>
 
 ){
@@ -3454,6 +3458,8 @@ public object FfiConverterTypeMobileGattService: FfiConverterRustBuffer<MobileGa
         return MobileGattService(
             FfiConverterString.read(buf),
             FfiConverterULong.read(buf),
+            FfiConverterOptionalBoolean.read(buf),
+            FfiConverterOptionalSequenceTypeMobileGattDescriptor.read(buf),
             FfiConverterSequenceTypeMobileGattCharacteristic.read(buf),
         )
     }
@@ -3461,12 +3467,16 @@ public object FfiConverterTypeMobileGattService: FfiConverterRustBuffer<MobileGa
     override fun allocationSize(value: MobileGattService) = (
             FfiConverterString.allocationSize(value.`uuid`) +
             FfiConverterULong.allocationSize(value.`occurrence`) +
+            FfiConverterOptionalBoolean.allocationSize(value.`primary`) +
+            FfiConverterOptionalSequenceTypeMobileGattDescriptor.allocationSize(value.`includedServices`) +
             FfiConverterSequenceTypeMobileGattCharacteristic.allocationSize(value.`characteristics`)
     )
 
     override fun write(value: MobileGattService, buf: ByteBuffer) {
             FfiConverterString.write(value.`uuid`, buf)
             FfiConverterULong.write(value.`occurrence`, buf)
+            FfiConverterOptionalBoolean.write(value.`primary`, buf)
+            FfiConverterOptionalSequenceTypeMobileGattDescriptor.write(value.`includedServices`, buf)
             FfiConverterSequenceTypeMobileGattCharacteristic.write(value.`characteristics`, buf)
     }
 }
@@ -3949,6 +3959,24 @@ sealed class MobileRadioCompletion {
         companion object
     }
 
+    data class ConnectedPeers(
+        val `peers`: List<uniffi.ubm_echo.MobilePeerName>) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
+    data class ResolvedPeer(
+        val `peer`: uniffi.ubm_echo.MobilePeerName?) : MobileRadioCompletion()
+
+    {
+
+
+        companion object
+    }
+
     data class Lease(
         val `leaseId`: kotlin.String) : MobileRadioCompletion()
 
@@ -4066,22 +4094,28 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
             15 -> MobileRadioCompletion.BondedPeers(
                 FfiConverterSequenceTypeMobilePeerName.read(buf),
                 )
-            16 -> MobileRadioCompletion.Lease(
+            16 -> MobileRadioCompletion.ConnectedPeers(
+                FfiConverterSequenceTypeMobilePeerName.read(buf),
+                )
+            17 -> MobileRadioCompletion.ResolvedPeer(
+                FfiConverterOptionalTypeMobilePeerName.read(buf),
+                )
+            18 -> MobileRadioCompletion.Lease(
                 FfiConverterString.read(buf),
                 )
-            17 -> MobileRadioCompletion.Companion(
+            19 -> MobileRadioCompletion.Companion(
                 FfiConverterLong.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            18 -> MobileRadioCompletion.CompanionList(
+            20 -> MobileRadioCompletion.CompanionList(
                 FfiConverterSequenceTypeMobileCompanionRecord.read(buf),
                 )
-            19 -> MobileRadioCompletion.Closed(
+            21 -> MobileRadioCompletion.Closed(
                 FfiConverterSequenceTypeMobileCloseFailure.read(buf),
                 )
-            20 -> MobileRadioCompletion.Failed(
+            22 -> MobileRadioCompletion.Failed(
                 FfiConverterString.read(buf),
                 FfiConverterOptionalInt.read(buf),
                 FfiConverterOptionalString.read(buf),
@@ -4201,6 +4235,20 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
             (
                 4UL
                 + FfiConverterSequenceTypeMobilePeerName.allocationSize(value.`peers`)
+            )
+        }
+        is MobileRadioCompletion.ConnectedPeers -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterSequenceTypeMobilePeerName.allocationSize(value.`peers`)
+            )
+        }
+        is MobileRadioCompletion.ResolvedPeer -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterOptionalTypeMobilePeerName.allocationSize(value.`peer`)
             )
         }
         is MobileRadioCompletion.Lease -> {
@@ -4329,13 +4377,23 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
                 FfiConverterSequenceTypeMobilePeerName.write(value.`peers`, buf)
                 Unit
             }
-            is MobileRadioCompletion.Lease -> {
+            is MobileRadioCompletion.ConnectedPeers -> {
                 buf.putInt(16)
+                FfiConverterSequenceTypeMobilePeerName.write(value.`peers`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.ResolvedPeer -> {
+                buf.putInt(17)
+                FfiConverterOptionalTypeMobilePeerName.write(value.`peer`, buf)
+                Unit
+            }
+            is MobileRadioCompletion.Lease -> {
+                buf.putInt(18)
                 FfiConverterString.write(value.`leaseId`, buf)
                 Unit
             }
             is MobileRadioCompletion.Companion -> {
-                buf.putInt(17)
+                buf.putInt(19)
                 FfiConverterLong.write(value.`associationId`, buf)
                 FfiConverterOptionalString.write(value.`peerId`, buf)
                 FfiConverterOptionalString.write(value.`displayName`, buf)
@@ -4343,17 +4401,17 @@ public object FfiConverterTypeMobileRadioCompletion : FfiConverterRustBuffer<Mob
                 Unit
             }
             is MobileRadioCompletion.CompanionList -> {
-                buf.putInt(18)
+                buf.putInt(20)
                 FfiConverterSequenceTypeMobileCompanionRecord.write(value.`records`, buf)
                 Unit
             }
             is MobileRadioCompletion.Closed -> {
-                buf.putInt(19)
+                buf.putInt(21)
                 FfiConverterSequenceTypeMobileCloseFailure.write(value.`failures`, buf)
                 Unit
             }
             is MobileRadioCompletion.Failed -> {
-                buf.putInt(20)
+                buf.putInt(22)
                 FfiConverterString.write(value.`kind`, buf)
                 FfiConverterOptionalInt.write(value.`gattStatus`, buf)
                 FfiConverterOptionalString.write(value.`nativeDomain`, buf)
@@ -4690,7 +4748,9 @@ sealed class MobileRadioRequest {
         val `deviceAddresses`: List<kotlin.String>,
         val `scanMode`: kotlin.String?,
         val `callbackType`: kotlin.String?,
-        val `legacy`: kotlin.Boolean?) : MobileRadioRequest()
+        val `legacy`: kotlin.Boolean?,
+        val `reportDelayMs`: kotlin.UInt?,
+        val `phy`: kotlin.String?) : MobileRadioRequest()
 
     {
 
@@ -4871,6 +4931,17 @@ sealed class MobileRadioRequest {
         companion object
     }
 
+    data class RequestSubrate(
+        val `id`: kotlin.ULong,
+        val `peerId`: kotlin.String,
+        val `mode`: kotlin.String) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
     data class ReadPhy(
         val `id`: kotlin.ULong,
         val `peerId`: kotlin.String) : MobileRadioRequest()
@@ -4926,6 +4997,26 @@ sealed class MobileRadioRequest {
 
     data class BondedPeers(
         val `id`: kotlin.ULong) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class ConnectedPeers(
+        val `id`: kotlin.ULong,
+        val `services`: List<kotlin.String>) : MobileRadioRequest()
+
+    {
+
+
+        companion object
+    }
+
+    data class ResolvePeer(
+        val `id`: kotlin.ULong,
+        val `peerId`: kotlin.String) : MobileRadioRequest()
 
     {
 
@@ -5052,6 +5143,8 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalBoolean.read(buf),
+                FfiConverterOptionalUInt.read(buf),
+                FfiConverterOptionalString.read(buf),
                 )
             3 -> MobileRadioRequest.StopScan(
                 FfiConverterULong.read(buf),
@@ -5130,69 +5223,82 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            19 -> MobileRadioRequest.ReadPhy(
+            19 -> MobileRadioRequest.RequestSubrate(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            20 -> MobileRadioRequest.ReadPhy(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            20 -> MobileRadioRequest.RequestPhy(
+            21 -> MobileRadioRequest.RequestPhy(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            21 -> MobileRadioRequest.SecurityState(
+            22 -> MobileRadioRequest.SecurityState(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            22 -> MobileRadioRequest.CreateBond(
-                FfiConverterULong.read(buf),
-                FfiConverterString.read(buf),
-                FfiConverterString.read(buf),
-                )
-            23 -> MobileRadioRequest.CancelBond(
-                FfiConverterULong.read(buf),
-                FfiConverterString.read(buf),
-                )
-            24 -> MobileRadioRequest.BondedPeers(
-                FfiConverterULong.read(buf),
-                )
-            25 -> MobileRadioRequest.AcquireBackground(
+            23 -> MobileRadioRequest.CreateBond(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            26 -> MobileRadioRequest.ReleaseBackground(
+            24 -> MobileRadioRequest.CancelBond(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            27 -> MobileRadioRequest.UpdateBackgroundNotification(
+            25 -> MobileRadioRequest.BondedPeers(
+                FfiConverterULong.read(buf),
+                )
+            26 -> MobileRadioRequest.ConnectedPeers(
+                FfiConverterULong.read(buf),
+                FfiConverterSequenceString.read(buf),
+                )
+            27 -> MobileRadioRequest.ResolvePeer(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            28 -> MobileRadioRequest.AcquireBackground(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            29 -> MobileRadioRequest.ReleaseBackground(
+                FfiConverterULong.read(buf),
+                FfiConverterString.read(buf),
+                )
+            30 -> MobileRadioRequest.UpdateBackgroundNotification(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            28 -> MobileRadioRequest.AssociateCompanion(
+            31 -> MobileRadioRequest.AssociateCompanion(
                 FfiConverterULong.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 FfiConverterOptionalString.read(buf),
                 )
-            29 -> MobileRadioRequest.ListCompanion(
+            32 -> MobileRadioRequest.ListCompanion(
                 FfiConverterULong.read(buf),
                 )
-            30 -> MobileRadioRequest.DisassociateCompanion(
+            33 -> MobileRadioRequest.DisassociateCompanion(
                 FfiConverterULong.read(buf),
                 FfiConverterLong.read(buf),
                 )
-            31 -> MobileRadioRequest.ObservePresence(
+            34 -> MobileRadioRequest.ObservePresence(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            32 -> MobileRadioRequest.StopPresence(
+            35 -> MobileRadioRequest.StopPresence(
                 FfiConverterULong.read(buf),
                 FfiConverterString.read(buf),
                 )
-            33 -> MobileRadioRequest.Close(
+            36 -> MobileRadioRequest.Close(
                 FfiConverterULong.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -5217,6 +5323,8 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 + FfiConverterOptionalString.allocationSize(value.`scanMode`)
                 + FfiConverterOptionalString.allocationSize(value.`callbackType`)
                 + FfiConverterOptionalBoolean.allocationSize(value.`legacy`)
+                + FfiConverterOptionalUInt.allocationSize(value.`reportDelayMs`)
+                + FfiConverterOptionalString.allocationSize(value.`phy`)
             )
         }
         is MobileRadioRequest.StopScan -> {
@@ -5360,6 +5468,15 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 + FfiConverterString.allocationSize(value.`priority`)
             )
         }
+        is MobileRadioRequest.RequestSubrate -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterString.allocationSize(value.`mode`)
+            )
+        }
         is MobileRadioRequest.ReadPhy -> {
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
@@ -5408,6 +5525,22 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
             (
                 4UL
                 + FfiConverterULong.allocationSize(value.`id`)
+            )
+        }
+        is MobileRadioRequest.ConnectedPeers -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterSequenceString.allocationSize(value.`services`)
+            )
+        }
+        is MobileRadioRequest.ResolvePeer -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`id`)
+                + FfiConverterString.allocationSize(value.`peerId`)
             )
         }
         is MobileRadioRequest.AcquireBackground -> {
@@ -5502,6 +5635,8 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 FfiConverterOptionalString.write(value.`scanMode`, buf)
                 FfiConverterOptionalString.write(value.`callbackType`, buf)
                 FfiConverterOptionalBoolean.write(value.`legacy`, buf)
+                FfiConverterOptionalUInt.write(value.`reportDelayMs`, buf)
+                FfiConverterOptionalString.write(value.`phy`, buf)
                 Unit
             }
             is MobileRadioRequest.StopScan -> {
@@ -5613,14 +5748,21 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 FfiConverterString.write(value.`priority`, buf)
                 Unit
             }
-            is MobileRadioRequest.ReadPhy -> {
+            is MobileRadioRequest.RequestSubrate -> {
                 buf.putInt(19)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterString.write(value.`mode`, buf)
+                Unit
+            }
+            is MobileRadioRequest.ReadPhy -> {
+                buf.putInt(20)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.RequestPhy -> {
-                buf.putInt(20)
+                buf.putInt(21)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 FfiConverterOptionalString.write(value.`tx`, buf)
@@ -5628,44 +5770,56 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 Unit
             }
             is MobileRadioRequest.SecurityState -> {
-                buf.putInt(21)
+                buf.putInt(22)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.CreateBond -> {
-                buf.putInt(22)
+                buf.putInt(23)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 FfiConverterString.write(value.`transport`, buf)
                 Unit
             }
             is MobileRadioRequest.CancelBond -> {
-                buf.putInt(23)
+                buf.putInt(24)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.BondedPeers -> {
-                buf.putInt(24)
+                buf.putInt(25)
                 FfiConverterULong.write(value.`id`, buf)
                 Unit
             }
+            is MobileRadioRequest.ConnectedPeers -> {
+                buf.putInt(26)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterSequenceString.write(value.`services`, buf)
+                Unit
+            }
+            is MobileRadioRequest.ResolvePeer -> {
+                buf.putInt(27)
+                FfiConverterULong.write(value.`id`, buf)
+                FfiConverterString.write(value.`peerId`, buf)
+                Unit
+            }
             is MobileRadioRequest.AcquireBackground -> {
-                buf.putInt(25)
+                buf.putInt(28)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`kind`, buf)
                 FfiConverterString.write(value.`reason`, buf)
                 Unit
             }
             is MobileRadioRequest.ReleaseBackground -> {
-                buf.putInt(26)
+                buf.putInt(29)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`leaseId`, buf)
                 Unit
             }
             is MobileRadioRequest.UpdateBackgroundNotification -> {
-                buf.putInt(27)
+                buf.putInt(30)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`leaseId`, buf)
                 FfiConverterString.write(value.`title`, buf)
@@ -5673,7 +5827,7 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 Unit
             }
             is MobileRadioRequest.AssociateCompanion -> {
-                buf.putInt(28)
+                buf.putInt(31)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterOptionalString.write(value.`name`, buf)
                 FfiConverterOptionalString.write(value.`serviceUuid`, buf)
@@ -5681,30 +5835,30 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 Unit
             }
             is MobileRadioRequest.ListCompanion -> {
-                buf.putInt(29)
+                buf.putInt(32)
                 FfiConverterULong.write(value.`id`, buf)
                 Unit
             }
             is MobileRadioRequest.DisassociateCompanion -> {
-                buf.putInt(30)
+                buf.putInt(33)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterLong.write(value.`associationId`, buf)
                 Unit
             }
             is MobileRadioRequest.ObservePresence -> {
-                buf.putInt(31)
+                buf.putInt(34)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.StopPresence -> {
-                buf.putInt(32)
+                buf.putInt(35)
                 FfiConverterULong.write(value.`id`, buf)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioRequest.Close -> {
-                buf.putInt(33)
+                buf.putInt(36)
                 FfiConverterULong.write(value.`id`, buf)
                 Unit
             }
@@ -5979,6 +6133,38 @@ public object FfiConverterOptionalShort: FfiConverterRustBuffer<kotlin.Short?> {
 /**
  * @suppress
  */
+public object FfiConverterOptionalUInt: FfiConverterRustBuffer<kotlin.UInt?> {
+    override fun read(buf: ByteBuffer): kotlin.UInt? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterUInt.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.UInt?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterUInt.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.UInt?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterUInt.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalInt: FfiConverterRustBuffer<kotlin.Int?> {
     override fun read(buf: ByteBuffer): kotlin.Int? {
         if (buf.get().toInt() == 0) {
@@ -6139,6 +6325,38 @@ public object FfiConverterOptionalTypeMobileCoreHost: FfiConverterRustBuffer<Mob
 /**
  * @suppress
  */
+public object FfiConverterOptionalTypeMobilePeerName: FfiConverterRustBuffer<MobilePeerName?> {
+    override fun read(buf: ByteBuffer): MobilePeerName? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMobilePeerName.read(buf)
+    }
+
+    override fun allocationSize(value: MobilePeerName?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMobilePeerName.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MobilePeerName?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMobilePeerName.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalSequenceString: FfiConverterRustBuffer<List<kotlin.String>?> {
     override fun read(buf: ByteBuffer): List<kotlin.String>? {
         if (buf.get().toInt() == 0) {
@@ -6161,6 +6379,38 @@ public object FfiConverterOptionalSequenceString: FfiConverterRustBuffer<List<ko
         } else {
             buf.put(1)
             FfiConverterSequenceString.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalSequenceTypeMobileGattDescriptor: FfiConverterRustBuffer<List<MobileGattDescriptor>?> {
+    override fun read(buf: ByteBuffer): List<MobileGattDescriptor>? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterSequenceTypeMobileGattDescriptor.read(buf)
+    }
+
+    override fun allocationSize(value: List<MobileGattDescriptor>?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterSequenceTypeMobileGattDescriptor.allocationSize(value)
+        }
+    }
+
+    override fun write(value: List<MobileGattDescriptor>?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterSequenceTypeMobileGattDescriptor.write(value, buf)
         }
     }
 }

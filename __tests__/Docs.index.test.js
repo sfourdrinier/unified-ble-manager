@@ -55,7 +55,7 @@ describe('documentation index and agent-facing docs consistency', () => {
     const report = read('etc/api/tauri.api.md')
     const prefix = report.split('## Verified exported symbols')[0]
     expect(prefix).not.toContain('```ts')
-    expect(report).toContain('ipcProtocol: 5')
+    expect(report).toContain('ipcProtocol: 6')
     expect(report).not.toContain('ipcProtocol: 2')
   })
 })

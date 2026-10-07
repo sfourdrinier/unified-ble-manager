@@ -2,7 +2,7 @@ const { IpcBleManager, IpcConnection, inspectIpcProvisionalAdmissionForTests } =
 const { BackendContractError } = require('../../src/backend-contract/errors')
 const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
 
-function negotiated(axis, value = axis === 'ipc-protocol' ? 5 : 1) {
+function negotiated(axis, value = axis === 'ipc-protocol' ? 6 : 1) {
   const selected = { axis, value }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
@@ -147,6 +147,7 @@ async function createConnectedIpc(behavior) {
         )
       if (command === 'gatt.unsubscribe') return behavior.gattUnsubscribe()
       if (command === 'connection.rssi') return { kind: 'route', payload: { rssi: -42 } }
+      if (command === 'connection.parameters') return { kind: 'route', payload: behavior.parameters(payload) }
       if (command === 'connection.parameters.subscribe') {
         return (
           behavior.parametersSubscribe?.(payload) ?? { kind: 'route', payload: { state: 'released', failures: [] } }
@@ -177,6 +178,31 @@ async function createConnectedIpc(behavior) {
   expect(commands).toContain('connection.events.ready')
   return { ipc, connection, commands }
 }
+
+test.each([
+  ['matching', 'connection-id-1', 'generation-1', null],
+  ['foreign connection', 'other-connection', 'generation-1', 'protocol.violation'],
+  ['old generation', 'connection-id-1', 'old-generation', 'protocol.violation'],
+  ['missing identity', undefined, undefined, 'protocol.malformed']
+])('parameter snapshot validates the host identity: %s', async (_label, connectionId, connectionGeneration, code) => {
+  const fixture = await createConnectedIpc({
+    parameters: () => ({
+      connectionId,
+      connectionGeneration,
+      intervalUs: 30_000,
+      latency: 0,
+      supervisionTimeoutUs: 4_000_000
+    }),
+    unsubscribe: async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }),
+    disconnect: async () => ({ kind: 'route', payload: { state: 'released', failures: [] } })
+  })
+  try {
+    if (code === null) await expect(fixture.connection.parameters()).resolves.toMatchObject({ intervalUs: 30_000 })
+    else await expect(fixture.connection.parameters()).rejects.toMatchObject({ normalized: { code } })
+  } finally {
+    await fixture.ipc.destroy()
+  }
+})
 
 function releaseFailed(resourceKind, operation) {
   return {

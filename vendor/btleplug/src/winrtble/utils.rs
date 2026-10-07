@@ -11,32 +11,17 @@
 //
 // Copyright (c) 2014 The Rust Project Developers
 
-use crate::{Error, Result, api::CharPropFlags};
+use crate::api::CharPropFlags;
 use std::str::FromStr;
 use uuid::Uuid;
 use windows::core::GUID;
 use windows::{
     Devices::Bluetooth::GenericAttributeProfile::{
         GattCharacteristicProperties, GattClientCharacteristicConfigurationDescriptorValue,
-        GattCommunicationStatus,
     },
     Foundation::IReference,
     Storage::Streams::{DataReader, IBuffer},
 };
-
-pub fn to_error(status: GattCommunicationStatus) -> Result<()> {
-    if status == GattCommunicationStatus::AccessDenied {
-        Err(Error::PermissionDenied)
-    } else if status == GattCommunicationStatus::Unreachable {
-        Err(Error::NotConnected)
-    } else if status == GattCommunicationStatus::Success {
-        Ok(())
-    } else if status == GattCommunicationStatus::ProtocolError {
-        Err(Error::NotSupported("ProtocolError".to_string()))
-    } else {
-        Err(Error::Other("Communication Error:".to_string().into()))
-    }
-}
 
 pub fn to_descriptor_value(
     properties: GattCharacteristicProperties,
@@ -106,33 +91,6 @@ pub fn to_char_props(props: &GattCharacteristicProperties) -> CharPropFlags {
     flags
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn check_uuid_to_guid_conversion() {
-        let uuid_str = "10B201FF-5B3B-45A1-9508-CF3EFCD7BBAF";
-        let uuid = Uuid::from_str(uuid_str).unwrap();
-
-        let guid_converted = to_guid(&uuid);
-
-        let guid_expected = GUID::try_from(uuid_str).unwrap();
-        assert_eq!(guid_converted, guid_expected);
-    }
-
-    #[test]
-    fn check_guid_to_uuid_conversion() {
-        let uuid_str = "10B201FF-5B3B-45A1-9508-CF3EFCD7BBAF";
-        let guid = GUID::try_from(uuid_str).unwrap();
-
-        let uuid_converted = to_uuid(&guid);
-
-        let uuid_expected = Uuid::from_str(uuid_str).unwrap();
-        assert_eq!(uuid_converted, uuid_expected);
-    }
-}
-
 /// UBM patch (UBM_PATCHES.md #20): the ATT error byte of a
 /// `GattCommunicationStatus::ProtocolError` as reported by
 /// `GattReadResult` / `GattWriteResult` `ProtocolError()`. `None` when the
@@ -168,4 +126,49 @@ pub fn gatt_status_error(
         platform = platform.with(key, value);
     }
     crate::Error::Platform(platform)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Error;
+    use windows::Devices::Bluetooth::GenericAttributeProfile::GattCommunicationStatus;
+
+    #[test]
+    fn check_uuid_to_guid_conversion() {
+        let uuid_str = "10B201FF-5B3B-45A1-9508-CF3EFCD7BBAF";
+        let uuid = Uuid::from_str(uuid_str).unwrap();
+
+        let guid_converted = to_guid(&uuid);
+
+        let guid_expected = GUID::try_from(uuid_str).unwrap();
+        assert_eq!(guid_converted, guid_expected);
+    }
+
+    #[test]
+    fn check_guid_to_uuid_conversion() {
+        let uuid_str = "10B201FF-5B3B-45A1-9508-CF3EFCD7BBAF";
+        let guid = GUID::try_from(uuid_str).unwrap();
+
+        let uuid_converted = to_uuid(&guid);
+
+        let uuid_expected = Uuid::from_str(uuid_str).unwrap();
+        assert_eq!(uuid_converted, uuid_expected);
+    }
+
+    #[test]
+    fn initial_connect_discovery_keeps_protocol_att_detail() {
+        let error = gatt_status_error("connect", GattCommunicationStatus::ProtocolError, Some(5));
+        let Error::Platform(platform) = error else {
+            panic!("structured discovery answer")
+        };
+        assert_eq!(platform.domain, "winrt");
+        assert_eq!(platform.code, "gatt-status");
+        assert!(
+            platform
+                .metadata
+                .contains(&("gattStatus", "protocol-error".into()))
+        );
+        assert!(platform.metadata.contains(&("attError", "5".into())));
+    }
 }

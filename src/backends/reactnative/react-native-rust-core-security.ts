@@ -39,8 +39,9 @@ const limitations = Object.freeze([
   Object.freeze({
     code: 'android-link-security-measurement-unavailable',
     explanation:
-      'The Android public bond API reports bond state; encryption, authentication, and Secure Connections are not inferred.',
-    affectedGuarantee: 'encryption, authentication, and Secure Connections measurement'
+      'Bond state is observed directly. Link encryption is observed where API 36 events or the SDK 36.1 LE snapshot are available; authentication and Secure Connections are never inferred.',
+    affectedGuarantee:
+      'authentication and Secure Connections measurement; encryption availability depends on the native runtime'
   })
 ])
 
@@ -66,6 +67,7 @@ export class RustCoreSecurityBackend implements SecurityBackend {
   private readonly streams = new Map<string, Set<OwnedCoreBoundedStream<PeerSecurityEvent>>>()
   private readonly activeResults = new Map<string, Promise<SecurityPairResult>>()
   private readonly sequences = new Map<string, number>()
+  private readonly sourceFailures = new Map<string | null, BackendContractError>()
   private closed = false
 
   constructor(private readonly host: RustCoreSecurityHost) {}
@@ -73,14 +75,21 @@ export class RustCoreSecurityBackend implements SecurityBackend {
   async state(peerId: string, options: PublicOperationOptions): Promise<PeerSecurityState> {
     const operation = 'react-native-rust-core.security.state'
     this.assertOpen(operation)
+    const failure = this.sourceFailures.get(peerId) ?? this.sourceFailures.get(null)
+    if (failure !== undefined) throw failure
     this.assertAdmission(options, operation)
     const nativePeerId = this.host.nativePeerId(peerId, operation)
     const operationId = this.host.mintOperationId('security-state')
     const removeAbort = this.watchAbort(options, operationId, operation)
     try {
-      return this.snapshot(
-        await this.host.securityState({ peerId: nativePeerId, operationId, ...this.host.budget(options, operation) })
-      )
+      const state = await this.host.securityState({
+        peerId: nativePeerId,
+        operationId,
+        ...this.host.budget(options, operation)
+      })
+      const failed = this.sourceFailures.get(peerId) ?? this.sourceFailures.get(null)
+      if (failed !== undefined) throw failed
+      return this.snapshot(state)
     } finally {
       removeAbort()
     }
@@ -94,8 +103,16 @@ export class RustCoreSecurityBackend implements SecurityBackend {
     const streams = this.streams.get(peerId) ?? new Set<OwnedCoreBoundedStream<PeerSecurityEvent>>()
     streams.add(stream)
     this.streams.set(peerId, streams)
+    const openingSequence = this.sequences.get(peerId) ?? 0
     this.state(peerId, { signal: null, deadline: null }).then(
-      state => this.emit(peerId, state),
+      state => {
+        if (
+          !this.closed &&
+          this.streams.get(peerId)?.has(stream) === true &&
+          (this.sequences.get(peerId) ?? 0) === openingSequence
+        )
+          this.emit(peerId, state)
+      },
       (error: unknown) => {
         stream.closeWithReason('source-failed', error instanceof BackendContractError ? error.normalized : null)
       }
@@ -170,7 +187,17 @@ export class RustCoreSecurityBackend implements SecurityBackend {
   /** A `security` drain record: fan the fact out to the peer's watches. */
   observe(peerId: string, state: WireSecurityState): void {
     if (this.closed) return
+    this.sourceFailures.delete(peerId)
+    this.sourceFailures.delete(null)
     this.emit(peerId, this.snapshot(state))
+  }
+
+  sourceFailed(peerId: string | null, error: BackendContractError): void {
+    if (this.closed) return
+    this.sourceFailures.set(peerId, error)
+    const streams =
+      peerId === null ? [...this.streams.values()].flatMap(group => [...group]) : [...(this.streams.get(peerId) ?? [])]
+    for (const stream of streams) stream.closeWithReason('source-failed', error.normalized)
   }
 
   close(): void {
@@ -179,6 +206,7 @@ export class RustCoreSecurityBackend implements SecurityBackend {
       for (const stream of [...streams]) stream.closeWithReason('owner-released')
     }
     this.streams.clear()
+    this.sourceFailures.clear()
   }
 
   /** Live watch count (resource accounting and leak tests). */

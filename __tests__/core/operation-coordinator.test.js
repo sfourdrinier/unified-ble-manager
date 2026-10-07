@@ -137,10 +137,15 @@ describe('CoreOperationCoordinator', () => {
       })
     )
     const admittedResult = coordinator.run({
-      ...operation(async () => {
-        started.push('admitted')
-        return 'admitted-value'
-      }, null, true, 5),
+      ...operation(
+        async () => {
+          started.push('admitted')
+          return 'admitted-value'
+        },
+        null,
+        true,
+        5
+      ),
       admission: () => {
         admissionStarts += 1
         return gate.handle
@@ -244,10 +249,15 @@ describe('CoreOperationCoordinator', () => {
     gate.signalReady()
     const started = []
     const failed = coordinator.run({
-      ...operation(() => {
-        started.push('failed')
-        throw new Error('synchronous dispatch failure')
-      }, null, true, 3),
+      ...operation(
+        () => {
+          started.push('failed')
+          throw new Error('synchronous dispatch failure')
+        },
+        null,
+        true,
+        3
+      ),
       admission: () => gate.handle
     })
     const following = coordinator.run(
@@ -271,27 +281,55 @@ describe('CoreOperationCoordinator', () => {
   test.each([
     ['disconnect', coordinator => coordinator.cancelQueue('connection-1', 'disconnected'), 'disconnected'],
     ['destroy', coordinator => coordinator.destroy(), 'destroyed']
-  ])('settles an admitting operation exactly once on %s without native dispatch', async (_label, terminate, outcome) => {
-    const { coordinator, ledger } = createCoordinator()
-    const gate = admissionGate()
-    const dispatch = jest.fn(async () => 'must-not-dispatch')
-    const result = coordinator.run({
-      ...operation(dispatch, null, true, 4),
-      admission: () => gate.handle
-    })
-    let settlements = 0
-    void result.then(() => {
-      settlements += 1
-    })
+  ])(
+    'settles an admitting operation exactly once on %s without native dispatch',
+    async (_label, terminate, outcome) => {
+      const { coordinator, ledger } = createCoordinator()
+      const gate = admissionGate()
+      const dispatch = jest.fn(async () => 'must-not-dispatch')
+      const result = coordinator.run({
+        ...operation(dispatch, null, true, 4),
+        admission: () => gate.handle
+      })
+      let settlements = 0
+      void result.then(() => {
+        settlements += 1
+      })
 
-    await Promise.resolve()
-    terminate(coordinator)
-    await expect(result).resolves.toMatchObject({ outcome, commitState: 'not-applicable' })
-    await Promise.resolve()
-    expect(settlements).toBe(1)
-    expect(dispatch).not.toHaveBeenCalled()
-    expect(gate.closeCalls()).toBe(1)
-    expect(Number(ledger.current('retainedByteBuffers'))).toBe(0)
+      await Promise.resolve()
+      terminate(coordinator)
+      await expect(result).resolves.toMatchObject({ outcome, commitState: 'not-applicable' })
+      await Promise.resolve()
+      expect(settlements).toBe(1)
+      expect(dispatch).not.toHaveBeenCalled()
+      expect(gate.closeCalls()).toBe(1)
+      expect(Number(ledger.current('retainedByteBuffers'))).toBe(0)
+      expect(ledger.isZero()).toBe(true)
+    }
+  )
+
+  test('settles adapter reset for dispatched and queued work without releasing native ownership early', async () => {
+    const { coordinator, ledger } = createCoordinator()
+    const native = deferred()
+    const dispatched = coordinator.run(operation(() => native.promise, null, true, 4))
+    const queuedDispatch = jest.fn(async () => 'must-not-dispatch')
+    const queued = coordinator.run(operation(queuedDispatch))
+    coordinator.cancelQueue('connection-1', 'reset')
+    await expect(dispatched).resolves.toMatchObject({
+      outcome: 'reset',
+      commitState: 'unknown',
+      error: { code: 'operation.reset', retryability: 'never', commit: 'uncertain' }
+    })
+    await expect(queued).resolves.toMatchObject({
+      outcome: 'reset',
+      commitState: 'not-applicable',
+      error: { code: 'operation.reset' }
+    })
+    expect(queuedDispatch).not.toHaveBeenCalled()
+    expect(coordinator.hasPendingDrain('connection-1')).toBe(true)
+    expect(ledger.isZero()).toBe(false)
+    native.reject(new Error('late native acknowledgment'))
+    await coordinator.waitForQuarantineDrain()
     expect(ledger.isZero()).toBe(true)
   })
 
@@ -306,18 +344,28 @@ describe('CoreOperationCoordinator', () => {
       })
     )
     const queuedResult = coordinator.run(
-      operation(async () => {
-        started.push('queued')
-        return 'queued'
-      }, null, false, 5)
+      operation(
+        async () => {
+          started.push('queued')
+          return 'queued'
+        },
+        null,
+        false,
+        5
+      )
     )
     let overflowSettlements = 0
     let overflowSettlement = null
     const overflowResult = coordinator.run(
-      operation(async () => {
-        started.push('overflow')
-        return 'must-not-dispatch'
-      }, null, false, 11)
+      operation(
+        async () => {
+          started.push('overflow')
+          return 'must-not-dispatch'
+        },
+        null,
+        false,
+        11
+      )
     )
     void overflowResult.then(result => {
       overflowSettlements += 1
@@ -394,10 +442,16 @@ describe('CoreOperationCoordinator', () => {
       })
     )
     const otherResult = coordinator.run(
-      operation(async () => {
-        started.push('connection-2:first')
-        return secondConnection.promise
-      }, null, false, 0, 'connection-2')
+      operation(
+        async () => {
+          started.push('connection-2:first')
+          return secondConnection.promise
+        },
+        null,
+        false,
+        0,
+        'connection-2'
+      )
     )
 
     expect(started).toEqual(['connection-1:first', 'connection-2:first'])
@@ -890,9 +944,13 @@ describe('CoreOperationCoordinator retryability', () => {
   test('a dispatched write whose backend reports its own abort is never retryable', async () => {
     const { coordinator } = createCoordinator()
     const result = coordinator.run(
-      operation(async () => {
-        throw contractError('operation.aborted', 'gatt', 'backend.write')
-      }, null, true)
+      operation(
+        async () => {
+          throw contractError('operation.aborted', 'gatt', 'backend.write')
+        },
+        null,
+        true
+      )
     )
 
     await expect(result).resolves.toMatchObject({
@@ -965,9 +1023,13 @@ describe('CoreOperationCoordinator commit on errors', () => {
   test('a dispatched write rejected with any code reports commit uncertain', async () => {
     const { coordinator } = createCoordinator()
     const result = coordinator.run(
-      operation(async () => {
-        throw contractError('operation.disconnected', 'gatt', 'backend.write')
-      }, null, true)
+      operation(
+        async () => {
+          throw contractError('operation.disconnected', 'gatt', 'backend.write')
+        },
+        null,
+        true
+      )
     )
 
     await expect(result).resolves.toMatchObject({
@@ -980,9 +1042,13 @@ describe('CoreOperationCoordinator commit on errors', () => {
   test('a dispatched read rejected by the backend keeps the backend error unchanged', async () => {
     const { coordinator } = createCoordinator()
     const result = coordinator.run(
-      operation(async () => {
-        throw contractError('operation.disconnected', 'gatt', 'backend.read')
-      }, null, false)
+      operation(
+        async () => {
+          throw contractError('operation.disconnected', 'gatt', 'backend.read')
+        },
+        null,
+        false
+      )
     )
 
     const settled = await result

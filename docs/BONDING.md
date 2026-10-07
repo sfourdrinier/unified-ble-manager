@@ -230,3 +230,12 @@ against a physical peripheral, and nothing here should be read as physical-radio
 proof. The `security:pairing-generation` capability reports `limited` when a controller
 is supplied, never `supported`, and that label changes only when physical
 evidence says so — not because the code looks finished.
+
+Android API 36 encryption changes and SDK 36.1 LE encryption snapshots are
+observations independent of bond state. The native runtime controls their
+availability. Encryption never implies authenticated pairing or Secure
+Connections; unsupported facts remain explicit. Null encryption snapshots
+are ambiguous without an independent live-link observation. Source failures
+preserve their controller status and terminate watches even when native
+cleanup fails. See [mobile encryption observations](MOBILE_RUST_WIRE.md#android-encryption-observations)
+for runtime floors, correlation, permissions and qualification limits.

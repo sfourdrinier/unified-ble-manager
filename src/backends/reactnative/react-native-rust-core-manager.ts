@@ -50,6 +50,10 @@ import type {
   ConnectionPhyRequest,
   ConnectionPriority,
   ConnectionPriorityRequest,
+  ConnectionSubrateRequest,
+  ConnectionSubrateMode,
+  ConnectionParametersMeasurement,
+  ConnectionParametersWatch,
   ConnectionWriteReadinessWatch,
   EffectiveMtuMeasurement,
   MtuNegotiation,
@@ -257,10 +261,13 @@ export const BRIDGE_SHAPES: Record<string, BridgeShape> = {
       'requestMtu',
       'effectiveMtu',
       'requestPriority',
+      'requestSubrate',
       'readPhy',
       'requestPhy',
       'maximumWriteLength',
-      'writeWithoutResponseReadiness'
+      'writeWithoutResponseReadiness',
+      'parameters',
+      'parameterEvents'
     ],
     properties: ['peerId', 'connectionId', 'ownerLeaseId', 'connectionGeneration', 'events']
   },
@@ -274,6 +281,8 @@ export const BRIDGE_SHAPES: Record<string, BridgeShape> = {
       'readReceipt',
       'write',
       'writeWhenReady',
+      'acquireWrite',
+      'acquireNotifications',
       'maximumWriteLength',
       'writeLong',
       'readDescriptor',
@@ -1144,6 +1153,18 @@ class NativeConnection {
     )
   }
 
+  async requestSubrate(
+    mode: ConnectionSubrateMode,
+    options: PortableOperationOptions
+  ): Promise<ConnectionSubrateRequest<string, string>> {
+    if (mode !== 'default' && mode !== 'low-latency' && mode !== 'low-power' && mode !== 'high-throughput') {
+      throw contractError('argument.invalid', 'connection', 'rust-core-manager.connection.request-subrate')
+    }
+    return this.control(BUILT_IN_FEATURE_IDS.connectionSubrate, options, 'request-subrate', (connections, operation) =>
+      requireControl(connections.requestSubrate, 'request-subrate')(this.resource, { operation, mode })
+    )
+  }
+
   async readPhy(options: PortableOperationOptions): Promise<ConnectionPhyObservation<string, string>> {
     return this.control(BUILT_IN_FEATURE_IDS.connectionPhy, options, 'read-phy', (connections, operation) =>
       requireControl(connections.readPhy, 'read-phy')(this.resource, { operation })
@@ -1209,11 +1230,35 @@ class NativeConnection {
     return open(this.resource, publicOptions)
   }
 
-  /**
-   * One connection control through the backend: refused before any native
-   * call when the backend does not register the capability, the connection
-   * is no longer current, or the caller already aborted or expired.
-   */
+  async parameters(options?: PortableOperationOptions): Promise<ConnectionParametersMeasurement<string, string>> {
+    return this.control(
+      BUILT_IN_FEATURE_IDS.connectionParameters,
+      options ?? { signal: null, deadline: null },
+      'parameters',
+      (connections, operation) => requireControl(connections.parameters, 'parameters')(this.resource, { operation })
+    )
+  }
+
+  async parameterEvents(options?: PortableOperationOptions): Promise<ConnectionParametersWatch<string>> {
+    const operation = 'rust-core-manager.connection.parameter-events'
+    const state = this.manager.featureState(BUILT_IN_FEATURE_IDS.connectionParameters)
+    if (state !== 'supported' && state !== 'limited') {
+      throw contractError(
+        state === 'unavailable' ? 'capability.unavailable' : 'capability.unsupported',
+        'connection',
+        operation
+      )
+    }
+    this.assertCurrent()
+    const publicOptions = toPublicOperationOptions(options ?? { signal: null, deadline: null })
+    if (publicOptions.signal?.aborted === true) throw contractError('operation.aborted', 'connection', operation)
+    const open = this.manager.backendConnections.parameterEvents
+    if (open === undefined) throw contractError('capability.unsupported', 'connection', operation)
+    return open(this.resource, publicOptions)
+  }
+
+  /** One connection control through the backend, with capability and owned
+   * connection admission checked before native dispatch. */
   private async control<Result extends { readonly terminal: unknown }>(
     featureId: FeatureId,
     options: PortableOperationOptions,
@@ -1520,95 +1565,24 @@ class NativeGattDatabase {
     }
     this.assertPath(path)
     this.assertOperationAdmission(options, 'write-when-ready')
-    const watch = await this.connection.writeWithoutResponseReadiness(options)
-    let failure: unknown = null
-    let receipt: WriteReceipt<string, string> | null = null
-    try {
-      const iterator = watch.events[Symbol.asyncIterator]()
-      while (true) {
-        const item = await this.nextReadinessItem(iterator, options, operation)
-        if (item.done === true || item.value === undefined) {
-          throw contractError('operation.disconnected', 'connection', `${operation}.closed`)
-        }
-        const streamItem = item.value
-        if (streamItem.kind === 'overflow') {
-          throw contractError('stream.overflow', 'connection', operation)
-        }
-        if (streamItem.kind === 'terminal') {
-          throw readinessTerminalError(streamItem.reason, operation)
-        }
-        if (
-          String(streamItem.value.connectionId) !== String(path.connectionId) ||
-          String(streamItem.value.connectionGeneration) !== String(path.connectionGeneration)
-        ) {
-          throw contractError('protocol.violation', 'connection', `${operation}.generation`)
-        }
-        if (streamItem.value.ready === true) break
-      }
-      receipt = await this.write(path, bytes, options)
-    } catch (error) {
-      failure = error
-      throw error
-    } finally {
-      const cleanup = await watch.close()
-      if (failure === null && cleanup.state === 'release-failed') {
-        failure = contractError('platform.failure', 'cleanup', `${operation}.close`)
-      }
+    const owned = ownBytes(bytes, this.options.maximumValueBytes)
+    const writeWhenReady = this.backendDatabase.writeWhenReady
+    if (writeWhenReady === undefined) {
+      throw contractError('capability.unsupported', 'connection', operation)
     }
-    if (failure !== null) throw failure
-    if (receipt === null) throw contractError('lifecycle.invariant-violation', 'gatt', `${operation}.receipt`)
-    return receipt
+    return writeWhenReady(path, owned, options)
   }
 
-  private nextReadinessItem(
-    iterator: AsyncIterator<
-      | { kind: 'value'; value: { connectionId: unknown; connectionGeneration: unknown; ready: boolean } }
-      | { kind: 'overflow' }
-      | { kind: 'terminal'; reason: string },
-      undefined,
-      undefined
-    >,
-    options: WritePolicy,
-    operation: string
-  ): Promise<
-    IteratorResult<
-      | { kind: 'value'; value: { connectionId: unknown; connectionGeneration: unknown; ready: boolean } }
-      | { kind: 'overflow' }
-      | { kind: 'terminal'; reason: string },
-      undefined
-    >
-  > {
-    if (options.signal?.aborted === true) {
-      return Promise.reject(contractError('operation.aborted', 'gatt', operation))
-    }
-    if (options.deadline !== null && options.deadline !== undefined && options.deadline <= this.options.now()) {
-      return Promise.reject(contractError('operation.timed-out', 'gatt', operation))
-    }
-    return new Promise((resolve, reject) => {
-      let settled = false
-      let timer: CoreDeadlineHandle | null = null
-      const signal = options.signal
-      const onAbort = (): void => {
-        finish(() => reject(contractError('operation.aborted', 'gatt', operation)))
-      }
-      const finish = (action: () => void): void => {
-        if (settled) return
-        settled = true
-        timer?.cancel()
-        signal?.removeEventListener('abort', onAbort)
-        action()
-      }
-      if (options.deadline !== null && options.deadline !== undefined) {
-        timer = this.scheduleDeadline(options.deadline, () => {
-          finish(() => reject(contractError('operation.timed-out', 'gatt', operation)))
-        })
-      }
-      signal?.addEventListener('abort', onAbort, { once: true })
-      iterator.next().then(
-        item => finish(() => resolve(item)),
-        error => finish(() => reject(error))
-      )
-    })
+  async acquireWrite(path: CurrentCharacteristicPath, options: PublicOperationOptions): Promise<never> {
+    this.assertPath(path)
+    this.assertOperationAdmission(options, 'acquire-write')
+    throw contractError('capability.unsupported', 'gatt', 'gatt.acquire-write')
+  }
+
+  async acquireNotifications(path: CurrentCharacteristicPath, options: SubscriptionOptions): Promise<never> {
+    this.assertPath(path)
+    this.assertOperationAdmission(options, 'acquire-notify')
+    throw contractError('capability.unsupported', 'gatt', 'gatt.acquire-notify')
   }
 
   async maximumWriteLength(
@@ -1879,6 +1853,17 @@ class NativeDiscoveredGattDatabase {
     return this.database.writeWhenReady(this.resolveCharacteristicPath(path), bytes, toPublicWritePolicy(options))
   }
 
+  async acquireWrite(path: PortableCurrentCharacteristicPath, options: PortableOperationOptions) {
+    return this.database.acquireWrite(this.resolveCharacteristicPath(path), toPublicOperationOptions(options))
+  }
+
+  async acquireNotifications(path: PortableCurrentCharacteristicPath, options: PortableSubscriptionOptions) {
+    return this.database.acquireNotifications(
+      this.resolveCharacteristicPath(path),
+      toPublicSubscriptionOptions(options)
+    )
+  }
+
   async maximumWriteLength(
     path: PortableCurrentCharacteristicPath,
     mode: WriteMode
@@ -1995,14 +1980,6 @@ class NativeSubscription {
     if (record.state === 'released') this.database.untrackSubscription(this)
     return record
   }
-}
-
-function readinessTerminalError(reason: string, operation: string): BackendContractError {
-  if (reason === 'operation-aborted') return contractError('operation.aborted', 'connection', operation)
-  if (reason === 'operation-timed-out') return contractError('operation.timed-out', 'connection', operation)
-  if (reason === 'overflow') return contractError('stream.overflow', 'connection', operation)
-  if (reason === 'source-failed') return contractError('platform.failure', 'connection', operation)
-  return contractError('operation.disconnected', 'connection', operation)
 }
 
 function isAborted(signal: AbortSignal | null | undefined): boolean {

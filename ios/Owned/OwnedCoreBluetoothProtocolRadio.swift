@@ -1,5 +1,4 @@
 // ios/Owned/OwnedCoreBluetoothProtocolRadio.swift
-
 import CoreBluetooth
 import Foundation
 
@@ -288,9 +287,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       peripheral.delegate = self
       self.pendingDiscovery[peerIdentifier] = PendingDiscovery(
         operationIdentifier: operationIdentifier,
-        completion: completion,
-        awaitingCharacteristics: 0,
-        awaitingDescriptors: 0
+        completion: completion
       )
       peripheral.discoverServices(nil)
     }
@@ -571,10 +568,9 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     if let pending = pendingConnect.removeValue(forKey: identifier) {
       pending.completion(error as NSError? ?? self.error(code: 1015, message: "CoreBluetooth disconnected while connecting"))
     }
-    pendingDiscovery.removeValue(forKey: identifier)?.completion(
-      nil,
-      error as NSError? ?? self.error(code: 1016, message: "CoreBluetooth disconnected during discovery")
-    )
+    if let pending = pendingDiscovery.removeValue(forKey: identifier), !pending.cancelled && !pending.completionDelivered {
+      pending.completion(nil, error as NSError? ?? self.error(code: 1016, message: "CoreBluetooth disconnected during discovery"))
+    }
     failPendingGATT(for: identifier, error: error as NSError?)
     if let explicitDisconnect {
       explicitDisconnect.completion(nil)
@@ -587,64 +583,11 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     let identifier = peripheral.identifier.uuidString
     clearNotificationOwnership(forPeerIdentifier: identifier)
     servicesByPeer.removeValue(forKey: identifier)
-    pendingDiscovery.removeValue(forKey: identifier)?.completion(
-      nil,
-      self.error(code: 1026, message: "CoreBluetooth services changed during discovery")
-    )
+    if let pending = pendingDiscovery[identifier] {
+      failDiscovery(identifier, pending: pending, error: self.error(code: 1026, message: "CoreBluetooth services changed during discovery"))
+    }
     failPendingGATT(for: identifier, error: self.error(code: 1027, message: "CoreBluetooth services changed"))
     delegate?.protocolRadioDidModifyServices(identifier)
-  }
-
-  public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-    let identifier = peripheral.identifier.uuidString
-    guard var pending = pendingDiscovery[identifier] else { return }
-    if let error {
-      pendingDiscovery.removeValue(forKey: identifier)
-      pending.completion(nil, error as NSError)
-      return
-    }
-    let services = peripheral.services ?? []
-    servicesByPeer[identifier] = services
-    pending.awaitingCharacteristics = services.count
-    pendingDiscovery[identifier] = pending
-    if services.isEmpty {
-      finishDiscoveryIfReady(identifier)
-      return
-    }
-    for service in services {
-      peripheral.discoverCharacteristics(nil, for: service)
-    }
-  }
-
-  public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-    let identifier = peripheral.identifier.uuidString
-    guard var pending = pendingDiscovery[identifier] else { return }
-    if let error {
-      pendingDiscovery.removeValue(forKey: identifier)
-      pending.completion(nil, error as NSError)
-      return
-    }
-    pending.awaitingCharacteristics -= 1
-    let characteristics = service.characteristics ?? []
-    pending.awaitingDescriptors += characteristics.count
-    pendingDiscovery[identifier] = pending
-    for characteristic in characteristics {
-      peripheral.discoverDescriptors(for: characteristic)
-    }
-    finishDiscoveryIfReady(identifier)
-  }
-
-  public func peripheral(_ peripheral: CBPeripheral, didDiscoverDescriptorsFor characteristic: CBCharacteristic, error: Error?) {
-    let identifier = peripheral.identifier.uuidString
-    guard var pending = pendingDiscovery[identifier] else { return }
-    if let error {
-      pendingDiscovery.removeValue(forKey: identifier)
-      pending.completion(nil, error as NSError)
-      return
-    }
-    pending.awaitingDescriptors -= 1
-    pendingDiscovery[identifier] = pending
-    finishDiscoveryIfReady(identifier)
   }
 
   public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -748,14 +691,6 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       )
       resolved.peripheral.setNotifyValue(enabled, for: resolved.characteristic)
     }
-  }
-
-  private func finishDiscoveryIfReady(_ peerIdentifier: String) {
-    guard let pending = pendingDiscovery[peerIdentifier],
-          pending.awaitingCharacteristics == 0,
-          pending.awaitingDescriptors == 0 else { return }
-    pendingDiscovery.removeValue(forKey: peerIdentifier)
-    pending.completion(OwnedCoreBluetoothProtocolRadioSupport.discoverySnapshot(servicesByPeer[peerIdentifier] ?? []), nil)
   }
 
   func resolve(_ address: CharacteristicAddress) -> (peripheral: CBPeripheral, characteristic: CBCharacteristic)? {
@@ -862,7 +797,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     for pending in disconnects.values {
       pending.completion(failure)
     }
-    for pending in discoveries.values {
+    for pending in discoveries.values where !pending.cancelled && !pending.completionDelivered {
       pending.completion(nil, failure)
     }
     for lane in reads.values {

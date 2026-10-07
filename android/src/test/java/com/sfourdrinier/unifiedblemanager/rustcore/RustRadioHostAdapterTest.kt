@@ -41,6 +41,57 @@ class RustRadioHostAdapterTest {
     radio.calls.clear()
   }
 
+  private fun startScan(id: Long, services: Array<String>?, addresses: Array<String>?, mode: String?,
+                        callbackType: String?, legacy: Int, reportDelayMs: Long = 0, phy: String? = null) {
+    adapter.startScan(id, services, addresses, mode, callbackType, legacy, reportDelayMs, phy)
+  }
+
+  @Test
+  fun subrateIsRuntimeGatedAndForwardsTheActualStatus() {
+    connect()
+    assertFalse(adapter.subrateAvailable())
+    adapter.requestSubrate(2, peer, "low-power")
+    assertTrue(radio.calls.isEmpty())
+    assertEquals(listOf("failure:2:unsupported:null"), core.calls)
+    radio.subrateSupported = true
+    assertTrue(adapter.subrateAvailable())
+    core.calls.clear()
+    adapter.requestSubrate(3, peer, "low-power")
+    assertEquals(listOf("subrate:$peer:low-power"), radio.calls)
+    radio.answer("subrate:$peer:low-power", Result.success(6))
+    assertEquals(listOf("subrateStatus:3:6"), core.calls)
+  }
+
+  @Test
+  fun subratePermissionFailureAndCancellationAreNotAccepted() {
+    connect()
+    radio.subrateSupported = true
+    adapter.requestSubrate(2, peer, "low-latency")
+    radio.answer("subrate:$peer:low-latency", Result.failure(SecurityException("BLUETOOTH_CONNECT")))
+    assertEquals(listOf("failure:2:permission-denied:null"), core.calls)
+    core.calls.clear()
+    adapter.requestSubrate(3, peer, "default")
+    adapter.cancel(3)
+    assertFalse(core.calls.any { it.startsWith("subrateStatus:") })
+    assertFalse(radio.cancelled.isEmpty())
+  }
+
+  @Test
+  fun scanBatchingAndCodedPhyReachTheRadioPort() {
+    startScan(1, null, null, "balanced", "all-matches", 0, 500, "coded")
+    assertEquals(listOf("startScan:[]:[]:1:1:false:batch=500:phy=3"), radio.calls)
+    assertEquals(listOf("unit:1"), core.calls)
+  }
+
+  @Test
+  fun scanRejectsInvalidDelayAndPhyBeforeTheRadioPort() {
+    startScan(1, null, null, null, null, 0, -1, null)
+    startScan(2, null, null, null, null, 0, 0, "2m")
+    startScan(3, null, null, null, null, 1, 0, "coded")
+    assertTrue(radio.calls.isEmpty())
+    assertEquals(listOf("failure:1:unsupported:null", "failure:2:unsupported:null", "failure:3:unsupported:null"), core.calls)
+  }
+
   @Test
   fun adapterStateAnswersThePlatformFacts() {
     radio.adapter = AdapterFacts("available", "denied", "unknown", "Bluetooth scan and connect permissions are not granted.")
@@ -53,28 +104,28 @@ class RustRadioHostAdapterTest {
 
   @Test
   fun scanForwardsPlatformOptionsAndAddressFilters() {
-    adapter.startScan(1, arrayOf(HR_SERVICE), arrayOf(peer), "balanced", "first-match", 0)
+    startScan(1, arrayOf(HR_SERVICE), arrayOf(peer), "balanced", "first-match", 0)
     assertEquals(listOf("startScan:[$HR_SERVICE]:[$peer]:1:2:false"), radio.calls)
     assertEquals(listOf("unit:1"), core.calls)
   }
 
   @Test
   fun scanDefaultsMatchLegacyLowLatencyAllMatchesLegacyScan() {
-    adapter.startScan(1, arrayOf(), null, null, null, 1)
+    startScan(1, arrayOf(), null, null, null, 1)
     assertEquals(listOf("startScan:[]:[]:2:1:true"), radio.calls)
-    adapter.startScan(2, null, null, "opportunistic", "all-matches", 1)
+    startScan(2, null, null, "opportunistic", "all-matches", 1)
     assertEquals("startScan:[]:[]:-1:1:true", radio.calls[1])
-    adapter.startScan(3, null, null, "low-power", null, 1)
+    startScan(3, null, null, "low-power", null, 1)
     assertEquals("startScan:[]:[]:0:1:true", radio.calls[2])
   }
 
   @Test
   fun scanRefusalIsClassifiedNotSwallowed() {
     radio.startScanFailure = RadioPortFailure(RadioFailureKind.ADAPTER_OFF, "Bluetooth adapter is off")
-    adapter.startScan(1, null, null, null, null, -1)
+    startScan(1, null, null, null, null, -1)
     radio.startScanFailure = SecurityException("BLUETOOTH_SCAN")
-    adapter.startScan(2, null, null, null, null, -1)
-    adapter.startScan(3, null, null, "turbo", null, -1)
+    startScan(2, null, null, null, null, -1)
+    startScan(3, null, null, "turbo", null, -1)
     assertEquals(listOf("failure:1:adapter-off:null", "failure:2:permission-denied:null", "failure:3:unsupported:null"), core.calls)
   }
 
@@ -232,19 +283,20 @@ class RustRadioHostAdapterTest {
       "discover:$peer",
       Result.success(
         listOf(
-          GattServiceNode(HR_SERVICE, listOf(GattCharacteristicNode(HR_MEASUREMENT, 0x10, listOf(GattDescriptorNode(CCCD))))),
+          GattServiceNode(HR_SERVICE, listOf(GattCharacteristicNode(HR_MEASUREMENT, 0x10, listOf(GattDescriptorNode(CCCD)))),
+            primary = true, includedServices = listOf(GattIncludedServiceNode(CUSTOM, 1))),
           GattServiceNode(
             CUSTOM,
             listOf(GattCharacteristicNode(CUSTOM, 0x0a, emptyList()), GattCharacteristicNode(CUSTOM, 0x04, emptyList()))
           ),
-          GattServiceNode(CUSTOM, emptyList())
+          GattServiceNode(CUSTOM, emptyList(), primary = false, includedServices = emptyList())
         )
       )
     )
     assertEquals(
       listOf(
-        "discovered:3:0/$HR_SERVICE/0/0,1/$HR_MEASUREMENT/0/16,2/$CCCD/0/0," +
-          "0/$CUSTOM/0/0,1/$CUSTOM/0/10,1/$CUSTOM/1/4,0/$CUSTOM/1/0"
+        "discovered:3:0/$HR_SERVICE/0/5,1/$HR_MEASUREMENT/0/16,2/$CCCD/0/0,3/$CUSTOM/1/0," +
+          "0/$CUSTOM/0/0,1/$CUSTOM/0/10,1/$CUSTOM/1/4,0/$CUSTOM/1/6"
       ),
       core.calls
     )

@@ -15,6 +15,7 @@
 // table that stamps notification values.
 
 import CoreBluetooth
+import CoreFoundation
 import Foundation
 
 /// The OS radio seam the adapter drives. `OwnedCoreBluetoothProtocolRadio`
@@ -24,6 +25,8 @@ protocol UnifiedBleRustRadioDriver: AnyObject {
   var workQueue: DispatchQueue { get }
   func adapterSnapshot(completion: @escaping (NSDictionary) -> Void)
   func prepareForOperation(operationIdentifier: String, completion: @escaping (NSDictionary?, NSError?) -> Void)
+  func resolveDirectoryPeer(peerIdentifier: String, completion: @escaping (MobilePeerName?, NSError?) -> Void)
+  func connectedPeerSnapshots(services: [String], completion: @escaping ([MobilePeerName]?, NSError?) -> Void)
   func restoredPeerSnapshots(completion: @escaping ([NSDictionary]) -> Void)
   func writeLimits(peerIdentifier: String, completion: @escaping (NSDictionary?, NSError?) -> Void)
   func startScan(
@@ -155,6 +158,30 @@ extension OwnedCoreBluetoothProtocolRadio: UnifiedBleRustRadioDriver {
     }
   }
 
+  func resolveDirectoryPeer(peerIdentifier: String, completion: @escaping (MobilePeerName?, NSError?) -> Void) {
+    queue.async {
+      guard self.requireUsable({ completion(nil, $0) }) else { return }
+      guard let identifier = OwnedCoreBluetoothKnownPeerLookup.identifier(peerIdentifier) else { completion(nil, self.error(code: 1005, message: "Invalid CoreBluetooth identifier")); return }
+      guard let central = self.centralForUse(or: { completion(nil, $0) }) else { return }
+      let peers = central.retrievePeripherals(withIdentifiers: [identifier])
+      guard peers.count <= 1, peers.allSatisfy({ $0.identifier == identifier }) else { completion(nil, self.error(code: 1035, message: "CoreBluetooth identifier lookup returned inconsistent identity")); return }
+      completion(peers.first.map { MobilePeerName(peerId: $0.identifier.uuidString, name: $0.name) }, nil)
+    }
+  }
+
+  func connectedPeerSnapshots(services: [String], completion: @escaping ([MobilePeerName]?, NSError?) -> Void) {
+    queue.async {
+      guard self.requireUsable({ completion(nil, $0) }) else { return }
+      guard !services.isEmpty else { completion(nil, self.error(code: 1034, message: "System-connected retrieval requires services")); return }
+      guard let central = self.centralForUse(or: { completion(nil, $0) }) else { return }
+      let peripherals = central.retrieveConnectedPeripherals(withServices: services.map { CBUUID(string: $0) })
+      guard peripherals.count <= 4096 else { completion(nil, self.error(code: 1035, message: "System-connected directory capacity exceeded")); return }
+      // No delegate assignment, owner-cache insertion or connection request.
+      let peers = peripherals.filter { $0.state == .connected }.map { MobilePeerName(peerId: $0.identifier.uuidString, name: $0.name) }
+      completion(peers, nil)
+    }
+  }
+
   /// CoreBluetooth's per-mode single-write limits and write-without-response
   /// readiness for one connected peripheral:
   /// `{withResponse, withoutResponse, canSendWithoutResponse}`.
@@ -282,8 +309,9 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
     switch request {
     case .adapterState:
       driver.adapterSnapshot { snapshot in self.finish(id, .adapter(snapshot: Self.adapterSnapshot(snapshot))) }
-    case let .startScan(_, serviceUuids, deviceAddresses, scanMode, callbackType, legacy):
-      guard deviceAddresses.isEmpty, scanMode == nil, callbackType == nil, legacy == nil else {
+    case let .startScan(_, serviceUuids, deviceAddresses, scanMode, callbackType, legacy, reportDelayMs, phy):
+      guard deviceAddresses.isEmpty, scanMode == nil, callbackType == nil, legacy == nil,
+            reportDelayMs == nil, phy == nil else {
         return finish(id, Self.unsupported("CoreBluetooth has no address filter or Android scan settings"))
       }
       whenReady(id, verb: .startScan) {
@@ -405,10 +433,26 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
       }
     case .requestMtu:
       finish(id, Self.unsupported("CoreBluetooth has no caller-directed ATT MTU request"))
-    case .requestConnectionPriority:
+    case .requestConnectionPriority, .requestSubrate:
       finish(id, Self.unsupported("CoreBluetooth has no connection priority control"))
     case .readPhy, .requestPhy:
       finish(id, Self.unsupported("CoreBluetooth exposes no LE PHY control"))
+    case let .resolvePeer(_, peerId):
+      whenReady(id, verb: .resolvePeer) {
+        self.driver.resolveDirectoryPeer(peerIdentifier: peerId) { peer, error in
+          if let error { return self.finish(id, Self.failure(error, verb: .resolvePeer)) }
+          self.finish(id, .resolvedPeer(peer: peer))
+        }
+      }
+    case let .connectedPeers(_, services):
+      guard !services.isEmpty else { return finish(id, Self.unsupported("CoreBluetooth requires a service-scoped system-connected query")) }
+      whenReady(id, verb: .connectedPeers) {
+        self.driver.connectedPeerSnapshots(services: services) { peers, error in
+          if let error { return self.finish(id, Self.failure(error, verb: .connectedPeers)) }
+          guard let peers else { return self.finish(id, Self.platformFailure("CoreBluetooth directory returned no result")) }
+          self.finish(id, .connectedPeers(peers: peers))
+        }
+      }
     case .securityState, .createBond, .cancelBond, .bondedPeers:
       finish(id, Self.unsupported("CoreBluetooth exposes no bond state or pairing control"))
     case .acquireBackground, .releaseBackground, .updateBackgroundNotification:
@@ -674,7 +718,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
 
   enum Verb {
     case startScan, stopScan, connect, disconnect, discover, read, write, readDescriptor, writeDescriptor
-    case enableNotifications, disableNotifications, readMtu, readWriteLimits, readWriteReadiness, readRssi
+    case enableNotifications, disableNotifications, readMtu, readWriteLimits, readWriteReadiness, readRssi, connectedPeers, resolvePeer
   }
 
   static let ownedDomain = "com.sfourdrinier.unifiedblemanager.corebluetooth"
@@ -842,6 +886,21 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
     for service in services {
       guard let uuid = service["uuid"] as? String, let occurrence = unsigned(service["occurrence"]),
             let characteristics = service["characteristics"] as? [NSDictionary] else { return nil }
+      let primary: Bool?
+      if service["primary"] is NSNull || service["primary"] == nil { primary = nil }
+      else if let value = service["primary"] as? NSNumber,
+              CFGetTypeID(value) == CFBooleanGetTypeID() { primary = value.boolValue }
+      else { return nil }
+      var includes: [MobileGattDescriptor]?
+      if service["includedServices"] is NSNull || service["includedServices"] == nil { includes = nil }
+      else if let references = service["includedServices"] as? [NSDictionary] {
+        var parsed = [MobileGattDescriptor]()
+        for reference in references {
+          guard let target = reference["uuid"] as? String, let targetOccurrence = unsigned(reference["occurrence"]) else { return nil }
+          parsed.append(MobileGattDescriptor(uuid: target, occurrence: targetOccurrence))
+        }
+        includes = parsed
+      } else { return nil }
       var mapped = [MobileGattCharacteristic]()
       for characteristic in characteristics {
         guard let characteristicUuid = characteristic["uuid"] as? String,
@@ -866,7 +925,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
           descriptors: mappedDescriptors
         ))
       }
-      result.append(MobileGattService(uuid: uuid, occurrence: occurrence, characteristics: mapped))
+      result.append(MobileGattService(uuid: uuid, occurrence: occurrence, primary: primary, includedServices: includes, characteristics: mapped))
     }
     return result
   }
@@ -884,11 +943,11 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
     switch request {
     case let .adapterState(id), let .stopScan(id), let .bondedPeers(id), let .close(id):
       return id
-    case let .startScan(id, _, _, _, _, _), let .connect(id, _, _, _), let .disconnect(id, _), let .discover(id, _),
+    case let .resolvePeer(id, _), let .connectedPeers(id, _), let .startScan(id, _, _, _, _, _, _, _), let .connect(id, _, _, _), let .disconnect(id, _), let .discover(id, _),
       let .read(id, _), let .write(id, _, _, _), let .readDescriptor(id, _, _, _), let .writeDescriptor(id, _, _, _, _),
       let .enableNotifications(id, _, _, _, _), let .disableNotifications(id, _), let .readMtu(id, _),
       let .readWriteLimits(id, _), let .readWriteReadiness(id, _),
-      let .requestMtu(id, _, _), let .readRssi(id, _), let .requestConnectionPriority(id, _, _), let .readPhy(id, _),
+      let .requestMtu(id, _, _), let .readRssi(id, _), let .requestConnectionPriority(id, _, _), let .requestSubrate(id, _, _), let .readPhy(id, _),
       let .requestPhy(id, _, _, _), let .securityState(id, _), let .createBond(id, _, _), let .cancelBond(id, _),
       let .acquireBackground(id, _, _), let .releaseBackground(id, _), let .updateBackgroundNotification(id, _, _, _),
       let .associateCompanion(id, _, _, _), let .listCompanion(id),

@@ -117,6 +117,14 @@ background standing order never silently becomes record-only.
 
 Remote streams preserve bounded delivery and overflow notices. GATT objects are immutable, generation-bound views.
 
+Each renderer lease can own up to 256 readiness watches and 256 parameter
+watches concurrently. Closing a watch frees its live capacity immediately.
+The plugin separately retains the most recent 256 successful close handles per
+watch type so repeated close requests are idempotent within that history. Older
+unknown close handles fail `ownership.denied`; they never identify a current
+watch. Renderer clients mint a fresh handle for every acquisition and do not
+reuse a released handle. Lease retirement clears that lease's ownership scope.
+
 **Discovery.** `gatt.discover` renders one characteristic record per characteristic — descriptor-level core rows repeat their characteristic's identity, so they never mint a second record — with the core's own occurrence numerals, the same grouping the Node desktop path applies; duplicate-UUID characteristics keep distinct per-UUID occurrences on every host. A rediscovery replaces the snapshot: the previous database goes stale (`gatt.stale-handle`). A snapshot that still violates the topology (duplicate service/characteristic/descriptor paths, orphan parents) fails with `protocol.violation` naming the offending path — uuids and occurrences — in the error's `platform` detail (`domain: 'gatt'`), never only a bare code.
 
 ## How the plugin runs operations
@@ -126,7 +134,7 @@ invalidation is immediate, cleanup ownership survives failure, and bounded
 child cleanup cannot prevent the scoped parent-release request. Local iterator
 cleanup remains distinct from confirmed native release.
 
-**IPC protocol version.** The webview and the plugin speak IPC protocol 5 and
+**IPC protocol version.** The webview and the plugin speak IPC protocol 6 and
 each offers exactly that version. Version 5 adds security routes, address
 targeting, connection intent and platform scan-option forwarding while retaining
 relative `budgetMs` deadlines, error `commit`, subscription `delivery`, connection
@@ -136,6 +144,21 @@ new option fields, so protocol 4 and earlier peers are refused at bootstrap with
 `protocol.incompatible` before any operation runs, whichever side is older.
 Upgrade the npm package and crate together.
 `TAURI_PLUGIN_COMPATIBILITY.ipcProtocol` reports the required version.
+
+On eligible Linux characteristics, `acquireWrite()` and `acquireNotifications()`
+use the native central's optional BlueZ acquired transports. The webview sees
+opaque owner-scoped handles, the returned MTU and copied packets. It never
+receives an OS descriptor. Acquisition, backpressure, cancellation and cleanup
+follow the [acquired transport contract](NODE.md#explicit-bluez-acquired-gatt-transports).
+A failed close retains its exact native lease for retry. Rediscovery, window
+teardown and connection release retire the acquired children. Availability
+comes from the instantiated native capability and the characteristic's
+eligibility; IPC support does not establish physical-radio qualification.
+
+Connection-parameter watch acquisition prefers native events received during
+its initial probe over that delayed probe's answer. A native queue gap causes
+a live parameter re-read; failure ends the stream with that failure's original
+detail, rather than substituting zeros or stale cached parameters.
 
 The plugin owns one shared Rust central (`ubm-desktop`) and never serializes BLE work behind a lock of its own: a slow connect or discovery on one peer does not delay another peer's notifications, a cancel, or shutdown. The central and its radio open once, on the shared desktop executor, the first time a BLE operation needs them.
 
@@ -323,3 +346,17 @@ qualification remains separate from deterministic and compile evidence.
 ## Maintainers
 
 [Current 5.0 authority](README.md#current-50-authority), [`PLATFORMS.md`](PLATFORMS.md).
+
+A connection-parameter observation-source failure terminates its current
+watches with the original error. A later watch on that connection remains
+refused until fresh valid native observation evidence recovers the source;
+a successful snapshot getter alone does not recover an event source. Reconnect
+creates a new source generation. Events accepted during the initial watch
+probe keep their native order and replace the delayed probe answer. Native
+queue loss triggers reconciliation, and samples retained from before that
+reconciliation are counted as discarded rather than published afterward as
+newer observations.
+
+IPC version 6 requires nullable service graph facts and the native
+readiness/acquired-GATT route contract. An older webview or plugin is refused
+at negotiation before radio ownership is admitted.

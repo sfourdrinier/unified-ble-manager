@@ -113,6 +113,7 @@ const ownedRadioSources = [
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothCentralDelegate.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadio.swift'),
+  path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioDiscovery.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioCancellation.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioDescriptors.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift')

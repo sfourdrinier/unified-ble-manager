@@ -88,6 +88,59 @@ pub type CoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, DesktopError>
 /// method is a direct delegation to the shared [`DesktopCentral`]; none of
 /// them takes a lock across the radio call.
 pub trait CoreAuthority: Send + Sync {
+    fn directory_os(&self) -> ubm_desktop::DesktopOs;
+    fn known_peers(&self, ctl: OpControl) -> CoreFuture<'_, Vec<ubm_desktop::DirectoryPeer>>;
+    /// Reserve before an IPC worker starts. Scripted authorities may have
+    /// their own admission; the production DesktopCentral owns the FIFO.
+    fn bind_gatt_admission(
+        &self,
+        _peer_id: &str,
+        ctl: OpControl,
+    ) -> Result<OpControl, DesktopError> {
+        Ok(ctl)
+    }
+    fn connection_parameter_source_failure<'a>(
+        &'a self,
+        _peer: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<DesktopError>> + Send + 'a>> {
+        Box::pin(async { None })
+    }
+
+    fn request_priority<'a>(
+        &'a self,
+        peer: &'a str,
+        lease: &'a str,
+        priority: ubm_desktop::boundary::ConnectionPriority,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, bool> {
+        let _ = (peer, lease, priority, ctl);
+        Box::pin(async {
+            Err(ubm_desktop::DesktopError::new(
+                ubm_core::contracts::BleErrorCode::CapabilityUnsupported,
+                ubm_core::contracts::BleErrorDomain::Capability,
+                "connection.request-priority",
+            ))
+        })
+    }
+
+    fn start_scan_platform<'a>(
+        &'a self,
+        owner: &'a str,
+        services: &'a [String],
+        windows: Option<ubm_desktop::boundary::WindowsScanOptions>,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, OperationId> {
+        if windows.is_none() {
+            return self.start_scan(owner, services, ctl);
+        }
+        Box::pin(async {
+            Err(ubm_desktop::DesktopError::new(
+                ubm_core::contracts::BleErrorCode::CapabilityUnsupported,
+                ubm_core::contracts::BleErrorDomain::Capability,
+                "scan.platform-options",
+            ))
+        })
+    }
     /// Security facts and ceremonies share this exact core/cancellation authority.
     fn security_state<'a>(
         &'a self,
@@ -205,6 +258,49 @@ pub trait CoreAuthority: Send + Sync {
         mode: &'a str,
         ctl: OpControl,
     ) -> CoreFuture<'a, ()>;
+    fn write_when_ready<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        value: Vec<u8>,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ()> {
+        let _ = (peer_id, selector, value, ctl);
+        Box::pin(async {
+            Err(ubm_desktop::DesktopError::new(
+                ubm_core::contracts::BleErrorCode::CapabilityUnsupported,
+                ubm_core::contracts::BleErrorDomain::Capability,
+                "gatt.write-when-ready",
+            ))
+        })
+    }
+    fn acquire_gatt<'a>(
+        &'a self,
+        peer: &'a str,
+        selector: &'a CoreSelector,
+        kind: ubm_desktop::acquired_gatt::AcquisitionKind,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::AcquiredGattHandle> {
+        let _ = (peer, selector, kind, ctl);
+        Box::pin(async { Err(acquired_unsupported()) })
+    }
+    fn acquired_write<'a>(
+        &'a self,
+        handle: &'a str,
+        value: Vec<u8>,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ()> {
+        let _ = (handle, value, ctl);
+        Box::pin(async { Err(acquired_unsupported()) })
+    }
+    fn acquired_receive<'a>(&'a self, handle: &'a str, ctl: OpControl) -> CoreFuture<'a, Vec<u8>> {
+        let _ = (handle, ctl);
+        Box::pin(async { Err(acquired_unsupported()) })
+    }
+    fn close_acquired<'a>(&'a self, handle: &'a str, ctl: OpControl) -> CoreFuture<'a, ()> {
+        let _ = (handle, ctl);
+        Box::pin(async { Err(acquired_unsupported()) })
+    }
     /// Descriptor read.
     fn read_descriptor<'a>(
         &'a self,
@@ -317,6 +413,40 @@ pub trait CoreAuthority: Send + Sync {
 }
 
 impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
+    fn request_priority<'a>(
+        &'a self,
+        peer: &'a str,
+        lease: &'a str,
+        priority: ubm_desktop::boundary::ConnectionPriority,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, bool> {
+        Box::pin(DesktopCentral::request_priority(
+            self, peer, lease, priority, ctl,
+        ))
+    }
+
+    fn start_scan_platform<'a>(
+        &'a self,
+        owner: &'a str,
+        services: &'a [String],
+        windows: Option<ubm_desktop::boundary::WindowsScanOptions>,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, OperationId> {
+        Box::pin(async move {
+            let refs: Vec<&str> = services.iter().map(String::as_str).collect();
+            let session = DesktopCentral::start_scan_platform(
+                self,
+                owner,
+                &refs,
+                ubm_core::central::ScanDuplicatePolicy::All,
+                None,
+                windows,
+                ctl,
+            )
+            .await?;
+            Ok(session.operation_id().clone())
+        })
+    }
     fn security_state<'a>(
         &'a self,
         peer: &'a str,
@@ -373,6 +503,12 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
         &self,
     ) -> CoreFuture<'_, Vec<ubm_core::central::CapabilityDescriptor>> {
         Box::pin(async move { Ok(DesktopCentral::capability_descriptors(self).await) })
+    }
+    fn directory_os(&self) -> ubm_desktop::DesktopOs {
+        DesktopCentral::directory_os(self)
+    }
+    fn known_peers(&self, ctl: OpControl) -> CoreFuture<'_, Vec<ubm_desktop::DirectoryPeer>> {
+        Box::pin(DesktopCentral::known_directory_peers(self, ctl))
     }
     fn connected_peers<'a>(
         &'a self,
@@ -493,6 +629,35 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
         })
     }
 
+    fn bind_gatt_admission(
+        &self,
+        peer_id: &str,
+        ctl: OpControl,
+    ) -> Result<OpControl, DesktopError> {
+        DesktopCentral::bind_gatt_admission(self, peer_id, ctl)
+    }
+    fn connection_parameter_source_failure<'a>(
+        &'a self,
+        peer: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<DesktopError>> + Send + 'a>> {
+        Box::pin(DesktopCentral::connection_parameter_source_failure(
+            self, peer,
+        ))
+    }
+
+    fn write_when_ready<'a>(
+        &'a self,
+        peer_id: &'a str,
+        selector: &'a CoreSelector,
+        value: Vec<u8>,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ()> {
+        Box::pin(async move {
+            let path = selector.path::<B>()?;
+            DesktopCentral::write_when_ready(self, peer_id, &path, value, ctl).await
+        })
+    }
+
     fn read_descriptor<'a>(
         &'a self,
         peer_id: &'a str,
@@ -503,6 +668,32 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
             let path = selector.path::<B>()?;
             DesktopCentral::read_descriptor(self, peer_id, &path, ctl).await
         })
+    }
+
+    fn acquire_gatt<'a>(
+        &'a self,
+        peer: &'a str,
+        selector: &'a CoreSelector,
+        kind: ubm_desktop::acquired_gatt::AcquisitionKind,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::AcquiredGattHandle> {
+        Box::pin(async move {
+            DesktopCentral::acquire_gatt(self, peer, &selector.path::<B>()?, kind, ctl).await
+        })
+    }
+    fn acquired_write<'a>(
+        &'a self,
+        handle: &'a str,
+        value: Vec<u8>,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ()> {
+        Box::pin(DesktopCentral::acquired_write(self, handle, value, ctl))
+    }
+    fn acquired_receive<'a>(&'a self, handle: &'a str, ctl: OpControl) -> CoreFuture<'a, Vec<u8>> {
+        Box::pin(DesktopCentral::acquired_receive(self, handle, ctl))
+    }
+    fn close_acquired<'a>(&'a self, handle: &'a str, ctl: OpControl) -> CoreFuture<'a, ()> {
+        Box::pin(DesktopCentral::close_acquired(self, handle, ctl))
     }
 
     fn write_descriptor<'a>(
@@ -789,4 +980,12 @@ mod tests {
         assert_eq!(operation, "desktop.open");
         assert_eq!(detail, "no adapter");
     }
+}
+
+fn acquired_unsupported() -> DesktopError {
+    DesktopError::new(
+        ubm_core::contracts::BleErrorCode::CapabilityUnsupported,
+        ubm_core::contracts::BleErrorDomain::Capability,
+        "gatt.acquire",
+    )
 }

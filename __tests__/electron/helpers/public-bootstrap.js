@@ -61,16 +61,16 @@ function bootstrap() {
   }
   const version = axis => ({
     axis,
-    selected: { axis, value: axis === 'ipc-protocol' ? 5 : 1 },
+    selected: { axis, value: axis === 'ipc-protocol' ? 6 : 1 },
     localRange: {
       axis,
-      minimum: { axis, value: axis === 'ipc-protocol' ? 5 : 1 },
-      maximum: { axis, value: axis === 'ipc-protocol' ? 5 : 1 }
+      minimum: { axis, value: axis === 'ipc-protocol' ? 6 : 1 },
+      maximum: { axis, value: axis === 'ipc-protocol' ? 6 : 1 }
     },
     remoteRange: {
       axis,
-      minimum: { axis, value: axis === 'ipc-protocol' ? 5 : 1 },
-      maximum: { axis, value: axis === 'ipc-protocol' ? 5 : 1 }
+      minimum: { axis, value: axis === 'ipc-protocol' ? 6 : 1 },
+      maximum: { axis, value: axis === 'ipc-protocol' ? 6 : 1 }
     }
   })
   return {

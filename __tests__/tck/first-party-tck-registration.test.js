@@ -366,6 +366,9 @@ describe('first-party backend standard TCK registrations', () => {
         'tck.feature.gatt.maximum-write-length'
       ])
       expectEveryReceiptHolds(report)
+      expect(harness.calls.filter(([name]) => name === 'connectionParameters').length).toBe(
+        platform === 'winrt' ? 3 : 0
+      )
       expect(inventoryRead).toHaveBeenCalledTimes(1)
       expect(harness.calls.filter(([name]) => name === 'connectWhenAvailable')).toHaveLength(
         ['winrt', 'bluez'].includes(platform) ? 1 : 0
@@ -404,8 +407,8 @@ describe('first-party backend standard TCK registrations', () => {
       ).toEqual(
         platform === 'bluez'
           ? [
-              { featureId: 'bluez:acquire-write', state: 'unsupported' },
-              { featureId: 'bluez:acquire-notify', state: 'unsupported' },
+              { featureId: 'bluez:acquire-write', state: 'unavailable' },
+              { featureId: 'bluez:acquire-notify', state: 'unavailable' },
               { featureId: 'bluez:pairing-agent', state: 'unsupported' },
               { featureId: 'bluez:deterministic-advanced-scenario-controls', state: 'unavailable' },
               { featureId: 'bluez:live-radio', state: 'unavailable' }

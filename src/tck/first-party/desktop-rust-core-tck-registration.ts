@@ -94,6 +94,13 @@ export interface DesktopRustCoreSyntheticRadio {
     reason?: string
   ): Promise<void>
   stageWriteReadiness(peerId: string, ready: boolean, announce?: boolean): Promise<void>
+  stageConnectionParameters(
+    peerId: string,
+    intervalUs: number,
+    latency: number,
+    supervisionTimeoutUs: number,
+    announce?: boolean
+  ): Promise<void>
   blockRadioOp(op: string): Promise<void>
   stagedRadioCalls(): Promise<string[]>
 }
@@ -322,13 +329,15 @@ export function createBluezFirstPartyTckRegistration(
     capabilityExclusions: Object.freeze([
       Object.freeze({
         featureId: 'bluez:acquire-write',
-        state: 'unsupported',
-        reason: 'BlueZ AcquireWrite is not implemented by the desktop Rust core.'
+        state: 'unavailable',
+        reason:
+          'The explicit public/native AcquireWrite route has dedicated deterministic scenarios; this registration does not establish physical acquired-FD radio evidence.'
       }),
       Object.freeze({
         featureId: 'bluez:acquire-notify',
-        state: 'unsupported',
-        reason: 'BlueZ AcquireNotify is not implemented by the desktop Rust core.'
+        state: 'unavailable',
+        reason:
+          'The explicit public/native AcquireNotify route has dedicated deterministic scenarios; this registration does not establish physical acquired-FD radio evidence.'
       }),
       Object.freeze({
         featureId: 'bluez:pairing-agent',
@@ -395,6 +404,7 @@ const SYNTHETIC_METHODS: readonly (keyof DesktopRustCoreSyntheticRadio)[] = Obje
   'stageSecurity',
   'stagePairOutcome',
   'stageWriteReadiness',
+  'stageConnectionParameters',
   'blockRadioOp',
   'stagedRadioCalls'
 ])
@@ -582,6 +592,7 @@ async function seedSyntheticWorld(central: SyntheticCentral, nativePeerId: strin
   await central.stageRssi(nativePeerId, TCK_RSSI)
   await central.stageSecurity(nativePeerId, 'not-bonded', true)
   await central.stageWriteReadiness(nativePeerId, true)
+  await central.stageConnectionParameters(nativePeerId, 30_000, 2, 4_000_000, false)
 }
 
 /**

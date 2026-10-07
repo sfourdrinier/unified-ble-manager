@@ -39,6 +39,7 @@ Pod::Spec.new do |s|
     "ios/Owned/OwnedCoreBluetoothCentralDelegate.swift",
     "ios/Owned/OwnedCoreBluetoothProtocolRadioDescriptors.swift",
     "ios/Owned/OwnedCoreBluetoothProtocolRadio.swift",
+    "ios/Owned/OwnedCoreBluetoothProtocolRadioDiscovery.swift",
     "ios/Owned/OwnedCoreBluetoothProtocolRadioCancellation.swift",
     "ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift",
     "ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift",

@@ -42,7 +42,7 @@ function fixture() {
   const characteristic = {
     uuid: CHARACTERISTIC,
     properties: { read: true, write: true, writeWithoutResponse: true, notify: true, indicate: false },
-    getDescriptors: async () => [descriptor, descriptor],
+    getDescriptors: async () => [descriptor, { ...descriptor }],
     readValue: async () => new Uint8Array([0, 70]),
     writeValueWithResponse: async value => {
       await Promise.resolve()
@@ -74,7 +74,7 @@ function fixture() {
   }
   const service = {
     uuid: SERVICE,
-    getCharacteristics: async () => [characteristic, characteristic]
+    getCharacteristics: async () => [characteristic, { ...characteristic }]
   }
   const gatt = {
     connected: false,
@@ -91,7 +91,7 @@ function fixture() {
       }
       gatt.connected = false
     },
-    getPrimaryServices: async () => [service, service]
+    getPrimaryServices: async () => [service, { ...service }]
   }
   const device = {
     id: 'browser-secret-device',

@@ -75,6 +75,7 @@ class ReactCompanionChooserTest {
         val adapter = mock(BluetoothAdapter::class.java)
         val device = mock(BluetoothDevice::class.java)
         val gatt = mock(BluetoothGatt::class.java)
+        doReturn("DC:56:7B:D9:E8:A4").`when`(device).address
         doReturn(BluetoothDevice.BOND_BONDED).`when`(device).bondState
         doReturn(BluetoothDevice.DEVICE_TYPE_LE).`when`(device).type
         doReturn(bluetoothManager).`when`(context).getSystemService(Context.BLUETOOTH_SERVICE)

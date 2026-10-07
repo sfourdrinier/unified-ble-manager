@@ -100,7 +100,8 @@ impl Adapter {
         address: &PeripheralId,
         kind: AddressType,
     ) -> Result<Peripheral> {
-        let peripheral = self.add_peripheral(address).await?;
+        let identity = PeripheralId::with_address_type(address.address(), Some(kind));
+        let peripheral = self.add_peripheral(&identity).await?;
         peripheral.set_explicit_address_type(kind)?;
         Ok(peripheral)
     }
@@ -185,6 +186,32 @@ impl Central for Adapter {
     }
 
     async fn start_scan(&self, filter: ScanFilter) -> Result<()> {
+        if filter
+            .windows
+            .is_some_and(|options| options.allow_extended_advertisements)
+        {
+            use windows::{
+                Devices::Bluetooth::BluetoothAdapter, Foundation::Metadata::ApiInformation,
+                core::HSTRING,
+            };
+            if !ApiInformation::IsPropertyPresent(
+                &HSTRING::from("Windows.Devices.Bluetooth.BluetoothAdapter"),
+                &HSTRING::from("IsExtendedAdvertisingSupported"),
+            )? {
+                return Err(Error::NotSupported(
+                    "WinRT cannot establish extended-advertising adapter support on this runtime"
+                        .to_owned(),
+                ));
+            }
+            // The advertisement watcher is system-wide and takes no selected
+            // adapter, so query the OS default adapter that owns that route.
+            let adapter = BluetoothAdapter::GetDefaultAsync()?.await?;
+            filter.windows.unwrap_or_default().validate_runtime(
+                true,
+                true,
+                adapter.IsExtendedAdvertisingSupported()?,
+            )?;
+        }
         let watcher = self.watcher.lock().map_err(Into::<Error>::into)?;
         let manager = self.manager.clone();
         watcher.start(
@@ -192,26 +219,44 @@ impl Central for Adapter {
             Box::new(move |args| {
                 let bluetooth_address = args.BluetoothAddress()?;
                 let address: BDAddr = bluetooth_address.try_into().unwrap();
+                let kind = match args.BluetoothAddressType() {
+                    Ok(windows::Devices::Bluetooth::BluetoothAddressType::Public) => {
+                        Some(AddressType::Public)
+                    }
+                    Ok(windows::Devices::Bluetooth::BluetoothAddressType::Random) => {
+                        Some(AddressType::Random)
+                    }
+                    result => {
+                        manager.emit(CentralEvent::AdvertisementUnread {
+                            id: PeripheralId::from(address),
+                            detail: format!(
+                                "WinRT advertisement address identity unavailable: {result:?}"
+                            ),
+                        });
+                        return Ok(());
+                    }
+                };
+                let identity = PeripheralId::with_address_type(address, kind);
                 let (peripheral, created) = manager
-                    .peripheral_or_insert_with(address.into(), || {
-                        Peripheral::new(Arc::downgrade(&manager), address)
+                    .peripheral_or_insert_with(identity.clone(), || {
+                        Peripheral::new_with_id(Arc::downgrade(&manager), identity.clone())
                     });
                 peripheral.update_properties(args);
                 manager.emit(if created {
-                    CentralEvent::DeviceDiscovered(address.into())
+                    CentralEvent::DeviceDiscovered(identity.clone())
                 } else {
-                    CentralEvent::DeviceUpdated(address.into())
+                    CentralEvent::DeviceUpdated(identity.clone())
                 });
                 // UBM patch (UBM_PATCHES.md #17): every received
                 // advertisement, with its own data; an unreadable one is
                 // reported, never dropped.
-                manager.emit(match Peripheral::advertisement_report(args) {
+                manager.emit(match Peripheral::advertisement_report(args, kind) {
                     Ok(report) => CentralEvent::Advertisement {
-                        id: address.into(),
+                        id: identity.clone(),
                         report,
                     },
                     Err(error) => CentralEvent::AdvertisementUnread {
-                        id: address.into(),
+                        id: identity,
                         detail: format!("{error:?}"),
                     },
                 });
@@ -241,7 +286,7 @@ impl Central for Adapter {
     /// is needed first.
     async fn add_peripheral(&self, address: &PeripheralId) -> Result<Peripheral> {
         let (peripheral, _) = self.manager.peripheral_or_insert_with(address.clone(), || {
-            Peripheral::new(Arc::downgrade(&self.manager), address.address())
+            Peripheral::new_with_id(Arc::downgrade(&self.manager), address.clone())
         });
         Ok(peripheral)
     }

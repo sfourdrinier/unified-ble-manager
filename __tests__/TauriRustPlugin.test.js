@@ -99,7 +99,7 @@ describe('Tauri v2 Rust plugin boundary', () => {
     // quota-drop (never abort), wire schema v2, the retained runtime
     // shape and identity, the heard peer count, and the passive
     // power-state read.
-    expect(dispatcher).toContain('.start_scan(&key')
+    expect(dispatcher).toContain('.start_scan_platform(&key')
     expect(dispatcher).toContain('take_advertisement')
     expect(dispatcher).toContain('CoreAuthority')
     expect(dispatcher).toContain('core_scan_observation')

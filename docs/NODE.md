@@ -67,6 +67,55 @@ advertised in one BLE packet. Electron and Tauri preserve supplied origin throug
 IPC. Either metadata field remains absent when the producer does not supply it;
 clients must not infer origin from RSSI, platform, or service UUIDs.
 
+### Explicit BlueZ acquired GATT transports
+
+On an eligible Linux characteristic, `characteristic.acquireWrite(options)`
+opens the optional native `AcquireWrite` route. Its owned writer exposes
+`mtuBytes`, `write(bytes, options)` and asynchronous `close()`. The MTU comes
+from that acquisition's reply. A packet must fit `min(mtuBytes - 3, 512)`;
+oversize input is refused rather than split. Writes copy the caller's bytes
+before waiting, share the connection's native FIFO, and retain the original
+deadline through backpressure. Native socket acceptance reports commit state
+`unknown`; it does not prove that the peripheral received the value.
+
+`characteristic.acquireNotifications({ stream, ...options })` opens the optional
+`AcquireNotify` route. It exposes the acquisition's `mtuBytes`, bounded `values`
+and asynchronous `close()`. Each packet owns its bytes. Empty packets remain
+values; socket HUP is an explicit transport failure. Delivery kind is `unknown`
+when the FD does not identify notification versus indication. Stream policies
+account for overflow; closing the stream also closes its acquired resource.
+
+AcquireWrite requires `write-without-response`; AcquireNotify requires notify
+or indicate. Optional method/property absence reports `capability.unsupported`,
+and an existing acquisition reports the native ownership refusal. These calls
+never substitute ordinary writes or CCCD subscriptions. A dedicated D-Bus
+sender owns each pending acquisition and returned descriptor, so cancellation
+before the FD reply also ends the daemon admission. Failed descriptor or sender
+cleanup remains owned for retry. Check the cleanup record returned by `close()`.
+
+Connection lease release closes its acquired descendants. Database changes,
+physical link loss, adapter reset and source failure terminalize old sessions;
+reconnection requires a new acquisition and native MTU. The optional native
+route and its source/control tests do not establish physical-radio evidence.
+Linux Node/Bun qualification and retained support labels remain separate.
+
+The same public acquired handles cross Electron's trusted-main IPC route and
+the Linux Tauri plugin's native-central route. The renderer receives copied
+packets and opaque lease-owned handles; it never receives a descriptor or opens
+an addon. Acquired writes retain the native FIFO and original deadline.
+Closing a notification iterator closes its native acquisition. Renderer
+teardown, database retirement and connection release retain failed child
+cleanup for retry. Returning a native handle to a different renderer lease
+does not transfer ownership. An ordinary CCCD removal that is still owed blocks
+acquired notification admission until that removal succeeds.
+
+The maintained producer ends an acquired notification socket if packet delivery
+fails or is truncated, so the stream cannot silently continue after losing a
+native value. A notification arriving while the FD acquisition is still waiting
+for readiness refuses that pending acquisition explicitly. Values are observed
+through the FD only after successful acquisition; applications needing continuous
+capture must qualify that acquisition boundary on their actual peripheral.
+
 ### System-connected peers on macOS
 
 A peripheral already connected elsewhere may no longer advertise. Use
@@ -249,7 +298,7 @@ Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backend
 - Scanning: the OS service-UUID scan filter on CoreBluetooth and BlueZ; on WinRT the OS advertisement service-UUID filter stays empty and the software filter admits the requested services; software name, manufacturer and address filters; scan share/join; first-sighting duplicates.
 - Events: `connection-lost` and `database-changed`.
 - Adapter: power, authorization (macOS, Windows), watch, and enumeration/selection.
-- Operations: exact in-flight cancellation; an honest without-response commit state; the `require-*` delivery check. WinRT additionally carries the requirement to the OS and prefers notify over indicate.
+- Operations: exact in-flight cancellation; an honest without-response commit state; the `require-*` delivery check. WinRT additionally carries hard requirements separately from soft preferences to the first CCCD write; without a preference it defaults to notification when both modes are available.
 - Connection: CoreBluetooth connected RSSI; per-mode maximum write length and ordinary OS-managed writes; initial `when-available` acquisition on all three desktop OSes (Linux requires the optional maintained-daemon LE observer).
 - Advertisements: solicited and overflow UUIDs and `connectable` (macOS).
 - Security (Windows, Linux): state, pair, cancel, unpair and security events, plus the BlueZ pairing-generation controller.
@@ -274,7 +323,7 @@ Every capability the TypeScript CoreBluetooth, WinRT and dbus-next BlueZ backend
 
   The rows with kept reasons are CoreBluetooth `connection:request-mtu` (`corebluetooth-auto-negotiated-mtu`), `connection:effective-mtu` and `connection:phy`, and BlueZ `security:pairing-generation`. The BlueZ row carries the privilege explanation without a host controller, and the adapter-wide blast radius with one. The vendored btleplug patches the loaded core links are reported as `diagnostics.btleplugPatches`.
 
-**Open release blockers:** none on the TypeScript/N-API path. `__tests__/backends/desktop/desktop-parity-blockers.test.js` fails if a row is ever marked `blocked` without a probe. The deterministic synthetic radio does not prove physical-radio behaviour. The physical checks listed under [Verification](#verification) are still outstanding.
+**rc.21 remediation and qualification:** the complete review denominator and current unresolved verification obligations are recorded in [RC21_REMEDIATION.md](review/RC21_REMEDIATION.md). Source implementation, deterministic checks and physical qualification remain distinct; an implemented parity row does not close an unexecuted scenario. `__tests__/backends/desktop/desktop-parity-blockers.test.js` requires a probe for a blocked row. The physical checks listed under [Verification](#verification) remain separate release obligations.
 
 ## Native continuation in a trusted process host
 
@@ -491,13 +540,25 @@ Hardware-free (any host): `pnpm test:package` drives the provider through the re
 Clean packed consumer, run from the checkout:
 
 ```sh
-pnpm native-prebuild:build -- --backend desktop-core   # this host's release prebuild + sidecar
+pnpm native:refresh                                   # canonical consuming build
 pnpm prepack && npm pack --pack-destination /tmp/ubm-pack
 node scripts/ci/napi-clean-tarball-acceptance.js --tarball /tmp/ubm-pack/unified-ble-manager-*.tgz --pm npm --negative
 node scripts/ci/napi-clean-tarball-acceptance.js --tarball /tmp/ubm-pack/unified-ble-manager-*.tgz --pm pnpm --negative
 ```
 
 The default `--probe identity` stops before any radio open. It loads the prebuild from the installed package, verifies identity, and drives a synthetic scan/connect/discover/subscribe/notify round trip in Rust. It is safe in a process without Bluetooth permission. `--probe radio` calls this OS's public no-options factory on the real adapter. Run it from a Bluetooth-authorized terminal on macOS: a headless host passes with `adapter.unavailable`.
+
+`node scripts/ci/bun-packed-desktop-acceptance.js` requires a sealed release
+prebuild assembled by the canonical release consumer. It installs the packed
+package in a fresh consumer and runs CommonJS and ESM under Node and Bun
+1.4.2. Each probe joins the installed OS-specific public factory and production
+desktop provider to the real addon, with an explicitly synthetic native radio.
+The joined route checks scan/GATT events, cancellation, deadlines and late
+completion, bounded overflow, stale discovery handles, reconnect, two logical
+owners, failed cleanup and retry, adapter loss and zero native resources after
+destroy. Windows also reads and watches native connection parameters. CI runs
+the packed qualifier on Linux, macOS and Windows. These integration receipts
+remain separate from physical-radio qualification and retained support labels.
 
 Physical checks still outstanding: a peripheral session per OS (scan, connect, discover, notify, write, disconnect); pairing on Windows and Linux, including the BlueZ pairing-generation controller; the Windows scan-terminated event when the radio is turned off; and a session-bus BlueZ under `dbus-run-session`.
 
@@ -508,3 +569,13 @@ Do not load a Node radio factory from a renderer. See [`ELECTRON.md`](ELECTRON.m
 ## Maintainers
 
 [Current 5.0 authority](README.md#current-50-authority), [`PLATFORMS.md`](PLATFORMS.md).
+
+A connection-parameter observation-source failure terminates its current
+watches with the original error. A later watch on that connection remains
+refused until fresh valid native observation evidence recovers the source;
+a successful snapshot getter alone does not recover an event source. Reconnect
+creates a new source generation. Events accepted during the initial watch
+probe keep their native order and replace the delayed probe answer. Native
+queue loss triggers reconciliation, and samples retained from before that
+reconciliation are counted as discarded rather than published afterward as
+newer observations.

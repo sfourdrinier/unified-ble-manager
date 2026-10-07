@@ -46,7 +46,11 @@ extension OwnedCoreBluetoothProtocolRadio {
         cleanup.peerIdentifiers.insert(peerIdentifier)
       }
     }
-    pendingDiscovery = pendingDiscovery.filter { $0.value.operationIdentifier != operationIdentifier }
+    for (peerIdentifier, var pending) in pendingDiscovery where pending.operationIdentifier == operationIdentifier {
+      pending.cancelled = true
+      pendingDiscovery[peerIdentifier] = pending
+      cleanup.discoveryPeers.insert(peerIdentifier)
+    }
     for address in pendingRead.keys {
       pendingRead[address]?.cancel { $0.operationIdentifier == operationIdentifier }
       if pendingRead[address]?.isIdle == true { pendingRead.removeValue(forKey: address) }
@@ -64,7 +68,7 @@ extension OwnedCoreBluetoothProtocolRadio {
         resolved.peripheral.setNotifyValue(pending.enabled ? false : true, for: resolved.characteristic)
       }
     }
-    if !cleanup.peerIdentifiers.isEmpty || !cleanup.notificationDesiredStates.isEmpty {
+    if !cleanup.peerIdentifiers.isEmpty || !cleanup.discoveryPeers.isEmpty || !cleanup.notificationDesiredStates.isEmpty {
       pendingCancellationCleanup[operationIdentifier] = cleanup
       scheduleCancellationCleanupRetry(operationIdentifier)
     }
@@ -78,6 +82,7 @@ extension OwnedCoreBluetoothProtocolRadio {
     for peerIdentifier in Array(cleanup.peerIdentifiers) {
       guard let peripheral = peripheralByIdentifier[peerIdentifier] else {
         cleanup.peerIdentifiers.remove(peerIdentifier)
+      cleanup.discoveryPeers.remove(peerIdentifier)
         continue
       }
       if peripheral.state == .disconnected {
@@ -123,13 +128,31 @@ extension OwnedCoreBluetoothProtocolRadio {
         ] as NSDictionary)
       }
     }
-    if cleanup.peerIdentifiers.isEmpty && cleanup.notificationDesiredStates.isEmpty {
+    for peerIdentifier in cleanup.discoveryPeers {
+      if pendingDiscovery[peerIdentifier]?.operationIdentifier != operationIdentifier {
+        cleanup.discoveryPeers.remove(peerIdentifier)
+      } else {
+        failures.append(["resource": "discovery", "peerIdentifier": peerIdentifier,
+          "code": "cleanup.awaiting-discovery-callback"] as NSDictionary)
+      }
+    }
+    if cleanup.peerIdentifiers.isEmpty && cleanup.discoveryPeers.isEmpty && cleanup.notificationDesiredStates.isEmpty {
       pendingCancellationCleanup.removeValue(forKey: operationIdentifier)
       return ["state": "released", "failures": []] as NSDictionary
     }
     pendingCancellationCleanup[operationIdentifier] = cleanup
     scheduleCancellationCleanupRetry(operationIdentifier)
     return ["state": "retryable", "failures": failures] as NSDictionary
+  }
+
+  func clearDiscoveryCancellationCleanup(forPeerIdentifier peerIdentifier: String) {
+    for (operationIdentifier, var cleanup) in pendingCancellationCleanup {
+      cleanup.discoveryPeers.remove(peerIdentifier)
+      if cleanup.peerIdentifiers.isEmpty && cleanup.discoveryPeers.isEmpty && cleanup.notificationDesiredStates.isEmpty {
+        pendingCancellationCleanup.removeValue(forKey: operationIdentifier)
+        pendingCancellationCleanupRetryScheduled.remove(operationIdentifier)
+      } else { pendingCancellationCleanup[operationIdentifier] = cleanup }
+    }
   }
 
   func clearCancellationCleanup(forPeerIdentifier peerIdentifier: String) {
@@ -145,7 +168,7 @@ extension OwnedCoreBluetoothProtocolRadio {
       cleanup.notificationAwaitingCallbacks = cleanup.notificationAwaitingCallbacks.filter {
         $0.peerIdentifier != peerIdentifier
       }
-      if cleanup.peerIdentifiers.isEmpty && cleanup.notificationDesiredStates.isEmpty {
+      if cleanup.peerIdentifiers.isEmpty && cleanup.discoveryPeers.isEmpty && cleanup.notificationDesiredStates.isEmpty {
         pendingCancellationCleanup.removeValue(forKey: operationIdentifier)
         pendingCancellationCleanupRetryScheduled.remove(operationIdentifier)
       } else {
@@ -158,7 +181,7 @@ extension OwnedCoreBluetoothProtocolRadio {
     for (operationIdentifier, var cleanup) in pendingCancellationCleanup {
       cleanup.notificationDesiredStates.removeValue(forKey: address)
       cleanup.notificationAwaitingCallbacks.remove(address)
-      if cleanup.peerIdentifiers.isEmpty && cleanup.notificationDesiredStates.isEmpty {
+      if cleanup.peerIdentifiers.isEmpty && cleanup.discoveryPeers.isEmpty && cleanup.notificationDesiredStates.isEmpty {
         pendingCancellationCleanup.removeValue(forKey: operationIdentifier)
         pendingCancellationCleanupRetryScheduled.remove(operationIdentifier)
       } else {

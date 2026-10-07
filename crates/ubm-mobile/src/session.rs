@@ -38,7 +38,7 @@ use crate::host::{BackgroundScope, HostInner, Route, ScanMember, adapter_value, 
 use crate::radio::BackgroundKind;
 use crate::radio::{
     AndroidScanOptions, BondState, ConnectionPriority, Instance, MobilePlatform, PairTransport,
-    Phy, RadioCompletion, RadioRequest, ScanCallbackType, ScanMode,
+    Phy, RadioCompletion, RadioRequest, ScanCallbackType, ScanMode, ScanPhy, SubrateMode,
 };
 use crate::wire::{self, Args, object, opt_text};
 
@@ -63,6 +63,8 @@ pub const OPS: &[&str] = &[
     "connection.effective-mtu",
     "connection.request-mtu",
     "connection.request-priority",
+    "connection.control-capabilities",
+    "connection.request-subrate",
     "connection.read-phy",
     "connection.request-phy",
     "connection.maximum-write-length",
@@ -74,6 +76,7 @@ pub const OPS: &[&str] = &[
     "gatt.read",
     "gatt.read-descriptor",
     "gatt.write",
+    "gatt.write-when-ready",
     "gatt.write-descriptor",
     "gatt.subscribe",
     "gatt.unsubscribe",
@@ -95,7 +98,11 @@ pub const OPS: &[&str] = &[
     "session.dispose",
 ];
 
-const WRITE_OPS: &[&str] = &["gatt.write", "gatt.write-descriptor"];
+const WRITE_OPS: &[&str] = &[
+    "gatt.write",
+    "gatt.write-when-ready",
+    "gatt.write-descriptor",
+];
 /// How far past the highest admitted operation a pre-admission cancel may
 /// name an admission (finding 109). A client assigns admissions in the order
 /// it sends invokes, so a cancel can only precede invokes it already sent;
@@ -455,7 +462,36 @@ fn discovery_tree(paths: &[DiscoveredPath]) -> Value {
         services
             .into_iter()
             .map(|(uuid, occurrence, characteristics)| {
+                let metadata = paths.iter().find(|path| {
+                    path.service_uuid == uuid
+                        && path.service_occurrence == occurrence
+                        && path.characteristic_uuid.is_none()
+                });
                 object(vec![
+                    (
+                        "primary",
+                        metadata
+                            .and_then(|path| path.service_primary)
+                            .map_or(Value::Null, Value::from),
+                    ),
+                    (
+                        "includedServices",
+                        metadata
+                            .and_then(|path| path.included_services.as_ref())
+                            .map_or(Value::Null, |references| {
+                                Value::Array(
+                                    references
+                                        .iter()
+                                        .map(|reference| {
+                                            object(vec![
+                                                ("uuid", Value::from(reference.uuid.as_str())),
+                                                ("occurrence", Value::from(reference.occurrence)),
+                                            ])
+                                        })
+                                        .collect(),
+                                )
+                            }),
+                    ),
                     ("uuid", Value::from(uuid)),
                     ("occurrence", Value::from(occurrence)),
                     (
@@ -699,6 +735,17 @@ impl MobileSession {
         if op != "op.cancel" && command.operation_id.is_some() != admission.is_some() {
             return reject(wire::invalid("args.admission"), completion);
         }
+        let gatt_admission = match &command.body {
+            Body::Read { peer_id, .. }
+            | Body::Write { peer_id, .. }
+            | Body::Subscribe { peer_id, .. }
+            | Body::Unsubscribe { peer_id, .. }
+            | Body::Discover { peer_id, .. } => match self.host.central.admit_gatt(peer_id) {
+                Ok(admission) => Some(admission),
+                Err(error) => return reject(error, completion),
+            },
+            _ => None,
+        };
         let is_disposal = matches!(command.body, Body::Dispose | Body::ContinuationDispose);
         let release_version = self.state.release_version.load(Ordering::SeqCst);
         // This is the definitive admission boundary. Teardown closes it under
@@ -738,6 +785,10 @@ impl MobileSession {
         });
         let session = self.clone();
         let ctl = OpControl::new(command.budget, ticket);
+        let ctl = match gatt_admission {
+            Some(admission) => ctl.with_gatt_admission(admission),
+            None => ctl,
+        };
         self.host.runtime.spawn(async move {
             let operation_id = command.operation_id.clone();
             let executing = session.clone();
@@ -824,9 +875,9 @@ impl MobileSession {
         };
         let (body, operation_id, budget) = match op {
             "adapter.state"
+            | "connection.control-capabilities"
             | "counters.describe"
             | "peers.known"
-            | "peers.connected"
             | "peers.restored"
             | "session.reconcile"
             | "session.quiesce"
@@ -835,10 +886,10 @@ impl MobileSession {
                 args.exact(&[], &[])?;
                 let body = match op {
                     "adapter.state" => Body::AdapterState,
+                    "connection.control-capabilities" => Body::ControlCapabilities,
                     "session.reconcile" => Body::Reconcile,
                     "counters.describe" => Body::Counters,
                     "peers.known" => Body::PeersKnown,
-                    "peers.connected" => Body::PeersConnected,
                     "peers.restored" => Body::PeersRestored,
                     "session.quiesce" => Body::Quiesce,
                     "session.continuation-dispose" => Body::ContinuationDispose,
@@ -854,6 +905,31 @@ impl MobileSession {
                 // semantics as iOS state restoration.
                 (Body::ClaimRestored(max_peers), None, Budget::unbounded())
             }
+            "peers.connected" => {
+                args.exact(&["operationId", "services"], &["budgetMs"])?;
+                let services = args
+                    .strings("services")?
+                    .iter()
+                    .map(|value| canonical_uuid(value).map_err(|_| wire::invalid("args.services")))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if apple && services.is_empty() {
+                    return Err(unsupported(
+                        "peers.connected.services-required",
+                        "CoreBluetooth requires a nonempty service query",
+                    ));
+                }
+                if !apple && !services.is_empty() {
+                    return Err(unsupported(
+                        "peers.connected.services",
+                        "Android's GATT inventory does not support a service filter",
+                    ));
+                }
+                (
+                    Body::PeersConnected(services),
+                    id_required(args)?,
+                    budget(args, received)?,
+                )
+            }
             "peers.bonded" => {
                 args.exact(&["operationId"], &["budgetMs"])?;
                 (
@@ -863,13 +939,13 @@ impl MobileSession {
                 )
             }
             "peers.resolve" => {
-                args.exact(&["reference"], &[])?;
+                args.exact(&["reference", "operationId"], &["budgetMs"])?;
                 let reference = args.object("reference")?;
                 reference.exact(&["opaqueId"], &["version", "backendId", "scope"])?;
                 (
                     Body::PeersResolve(reference.string("opaqueId")?),
-                    None,
-                    Budget::unbounded(),
+                    id_required(args)?,
+                    budget(args, received)?,
                 )
             }
             "scan.start" => {
@@ -924,17 +1000,6 @@ impl MobileSession {
                             &[],
                             &["mode", "callbackType", "legacy", "phy", "reportDelayMs"],
                         )?;
-                        // Legacy refused an Android scan PHY or batched
-                        // report delay as unsupported (139, AN-1).
-                        if options.get_raw("phy").is_some()
-                            || options.get_raw("reportDelayMs").is_some()
-                        {
-                            return Err(error(
-                                BleErrorCode::CapabilityUnsupported,
-                                BleErrorDomain::Scan,
-                                "scan.start.platform-options",
-                            ));
-                        }
                         Some(AndroidScanOptions {
                             mode: options
                                 .opt_one_of(
@@ -963,6 +1028,24 @@ impl MobileSession {
                                 Some(_) => None,
                             },
                             legacy: options.opt_boolean("legacy")?,
+                            report_delay_ms: options
+                                .opt_integer("reportDelayMs", 2_147_483_647)?
+                                .map(u32::try_from)
+                                .transpose()
+                                .map_err(|_| {
+                                    error(
+                                        BleErrorCode::ArgumentInvalid,
+                                        BleErrorDomain::Scan,
+                                        "scan.start.report-delay",
+                                    )
+                                })?,
+                            phy: options
+                                .opt_one_of("phy", &["all-supported", "1m", "coded"])?
+                                .map(|phy| match phy {
+                                    "1m" => ScanPhy::Le1m,
+                                    "coded" => ScanPhy::LeCoded,
+                                    _ => ScanPhy::AllSupported,
+                                }),
                         })
                     }
                 };
@@ -1054,6 +1137,7 @@ impl MobileSession {
             | "connection.effective-mtu"
             | "connection.request-mtu"
             | "connection.request-priority"
+            | "connection.request-subrate"
             | "connection.read-phy"
             | "connection.request-phy"
             | "connection.maximum-write-length"
@@ -1069,6 +1153,9 @@ impl MobileSession {
                         &["peerId", "lease", "priority", "operationId"],
                         &["budgetMs"],
                     ),
+                    "connection.request-subrate" => {
+                        (&["peerId", "lease", "mode", "operationId"], &["budgetMs"])
+                    }
                     "connection.request-phy" => (
                         &["peerId", "lease", "operationId"],
                         &["tx", "rx", "budgetMs"],
@@ -1084,6 +1171,7 @@ impl MobileSession {
                         op,
                         "connection.request-mtu"
                             | "connection.request-priority"
+                            | "connection.request-subrate"
                             | "connection.read-phy"
                             | "connection.request-phy"
                     )
@@ -1113,6 +1201,24 @@ impl MobileSession {
                         },
                     ),
                     "connection.read-phy" => Control::ReadPhy,
+                    "connection.request-subrate" => {
+                        let mode = match args.one_of(
+                            "mode",
+                            &["default", "low-latency", "low-power", "high-throughput"],
+                        )? {
+                            "default" => SubrateMode::Default,
+                            "low-latency" => SubrateMode::LowLatency,
+                            "low-power" => SubrateMode::LowPower,
+                            _ => SubrateMode::HighThroughput,
+                        };
+                        if !self.host.radio.connection_subrate_available() {
+                            return Err(unsupported(
+                                op,
+                                "Android public subrate requests require an available SDK 36.1+ API",
+                            ));
+                        }
+                        Control::Subrate(mode)
+                    }
                     "connection.maximum-write-length" => Control::MaximumWriteLength(
                         args.one_of("mode", &["with-response", "without-response"])?
                             == "with-response",
@@ -1198,13 +1304,17 @@ impl MobileSession {
                     budget(args, received)?,
                 )
             }
-            "gatt.write" | "gatt.write-descriptor" => {
+            "gatt.write" | "gatt.write-when-ready" | "gatt.write-descriptor" => {
                 args.exact(
                     &["peerId", "selector", "valueB64", "mode", "operationId"],
                     &["budgetMs"],
                 )?;
                 let descriptor = op == "gatt.write-descriptor";
                 let mode = args.one_of("mode", &["with-response", "without-response"])?;
+                let wait_ready = op == "gatt.write-when-ready";
+                if wait_ready && mode != "without-response" {
+                    return Err(wire::invalid("args.mode"));
+                }
                 if descriptor && mode == "without-response" {
                     return Err(unsupported(
                         "gatt.write-descriptor.mode",
@@ -1223,6 +1333,7 @@ impl MobileSession {
                         value: args.bytes("valueB64")?,
                         with_response: mode == "with-response",
                         descriptor,
+                        wait_ready,
                     },
                     id_required(args)?,
                     budget(args, received)?,
@@ -1498,6 +1609,10 @@ impl MobileSession {
                 Ok(adapter_value(&snapshot, updated_at, &central.attachment()))
             }
             Body::Counters => self.counters().await,
+            Body::ControlCapabilities => Ok(object(vec![(
+                "subrate",
+                Value::Bool(host.radio.connection_subrate_available()),
+            )])),
             Body::ScanStart {
                 start_operation_id,
                 service_uuids,
@@ -1677,11 +1792,32 @@ impl MobileSession {
                     || lock(&host.restored).contains_key(&peer_id);
                 let record = self.peer_record(&peer_id).await;
                 if !known && record.is_none() {
-                    return Ok(Value::Null);
+                    let resolved = match bounded(
+                        &ctl,
+                        "peers.resolve",
+                        host.radio.call(|id| RadioRequest::ResolvePeer {
+                            id,
+                            peer_id: peer_id.clone(),
+                        }),
+                    )
+                    .await?
+                    {
+                        RadioCompletion::ResolvedPeer(peer) => peer,
+                        _ => return Err(protocol("peers.resolve")),
+                    };
+                    let Some(peer) = resolved else {
+                        return Ok(Value::Null);
+                    };
+                    if peer.peer_id != peer_id {
+                        return Err(protocol("peers.resolve.identity"));
+                    }
+                    let mut value = host.peer_value(&peer_id, None, Some("app-reference"));
+                    value["name"] = peer.name.map_or(Value::Null, Value::from);
+                    return Ok(value);
                 }
                 Ok(host.peer_value(&peer_id, record.as_ref(), None))
             }
-            Body::PeersKnown | Body::PeersConnected | Body::PeersRestored => {
+            Body::PeersKnown | Body::PeersRestored => {
                 let records = central.peer_records().await;
                 let mut ids: Vec<String> = match body {
                     Body::PeersRestored => lock(&host.restored).keys().cloned().collect(),
@@ -1699,11 +1835,6 @@ impl MobileSession {
                     .map(|peer_id| {
                         let record = records.iter().find(|record| record.peer_id == *peer_id);
                         (record, host.peer_value(peer_id, record, None))
-                    })
-                    .filter(|(record, _)| {
-                        !matches!(body, Body::PeersConnected)
-                            || record.and_then(|r| r.connection_state)
-                                == Some(ConnectionState::Connected)
                     })
                     .map(|(_, value)| value)
                     .collect();
@@ -1740,6 +1871,45 @@ impl MobileSession {
                     })
                     .collect();
                 Ok(object(vec![("peers", Value::Array(peers))]))
+            }
+            Body::PeersConnected(services) => {
+                let peers = match bounded(
+                    &ctl,
+                    "peers.connected",
+                    host.radio.call(|id| RadioRequest::ConnectedPeers {
+                        id,
+                        services: services.clone(),
+                    }),
+                )
+                .await?
+                {
+                    RadioCompletion::ConnectedPeers(peers) => peers,
+                    _ => return Err(protocol("peers.connected")),
+                };
+                if peers.len() > 4096 {
+                    return Err(error(
+                        BleErrorCode::CapabilityLimited,
+                        BleErrorDomain::Capability,
+                        "peers.connected",
+                    )
+                    .with_detail("system inventory exceeds the bounded directory capacity"));
+                }
+                let mut seen = std::collections::HashSet::new();
+                let mut values = Vec::new();
+                for peer in peers {
+                    if peer.peer_id.is_empty() || !seen.insert(peer.peer_id.clone()) {
+                        return Err(protocol("peers.connected.identity"));
+                    }
+                    // This read creates neither cached ownership nor a central peer.
+                    let mut value = host.peer_value(&peer.peer_id, None, Some("system-connected"));
+                    value["name"] = peer.name.map_or(Value::Null, Value::from);
+                    value["rssi"] = Value::Null;
+                    value["lastSeenAtMonotonicMs"] = Value::Null;
+                    value["connection"] = Value::from("connected");
+                    value["reachability"] = Value::from("reachable");
+                    values.push(value);
+                }
+                Ok(Value::Array(values))
             }
             Body::PeersBonded => {
                 let peers = match bounded(
@@ -1956,6 +2126,7 @@ impl MobileSession {
                 value,
                 with_response,
                 descriptor,
+                wait_ready,
             } => {
                 if descriptor {
                     central
@@ -1967,7 +2138,13 @@ impl MobileSession {
                     } else {
                         "without-response"
                     };
-                    central.write(&peer_id, &selector, value, mode, ctl).await?;
+                    if wait_ready {
+                        central
+                            .write_when_ready(&peer_id, &selector, value, ctl)
+                            .await?;
+                    } else {
+                        central.write(&peer_id, &selector, value, mode, ctl).await?;
+                    }
                 }
                 Ok(object(vec![(
                     "commitState",
@@ -2345,6 +2522,11 @@ impl MobileSession {
                     peer_id: peer,
                     priority,
                 },
+                Control::Subrate(mode) => RadioRequest::RequestSubrate {
+                    id,
+                    peer_id: peer,
+                    mode,
+                },
                 Control::ReadPhy => RadioRequest::ReadPhy { id, peer_id: peer },
                 Control::RequestPhy(tx, rx) => RadioRequest::RequestPhy {
                     id,
@@ -2362,7 +2544,7 @@ impl MobileSession {
             (Control::RequestMtu(_), RadioCompletion::Mtu(Some(mtu))) => {
                 Ok(object(vec![("mtu", Value::from(mtu))]))
             }
-            (Control::Priority(_), RadioCompletion::Accepted(accepted)) => {
+            (Control::Priority(_) | Control::Subrate(_), RadioCompletion::Accepted(accepted)) => {
                 Ok(object(vec![("accepted", Value::Bool(accepted))]))
             }
             (Control::ReadPhy, RadioCompletion::Phy(observation)) => Ok(phy_value(observation)),
@@ -2641,6 +2823,18 @@ impl MobileSession {
             ("orphanedIpcOwners", count(0)),
         ]);
         let process_native = object(vec![
+            (
+                "nativeGattAdmissions",
+                count(counters.native_gatt_admissions),
+            ),
+            (
+                "acquiredGattTransports",
+                count(counters.acquired_gatt_transports),
+            ),
+            (
+                "pendingGattAcquisitions",
+                count(counters.pending_gatt_acquisitions),
+            ),
             ("pendingRadioRequests", Value::from(radio.pending_requests)),
             (
                 "lateRadioCompletions",
@@ -2777,6 +2971,15 @@ impl MobileSession {
                 })
                 .collect()
         };
+        let security_failures: Vec<Value> = lock(&host.security_failures)
+            .iter()
+            .map(|(peer, error)| {
+                object(vec![
+                    ("peerId", opt_text(peer.as_deref())),
+                    ("error", Value::Object(wire::error_object(error))),
+                ])
+            })
+            .collect();
         let restored: Vec<Value> = lock(&host.restored)
             .values()
             .map(|peer| {
@@ -2793,6 +2996,7 @@ impl MobileSession {
             ("links", Value::Array(links)),
             ("subscriptions", Value::Array(subscriptions)),
             ("security", Value::Array(security)),
+            ("securityFailures", Value::Array(security_failures)),
             ("restored", Value::Array(restored)),
             ("scan", opt_text(scan.as_deref())),
         ]))
@@ -2945,6 +3149,7 @@ enum Control {
     EffectiveMtu,
     RequestMtu(u16),
     Priority(ConnectionPriority),
+    Subrate(SubrateMode),
     ReadPhy,
     RequestPhy(Option<Phy>, Option<Phy>),
     /// `true` = with response.
@@ -2959,6 +3164,7 @@ impl Control {
             Self::EffectiveMtu => "connection.effective-mtu",
             Self::RequestMtu(_) => "connection.request-mtu",
             Self::Priority(_) => "connection.request-priority",
+            Self::Subrate(_) => "connection.request-subrate",
             Self::ReadPhy => "connection.read-phy",
             Self::RequestPhy(..) => "connection.request-phy",
             Self::MaximumWriteLength(_) => "connection.maximum-write-length",
@@ -2969,6 +3175,7 @@ impl Control {
 
 enum Body {
     AdapterState,
+    ControlCapabilities,
     Counters,
     Quiesce,
     ContinuationDispose,
@@ -2982,7 +3189,7 @@ enum Body {
     ScanStop(String),
     PeersResolve(String),
     PeersKnown,
-    PeersConnected,
+    PeersConnected(Vec<String>),
     PeersRestored,
     Reconcile,
     ClaimRestored(u64),
@@ -3022,6 +3229,7 @@ enum Body {
         value: Vec<u8>,
         with_response: bool,
         descriptor: bool,
+        wait_ready: bool,
     },
     Subscribe {
         peer_id: String,

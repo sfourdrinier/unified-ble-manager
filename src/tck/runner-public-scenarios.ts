@@ -1475,8 +1475,8 @@ async function executeConnectionControlsScenario<
     const subrateState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionSubrate)
     const readinessState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness)
     const phy = await observePhyTruth(connection, fixture, phyState)
-    const parameters = await observeParametersTruth(parametersState)
-    const subrate = await observeSubrateTruth(subrateState)
+    const parameters = await observeParametersTruth(connection, fixture, parametersState)
+    const subrate = await observeSubrateTruth(connection, fixture, subrateState)
     const readiness = await observeReadinessTruth(connection, fixture, readinessState)
     const database = await fixture.controller.settle(connection.discover(operationOptions))
     const observationsBoundToGeneration =
@@ -1620,33 +1620,91 @@ async function observePhyTruth<
   }
 }
 
-function observeParametersTruth(state: FeatureState): ControlFactObservation {
+async function observeParametersTruth<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(
+  connection: ConnectionHandle<Attachment, Identity>,
+  fixture: BackendTckFixture<Attachment, Identity, Backend>,
+  state: FeatureState
+): Promise<ControlFactObservation> {
   const expectedError = capabilityErrorCode(state)
-  const descriptorTruth = state === 'unsupported' || state === 'unavailable'
+  if (!isCallableFeatureState(state)) {
+    return {
+      holds: true,
+      generationBound: true,
+      detail: { invoked: false, operationAvailable: false, descriptorOnly: true, expectedError }
+    }
+  }
+  const read = await observePublicControl(() => fixture.controller.settle(connection.parameters(operationOptions)))
+  const measured =
+    read.errorCode === null &&
+    read.value !== null &&
+    Number.isFinite(read.value.intervalUs) &&
+    read.value.intervalUs > 0 &&
+    Number.isSafeInteger(read.value.latency) &&
+    read.value.latency >= 0 &&
+    Number.isFinite(read.value.supervisionTimeoutUs) &&
+    read.value.supervisionTimeoutUs > 0 &&
+    Number.isFinite(read.value.observedAtMonotonicMs) &&
+    read.value.observedAtMonotonicMs >= 0 &&
+    read.value.terminal.outcome === 'succeeded'
+  const generationBound =
+    read.value !== null &&
+    String(read.value.connectionId) === String(connection.connectionId) &&
+    String(read.value.connectionGeneration) === String(connection.connectionGeneration)
   return {
-    holds: descriptorTruth,
-    generationBound: true,
+    holds: measured && generationBound,
+    generationBound,
     detail: {
-      invoked: false,
-      operationAvailable: false,
-      scope: 'descriptor/runtime-truth-only-no-parameters-seam',
-      expectedError
+      invoked: read.invoked,
+      operationAvailable: true,
+      measured,
+      generationBound,
+      readErrorCode: read.errorCode
     }
   }
 }
 
-function observeSubrateTruth(state: FeatureState): ControlFactObservation {
+async function observeSubrateTruth<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(
+  connection: ConnectionHandle<Attachment, Identity>,
+  fixture: BackendTckFixture<Attachment, Identity, Backend>,
+  state: FeatureState
+): Promise<ControlFactObservation> {
   const expectedError = capabilityErrorCode(state)
-  const descriptorTruth = state === 'unsupported' || state === 'unavailable'
-  return {
-    holds: descriptorTruth,
-    generationBound: true,
-    detail: {
-      invoked: false,
-      operationAvailable: false,
-      scope: 'descriptor/runtime-truth-only-no-subrate-seam',
-      expectedError
+  if (!isCallableFeatureState(state)) {
+    return {
+      holds: true,
+      generationBound: true,
+      detail: {
+        invoked: false,
+        descriptorOnly: true,
+        operationAvailable: false,
+        expectedError
+      }
     }
+  }
+  const request = await observePublicControl(() =>
+    fixture.controller.settle(connection.requestSubrate('low-power', operationOptions))
+  )
+  const reported =
+    request.errorCode === null &&
+    request.value !== null &&
+    typeof request.value.accepted === 'boolean' &&
+    request.value.requested === 'low-power' &&
+    Number.isFinite(request.value.observedAtMonotonicMs) &&
+    request.value.observedAtMonotonicMs >= 0 &&
+    request.value.terminal.outcome === 'succeeded'
+  const generationBound = reported && connection.connectionGeneration.length > 0
+  return {
+    holds: reported && generationBound,
+    generationBound,
+    detail: { invoked: request.invoked, operationAvailable: true, reported, requestErrorCode: request.errorCode }
   }
 }
 

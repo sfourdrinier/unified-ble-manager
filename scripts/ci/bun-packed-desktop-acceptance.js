@@ -171,7 +171,8 @@ async function main() {
   publicEntries()
   await scenarios()
   await waker()
-  process.stdout.write(JSON.stringify({ ok: true, runtime: 'node', scenarios: ids.length }) + '\\n')
+  const joined = await require('./packed-desktop-public-route.cjs').qualifyPublicRoute()
+  process.stdout.write(JSON.stringify({ ok: true, runtime: 'node', scenarios: ids.length, joined }) + '\\n')
 }
 
 main().catch(error => {
@@ -194,10 +195,15 @@ const report = await testing.runManagerScenarios(testing.createDeterministicMana
 if (report.receipts.length !== ${MANAGER_SCENARIO_IDS.length} || report.receipts.some(receipt => receipt.disposition !== 'passed')) {
   throw new Error('ESM manager scenarios did not all pass')
 }
-process.stdout.write(JSON.stringify({ ok: true, runtime: 'esm' }) + '\\n')
+const joined = await (await import('./packed-desktop-public-route.cjs')).default.qualifyPublicRoute({ moduleKind: 'esm' })
+process.stdout.write(JSON.stringify({ ok: true, runtime: 'esm', joined }) + '\\n')
 `
   fs.writeFileSync(path.join(consumer, 'probe.cjs'), cjs)
   fs.writeFileSync(path.join(consumer, 'probe.mjs'), esm)
+  fs.copyFileSync(
+    path.join(__dirname, 'packed-desktop-public-route.cjs'),
+    path.join(consumer, 'packed-desktop-public-route.cjs')
+  )
 }
 
 function main() {

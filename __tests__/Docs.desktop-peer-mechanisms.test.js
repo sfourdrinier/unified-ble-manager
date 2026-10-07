@@ -12,6 +12,6 @@ test('desktop guides distinguish implemented native acquisition and bond stores 
   expect(node).not.toContain('Each option below is rejected before any core call')
   expect(read('docs/PEERS.md')).toContain('BlueZ Device1')
   expect(read('docs/PEERS.md')).toContain('WinRT paired')
-  expect(read('docs/PEERS.md')).toContain('removed bond resolves to `null`')
+  expect(read('docs/PEERS.md')).toContain('disappearance from the native cache\nreturns `null`')
   expect(read('src/public/ble-manager.ts')).toContain('automatic reconnect after a later link loss')
 })

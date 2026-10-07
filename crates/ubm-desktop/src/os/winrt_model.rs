@@ -13,6 +13,11 @@
 /// btleplug's `BDAddr` display).
 #[must_use]
 pub fn address_of_peer(peer_id: &str) -> Option<u64> {
+    let peer_id = peer_id
+        .strip_prefix("public:")
+        .or_else(|| peer_id.strip_prefix("random:"))
+        .or_else(|| peer_id.strip_prefix("unknown:"))
+        .unwrap_or(peer_id);
     let octets: Vec<&str> = peer_id.split(':').collect();
     if octets.len() != 6 {
         return None;
@@ -309,6 +314,19 @@ mod tests {
 
     #[test]
     fn peer_ids_parse_to_48_bit_addresses() {
+        assert_eq!(
+            address_of_peer("public:AA:BB:CC:DD:EE:FF"),
+            Some(0xAABB_CCDD_EEFF)
+        );
+        assert_eq!(
+            address_of_peer("random:AA:BB:CC:DD:EE:FF"),
+            Some(0xAABB_CCDD_EEFF)
+        );
+        assert_eq!(
+            address_of_peer("unknown:AA:BB:CC:DD:EE:FF"),
+            Some(0xAABB_CCDD_EEFF)
+        );
+        assert_eq!(address_of_peer("invalid:AA:BB:CC:DD:EE:FF"), None);
         assert_eq!(address_of_peer("AA:BB:CC:DD:EE:FF"), Some(0xAABB_CCDD_EEFF));
         assert_eq!(address_of_peer("00:00:00:00:00:01"), Some(1));
         assert_eq!(address_of_peer("AA:BB:CC:DD:EE"), None);

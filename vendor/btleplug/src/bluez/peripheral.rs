@@ -50,6 +50,7 @@ struct ServiceInternal {
     handle: u64,
     info: ServiceInfo,
     characteristics: Vec<CharacteristicInternal>,
+    includes: Option<Vec<crate::api::IncludedService>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -408,8 +409,34 @@ impl api::Peripheral for Peripheral {
         };
         let mut services_internal = Vec::new();
         let services = self.session.get_services(&self.device).await?;
-        for service in services {
+        for service in &services {
             let service_handle = object_handle(&service.id.to_string())?;
+            let includes = service
+                .includes
+                .as_ref()
+                .map(|references| {
+                    references
+                        .iter()
+                        .map(|id| {
+                            let target = services
+                                .iter()
+                                .find(|candidate| candidate.id == *id)
+                                .ok_or_else(|| {
+                                    Error::Other(
+                                        format!(
+                                            "included service {id} is absent from the current graph"
+                                        )
+                                        .into(),
+                                    )
+                                })?;
+                            Ok(crate::api::IncludedService {
+                                uuid: target.uuid,
+                                instance: object_handle(&target.id.to_string())?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()
+                })
+                .transpose()?;
             let characteristics = self.session.get_characteristics(&service.id).await?;
             let characteristics = join_all(characteristics.into_iter().map(|info| async move {
                 let handle = object_handle(&info.id.to_string())?;
@@ -436,8 +463,9 @@ impl api::Peripheral for Peripheral {
             .collect::<Result<Vec<_>>>()?;
             services_internal.push(ServiceInternal {
                 handle: service_handle,
-                info: service,
+                info: service.clone(),
                 characteristics,
+                includes,
             });
         }
         if let Some(before) = &before {
@@ -636,7 +664,8 @@ impl From<&ServiceInternal> for Service {
         Service {
             uuid: service.info.uuid,
             instance: service.handle,
-            primary: service.info.primary,
+            primary: Some(service.info.primary),
+            included_services: service.includes.clone(),
             characteristics: service
                 .characteristics
                 .iter()

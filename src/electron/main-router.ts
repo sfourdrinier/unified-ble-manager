@@ -158,6 +158,7 @@ interface RendererResources {
   readonly connectionEventSubscriptions: Map<string, ManagedConnectionEventSubscription>
   readonly databases: Map<string, ManagedDatabase>
   readonly subscriptions: Map<string, ManagedSubscription>
+  readonly acquiredWriters: Map<string, ManagedAcquiredWriter>
   readonly operations: Map<string, ManagedOperation>
   readonly preCancelledOperations: Map<string, number>
   readonly settledOperations: Map<string, number>
@@ -170,6 +171,13 @@ interface RendererResources {
   readonly releasedHandles: Set<string>
   lifecycle: 'active' | 'releasing'
   releaseResult: Promise<CleanupRecord> | null
+}
+
+interface ManagedAcquiredWriter {
+  readonly databaseHandle: string
+  readonly connectionHandle: string
+  readonly writer: Awaited<ReturnType<MainDatabase['acquireWrite']>>
+  cleanup: Promise<CleanupRecord> | null
 }
 
 interface ManagedDatabase {
@@ -194,6 +202,7 @@ interface RendererResourceSnapshot {
   readonly connectionEventSubscriptions: ReadonlySet<string>
   readonly databases: ReadonlySet<string>
   readonly subscriptions: ReadonlySet<string>
+  readonly acquiredWriters: ReadonlySet<string>
 }
 
 /**
@@ -498,6 +507,21 @@ export class ElectronMainBleRouter {
         response = await this.peerDirectory(envelope.command, envelope.payload, controller)
       } else if (envelope.command === 'connection.rssi') {
         response = await this.readRssi(resources, envelope.payload, controller)
+      } else if (envelope.command === 'connection.request-priority') {
+        const connection = requiredResource(
+          resources.connections,
+          requiredString(envelope.payload, 'connectionHandle'),
+          'connection'
+        )
+        const priority = requiredString(envelope.payload, 'priority')
+        if (priority !== 'balanced' && priority !== 'low-power' && priority !== 'high-throughput')
+          throw contractError('argument.invalid', 'connection', 'electron.request-priority')
+        const result = await connection.requestPriority(priority, operationOptions(envelope.payload, controller))
+        response = Object.freeze({
+          accepted: result.accepted,
+          connectionId: connection.connectionId,
+          connectionGeneration: connection.connectionGeneration
+        })
       } else if (envelope.command === 'connection.effective-mtu') {
         response = await this.effectiveMtu(resources, envelope.payload, controller)
       } else if (envelope.command === 'connection.maximum-write-length') {
@@ -529,15 +553,27 @@ export class ElectronMainBleRouter {
       } else if (envelope.command === 'gatt.discover') {
         response = await this.discover(resources, envelope.payload, controller)
       } else if (envelope.command === 'gatt.database.release') {
-        response = this.releaseDatabase(resources, envelope.payload)
+        response = await this.releaseDatabase(resources, envelope.payload)
       } else if (envelope.command === 'gatt.read') {
         response = await this.read(resources, envelope.payload, controller)
+      } else if (envelope.command === 'gatt.write-when-ready') {
+        response = await this.write(resources, envelope.payload, envelope.binaryPayload, controller, true)
       } else if (envelope.command === 'gatt.write') {
         response = await this.write(resources, envelope.payload, envelope.binaryPayload, controller)
       } else if (envelope.command === 'gatt.descriptor.read') {
         response = await this.readDescriptor(resources, envelope.payload, controller)
       } else if (envelope.command === 'gatt.descriptor.write') {
         response = await this.writeDescriptor(resources, envelope.payload, envelope.binaryPayload, controller)
+      } else if (envelope.command === 'gatt.acquire-write') {
+        response = await this.acquireWriter(resources, envelope.payload, controller)
+      } else if (envelope.command === 'gatt.acquired-write') {
+        response = await this.writeAcquired(resources, envelope.payload, envelope.binaryPayload, controller)
+      } else if (envelope.command === 'gatt.acquired-write.close') {
+        response = cleanupRecord(
+          await this.closeAcquiredWriter(resources, requiredString(envelope.payload, 'acquiredHandle'))
+        )
+      } else if (envelope.command === 'gatt.acquire-notifications') {
+        response = await this.subscribe(resources, envelope, controller, true)
       } else if (envelope.command === 'gatt.subscribe') {
         response = await this.subscribe(resources, envelope, controller)
       } else if (envelope.command === 'gatt.unsubscribe') {
@@ -1331,9 +1367,12 @@ export class ElectronMainBleRouter {
         uuid: String(service.path.serviceUuid),
         occurrence: String(service.path.serviceOccurrence),
         primary: service.primary,
-        includedServices: service.includedServices.map(included =>
-          Object.freeze({ uuid: String(included.uuid), occurrence: String(included.occurrence) })
-        ),
+        includedServices:
+          service.includedServices === null
+            ? null
+            : service.includedServices.map(included =>
+                Object.freeze({ uuid: String(included.uuid), occurrence: String(included.occurrence) })
+              ),
         ...(service.restriction === undefined ? {} : { restriction: serializeServiceRestriction(service.restriction) })
       })
     )
@@ -1409,7 +1448,8 @@ export class ElectronMainBleRouter {
     resources: RendererResources,
     payload: SerializableRecord,
     binaryPayload: OwnedBytes | null,
-    controller: AbortController
+    controller: AbortController,
+    waitReady = false
   ): Promise<SerializableRecord> {
     if (binaryPayload === null) {
       throw contractError('bytes.invalid', 'ipc', 'electron-main-router.write-missing-bytes')
@@ -1417,7 +1457,14 @@ export class ElectronMainBleRouter {
     const database = this.database(resources, payload)
     const path = this.characteristic(database, payload)
     const mode = requiredWriteMode(payload)
-    const receipt = await database.database.write(path, new Uint8Array(binaryPayload), {
+    if (waitReady && mode !== 'without-response') {
+      throw contractError('argument.invalid', 'gatt', 'electron-main-router.write-when-ready.mode')
+    }
+    const write = waitReady ? database.database.writeWhenReady : database.database.write
+    if (write === undefined) {
+      throw contractError('capability.unsupported', 'gatt', 'electron-main-router.write-when-ready')
+    }
+    const receipt = await write.call(database.database, path, new Uint8Array(binaryPayload), {
       ...operationOptions(payload, controller),
       mode
     })
@@ -1456,16 +1503,23 @@ export class ElectronMainBleRouter {
   private async subscribe<Renderer extends string, Operation extends string>(
     resources: RendererResources,
     envelope: IpcEnvelope<string, Renderer, Operation>,
-    controller: AbortController
+    controller: AbortController,
+    acquired = false
   ): Promise<SerializableRecord> {
     const database = this.database(resources, envelope.payload)
     const path = this.characteristic(database, envelope.payload)
     const deliveryMode = requiredDeliveryMode(envelope.payload.deliveryMode)
-    const subscription = await database.database.subscribe(path, {
+    const options = {
       ...operationOptions(envelope.payload, controller),
       delivery: deliveryFromPayload(envelope.payload),
       ...(deliveryMode === undefined ? {} : { deliveryMode })
-    } satisfies SubscriptionOptions)
+    } satisfies SubscriptionOptions
+    const notifications = acquired ? await database.database.acquireNotifications(path, options) : null
+    const ordinary = notifications === null ? await database.database.subscribe(path, options) : null
+    const subscription =
+      notifications === null ? ordinary : { values: notifications.values, remove: () => notifications.close() }
+    if (subscription === null)
+      throw contractError('lifecycle.invariant-violation', 'gatt', 'electron.gatt.subscription-admission')
     const handle = this.allocateHandle('subscription')
     this.streams.registerSubscription(
       resources,
@@ -1474,7 +1528,90 @@ export class ElectronMainBleRouter {
       requiredString(envelope.payload, 'databaseHandle'),
       subscription
     )
-    return Object.freeze({ handle, observedDelivery: subscription.observedDelivery ?? 'unknown' })
+    return Object.freeze({
+      handle,
+      observedDelivery: ordinary?.observedDelivery ?? 'unknown',
+      ...(notifications === null ? {} : { mtuBytes: notifications.mtuBytes })
+    })
+  }
+
+  private async acquireWriter(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    const database = this.database(resources, payload)
+    const writer = await database.database.acquireWrite(
+      this.characteristic(database, payload),
+      operationOptions(payload, controller)
+    )
+    const handle = this.allocateHandle('acquired-writer')
+    resources.acquiredWriters.set(handle, {
+      writer,
+      databaseHandle: requiredString(payload, 'databaseHandle'),
+      connectionHandle: database.connectionHandle,
+      cleanup: null
+    })
+    return Object.freeze({ handle, mtuBytes: writer.mtuBytes })
+  }
+
+  private async writeAcquired(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    bytes: OwnedBytes | null,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    if (bytes === null) throw contractError('bytes.invalid', 'ipc', 'electron.acquired-write.bytes')
+    const entry = requiredResource(
+      resources.acquiredWriters,
+      requiredString(payload, 'acquiredHandle'),
+      'acquired-writer'
+    )
+    const database = this.database(resources, payload)
+    if (resources.databases.get(entry.databaseHandle) !== database)
+      throw contractError('ownership.denied', 'gatt', 'electron.acquired-write.database')
+    const receipt = await entry.writer.write(new Uint8Array(bytes), operationOptions(payload, controller))
+    return serializeWriteReceipt(receipt, 'without-response', bytes.byteLength)
+  }
+
+  private closeAcquiredWriter(resources: RendererResources, handle: string): Promise<CleanupRecord> {
+    const entry = resources.acquiredWriters.get(handle)
+    if (entry === undefined) {
+      if (releasedHandleTombstone(resources, handle)) return Promise.resolve({ state: 'released', failures: [] })
+      throw contractError('ownership.denied', 'ipc', 'electron.acquired-write.owner')
+    }
+    if (entry.cleanup !== null) return entry.cleanup
+    const result = entry.writer.close().then(
+      cleanup => {
+        if (cleanup.state === 'released') {
+          resources.acquiredWriters.delete(handle)
+          resources.releasedHandles.add(handle)
+        } else entry.cleanup = null
+        return cleanup
+      },
+      error => {
+        entry.cleanup = null
+        throw error
+      }
+    )
+    entry.cleanup = result
+    return result
+  }
+
+  private async releaseAcquiredWriters(
+    resources: RendererResources,
+    include: (entry: ManagedAcquiredWriter, handle: string) => boolean = () => true
+  ): Promise<CleanupRecord> {
+    const failures: CleanupFailure[] = []
+    for (const [handle, entry] of resources.acquiredWriters) {
+      if (!include(entry, handle)) continue
+      try {
+        failures.push(...(await this.closeAcquiredWriter(resources, handle)).failures)
+      } catch (error) {
+        failures.push({ resourceKind: 'acquired-gatt-writer', error: normalizedCleanupError(error) })
+      }
+    }
+    return { state: failures.length === 0 ? 'released' : 'release-failed', failures }
   }
 
   private async stopScan(resources: RendererResources, payload: SerializableRecord): Promise<SerializableRecord> {
@@ -1491,6 +1628,8 @@ export class ElectronMainBleRouter {
       if (releasedHandleTombstone(resources, handle)) return alreadyReleasedCleanup()
       throw contractError('ownership.denied', 'ipc', 'electron-main-router.connection-ownership')
     }
+    const writerCleanup = await this.releaseAcquiredWriters(resources, entry => entry.connectionHandle === handle)
+    if (writerCleanup.state === 'release-failed') return cleanupRecord(writerCleanup)
     const readinessCleanup = await this.releaseReadinessWatches(resources, handle)
     if (readinessCleanup.length > 0) {
       return cleanupRecord({ state: 'release-failed', failures: readinessCleanup })
@@ -1558,7 +1697,10 @@ export class ElectronMainBleRouter {
     return cleanupRecord(cleanup)
   }
 
-  private releaseDatabase(resources: RendererResources, payload: SerializableRecord): SerializableRecord {
+  private async releaseDatabase(
+    resources: RendererResources,
+    payload: SerializableRecord
+  ): Promise<SerializableRecord> {
     const handle = requiredString(payload, 'databaseHandle')
     const database = resources.databases.get(handle)
     if (database === undefined) return Object.freeze({ state: 'released', failures: [] })
@@ -1568,6 +1710,15 @@ export class ElectronMainBleRouter {
     ) {
       throw contractError('protocol.violation', 'ipc', 'electron-main-router.database-release-connection')
     }
+    const cleanup = await this.releaseAcquiredWriters(resources, entry => entry.databaseHandle === handle)
+    const failures = [...cleanup.failures]
+    for (const [subscriptionHandle, subscription] of resources.subscriptions) {
+      if (subscription.databaseHandle === handle)
+        failures.push(
+          ...(await this.streams.removeSubscription(resources, subscriptionHandle, subscription, true)).failures
+        )
+    }
+    if (failures.length > 0) return cleanupRecord({ state: 'release-failed', failures })
     resources.databases.delete(handle)
     return Object.freeze({ state: 'released', failures: [] })
   }
@@ -1648,6 +1799,7 @@ export class ElectronMainBleRouter {
       await operation.settled
     }
     const failures: CleanupFailure[] = []
+    failures.push(...(await this.releaseAcquiredWriters(resources)).failures)
     failures.push(...(await this.releaseReadinessWatches(resources)))
     failures.push(...(await this.releaseParameterWatches(resources)))
     for (const handle of resources.securityWatches.keys()) {
@@ -1700,6 +1852,7 @@ export class ElectronMainBleRouter {
       resources.scans.size === 0 &&
       resources.connectionEventSubscriptions.size === 0 &&
       resources.subscriptions.size === 0 &&
+      resources.acquiredWriters.size === 0 &&
       resources.connections.size === 0 &&
       resources.databases.size === 0
     ) {
@@ -1720,6 +1873,10 @@ export class ElectronMainBleRouter {
     snapshot: RendererResourceSnapshot
   ): Promise<CleanupRecord> {
     const failures: CleanupFailure[] = []
+    failures.push(
+      ...(await this.releaseAcquiredWriters(resources, (_entry, handle) => !snapshot.acquiredWriters.has(handle)))
+        .failures
+    )
     for (const handle of resources.readinessWatches.keys()) {
       if (snapshot.readinessWatches.has(handle)) continue
       try {
@@ -1799,7 +1956,7 @@ export class ElectronMainBleRouter {
       }
     }
     for (const [handle, connection] of resources.connections) {
-      if (snapshot.connections.has(handle)) {
+      if (snapshot.connections.has(handle) || this.hasDependentResourcesForConnection(resources, handle)) {
         continue
       }
       const cleanup = await this.disconnectConnection(resources, handle, connection)
@@ -1813,7 +1970,12 @@ export class ElectronMainBleRouter {
     }
     for (const handle of resources.databases.keys()) {
       if (!snapshot.databases.has(handle)) {
-        resources.databases.delete(handle)
+        const cleanup = await this.releaseDatabase(resources, Object.freeze({ databaseHandle: handle }))
+        if (cleanup.state !== 'released')
+          failures.push({
+            resourceKind: 'gatt-database',
+            error: contractError('lifecycle.invalid-state', 'cleanup', 'electron.rollback.database-retained').normalized
+          })
       }
     }
     return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
@@ -1916,6 +2078,9 @@ export class ElectronMainBleRouter {
   }
 
   private hasDependentResourcesForConnection(resources: RendererResources, connectionHandle: string): boolean {
+    for (const entry of resources.acquiredWriters.values()) {
+      if (entry.connectionHandle === connectionHandle) return true
+    }
     for (const resource of resources.connectionEventSubscriptions.values()) {
       if (resource.connectionHandle === connectionHandle) {
         return true
@@ -1946,7 +2111,12 @@ export class ElectronMainBleRouter {
       if (database.connectionHandle !== connectionHandle) {
         continue
       }
-      let retired = true
+      const writerCleanup = await this.releaseAcquiredWriters(
+        resources,
+        entry => entry.databaseHandle === databaseHandle
+      )
+      failures.push(...writerCleanup.failures)
+      let retired = writerCleanup.state === 'released'
       for (const [subscriptionHandle, subscription] of resources.subscriptions) {
         if (subscription.databaseHandle !== databaseHandle) {
           continue
@@ -1981,6 +2151,7 @@ export class ElectronMainBleRouter {
       connectionEventSubscriptions: new Map(),
       databases: new Map(),
       subscriptions: new Map(),
+      acquiredWriters: new Map(),
       operations: new Map(),
       preCancelledOperations: new Map(),
       settledOperations: new Map(),
@@ -1993,7 +2164,7 @@ export class ElectronMainBleRouter {
   }
 
   private allocateHandle(
-    kind: 'scan' | 'connection' | 'characteristic' | 'descriptor' | 'database' | 'subscription'
+    kind: 'scan' | 'connection' | 'characteristic' | 'descriptor' | 'database' | 'subscription' | 'acquired-writer'
   ): string {
     for (;;) {
       const handle = `${kind}-${this.nextHandle++}`
@@ -2013,7 +2184,8 @@ export class ElectronMainBleRouter {
         resources.connections.has(handle) ||
         resources.connectionEventSubscriptions.has(handle) ||
         resources.databases.has(handle) ||
-        resources.subscriptions.has(handle)
+        resources.subscriptions.has(handle) ||
+        resources.acquiredWriters.has(handle)
       ) {
         return true
       }
@@ -2107,7 +2279,8 @@ function snapshotResourceHandles(resources: RendererResources): RendererResource
     connections: new Set(resources.connections.keys()),
     connectionEventSubscriptions: new Set(resources.connectionEventSubscriptions.keys()),
     databases: new Set(resources.databases.keys()),
-    subscriptions: new Set(resources.subscriptions.keys())
+    subscriptions: new Set(resources.subscriptions.keys()),
+    acquiredWriters: new Set(resources.acquiredWriters.keys())
   }
 }
 
@@ -2248,6 +2421,7 @@ function isDestructiveCleanupCommand(command: string): boolean {
     command === 'connection.disconnect' ||
     command === 'connection.events.unsubscribe' ||
     command === 'gatt.unsubscribe' ||
+    command === 'gatt.acquired-write.close' ||
     command === 'gatt.database.release'
   )
 }
@@ -2263,6 +2437,8 @@ function reportsCompletedEffect(command: string): boolean {
   return (
     isDestructiveCleanupCommand(command) ||
     command === 'gatt.write' ||
+    command === 'gatt.acquired-write' ||
+    command === 'gatt.write-when-ready' ||
     command === 'gatt.descriptor.write' ||
     command === 'security.pair' ||
     command === 'security.cancel-pairing' ||

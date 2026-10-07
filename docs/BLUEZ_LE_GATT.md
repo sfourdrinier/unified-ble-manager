@@ -14,7 +14,7 @@ Scanning does not require this extension; strict connection/GATT work does.
 
 The native authority additionally requires
 `org.unifiedblemanager.LinuxAuthority1.GetContract` on the selected adapter,
-with the exact three-unsigned-integer reply `(1, 2, 1)` for contract, lease and
+with the exact three-unsigned-integer reply `(1, 3, 1)` for contract, lease and
 GATT observer versions. Missing, malformed or unknown answers refuse lifecycle
 admission and keep their native failure details. The maintained source extension
 supplies the lease producer and fresh GATT observer together. Installing UBM
@@ -23,13 +23,13 @@ alone does not install that derivative daemon.
 Initial `when-available` additionally probes the optional revision-1
 `LinuxAuthority1.GetLeAvailability` / `LeAdvertisement` observer introduced in
 maintained `5.87-ubm.5`. It proves fresh connectable LE advertisement availability,
-not GATT readiness, and does not change the `(1, 2, 1)` lease/GATT tuple. Older
+not GATT readiness, and does not change the `(1, 3, 1)` lease/GATT tuple. Older
 daemons retain direct acquisition but report deferred acquisition unsupported.
 See [deployment prerequisites](BLUEZ_DEPLOYMENT.md#optional-authoritative-deferred-le-availability)
 and [client ownership](NODE.md#linux-initial-deferred-acquisition). Installing or
 testing this source is not physical-radio qualification.
 
-Lease revision 2's exact `ReleaseLease` reply is `uttsby` (version, original
+Lease revision 3's exact `ReleaseLease` reply is `uttsby` (version, original
 token, physical generation, scope, observed-reason presence, raw MGMT byte).
 The reason is captured only from the exact generation's native physical-loss
 callback and retained in the release answer, so reply-before-signal scheduling
@@ -87,7 +87,15 @@ Release replies retain version, exact token, physical LE generation and scope:
 `physical-released`, `reservation-released`, `lease-released-protected`, or
 `lease-released-indeterminate`. A matching `lease-released-protected` receipt
 retires this logical lease only: the other owner's link stays up, and this
-manager records no physical generation, disconnect reason, or `AckLease`.
+manager records no physical generation or disconnect reason. It still
+acknowledges the exact token. Lease revision 3 transfers deferred cleanup to
+one daemon-owned obligation for that physical generation before reclaiming
+the token. Once the final protecting interest ends, reconciliation runs even
+while the original sender remains alive. Disconnect refusals retain that
+obligation and a bounded retry; loss or generation replacement retires it.
+An ACK never disconnects a foreign-owned or indeterminate link, evicts an
+unresolved token, or fabricates a physical-loss receipt. Duplicate ACKs remain
+idempotent through exact sender-bound token and reservation fences.
 `lease-released-indeterminate`, a protected receipt whose token or generation
 does not match, and a protected receipt that carries a disconnect reason stay
 retry-owned failures. They are not turned into a successful disconnect. A finished

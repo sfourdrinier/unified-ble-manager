@@ -224,6 +224,10 @@ impl From<BluetoothError> for Error {
 /// labelled as such. The legacy BlueZ backend read the same properties.
 fn device_state_report(device: &bluez_async::DeviceInfo) -> crate::api::AdvertisementReport {
     DeviceState {
+        address_type: match device.address_type {
+            bluez_async::AddressType::Public => crate::api::AddressType::Public,
+            bluez_async::AddressType::Random => crate::api::AddressType::Random,
+        },
         name: device.name.clone(),
         rssi: device.rssi,
         tx_power: device.tx_power,
@@ -236,6 +240,7 @@ fn device_state_report(device: &bluez_async::DeviceInfo) -> crate::api::Advertis
 
 /// The `Device1` facts a sighting carries.
 struct DeviceState {
+    address_type: crate::api::AddressType,
     name: Option<String>,
     rssi: Option<i16>,
     tx_power: Option<i16>,
@@ -247,6 +252,7 @@ struct DeviceState {
 impl DeviceState {
     fn report(self) -> crate::api::AdvertisementReport {
         crate::api::AdvertisementReport {
+            address_type: Some(self.address_type),
             source: crate::api::ReportSource::DeviceState,
             local_name: self.name,
             rssi: self.rssi,
@@ -430,6 +436,7 @@ mod ubm_discovery_filter_tests {
             services: Vec::new(),
             allow_duplicates: Some(false),
             name_prefix: Some("Polar".to_owned()),
+            windows: None,
         });
         assert_eq!(filter.pattern.as_deref(), Some("Polar"));
         assert_eq!(filter.duplicate_data, Some(false));
@@ -479,6 +486,7 @@ mod ubm_sighting_tests {
             0x0000180d_0000_1000_8000_00805f9b34fb,
         )];
         let report = DeviceState {
+            address_type: crate::api::AddressType::Public,
             name: Some("Polar H10".to_owned()),
             rssi: Some(-60),
             tx_power: Some(4),
@@ -488,6 +496,7 @@ mod ubm_sighting_tests {
         }
         .report();
         assert_eq!(report.source, ReportSource::DeviceState);
+        assert_eq!(report.address_type, Some(crate::api::AddressType::Public));
         assert_eq!(report.local_name.as_deref(), Some("Polar H10"));
         assert_eq!(report.rssi, Some(-60));
         assert_eq!(report.tx_power_level, Some(4));

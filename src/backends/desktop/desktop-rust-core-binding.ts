@@ -53,6 +53,7 @@ export interface DesktopRustCoreGattTarget extends DesktopRustCoreControl {
 export interface DesktopRustCoreAdvertisement {
   readonly peerId: string
   readonly address?: string | null
+  readonly addressType?: 'public' | 'random' | null
   readonly rssi?: number | null
   readonly localName?: string | null
   readonly serviceUuids: readonly string[]
@@ -97,6 +98,8 @@ export interface DesktopRustCoreCharacteristicAccess {
 }
 
 export interface DesktopRustCorePath {
+  readonly servicePrimary?: boolean | null
+  readonly includedServices?: readonly { readonly uuid: string; readonly occurrence: number }[] | null
   readonly serviceUuid: string
   readonly serviceOccurrence: number
   readonly characteristicUuid?: string | null
@@ -138,7 +141,7 @@ export interface DesktopRustCoreConnectionParameters {
 
 /** One connection-parameter report, or a gap marker. */
 export interface DesktopRustCoreConnectionParametersEvent {
-  readonly kind: 'state' | 'lagged' | 'closed'
+  readonly kind: 'state' | 'lagged' | 'closed' | 'source-failed'
   readonly sequence?: number | null
   readonly peerId?: string | null
   readonly connectionGeneration?: string | null
@@ -146,6 +149,7 @@ export interface DesktopRustCoreConnectionParametersEvent {
   readonly latency?: number | null
   readonly supervisionTimeoutUs?: number | null
   readonly missed?: number | null
+  readonly error?: string | null
 }
 
 /** One write-without-response readiness report, or a gap marker. */
@@ -391,7 +395,7 @@ export interface DesktopRustCoreCentral {
   continuationRecordingAcknowledge?(id: string, token: string): Promise<string>
   continuationRecordingStop?(id: string): Promise<string>
   continuationRecordingClear?(id: string): Promise<string>
-  createTicket(): string
+  createTicket(gattPeerId?: string): string
   cancelTicket(ticket: string): Promise<DesktopRustCoreTicketCancel>
   releaseTicket(ticket: string): boolean
   adapterName(): Promise<string>
@@ -399,12 +403,26 @@ export interface DesktopRustCoreCentral {
   takeAdapterEvent(): Promise<DesktopRustCoreAdapterEvent | null>
   takeLifecycleEvent(): Promise<DesktopRustCoreLifecycleEvent | null>
   dispatchCounters(): DesktopRustCoreDispatchCounters
+  resourceCounters(): Promise<{
+    readonly nativeGattAdmissions: number
+    readonly acquiredGattTransports: number
+    readonly pendingGattAcquisitions: number
+    readonly routedSubscriptions: number
+    readonly pendingDisables: number
+    readonly retainedEnablements: number
+    readonly liveOperations: number
+    readonly liveConnections: number
+    readonly liveConsumers: number
+    readonly scanOwned: boolean
+  }>
   startScan(
     options: {
       readonly owner: string
       readonly serviceUuids: string[]
       /** The OS duplicate filter policy (`all` when absent). */
       readonly duplicatePolicy?: 'all' | 'first' | 'merged'
+      readonly winrtScanningMode?: 'active' | 'passive' | 'none'
+      readonly winrtAllowExtendedAdvertisements?: boolean
       /**
        * The local-name prefix the OS filter narrows by (BlueZ
        * `SetDiscoveryFilter` `Pattern`; CoreBluetooth and WinRT ignore it).
@@ -426,8 +444,19 @@ export interface DesktopRustCoreCentral {
   ): Promise<DesktopRustCoreConnectionReleaseReport>
   readRssi(options: { readonly peerId: string; readonly lease: string } & DesktopRustCoreControl): Promise<number>
   /** Observed connection parameters. Interval and supervision timeout are microseconds. */
+  requestPriority(
+    options: {
+      readonly peerId: string
+      readonly lease: string
+      readonly priority: 'balanced' | 'high-throughput' | 'low-power'
+    } & DesktopRustCoreControl
+  ): Promise<boolean>
   connectionParameters(
-    options: { readonly peerId: string; readonly lease: string } & DesktopRustCoreControl
+    options: {
+      readonly peerId: string
+      readonly lease: string
+      readonly observationWatch?: boolean
+    } & DesktopRustCoreControl
   ): Promise<DesktopRustCoreConnectionParameters>
   takeConnectionParameterEvent(): Promise<DesktopRustCoreConnectionParametersEvent | null>
   /**
@@ -457,6 +486,25 @@ export interface DesktopRustCoreCentral {
       readonly mode?: string
     } & DesktopRustCoreGattTarget
   ): Promise<void>
+  writeWhenReady(
+    options: { readonly value: Uint8Array; readonly mode: 'without-response' } & DesktopRustCoreGattTarget
+  ): Promise<void>
+  acquireGatt(
+    options: DesktopRustCoreGattTarget,
+    kind: 'write' | 'notify'
+  ): Promise<{ readonly handle: string; readonly mtu: number }>
+  acquiredWrite(
+    options: DesktopRustCoreControl & {
+      readonly peerId: string
+      readonly lease: string
+      readonly handle: string
+      readonly value: Uint8Array
+    }
+  ): Promise<void>
+  acquiredReceive(
+    options: DesktopRustCoreControl & { readonly lease: string; readonly handle: string }
+  ): Promise<Uint8Array>
+  closeAcquired(options: DesktopRustCoreControl & { readonly lease: string; readonly handle: string }): Promise<void>
   readDescriptor(options: DesktopRustCoreGattTarget): Promise<Uint8Array>
   writeDescriptor(
     options: {
@@ -467,6 +515,8 @@ export interface DesktopRustCoreCentral {
     options: {
       readonly consumer: string
       readonly deliveryMode?: 'notification' | 'indication'
+      /** A soft preference; unsupported modes fall back to the platform's supported mode. */
+      readonly preferredDeliveryMode?: 'notification' | 'indication'
       /** The consumer's overflow policy in the core (`error` when absent). */
       readonly overflowPolicy?: 'error' | 'drop-oldest' | 'drop-newest' | 'latest'
     } & DesktopRustCoreGattTarget
@@ -538,6 +588,7 @@ export interface DesktopRustCoreCentral {
   eventWakeFailures(): number
   /** Every resolved radio peer with the core's connection facts (the re-read after a lifecycle lag). */
   peerRecords(): Promise<DesktopRustCorePeerRecord[]>
+  knownDirectoryPeers(options?: DesktopRustCoreControl): Promise<readonly DesktopRustCoreDirectoryPeer[]>
   connectedPeers(
     options: { readonly services: readonly string[] } & DesktopRustCoreControl
   ): Promise<DesktopRustCoreDirectoryPeer[]>

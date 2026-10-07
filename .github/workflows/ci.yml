@@ -317,9 +317,13 @@ jobs:
   # Packed Bun 1.4.2 and Node consume the sealed desktop prebuild through the
   # public package. The source-mode smoke above does not cover this.
   bun-desktop-packed:
-    name: Packed Bun desktop acceptance
+    name: Packed Node/Bun desktop acceptance (${{ matrix.os }})
     timeout-minutes: 90
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.0
@@ -334,12 +338,13 @@ jobs:
         run: cargo --version
 
       - name: Install Linux native build dependencies
+        if: runner.os == 'Linux'
         run: bash scripts/ci/install-linux-native-system-dependencies.sh desktop-prebuild
 
       - name: Install Bun 1.4.2
-        run: |
-          curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.2"
-          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.4.2'
 
       - name: Build the desktop-core prebuild
         run: pnpm native-prebuild:build -- --backend desktop-core

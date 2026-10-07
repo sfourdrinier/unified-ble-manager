@@ -15,17 +15,22 @@ test.each([
   ['winrt', 'AA:BB:CC:DD:EE:FF', 'win32'],
   ['bluez', 'hci0/dev_AA_BB_CC_DD_EE_FF', 'linux']
 ])(
-  'public bonded reference resolves current native inventory before explicit %s connection',
+  'public bonded reference resolves the independent known OS route before explicit %s connection',
   async (platform, peerId, hostPlatform) => {
     const harness = h.realBinding(platform)
     const open = harness.binding.openSynthetic
     let records = [{ peerId, name: 'saved H10', connection: 'disconnected' }]
     const bonded = jest.fn(async () => records)
+    const resolve = jest.fn(async id => records.find(record => record.peerId === id) ?? null)
     harness.binding.openSynthetic = async (...args) => {
       const central = await open(...args)
       return new Proxy(central, {
         get(target, key) {
-          return key === 'bondedPeers' ? bonded : Reflect.get(target, key)
+          return key === 'bondedPeers'
+            ? bonded
+            : key === 'resolvePeer'
+              ? options => resolve(options.peerId)
+              : Reflect.get(target, key)
         }
       })
     }
@@ -48,13 +53,15 @@ test.each([
       const [peer] = await manager.peers.bonded()
       expect(harness.calls.filter(([method]) => method === 'connect')).toHaveLength(0)
       const connection = await manager.connect(peer.reference, { timeoutMs: 1000 })
-      expect(bonded).toHaveBeenCalledTimes(2)
+      expect(bonded).toHaveBeenCalledTimes(1)
+      expect(resolve).toHaveBeenCalledTimes(1)
       expect(harness.calls.filter(([method]) => method === 'resolvePeer')).toHaveLength(0)
       expect(harness.calls.filter(([method]) => method === 'connect')).toHaveLength(1)
       expect(await connection.release()).toEqual({ state: 'released', failures: [] })
       records = []
       expect(await manager.peers.resolve(peer.reference)).toBeNull()
-      expect(manager.capabilities.supports('peer:known')).toBe(false)
+      expect(manager.capabilities.get('peer:known').state).toBe('limited')
+      expect(resolve).toHaveBeenCalledTimes(2)
     } finally {
       expect(await manager.destroy()).toEqual({ state: 'released', failures: [] })
     }
@@ -148,3 +155,55 @@ test('resolve reaches the same native identity and late completion after destroy
   complete([{ peerId: ID, name: null, connection: 'connected' }])
   await checked
 })
+
+test.each([
+  ['winrt', 'public:AA:BB:CC:DD:EE:FF', 'win32'],
+  ['bluez', 'hci0/dev_AA_BB_CC_DD_EE_FF', 'linux']
+])(
+  '%s public known/system directory joins the actual addon without creating a lease',
+  async (platform, peerId, hostPlatform) => {
+    const harness = h.realBinding(platform)
+    const now = () => performance.now()
+    const provider = createTestDesktopRustCoreBackendProvider({
+      platform,
+      owner: 'native-directories',
+      now,
+      radio: 'synthetic',
+      binding: harness.binding,
+      hostPlatform
+    })
+    const manager = await createPublicBleManager(
+      await createNodeBleManagerFromProvider(provider, DESKTOP_RUST_CORE_PROFILES[platform].compatibility, { now }),
+      now
+    )
+    const stage = harness.opened.at(-1)
+    try {
+      await stage.stageKnownDirectoryPeers([{ peerId, name: 'unbonded OS-visible peer' }])
+      await stage.stageDirectoryPeers([{ peerId, name: 'foreign app connected peer' }])
+      const [known] = await manager.peers.known()
+      expect(known).toMatchObject({
+        name: 'unbonded OS-visible peer',
+        sources: ['backend-cache'],
+        state: { connection: 'unknown' }
+      })
+      const [connected] = await manager.peers.connected()
+      expect(connected).toMatchObject({
+        name: 'foreign app connected peer',
+        sources: ['system-connected'],
+        state: { connection: 'connected' }
+      })
+      expect(await manager.peers.resolve(known.reference)).not.toBeNull()
+      for (const method of ['connect', 'startScan', 'pair'])
+        expect(harness.calls.filter(([name]) => name === method)).toHaveLength(0)
+      const records = await stage.peerRecords()
+      expect(records).toEqual([])
+      await stage.stageKnownDirectoryPeers([])
+      await stage.stageDirectoryPeers([])
+      expect(await manager.peers.known()).toEqual([])
+      expect(await manager.peers.resolve(known.reference)).toBeNull()
+    } finally {
+      await manager.destroy()
+    }
+  },
+  30000
+)

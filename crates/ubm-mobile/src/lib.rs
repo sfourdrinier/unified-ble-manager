@@ -4,7 +4,7 @@
 //! (through [`ubm_desktop::DesktopCentral`]) over the platform radio
 //! ([`ForeignRadio`] → [`PlatformRadio`]); every React Native manager is a
 //! [`MobileSession`] lease on it. JS talks to a session through the
-//! `ubm-mobile-wire/1` op table ([`wire`], `docs/MOBILE_RUST_WIRE.md`):
+//! `ubm-mobile-wire/2` op table ([`wire`], `docs/MOBILE_RUST_WIRE.md`):
 //! `invoke` for operations, wake-driven `drain` for records.
 //!
 //! This crate has no path to the staged/fake radio: its production

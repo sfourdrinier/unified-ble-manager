@@ -147,13 +147,44 @@ export interface ScanOptions<Attachment extends string, Lease extends string> {
   readonly deadline: Deadline | null
   readonly signal: AbortSignal | null
   readonly sharing: ScanSharing<Attachment, Lease>
-  readonly platform?: {
-    readonly kind: 'android' | 'corebluetooth' | 'winrt' | 'web' | 'electron' | 'tauri'
-    readonly mode?: 'low-power' | 'balanced' | 'low-latency' | 'opportunistic'
-    readonly callbackType?: 'all-matches' | 'first-match' | 'match-lost'
-    readonly reportDelayMs?: number
-    readonly legacy?: boolean
-    readonly phy?: 'all-supported' | '1m' | 'coded'
+  readonly platform?:
+    | {
+        readonly kind: 'android'
+        readonly mode?: 'low-power' | 'balanced' | 'low-latency' | 'opportunistic'
+        readonly callbackType?: 'all-matches' | 'first-match' | 'match-lost'
+        readonly reportDelayMs?: number
+        readonly legacy?: boolean
+        readonly phy?: 'all-supported' | '1m' | 'coded'
+      }
+    | WinRtScanPlatformOptions
+    | { readonly kind: 'corebluetooth' | 'web' | 'electron' | 'tauri' }
+}
+
+/** Windows requests retain the OS's scan and advertisement-format semantics. */
+export interface WinRtScanPlatformOptions {
+  readonly kind: 'winrt'
+  readonly mode?: 'active' | 'passive' | 'none'
+  readonly allowExtendedAdvertisements?: boolean
+}
+
+export function decodeWinRtScanPlatformOptions(value: unknown, operation: string): WinRtScanPlatformOptions {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    throw contractError('argument.invalid', 'scan', operation)
+  const fields = Object.fromEntries(Object.entries(value))
+  const mode = fields.mode,
+    allowExtendedAdvertisements = fields.allowExtendedAdvertisements
+  if (
+    fields.kind !== 'winrt' ||
+    Object.keys(fields).some(key => !['kind', 'mode', 'allowExtendedAdvertisements'].includes(key)) ||
+    (mode !== undefined && mode !== 'active' && mode !== 'passive' && mode !== 'none') ||
+    (allowExtendedAdvertisements !== undefined && typeof allowExtendedAdvertisements !== 'boolean')
+  ) {
+    throw contractError('argument.invalid', 'scan', operation)
+  }
+  return {
+    kind: 'winrt',
+    ...(mode === undefined ? {} : { mode }),
+    ...(allowExtendedAdvertisements === undefined ? {} : { allowExtendedAdvertisements })
   }
 }
 export type OwnerScanOptions<Attachment extends string, Lease extends string> = Omit<

@@ -12,10 +12,6 @@ use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CommitState, CoreError};
 
 /// Preserve every independent native cleanup refusal in a singular result.
 /// One failure retains its exact identity and native answer unchanged.
-#[cfg(any(
-    test,
-    all(feature = "btleplug", any(target_os = "linux", target_os = "windows"))
-))]
 pub(crate) fn cleanup_result(
     domain: &str,
     mut failures: Vec<DesktopError>,
@@ -278,6 +274,8 @@ fn is_link_operation(operation: &str) -> bool {
         || operation.starts_with("discovery.")
         || operation == "connection.effective-mtu"
         || operation == "connection.rssi"
+        || operation == "connection.parameters"
+        || operation == "connection.request-priority"
         || operation == "peer.rssi"
 }
 
@@ -910,6 +908,7 @@ mod tests {
                 "gatt.write-readiness",
                 "connection.effective-mtu",
                 "connection.rssi",
+                "connection.parameters",
                 // The radio seam's name for the central `connection.rssi` read.
                 "peer.rssi",
             ] {

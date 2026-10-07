@@ -1,0 +1,24 @@
+{
+  "reviewHead": "b80542f39144949738b04dc7d19b4a7ee52cc8c6",
+  "scope": "real shared public IPC adapter with scripted host, no native radio",
+  "closes": 2,
+  "results": [
+    {
+      "case": "supported-readiness-unwired-helper",
+      "readiness": "ready true",
+      "actualHelperError": "capability.unsupported",
+      "nativeWrites": 0,
+      "expected": "same owned FIFO writeWhenReady helper as in-process macOS"
+    },
+    {
+      "case": "typed-source-error-fixed",
+      "hostError": "adapter.powered-off",
+      "actualPublicError": {
+        "code": "adapter.powered-off",
+        "operation": "host-readiness-source"
+      },
+      "publicBleError": true,
+      "expected": "preserve source code/detail and project a public BleError"
+    }
+  ]
+}

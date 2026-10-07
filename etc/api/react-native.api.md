@@ -3,8 +3,12 @@
 ```ts
 export function createReactNativeBleManager(options?: CreateReactNativeBleManagerOptions): Promise<BleManager>
 export function createReactNativeBleManagerWithEnvironment(options: ReactNativeBleManagerOptions): Promise<BleManager>
-export function createReactNativeAndroidBackendProvider(options: ReactNativeAndroidBackendProviderOptions): ReactNativeRustCoreBackendProvider
-export function createReactNativeAppleBackendProvider(options: ReactNativeAppleBackendProviderOptions): ReactNativeRustCoreBackendProvider
+export function createReactNativeAndroidBackendProvider(
+  options: ReactNativeAndroidBackendProviderOptions
+): ReactNativeRustCoreBackendProvider
+export function createReactNativeAppleBackendProvider(
+  options: ReactNativeAppleBackendProviderOptions
+): ReactNativeRustCoreBackendProvider
 export function createReactNativeRustCoreBinding(options: ReactNativeRustCoreBindingOptions): ReactNativeRustCoreBinding
 export type BleManagerCreateOptions = {
   readonly instanceId?: string
@@ -68,7 +72,7 @@ host/test seam; its internal options remain separate from the application API.
 - `ReactNativeRustCoreBindingPlatform :: "android" | "apple"`
 - `ReactNativeRustCorePlatform :: "android" | "apple"`
 - `ReactNativeRustCoreProviderOptions :: { readonly platform: ReactNativeRustCorePlatform; readonly binding: ReactNativeRustCoreBinding; readonly owner: string; readonly now: () => number; readonly runtime: ReactNativeRustCoreRuntimeFacts; readonly restorationAuthority?: (() => ReactNativeRestorationAuthority | null) | undefined; readonly createOwnerId?: (() => string) | undefined; readonly trace?: CoreTraceSink | undefined; readonly backgroundContinuation?: unknown }`
-- `ReactNativeRustCoreRuntimeFacts :: { readonly continuationBindingAvailable?: boolean | undefined; readonly androidApiLevel: number | null; readonly appleRestorationConfigured?: boolean | undefined; readonly systemChooserAvailable?: boolean | undefined; readonly authorizedAccessoryBindingAvailable?: boolean | undefined }`
+- `ReactNativeRustCoreRuntimeFacts :: { readonly continuationBindingAvailable?: boolean | undefined; readonly androidApiLevel: number | null; readonly androidSubrateAvailable?: boolean | undefined; readonly appleRestorationConfigured?: boolean | undefined; readonly systemChooserAvailable?: boolean | undefined; readonly authorizedAccessoryBindingAvailable?: boolean | undefined }`
 - `ReactNativeRustCoreSession :: { readonly sessionId: string; readonly buildIdentity: NativeBuildIdentityRecord; invoke<Op extends WireOp>(op: Op, args: WireJsonObject): Promise<WireOpResults[Op]>; drain(maxItems: number, maxBytes: number): Promise<WireDrainBatch>; onWake(listener: () => void): () => void; close(): Promise<void> }`
 - `RustCoreRestorationIdentityRequest :: { readonly restorationId: string; readonly generation: string }`
 - `RustCoreSessionWake :: { sessionId: string }`

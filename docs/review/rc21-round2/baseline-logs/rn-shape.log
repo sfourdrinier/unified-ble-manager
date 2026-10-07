@@ -1,0 +1,15 @@
+bun test v1.4.2 (744846f84)
+
+../ubm-pr251-review-b80542f3/unified-ble-manager-pr251-review-b80542f3/reproductions/native-connection-shape-repro.test.ts:
+{"platform":"android","method":"parameters","type":"undefined","error":"TypeError","message":"connection[method] is not a function. (In 'connection[method]()', 'connection[method]' is undefined)"}
+{"platform":"android","method":"parameterEvents","type":"undefined","error":"TypeError","message":"connection[method] is not a function. (In 'connection[method]()', 'connection[method]' is undefined)"}
+{"platform":"android","publicParametersError":"capability.unsupported"}
+(pass) missing native methods on android [14.28ms]
+{"platform":"apple","method":"parameters","type":"undefined","error":"TypeError","message":"connection[method] is not a function. (In 'connection[method]()', 'connection[method]' is undefined)"}
+{"platform":"apple","method":"parameterEvents","type":"undefined","error":"TypeError","message":"connection[method] is not a function. (In 'connection[method]()', 'connection[method]' is undefined)"}
+{"platform":"apple","publicParametersError":"capability.unsupported"}
+(pass) missing native methods on apple [1.47ms]
+
+ 2 pass
+ 0 fail
+Ran 2 tests across 1 file. [64.00ms]

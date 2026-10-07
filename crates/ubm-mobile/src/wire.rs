@@ -1,4 +1,4 @@
-//! Rust half of wire revision `ubm-mobile-wire/1` (the TS half is
+//! Rust half of wire revision `ubm-mobile-wire/2` (the TS half is
 //! `src/backends/reactnative/rust-core-wire.ts`; golden vectors bind the
 //! two, see `docs/MOBILE_RUST_WIRE.md`).
 //!
@@ -19,7 +19,7 @@ use ubm_core::contracts::{BleErrorCode, BleErrorDomain, MAX_OPERATION_BYTES};
 use ubm_desktop::{DesktopError, PlatformDetail, PlatformValue};
 
 /// Wire revision this crate speaks.
-pub const WIRE_REVISION: &str = "ubm-mobile-wire/1";
+pub const WIRE_REVISION: &str = "ubm-mobile-wire/2";
 /// Bound on any JSON text crossing the native boundary, in UTF-8 bytes.
 pub const MAX_WIRE_TEXT_BYTES: usize = 1 << 20;
 /// Longest padded base64 text that can encode `MAX_OPERATION_BYTES`.

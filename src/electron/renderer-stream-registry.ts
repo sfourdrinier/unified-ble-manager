@@ -43,7 +43,7 @@ export interface ManagedScan {
 
 export interface ManagedSubscription {
   readonly databaseHandle: string
-  readonly subscription: Subscription<string, HostNeutralBackendIdentity<string>>
+  readonly subscription: Pick<Subscription<string, HostNeutralBackendIdentity<string>>, 'values' | 'remove'>
   pump: Promise<void>
   cleanupRequested: boolean
   retryHandle: ReturnType<typeof setTimeout> | null
@@ -111,7 +111,7 @@ export class ElectronRendererStreamRegistry {
     rendererLease: RendererLeaseIdentity,
     handle: string,
     databaseHandle: string,
-    subscription: Subscription<string, HostNeutralBackendIdentity<string>>
+    subscription: Pick<Subscription<string, HostNeutralBackendIdentity<string>>, 'values' | 'remove'>
   ): ManagedSubscription {
     const resource: ManagedSubscription = {
       databaseHandle,

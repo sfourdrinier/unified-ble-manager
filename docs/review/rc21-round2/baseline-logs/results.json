@@ -1,0 +1,55 @@
+[
+  {
+    "name": "scan-evidence",
+    "exit": 0,
+    "log": "/tmp/ubm-rc21-verification/baseline/scan-evidence.log",
+    "tail": "    {\n      \"case\": \"nonempty-service-lists-not-unioned\",\n      \"actual\": \"no match for services.all [180D,180F]\",\n      \"expected\": \"merge the two in-window packet lists and match\"\n    },\n    {\n      \"case\": \"address-type-collision\",\n      \"actual\": \"random-peer falsely matches using public-peer name\",\n      \"expected\": \"never merge distinct peer identities\"\n    },\n    {\n      \"case\": \"inactive-peer-retention\",\n      \"inactivePeers\": 10000,\n      \"ageMs\": 60000,\n      \"retainedEntries\": 10001,\n      \"expected\": \"bounded retention with eviction independent of future packets from that identity\"\n    },\n    {\n      \"case\": \"ipc-shape\",\n      \"expiry\": \"same defect\",\n      \"listUnion\": \"same defect\",\n      \"identity\": \"same defect\"\n    }\n  ]\n}\n"
+  },
+  {
+    "name": "ipc-readiness",
+    "exit": 0,
+    "log": "/tmp/ubm-rc21-verification/baseline/ipc-readiness.log",
+    "tail": "ewHead\": \"b80542f39144949738b04dc7d19b4a7ee52cc8c6\",\n  \"scope\": \"real shared public IPC adapter with scripted host, no native radio\",\n  \"closes\": 2,\n  \"results\": [\n    {\n      \"case\": \"supported-readiness-unwired-helper\",\n      \"readiness\": \"ready true\",\n      \"actualHelperError\": \"capability.unsupported\",\n      \"nativeWrites\": 0,\n      \"expected\": \"same owned FIFO writeWhenReady helper as in-process macOS\"\n    },\n    {\n      \"case\": \"typed-source-error-fixed\",\n      \"hostError\": \"adapter.powered-off\",\n      \"actualPublicError\": {\n        \"code\": \"adapter.powered-off\",\n        \"operation\": \"host-readiness-source\"\n      },\n      \"publicBleError\": true,\n      \"expected\": \"preserve source code/detail and project a public BleError\"\n    }\n  ]\n}\n"
+  },
+  {
+    "name": "parameter-order",
+    "exit": 0,
+    "log": "/tmp/ubm-rc21-verification/baseline/parameter-order.log",
+    "tail": "{\n  \"runtime\": \"Bun 1.4.2\",\n  \"scope\": \"actual provider watch/event methods with deterministic native scheduling, no physical radio\",\n  \"expected\": \"Initial 30000 before newer 60000, or suppress obsolete initial sample; final current sample must be 60000\",\n  \"actualIntervalsUs\": [\n    60000,\n    30000\n  ],\n  \"actualOrdinals\": [\n    1,\n    2\n  ],\n  \"actualObservedTimes\": [\n    1,\n    2\n  ],\n  \"finalStateRegressed\": true\n}\n"
+  },
+  {
+    "name": "parameter-validation",
+    "exit": 0,
+    "log": "/tmp/ubm-rc21-verification/baseline/parameter-validation.log",
+    "tail": "{\n  \"runtime\": \"Bun 1.4.2\",\n  \"scope\": \"Actual public facade; fake internal source, no physical radio\",\n  \"expected\": \"Identical invalid all-zero sample must be rejected by both APIs\",\n  \"snapshot\": {\n    \"rejected\": \"protocol.violation\"\n  },\n  \"stream\": {\n    \"connectionGeneration\": \"generation-1\",\n    \"observedAtMonotonicMs\": 100,\n    \"source\": \"backend\",\n    \"authority\": \"backend-observation\",\n    \"limitations\": [],\n    \"state\": \"measured\",\n    \"intervalMs\": 0,\n    \"peripheralLatency\": 0,\n    \"supervisionTimeoutMs\": 0,\n    \"subrateFactor\": null,\n    \"connectionEventLengthMs\": null\n  }\n}\n"
+  },
+  {
+    "name": "rn-shape",
+    "exit": 0,
+    "log": "/tmp/ubm-rc21-verification/baseline/rn-shape.log",
+    "tail": "connection[method]()', 'connection[method]' is undefined)\"}\n{\"platform\":\"android\",\"publicParametersError\":\"capability.unsupported\"}\n(pass) missing native methods on android [14.28ms]\n{\"platform\":\"apple\",\"method\":\"parameters\",\"type\":\"undefined\",\"error\":\"TypeError\",\"message\":\"connection[method] is not a function. (In 'connection[method]()', 'connection[method]' is undefined)\"}\n{\"platform\":\"apple\",\"method\":\"parameterEvents\",\"type\":\"undefined\",\"error\":\"TypeError\",\"message\":\"connection[method] is not a function. (In 'connection[method]()', 'connection[method]' is undefined)\"}\n{\"platform\":\"apple\",\"publicParametersError\":\"capability.unsupported\"}\n(pass) missing native methods on apple [1.47ms]\n\n 2 pass\n 0 fail\nRan 2 tests across 1 file. [64.00ms]\n"
+  },
+  {
+    "name": "rn-readiness",
+    "exit": 0,
+    "log": "/tmp/ubm-rc21-verification/baseline/rn-readiness.log",
+    "tail": "passes an earlier public writeWhenReady [2.24ms]\nINVALIDATION REPRO {\n  readAfterInvalidation: \"gatt.stale-handle\",\n  pendingWrite: \"pending\",\n}\n(pass) REPRO: database invalidation leaves public writeWhenReady pending until an unrelated ready edge [2.88ms]\nDRAIN FAILURE REPRO {\n  sourceFailure: \"injected native drain failure\",\n  publicNext: {\n    done: true,\n    value: undefined,\n  },\n}\n(pass) REPRO: native drain failure becomes normal public readiness completion [2.01ms]\nFAILED CLEANUP REPRO {\n  sourceFailed: true,\n  disconnectFailed: true,\n  publicNext: \"pending\",\n}\n(pass) REPRO: native drain failure leaves readiness pending if connection cleanup also fails [1.54ms]\n\n 5 pass\n 0 fail\n 13 expect() calls\nRan 5 tests across 1 file. [76.00ms]\n"
+  },
+  {
+    "name": "linux-controls",
+    "exit": 1,
+    "log": "/tmp/ubm-rc21-verification/baseline/linux-controls.log",
+    "tail": ""
+  },
+  {
+    "name": "linux-controls-lx5090",
+    "baseline": "a94bee1e3c875c3471000f26b42555776d74f5b3",
+    "reviewed_linux_sources": "byte-identical to b80542f39144949738b04dc7d19b4a7ee52cc8c6",
+    "wrapper_exit": 0,
+    "generated_executable_exit": 1,
+    "fault_scenarios_reproduced": 7,
+    "positive_controls_passed": 6,
+    "log": "linux-controls-lx5090.log",
+    "scope": "complete production functions with controlled external boundaries; no physical-radio claim"
+  }
+]

@@ -123,6 +123,13 @@ bitflags! {
     }
 }
 
+/// An inclusion edge to a service instance in the same discovered graph.
+#[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Clone)]
+pub struct IncludedService {
+    pub uuid: Uuid,
+    pub instance: u64,
+}
+
 /// A GATT service. Services are groups of characteristics, which may be standard or
 /// device-specific.
 #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Clone)]
@@ -138,7 +145,9 @@ pub struct Service {
     /// discovery order.
     pub instance: u64,
     /// Whether this is a primary service.
-    pub primary: bool,
+    pub primary: Option<bool>,
+    /// `None` is unobserved; `Some([])` is an observed empty inclusion list.
+    pub included_services: Option<Vec<IncludedService>>,
     /// The characteristics of this service.
     pub characteristics: BTreeSet<Characteristic>,
 }
@@ -249,13 +258,112 @@ pub struct PeripheralProperties {
     pub class: Option<u32>,
 }
 
+/// Windows-native scan request; no Android scan controls are implied.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
     serde(crate = "serde_cr")
 )]
+pub enum WindowsScanningMode {
+    Passive,
+    #[default]
+    Active,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_cr")
+)]
+pub struct WindowsScanOptions {
+    pub mode: WindowsScanningMode,
+    pub allow_extended_advertisements: bool,
+}
+
+impl WindowsScanOptions {
+    pub fn validate_runtime(
+        self,
+        none_present: bool,
+        extended_present: bool,
+        adapter_extended: bool,
+    ) -> crate::Result<()> {
+        if self.mode == WindowsScanningMode::None && !none_present {
+            return Err(crate::Error::NotSupported(
+                "WinRT None reception is absent on this runtime".to_owned(),
+            ));
+        }
+        if self.allow_extended_advertisements && (!extended_present || !adapter_extended) {
+            return Err(crate::Error::NotSupported(
+                "WinRT extended reception requires the runtime API and default-adapter support"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod windows_scan_tests {
+    use super::{WindowsScanOptions, WindowsScanningMode};
+    #[test]
+    fn versioned_controls_refuse_missing_runtime_or_adapter_support_without_substitution() {
+        for mode in [WindowsScanningMode::Active, WindowsScanningMode::Passive] {
+            assert!(
+                WindowsScanOptions {
+                    mode,
+                    allow_extended_advertisements: false
+                }
+                .validate_runtime(false, false, false)
+                .is_ok()
+            );
+        }
+        let none = WindowsScanOptions {
+            mode: WindowsScanningMode::None,
+            allow_extended_advertisements: false,
+        };
+        assert!(matches!(
+            none.validate_runtime(false, true, true),
+            Err(crate::Error::NotSupported(_))
+        ));
+        assert!(none.validate_runtime(true, false, false).is_ok());
+        for (api, adapter) in [(false, false), (false, true), (true, false)] {
+            let extended = WindowsScanOptions {
+                mode: WindowsScanningMode::Active,
+                allow_extended_advertisements: true,
+            };
+            assert!(matches!(
+                extended.validate_runtime(true, api, adapter),
+                Err(crate::Error::NotSupported(_))
+            ));
+        }
+        assert!(
+            WindowsScanOptions {
+                mode: WindowsScanningMode::None,
+                allow_extended_advertisements: true
+            }
+            .validate_runtime(true, true, true)
+            .is_ok()
+        );
+        assert_eq!(
+            WindowsScanOptions::default(),
+            WindowsScanOptions {
+                mode: WindowsScanningMode::Active,
+                allow_extended_advertisements: false
+            }
+        );
+    }
+}
+
 /// The filter used when scanning for BLE devices.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_cr")
+)]
 pub struct ScanFilter {
     /// If the filter contains at least one service UUID, only devices supporting at least one of
     /// the given services will be available.
@@ -275,6 +383,8 @@ pub struct ScanFilter {
     /// name filter and ignore it. `None` sets no pattern.
     #[cfg_attr(feature = "serde", serde(default))]
     pub name_prefix: Option<String>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub windows: Option<WindowsScanOptions>,
 }
 
 /// Current BLE connection parameters as reported by the OS.
@@ -287,6 +397,10 @@ pub struct ConnectionParameters {
     /// Supervision timeout in microseconds (100_000..32_000_000).
     pub supervision_timeout_us: u32,
 }
+
+/// One native getter outcome; failures belong to the observation source.
+pub type ConnectionParametersReport =
+    std::result::Result<ConnectionParameters, crate::PlatformError>;
 
 /// Preferred connection parameter presets for requesting updates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -502,6 +616,9 @@ pub enum ReportSource {
 )]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AdvertisementReport {
+    /// Address identity captured with this sighting, never read later from
+    /// a mutable merged peripheral cache.
+    pub address_type: Option<AddressType>,
     pub source: ReportSource,
     pub local_name: Option<String>,
     pub rssi: Option<i16>,

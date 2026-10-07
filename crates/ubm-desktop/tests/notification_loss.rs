@@ -134,6 +134,8 @@ async fn the_central_ends_an_error_policy_stream_with_the_counted_loss() {
     central.boundary().set_services(
         "peer-1",
         vec![ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: HRM_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: vec![CharacteristicSnapshot {
@@ -264,6 +266,8 @@ async fn a_burst_before_the_host_polls_is_retained_up_to_the_public_maximum() {
     central.boundary().set_services(
         "peer-1",
         vec![ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: HRM_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: vec![CharacteristicSnapshot {
@@ -368,6 +372,8 @@ async fn values_held_at_invalidation_drain_before_it() {
         central.boundary().set_services(
             "peer-1",
             vec![ServiceSnapshot {
+                primary: None,
+                included_services: None,
                 uuid: HRM_SERVICE.to_owned(),
                 occurrence: 0,
                 characteristics: vec![CharacteristicSnapshot {
@@ -455,6 +461,8 @@ async fn a_lossy_subscriber_counts_a_loss_and_stays_live() {
     central.boundary().set_services(
         "peer-1",
         vec![ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: HRM_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: vec![CharacteristicSnapshot {

@@ -88,7 +88,7 @@ class RustCoreSessionsTest {
     }
   }
 
-  private fun open(): Captured = Captured().also { sessions.openSession("manager-a", "ubm-mobile-wire/1", it) }
+  private fun open(): Captured = Captured().also { sessions.openSession("manager-a", "ubm-mobile-wire/2", it) }
 
   private class QueuedExecutor : Executor {
     private val tasks = ArrayDeque<Runnable>()
@@ -119,13 +119,13 @@ class RustCoreSessionsTest {
   @Test
   fun admissionRefusalRejectsWithStructuredJson() {
     core.openFailure = MobileCoreBridge.MobileCoreException(
-      "protocol.incompatible|core|ubm-mobile.session.open|caller speaks x, owner speaks ubm-mobile-wire/1"
+      "protocol.incompatible|core|ubm-mobile.session.open|caller speaks x, owner speaks ubm-mobile-wire/2"
     )
     val rejection = open().rejection()
     assertEquals("protocol.incompatible", rejection.code)
     assertEquals(
       "{\"code\":\"protocol.incompatible\",\"domain\":\"core\",\"operation\":\"ubm-mobile.session.open\"," +
-        "\"detail\":\"caller speaks x, owner speaks ubm-mobile-wire/1\"}",
+        "\"detail\":\"caller speaks x, owner speaks ubm-mobile-wire/2\"}",
       rejection.toJson()
     )
     assertTrue(sessions.ownedSessions().isEmpty())
@@ -247,7 +247,7 @@ class RustCoreSessionsTest {
     open().single()
     val other = RustCoreSessions(core, host, DirectExecutor, { }, { packageName }, SecureRandom(), { })
     core.openRecord = { "{\"sessionId\":9}" }
-    Captured().also { other.openSession("manager-b", "ubm-mobile-wire/1", it) }.single()
+    Captured().also { other.openSession("manager-b", "ubm-mobile-wire/2", it) }.single()
     val scopes = core.openScopes
     assertEquals(3, scopes.size)
     assertEquals("a manager destroy/recreate stays in the module's scope", scopes[0], scopes[1])
@@ -272,7 +272,7 @@ class RustCoreSessionsTest {
     val processHost = RustCoreProcessHost(core, { unusedRadioHost() },
       { _, task -> cleanupTasks.execute(task) }, { logs.add(it) })
     val moduleSessions = RustCoreSessions(core, processHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
-    Captured().also { moduleSessions.openSession("manager-a", "ubm-mobile-wire/1", it) }.single()
+    Captured().also { moduleSessions.openSession("manager-a", "ubm-mobile-wire/2", it) }.single()
     core.scopeRelease = "{\"failures\":[{\"resourceKind\":\"background\",\"code\":\"platform.failure\"}],\"state\":\"release-failed\"}"
     moduleSessions.invalidate()
     core.callbacks.forEach { it.onResult("{\"ok\":true,\"value\":{\"failures\":[],\"state\":\"released\"}}") }
@@ -287,9 +287,9 @@ class RustCoreSessionsTest {
       { _, task -> cleanupTasks.execute(task) }, { logs.add(it) })
     val first = RustCoreSessions(core, processHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
     val second = RustCoreSessions(core, processHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
-    Captured().also { first.openSession("first", "ubm-mobile-wire/1", it) }.single()
+    Captured().also { first.openSession("first", "ubm-mobile-wire/2", it) }.single()
     core.openRecord = { "{\"sessionId\":8}" }
-    Captured().also { second.openSession("second", "ubm-mobile-wire/1", it) }.single()
+    Captured().also { second.openSession("second", "ubm-mobile-wire/2", it) }.single()
     val firstScope = core.openScopes[0]
     val secondScope = core.openScopes[1]
     core.scopeRelease = "{\"failures\":[{\"resourceKind\":\"background\",\"code\":\"platform.failure\"}],\"state\":\"release-failed\"}"
@@ -313,7 +313,7 @@ class RustCoreSessionsTest {
     val processHost = RustCoreProcessHost(core, { unusedRadioHost() },
       { _, task -> cleanupTasks.execute(task) }, { logs.add(it) })
     val moduleSessions = RustCoreSessions(core, processHost, DirectExecutor, {}, { packageName }, SecureRandom(), { logs.add(it) })
-    Captured().also { moduleSessions.openSession("manager", "ubm-mobile-wire/1", it) }.single()
+    Captured().also { moduleSessions.openSession("manager", "ubm-mobile-wire/2", it) }.single()
     val acquisition = Captured()
     moduleSessions.invoke("7", "background.acquire", "{\"kind\":\"connected-device\"}", acquisition)
     assertEquals(1, core.callbacks.size)
@@ -394,7 +394,7 @@ class RustCoreSessionsTest {
     )
     val admission = Captured()
 
-    queuedSessions.openSession("queued-manager", "ubm-mobile-wire/1", admission)
+    queuedSessions.openSession("queued-manager", "ubm-mobile-wire/2", admission)
     queuedSessions.invalidate()
     queued.runAll()
 
@@ -425,7 +425,7 @@ class RustCoreSessionsTest {
       SecureRandom(),
       { logs.add(it) }
     )
-    Captured().also { moduleSessions.openSession("manager-a", "ubm-mobile-wire/1", it) }.single()
+    Captured().also { moduleSessions.openSession("manager-a", "ubm-mobile-wire/2", it) }.single()
 
     moduleSessions.invalidate()
     core.callbacks.single().onResult(
@@ -447,7 +447,7 @@ class RustCoreSessionsTest {
     val wire = Captured().also { sessions.wireRevision(it) }
     assertEquals(core.buildIdentityJson(), build.single())
     assertEquals("C-UBM.test", contract.single())
-    assertEquals("ubm-mobile-wire/1", wire.single())
+    assertEquals("ubm-mobile-wire/2", wire.single())
   }
 
   @Test

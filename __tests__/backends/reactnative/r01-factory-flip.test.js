@@ -52,7 +52,7 @@ describe('R01 factory flip: the Rust core is the only route', () => {
     mockNativeModule = native
     const manager = await createReactNativeBleManagerWithEnvironment(environment())
     expect(count(native, 'openSession')).toBe(1)
-    expect(native.calls.find(call => call[0] === 'openSession')[2]).toBe('ubm-mobile-wire/1')
+    expect(native.calls.find(call => call[0] === 'openSession')[2]).toBe('ubm-mobile-wire/2')
     await manager.destroy()
     expect(count(native, 'closeSession')).toBe(1)
   })
@@ -77,7 +77,7 @@ describe('R01 factory flip: the Rust core is the only route', () => {
       JSON.stringify({
         sessionId: id,
         contractRevision: 'C-UBM.9.9.9-DRAFT',
-        wireRevision: 'ubm-mobile-wire/1',
+        wireRevision: 'ubm-mobile-wire/2',
         buildIdentity: native.identity
       })
     mockNativeModule = native

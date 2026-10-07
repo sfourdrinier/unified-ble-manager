@@ -224,7 +224,8 @@ export function createGattSnapshot(
       continue
     }
     const primary = booleanVariant(service, 'Primary')
-    const includedObjectPaths = objectPathArrayVariant(service, 'Includes')
+    const includedObjectPaths =
+      service.properties.Includes === undefined ? null : objectPathArrayVariant(service, 'Includes')
     const characteristics: BluezGattCharacteristicRecord[] = []
     for (const characteristicObject of objects) {
       const characteristic = findInterface(characteristicObject.interfaces, BLUEZ_GATT_CHARACTERISTIC_INTERFACE)
@@ -255,16 +256,17 @@ export function createGattSnapshot(
         objectPath: object.path,
         uuid: serviceUuid,
         primary,
-        // BlueZ may legitimately list an Includes entry whose object lives outside
-        // this device's resolved snapshot. The public included-service link is
-        // advisory {uuid, occurrence} metadata scoped to this database, so an
-        // unresolvable entry degrades to omission instead of failing discovery.
-        includedServices: Object.freeze(
-          includedObjectPaths.flatMap(objectPath => {
-            const uuid = serviceUuidsByPath.get(objectPath)
-            return uuid === undefined ? [] : [{ objectPath, uuid }]
-          })
-        ),
+        includedServices:
+          includedObjectPaths === null
+            ? null
+            : Object.freeze(
+                includedObjectPaths.map(objectPath => {
+                  const uuid = serviceUuidsByPath.get(objectPath)
+                  if (uuid === undefined)
+                    throw contractError('protocol.violation', 'gatt', 'bluez.gatt.included-service-unresolved')
+                  return { objectPath, uuid }
+                })
+              ),
         characteristics: Object.freeze(
           characteristics.sort((left, right) => left.objectPath.localeCompare(right.objectPath))
         )

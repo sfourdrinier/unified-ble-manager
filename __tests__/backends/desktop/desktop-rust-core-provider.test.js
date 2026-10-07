@@ -10,6 +10,8 @@
 const {
   DESKTOP_RUST_CORE_PROFILES,
   assertDesktopRustCorePlatform,
+  desktopRustCoreWiring,
+  createDesktopRustCoreFeatureRegistry,
   createTestDesktopRustCoreBackendProvider
 } = require('../../../src/backends/desktop/desktop-rust-core-provider')
 const {
@@ -19,7 +21,22 @@ const {
 } = require('../../../src/backends/desktop/desktop-rust-core-binding')
 const { DESKTOP_RUST_CORE_PARITY } = require('../../../src/backends/desktop/desktop-rust-core-parity')
 const { normalizeScanQuery } = require('../../../src/public/scan-query')
+
+test('WinRT scan planning includes the connectability reported by native observations', () => {
+  expect(DESKTOP_RUST_CORE_PROFILES.winrt.observationFields).toContain('connectable')
+})
 const { BUILT_IN_FEATURE_IDS } = require('../../../src/backend-contract/capabilities')
+
+test('the provider retains an unavailable runtime parameter descriptor and its native reason', () => {
+  const wiring = desktopRustCoreWiring([
+    { id: BUILT_IN_FEATURE_IDS.connectionParameters, state: 'unavailable', limitation: 'runtime-api-absent' }
+  ])
+  const registry = createDesktopRustCoreFeatureRegistry(DESKTOP_RUST_CORE_PROFILES.winrt, wiring)
+  expect(registry.registrations.find(row => row.id === BUILT_IN_FEATURE_IDS.connectionParameters)).toMatchObject({
+    state: 'unavailable',
+    limitations: [{ code: 'runtime-api-absent' }]
+  })
+})
 const {
   HRM_MEASUREMENT,
   HRM_SERVICE,
@@ -905,7 +922,7 @@ describe('delivery mode (decision 3, PR210-31)', () => {
   )
 
   test.each(['bluez', 'corebluetooth', 'winrt'])(
-    '%s does not forward a delivery preference',
+    '%s forwards a delivery preference separately from its hard requirement',
     async platform => {
       await withBackend(platform, async ({ backend, stage, harness }) => {
         const { database, measurement } = await connectAndDiscover(
@@ -919,6 +936,7 @@ describe('delivery mode (decision 3, PR210-31)', () => {
         )
         const forwarded = harness.calls.filter(([name]) => name === 'subscribe').at(-1)
         expect(forwarded[1][0].deliveryMode).toBeUndefined()
+        expect(forwarded[1][0].preferredDeliveryMode).toBe('indication')
         await subscription.remove()
       })
     }
@@ -1782,7 +1800,8 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
       const lease = await backend.scanner.start(scanOptions(), 'client-1')
       const iterator = lease.observations[Symbol.asyncIterator]()
       try {
-        await stage.stageAdvertisement({ peerId: 'peer-8', address: 'AA:BB:CC:DD:EE:08' })
+        // Scan identity uses this sighting's native fact, not an earlier lookup.
+        await stage.stageAdvertisement({ peerId: 'peer-8', address: 'AA:BB:CC:DD:EE:08', addressType: 'random' })
         const observation = await nextValue(iterator, 5000)
         expect(observation.device.address).toEqual({ value: 'AA:BB:CC:DD:EE:08', type: 'random' })
       } finally {
@@ -1792,7 +1811,7 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
     })
   })
 
-  test('BlueZ address without a reported type is random, as legacy mapped it', async () => {
+  test('BlueZ address without a reported type remains opaque', async () => {
     await withBackend('bluez', async ({ backend, stage }) => {
       const lease = await backend.scanner.start(scanOptions(), 'client-1')
       const iterator = lease.observations[Symbol.asyncIterator]()
@@ -1801,7 +1820,7 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
         // mapped every non-public (including unknown) type to random.
         await stage.stageAdvertisement({ peerId: 'peer-9', address: 'AA:BB:CC:DD:EE:09' })
         const observation = await nextValue(iterator, 5000)
-        expect(observation.device.address).toEqual({ value: 'AA:BB:CC:DD:EE:09', type: 'random' })
+        expect(observation.device.address).toEqual({ value: 'AA:BB:CC:DD:EE:09', type: 'opaque' })
       } finally {
         await iterator.return?.()
         await lease.stop()
@@ -1885,6 +1904,27 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
 })
 
 describe('scan name prefix reaches the OS filter (LEGACY-AUDIT-2 N10)', () => {
+  test('BlueZ preserves each sighting address type and never guesses a missing type', async () => {
+    await withBackend('bluez', async ({ backend, stage }) => {
+      const lease = await backend.scanner.start(scanOptions(), 'identity-client')
+      const iterator = lease.observations[Symbol.asyncIterator]()
+      try {
+        for (const [addressType, expected] of [
+          ['public', 'public'],
+          ['random', 'random'],
+          [null, 'opaque'],
+          ['random', 'random'],
+          [undefined, 'opaque']
+        ]) {
+          await stage.stageAdvertisement({ peerId: 'same-native-path', address: 'AA:BB:CC:DD:EE:FF', addressType })
+          expect((await nextValue(iterator, 5000)).device.address.type).toBe(expected)
+        }
+      } finally {
+        await iterator.return?.()
+        await lease.stop()
+      }
+    })
+  })
   test.each(PLATFORMS)(
     '%s: a caller name prefix is handed to the radio and the software match still filters',
     async platform => {

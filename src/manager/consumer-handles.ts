@@ -143,8 +143,8 @@ export interface PortableGattDatabaseSnapshot {
   readonly path: PortableDatabasePath
   readonly services: readonly {
     readonly path: PortableServicePath
-    readonly primary?: boolean
-    readonly includedServices?: readonly { readonly uuid: string; readonly occurrence: string }[]
+    readonly primary?: boolean | null
+    readonly includedServices?: readonly { readonly uuid: string; readonly occurrence: string }[] | null
     readonly restriction?: import('../backend-contract/gatt').GattServiceRestriction
   }[]
   readonly characteristics: readonly {
@@ -362,6 +362,14 @@ export interface DiscoveredGattDatabaseHandle {
   monotonicNow(): number
   scheduleDeadline(deadline: number, action: () => void): DeadlineHandle
   snapshot(): Promise<PortableGattDatabaseSnapshot>
+  acquireWrite?(
+    path: PortableCurrentCharacteristicPath,
+    options: PortableOperationOptions
+  ): Promise<AcquiredGattWriteHandle>
+  acquireNotifications?(
+    path: PortableCurrentCharacteristicPath,
+    options: PortableSubscriptionOptions
+  ): Promise<AcquiredGattNotificationHandle>
   read(path: PortableCurrentCharacteristicPath, options: PortableOperationOptions): Promise<Uint8Array>
   /**
    * Like `read`, with the platform's provenance for the value. Optional so a
@@ -395,6 +403,17 @@ export interface DiscoveredGattDatabaseHandle {
     options: PortableWritePolicy
   ): Promise<PortableWriteReceipt>
   subscribe(path: PortableCurrentCharacteristicPath, options: PortableSubscriptionOptions): Promise<SubscriptionHandle>
+}
+
+export interface AcquiredGattWriteHandle {
+  readonly mtuBytes: number
+  write(value: Readonly<Uint8Array>, options: PortableOperationOptions): Promise<PortableWriteReceipt>
+  close(): Promise<PortableCleanupRecord>
+}
+export interface AcquiredGattNotificationHandle {
+  readonly mtuBytes: number
+  readonly values: PortableBoundedAsyncStream<PortableNotificationValue>
+  close(): Promise<PortableCleanupRecord>
 }
 
 /** Public, unbranded notification subscription contract for domain consumers. */

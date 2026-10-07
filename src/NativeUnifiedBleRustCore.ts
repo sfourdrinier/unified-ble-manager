@@ -2,7 +2,7 @@
 //
 // Codegen spec for the production React Native session facade over the
 // process-owned Rust mobile host (docs/MOBILE_RUST_WIRE.md). Session invoke
-// and drain use Rust's ubm-mobile-wire/1 JSON unchanged; Java/Swift do not
+// and drain use Rust's ubm-mobile-wire/2 JSON unchanged; Java/Swift do not
 // re-shape those operations. The OS accessory chooser and saved-authorized
 // directory are separate versioned native-control JSON seams. All methods
 // are asynchronous; nothing blocks the module thread.

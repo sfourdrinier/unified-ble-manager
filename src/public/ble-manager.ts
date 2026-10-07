@@ -1,6 +1,8 @@
 // src/public/ble-manager.ts — non-generic application façade (PR1 skeleton)
 
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
+import { decodeWinRtScanPlatformOptions } from '../backend-contract/advertisement'
+import { assertConnectionParameterValues } from '../backend-contract/connection-parameter-validation'
 import type { ScanOptions as InternalScanOptions } from '../backend-contract/advertisement'
 import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../backend-contract/connection-lifecycle'
 import {
@@ -86,6 +88,7 @@ import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
   type ConnectionPriority,
+  type ConnectionSubrateMode,
   type ConnectionParametersStreamObservation,
   type ConnectionParametersWatch,
   type ConnectionWriteReadinessObservation,
@@ -178,7 +181,7 @@ export type PhyPreference = Readonly<{
   readonly tx?: BlePhy
   readonly rx?: BlePhy
 }>
-export type SubrateMode = 'default' | 'low-latency' | 'low-power'
+export type SubrateMode = ConnectionSubrateMode
 export type WriteMode = 'with-response' | 'without-response'
 
 export interface MaximumWriteLengthObservation extends BleControlObservationMetadata {
@@ -252,6 +255,8 @@ export type {
   GattDatabaseSnapshot,
   GattService,
   GattCharacteristic,
+  GattAcquiredWriter,
+  GattAcquiredNotifications,
   GattDescriptor,
   GattSubscription,
   GattValueEvent,
@@ -396,14 +401,19 @@ export interface AndroidScanPlatformOptions {
   readonly kind: 'android'
   readonly mode?: AndroidScanMode
   readonly callbackType?: AndroidScanCallbackType
+  /** Android API 21+ report delay in milliseconds. Zero delivers immediately;
+   * positive delays request batching, whose actual delivery timing is OS-owned. */
   readonly reportDelayMs?: number
   readonly legacy?: boolean
+  /** Android API 26+ scan PHY. Requires legacy:false; coded also requires
+   * adapter support. The backend reports the OS refusal rather than ignoring it. */
   readonly phy?: AndroidScanPhy
 }
+export type WinRtScanPlatformOptions = import('../backend-contract/advertisement').WinRtScanPlatformOptions
 export type ScanPlatformOptions =
   | AndroidScanPlatformOptions
   | { readonly kind: 'corebluetooth' }
-  | { readonly kind: 'winrt' }
+  | WinRtScanPlatformOptions
   | { readonly kind: 'web' }
   | { readonly kind: 'electron' }
   | { readonly kind: 'tauri' }
@@ -1192,6 +1202,7 @@ function publicParameterObservation(
   descriptor: CapabilityDescriptor | null,
   measured: { readonly intervalUs: number; readonly latency: number; readonly supervisionTimeoutUs: number }
 ): ConnectionParametersObservation {
+  assertConnectionParameterValues(measured, 'public-connection.controls.parameters.result')
   return Object.freeze({
     ...controlMetadata(generation, observedAtMonotonicMs, descriptor, 'backend-observation'),
     state: 'measured',
@@ -1757,10 +1768,27 @@ function createPublicConnectionControls<Attachment extends string, Identity exte
       })
     })
 
-  const unsupportedPromise = <Value>(id: `${string}:${string}`, operation: string): Promise<Value> =>
+  const requestSubrate = (mode: SubrateMode, options: OperationOptions = {}): Promise<SubrateResult> =>
     runPublicControl(async () => {
-      requireControlCapability(internal, id, operation)
-      throw contractError('capability.unsupported', 'connection', operation)
+      if (mode !== 'default' && mode !== 'low-latency' && mode !== 'low-power' && mode !== 'high-throughput') {
+        throw contractError('argument.invalid', 'connection', 'public-connection.controls.request-subrate')
+      }
+      const descriptor = requireControlCapability(
+        internal,
+        'connection:subrate',
+        'public-connection.controls.request-subrate'
+      )
+      const normalized = normalizeOperationOptions(options, now)
+      const result = await connection.requestSubrate(mode, { signal: normalized.signal, deadline: normalized.deadline })
+      if (result.requested !== mode || typeof result.accepted !== 'boolean') {
+        throw contractError('protocol.violation', 'connection', 'public-connection.controls.request-subrate.result')
+      }
+      return Object.freeze({
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
+        state: result.accepted ? ('accepted' as const) : ('rejected' as const),
+        requested: mode,
+        observation: null
+      })
     })
 
   return Object.freeze({
@@ -1783,16 +1811,6 @@ function createPublicConnectionControls<Attachment extends string, Identity exte
         }
         const measured = await connection.parameters()
         assertPublicConnectionIdentity(connection, measured, 'public-connection.controls.parameters.identity')
-        if (
-          !Number.isFinite(measured.intervalUs) ||
-          measured.intervalUs <= 0 ||
-          !Number.isInteger(measured.latency) ||
-          measured.latency < 0 ||
-          !Number.isFinite(measured.supervisionTimeoutUs) ||
-          measured.supervisionTimeoutUs <= 0
-        ) {
-          throw contractError('protocol.violation', 'connection', 'public-connection.controls.parameters.result')
-        }
         return publicParameterObservation(generation, measured.observedAtMonotonicMs, descriptor, measured)
       }),
     parameterEvents: () => {
@@ -1813,8 +1831,7 @@ function createPublicConnectionControls<Attachment extends string, Identity exte
       }
       return publicParameterStream(connection, generation, descriptor)
     },
-    requestSubrate: (_mode: SubrateMode, _options: OperationOptions = {}) =>
-      unsupportedPromise<SubrateResult>('connection:subrate', 'public-connection.controls.request-subrate'),
+    requestSubrate,
     writeReadiness: (mode: 'without-response') => {
       if (mode !== 'without-response') {
         throw contractError('argument.invalid', 'connection', 'public-connection.controls.write-readiness.mode')
@@ -3239,9 +3256,12 @@ function assertPublicScanPlatformOptions(options: ScanPlatformOptions | undefine
     }
     return
   }
+  if (options.kind === 'winrt') {
+    decodeWinRtScanPlatformOptions(options, 'public-ble-manager.scan.platform-options')
+    return
+  }
   if (
     options.kind !== 'corebluetooth' &&
-    options.kind !== 'winrt' &&
     options.kind !== 'web' &&
     options.kind !== 'electron' &&
     options.kind !== 'tauri'

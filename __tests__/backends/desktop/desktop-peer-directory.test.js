@@ -220,3 +220,60 @@ test('known refuses a generation change between sequential resolutions', async (
   })
   expect(hooks.resolve).toHaveBeenCalledTimes(1)
 })
+
+test.each([
+  ['unified-ble:winrt', 'public:AA:BB:CC:DD:EE:FF'],
+  ['unified-ble:bluez-dbus', 'hci0/dev_AA_BB_CC_DD_EE_FF']
+])('known and system-connected queries use distinct read-only OS hooks for %s', async (backendId, peerId) => {
+  const known = [{ peerId, name: 'unbonded OS cache', connection: 'disconnected' }]
+  const connected = [{ peerId, name: 'other app owns link', connection: 'connected' }]
+  const hooks = {
+    backendId,
+    generation: () => 1,
+    assertUsable: jest.fn(),
+    peerId: id => `mapped:${id}`,
+    known: jest.fn(async () => known),
+    connected: jest.fn(async () => connected),
+    resolve: jest.fn(async () => known[0]),
+    bonded: jest.fn(async () => [])
+  }
+  const directory = createDesktopPeerDirectory(hooks)
+  expect(await directory.known({})).toMatchObject([
+    { source: 'backend-cache', state: { connection: 'disconnected', bond: 'unknown' } }
+  ])
+  expect(hooks.known).toHaveBeenCalledTimes(1)
+  expect(hooks.bonded).not.toHaveBeenCalled()
+  expect(await directory.connected({})).toMatchObject([
+    { source: 'system-connected', state: { connection: 'connected' } }
+  ])
+  expect(hooks.connected).toHaveBeenCalledWith([], {})
+  expect(await directory.resolve({ version: 1, backendId, scope: 'application', opaqueId: peerId }, {})).toMatchObject({
+    source: 'app-reference'
+  })
+  expect(hooks.bonded).not.toHaveBeenCalled()
+  await expect(directory.connected({ services: ['180d'] })).rejects.toMatchObject({
+    normalized: { code: 'capability.unsupported' }
+  })
+  expect(hooks.connected).toHaveBeenCalledTimes(1)
+})
+
+test('a native known inventory cannot publish after the backend generation changes', async () => {
+  let finish
+  let generation = 1
+  const hooks = {
+    backendId: 'unified-ble:bluez-dbus',
+    generation: () => generation,
+    assertUsable: jest.fn(),
+    peerId: id => id,
+    connected: jest.fn(),
+    resolve: jest.fn(),
+    known: () =>
+      new Promise(resolve => {
+        finish = resolve
+      })
+  }
+  const pending = createDesktopPeerDirectory(hooks).known({})
+  generation += 1
+  finish([{ peerId: 'hci0/dev_AA_BB_CC_DD_EE_FF', name: null, connection: 'unknown' }])
+  await expect(pending).rejects.toMatchObject({ normalized: { code: 'lifecycle.invalid-state' } })
+})

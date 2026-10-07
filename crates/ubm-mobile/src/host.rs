@@ -139,6 +139,7 @@ enum HostSignal {
     ScanFailed(String),
     ScanDeadlines,
     Security(String, SecurityState),
+    SecurityFailed(Option<String>, DesktopError),
     /// Latest write-without-response readiness for one peer. The generation
     /// is the connection generation current when the report arrived.
     WriteReadiness(String, Option<String>, bool),
@@ -372,6 +373,9 @@ impl Signals {
                         Self::push_countable(&mut state, class, count);
                     }
                 }
+                HostSignal::SecurityFailed(peer, error) => {
+                    Self::push_bounded(&mut state, HostSignal::SecurityFailed(peer, error));
+                }
                 HostSignal::Lifecycle(event) => {
                     if state.queue.len() >= SIGNALS_CAP {
                         state.signal_lost += 1;
@@ -553,6 +557,7 @@ pub(crate) struct HostInner {
     /// adopts the same peer again. Lock after `restored`.
     pub restoration_claims: Mutex<BTreeMap<String, u64>>,
     pub security: Mutex<HashMap<String, SecurityState>>,
+    pub security_failures: Mutex<BTreeMap<Option<String>, DesktopError>>,
     pub adapter: Mutex<Option<(AdapterSnapshot, u64)>>,
     /// Live background leases per scope. A lease leaves only when the
     /// platform confirmed its release; a failed release stays for a retry.
@@ -612,6 +617,7 @@ fn canonical_advertisement(advertisement: Advertisement) -> Option<PeerSnapshot>
         }
     };
     let extras = ubm_desktop::AdvertisementExtras {
+        address_type: None,
         solicited_service_uuids: canonical_list(advertisement.solicited_service_uuids)?,
         overflow_service_uuids: canonical_list(advertisement.overflow_service_uuids)?,
         connectable: advertisement.connectable,
@@ -1000,6 +1006,13 @@ impl HostInner {
                     ("state", security_value(&state)),
                 ]);
                 self.broadcast(&record);
+            }
+            HostSignal::SecurityFailed(peer_id, error) => {
+                self.broadcast(&object(vec![
+                    ("t", Value::from("security-failed")),
+                    ("peerId", opt_text(peer_id.as_deref())),
+                    ("error", Value::Object(wire::error_object(&error))),
+                ]));
             }
             HostSignal::WriteReadiness(peer_id, generation, ready) => {
                 let record = object(vec![
@@ -2112,6 +2125,7 @@ impl MobileHost {
             drop_signals.push(HostSignal::IngressDrop(class, 1));
         }));
         let profile = CentralProfile {
+            directory_os: ubm_desktop::DesktopOs::MacOs,
             identity: Arc::new(MobileIdentity::new(options.platform)),
             register_capabilities: register_mobile_capabilities,
             observer: Some(observer),
@@ -2139,6 +2153,7 @@ impl MobileHost {
             restored: Mutex::new(BTreeMap::new()),
             restoration_claims: Mutex::new(BTreeMap::new()),
             security: Mutex::new(HashMap::new()),
+            security_failures: Mutex::new(BTreeMap::new()),
             adapter: Mutex::new(None),
             background: Mutex::new(BTreeMap::new()),
             link_ends: Mutex::new(BTreeMap::new()),
@@ -2236,16 +2251,38 @@ impl MobileHost {
                 peer_id,
                 connected,
                 status,
-            } => inner.radio.push_event(if connected {
-                RadioEvent::Connected(peer_id)
-            } else if status.is_some_and(|status| status != 0) {
-                // Android reports a non-zero GATT status, CoreBluetooth an
-                // `NSError`, when the link ended for a reason other than
-                // this app's release: a loss even if a release was pending.
-                RadioEvent::Lost(peer_id)
-            } else {
-                RadioEvent::Disconnected(peer_id)
-            }),
+            } => {
+                if !connected {
+                    let mut security = lock(&inner.security);
+                    if let Some(state) = security.get_mut(&peer_id) {
+                        if state.encryption != crate::radio::EncryptionState::Unsupported {
+                            state.encryption = crate::radio::EncryptionState::Unknown;
+                        }
+                        if state.authentication != crate::radio::AuthenticationState::Unsupported {
+                            state.authentication = crate::radio::AuthenticationState::Unknown;
+                        }
+                        if state.secure_connections
+                            != crate::radio::SecureConnectionsState::Unsupported
+                        {
+                            state.secure_connections =
+                                crate::radio::SecureConnectionsState::Unknown;
+                        }
+                        inner
+                            .signals
+                            .push(HostSignal::Security(peer_id.clone(), state.clone()));
+                    }
+                }
+                inner.radio.push_event(if connected {
+                    RadioEvent::Connected(peer_id)
+                } else if status.is_some_and(|status| status != 0) {
+                    // Android reports a non-zero GATT status, CoreBluetooth an
+                    // `NSError`, when the link ended for a reason other than
+                    // this app's release: a loss even if a release was pending.
+                    RadioEvent::Lost(peer_id)
+                } else {
+                    RadioEvent::Disconnected(peer_id)
+                })
+            }
             RadioIngress::ServicesChanged { peer_id } => {
                 inner.radio.push_event(RadioEvent::ServicesChanged(peer_id))
             }
@@ -2292,8 +2329,24 @@ impl MobileHost {
                 Ok(())
             }
             RadioIngress::SecurityChanged { peer_id, state } => {
+                lock(&inner.security_failures).remove(&Some(peer_id.clone()));
+                lock(&inner.security_failures).remove(&None);
                 lock(&inner.security).insert(peer_id.clone(), state.clone());
                 inner.signals.push(HostSignal::Security(peer_id, state));
+                Ok(())
+            }
+            RadioIngress::SecurityFailed { peer_id, failure } => {
+                let error =
+                    failure.to_error(crate::radio::RequestKind::SecurityState, inner.platform);
+                if let Some(peer) = &peer_id {
+                    lock(&inner.security).remove(peer);
+                } else {
+                    lock(&inner.security).clear();
+                }
+                lock(&inner.security_failures).insert(peer_id.clone(), error.clone());
+                inner
+                    .signals
+                    .push(HostSignal::SecurityFailed(peer_id, error));
                 Ok(())
             }
             RadioIngress::WriteReadiness { peer_id, ready } => inner

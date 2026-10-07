@@ -17,7 +17,7 @@ const RELEASE_FAILURE_MESSAGE = '[ElectronMainBleBinding] Renderer lifetime clea
 const EXHAUSTION_MESSAGE = '[ElectronMainBleBinding] Renderer release retries exhausted; reporting release-failed:'
 
 function negotiated(axis) {
-  const selected = version(axis, axis === 'ipc-protocol' ? 5 : 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 6 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }

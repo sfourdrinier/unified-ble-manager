@@ -45,6 +45,7 @@ import type {
   ConnectionPhyObservation,
   ConnectionPhyRequest,
   ConnectionPriority,
+  ConnectionSubrateMode,
   ConnectionWriteReadinessWatch,
   PhyPreference
 } from '../backend-contract/connection-controls'
@@ -702,6 +703,10 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
     return this.connection.requestPriority(priority, toPublicOperationOptions(options))
   }
 
+  requestSubrate(mode: ConnectionSubrateMode, options: PortableOperationOptions) {
+    return this.connection.requestSubrate(mode, toPublicOperationOptions(options))
+  }
+
   readPhy(options: PortableOperationOptions): Promise<ConnectionPhyObservation<Attachment, string>> {
     return this.connection.readPhy(toPublicOperationOptions(options))
   }
@@ -784,6 +789,17 @@ export class DiscoveredGattDatabase<Attachment extends string, Identity extends 
     options: PortableWritePolicy
   ) {
     return this.database.writeWhenReady(this.resolveCharacteristicPath(path), bytes, toPublicWritePolicy(options))
+  }
+
+  async acquireWrite(path: PortableCurrentCharacteristicPath, options: PortableOperationOptions) {
+    return this.database.acquireWrite(this.resolveCharacteristicPath(path), toPublicOperationOptions(options))
+  }
+
+  async acquireNotifications(path: PortableCurrentCharacteristicPath, options: PortableSubscriptionOptions) {
+    return this.database.acquireNotifications(
+      this.resolveCharacteristicPath(path),
+      toPublicSubscriptionOptions(options)
+    )
   }
 
   async maximumWriteLength(path: PortableCurrentCharacteristicPath, mode: WriteMode) {

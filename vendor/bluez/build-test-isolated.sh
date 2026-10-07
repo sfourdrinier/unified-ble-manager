@@ -29,12 +29,12 @@ make -j1 src/builtin.h src/bluetoothd unit/test-gatt
 cc -std=c11 -Wall -Wextra -Werror -I. unit/test-ubm-gatt-state.c \
   -o unit/test-ubm-gatt-state
 ./unit/test-ubm-gatt-state
-for test_name in gatt-projection refresh device bonded-notify att-exchange scan-filter; do
+for test_name in gatt-projection refresh device bonded-notify att-exchange scan-filter acquired-failure; do
   # pkg-config provides ordinary compiler/linker argument lists, not file names.
   # shellcheck disable=SC2046
   cc -std=gnu11 -DHAVE_CONFIG_H -DUBM_NOTIFY_TRACKED -Werror=implicit-function-declaration \
     -ffunction-sections -fdata-sections -I. -Ilib \
-    $(pkg-config --cflags glib-2.0 dbus-1) "unit/test-ubm-$test_name.c" \
+    $(pkg-config --cflags glib-2.0 dbus-1) "unit/test-ubm-$test_name.c" src/error.c \
     -Wl,--gc-sections gdbus/.libs/libgdbus-internal.a \
     src/.libs/libshared-glib.a lib/.libs/libbluetooth-internal.a \
     $(pkg-config --libs glib-2.0 dbus-1) -o "unit/test-ubm-$test_name"
@@ -45,6 +45,7 @@ dbus-run-session -- ./unit/test-ubm-device
 ./unit/test-ubm-bonded-notify
 ./unit/test-ubm-att-exchange
 ./unit/test-ubm-scan-filter
+./unit/test-ubm-acquired-failure
 for row in pending-count pending-disable removed transition unbonded-peer dormant-peer \
   registration-refused pending-registration-refused client-registration-refused \
   pending-queue-refused client-queue-refused io-refused \

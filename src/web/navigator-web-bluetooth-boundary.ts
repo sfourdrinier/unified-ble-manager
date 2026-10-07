@@ -64,6 +64,8 @@ interface BrowserBluetoothCharacteristic {
 
 interface BrowserBluetoothService {
   readonly uuid: string
+  readonly isPrimary?: boolean
+  getIncludedServices?(): Promise<readonly BrowserBluetoothService[]>
   getCharacteristics(): Promise<readonly BrowserBluetoothCharacteristic[]>
 }
 
@@ -322,15 +324,35 @@ class NavigatorGattServerBoundary implements WebBluetoothGattServerBoundary {
 
   async getPrimaryServices(): Promise<readonly WebBluetoothServiceBoundary[]> {
     const services = await this.server.getPrimaryServices()
-    return services.map(service => new NavigatorServiceBoundary(service))
+    const cache = new Map<BrowserBluetoothService, NavigatorServiceBoundary>()
+    const wrap = (service: BrowserBluetoothService, root = false): NavigatorServiceBoundary => {
+      const existing = cache.get(service)
+      if (existing !== undefined) return existing
+      const boundary = new NavigatorServiceBoundary(service, wrap, root)
+      cache.set(service, boundary)
+      return boundary
+    }
+    return services.map(service => wrap(service, true))
   }
 }
 
 class NavigatorServiceBoundary implements WebBluetoothServiceBoundary {
   readonly uuid: string
+  readonly primary: boolean | null
 
-  constructor(private readonly service: BrowserBluetoothService) {
+  constructor(
+    private readonly service: BrowserBluetoothService,
+    private readonly wrap: (service: BrowserBluetoothService) => NavigatorServiceBoundary,
+    root: boolean
+  ) {
     this.uuid = service.uuid
+    this.primary = service.isPrimary ?? (root ? true : null)
+  }
+
+  async getIncludedServices(): Promise<readonly WebBluetoothServiceBoundary[] | null> {
+    if (this.service.getIncludedServices === undefined) return null
+    const included = await this.service.getIncludedServices()
+    return included.map(service => this.wrap(service))
   }
 
   async getCharacteristics(): Promise<readonly WebBluetoothCharacteristicBoundary[]> {

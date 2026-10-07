@@ -25,8 +25,8 @@ export const EXPECTED_NATIVE_BUILD_IDENTITY: ExpectedNativeBuildIdentity = Objec
   contractRevision: 'C-UBM.0.1.2-DRAFT',
   bindings: Object.freeze({
     napi: Object.freeze({
-      sourceDigest: 'a47cd269601b26c25efad4d209014bde8bef3727ce1fdbea89ff4615910e3466',
-      bindingSchema: '363dd32211c09035bfcce306e8dbda0d767e5b260667d6f4b1db753bf37f0396',
+      sourceDigest: 'e47f6da027061a27d395cb4b4ceaf7e843c66d9722a7508923a0f87ffbbbff58',
+      bindingSchema: '85e35476b3baeffc7678cd83ec25aa77f3c7a17293559bfc91fb684e93b866b3',
       targets: Object.freeze([
         'aarch64-apple-darwin',
         'aarch64-pc-windows-msvc',
@@ -36,13 +36,13 @@ export const EXPECTED_NATIVE_BUILD_IDENTITY: ExpectedNativeBuildIdentity = Objec
       ])
     }),
     jni: Object.freeze({
-      sourceDigest: '87119b0071c0f061b341bfcdfedbae9314a75b7589f7f0a61f08d8ab35f278f1',
-      bindingSchema: '2012ba3aa5aa68cac5d87a915b131fce3daca1599b9d94f4fd39b3ff5ffec2a2',
+      sourceDigest: '29b39ed1d57cee98300fc6642d18eae63f36847ce4f8fbb3a62d1936bbce42e9',
+      bindingSchema: '034ff00cd3a144242504544cb7e707a7c4a066b269cf0ab8e06add0732bacc37',
       targets: Object.freeze(['armv7-linux-androideabi', 'aarch64-linux-android', 'x86_64-linux-android'])
     }),
     uniffi: Object.freeze({
-      sourceDigest: '6a0bc241a7e1b58167d0ae550dded1ef55f67e9167356dc6a3353681703ba526',
-      bindingSchema: 'f9e4844a03ba411525032fdf71694c1282ec16da2c21240d490cdbf9f22c3895',
+      sourceDigest: 'e6aaddd3cb32bc066c566f6df0fae60b2325bf3746a30cea63e0ea7cc0b0f8bf',
+      bindingSchema: '3e773467de7b05743c6884d14072a60895f67a69eea83d0ed17ea43faf23f8a1',
       targets: Object.freeze([
         'aarch64-apple-ios',
         'aarch64-apple-ios-sim',

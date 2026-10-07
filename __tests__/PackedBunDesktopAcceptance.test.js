@@ -41,13 +41,35 @@ describe('packed Bun desktop acceptance', () => {
     expect(script).toContain('runManagerScenarios')
   })
 
-  test('CI runs the packed acceptance on ubuntu-22.04 before the contracts job', () => {
+  test('joins the installed public host factory to the identity-checked native provider', () => {
+    const route = fs.readFileSync(path.join(root, 'scripts/ci/packed-desktop-public-route.cjs'), 'utf8')
+    expect(script).toContain('qualifyPublicRoute')
+    expect(route).toContain('loadDesktopCoreBinding')
+    expect(route).toContain('entry[host.factory]')
+    expect(route).toContain('openProduction')
+    expect(route).toContain('connection.controls.parameters()')
+    expect(route).toContain('connection.controls.parameterEvents()')
+    expect(route).toContain("stage.blockRadioOp('read')")
+    expect(route).toContain('abort.abort()')
+    expect(route).toContain('connection.release()')
+    expect(route).toContain('for (const native of opened)')
+    expect(route).toContain('native.resourceCounters()')
+    expect(route).toContain('assert.equal(opens, 2)')
+    expect(route).toContain("stage.failNextRadioOp('unsubscribe'")
+    expect(route).toContain("stage.stageAdapterState('powered-off', true)")
+    expect(route).toContain("overflowPolicy: 'error'")
+    expect(route).toContain('stale database after rediscovery')
+    expect(route).not.toContain('createDeterministicManagerScenarioFactory')
+    expect(route).not.toContain("require('../../src/")
+  })
+
+  test('CI runs packed Node/Bun acceptance on all three desktop operating systems', () => {
     const job = ci.indexOf('bun-desktop-packed:')
     const contracts = ci.indexOf('\n  contracts:')
     const packedHost = 'node scripts/ci/packed-host-consumer-check.js'
     expect(job).toBeGreaterThan(-1)
     expect(contracts).toBeGreaterThan(job)
-    expect(ci).toContain('runs-on: ubuntu-22.04')
+    expect(ci).toContain('os: [ubuntu-22.04, macos-latest, windows-latest]')
     expect(ci).toContain('timeout-minutes: 90')
     expect(ci).toContain("prepack: 'true'")
     expect(ci).toContain('node scripts/ci/bun-packed-desktop-acceptance.js')

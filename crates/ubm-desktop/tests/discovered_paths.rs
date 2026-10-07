@@ -23,6 +23,11 @@ const BATTERY_SERVICE: &str = "0000180f-0000-1000-8000-00805f9b34fb";
 fn db_services() -> Vec<ServiceSnapshot> {
     vec![
         ServiceSnapshot {
+            primary: Some(true),
+            included_services: Some(vec![ubm_desktop::boundary::IncludedServiceReference {
+                uuid: HRM_SERVICE.to_owned(),
+                occurrence: 1,
+            }]),
             uuid: HRM_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: vec![
@@ -59,6 +64,8 @@ fn db_services() -> Vec<ServiceSnapshot> {
         },
         // Duplicate service UUID: occurrences keep the instances distinct.
         ServiceSnapshot {
+            primary: Some(false),
+            included_services: Some(Vec::new()),
             uuid: HRM_SERVICE.to_owned(),
             occurrence: 1,
             characteristics: Vec::new(),
@@ -66,6 +73,8 @@ fn db_services() -> Vec<ServiceSnapshot> {
             access: std::default::Default::default(),
         },
         ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: BATTERY_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: Vec::new(),
@@ -111,6 +120,32 @@ async fn discovered_paths_reports_every_registered_level() {
         .discovered_paths("peer-1")
         .await
         .expect("discovered paths");
+    let primary = paths
+        .iter()
+        .find(|path| {
+            path.service_uuid == HRM_SERVICE
+                && path.service_occurrence == 0
+                && path.characteristic_uuid.is_none()
+        })
+        .unwrap();
+    assert_eq!(primary.service_primary, Some(true));
+    assert_eq!(primary.included_services.as_ref().unwrap()[0].occurrence, 1);
+    let secondary = paths
+        .iter()
+        .find(|path| {
+            path.service_uuid == HRM_SERVICE
+                && path.service_occurrence == 1
+                && path.characteristic_uuid.is_none()
+        })
+        .unwrap();
+    assert_eq!(secondary.service_primary, Some(false));
+    assert_eq!(secondary.included_services, Some(Vec::new()));
+    let unknown = paths
+        .iter()
+        .find(|path| path.service_uuid == BATTERY_SERVICE && path.characteristic_uuid.is_none())
+        .unwrap();
+    assert_eq!(unknown.service_primary, None);
+    assert_eq!(unknown.included_services, None);
     // Registration order: service, then each characteristic with its
     // descriptors, per service in snapshot order.
     let shape: Vec<(String, u64, Option<String>, Option<String>)> = paths
@@ -244,5 +279,5 @@ async fn a_denied_service_stays_in_the_discovered_tree() {
         .iter()
         .find(|path| path.service_uuid == HRM_SERVICE && path.characteristic_uuid.is_none())
         .expect("heart rate service path");
-    assert_eq!(heart.service_access, None);
+    assert_eq!(heart.service_access, Some(ServiceAccess::Open));
 }

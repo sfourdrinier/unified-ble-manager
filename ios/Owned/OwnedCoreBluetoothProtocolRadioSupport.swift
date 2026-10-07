@@ -61,7 +61,7 @@ enum OwnedCoreBluetoothProtocolRadioSupport {
     return result as NSDictionary
   }
 
-  static func discoverySnapshot(_ discoveredServices: [CBService]) -> NSDictionary {
+  static func discoverySnapshot(_ discoveredServices: [CBService]) throws -> NSDictionary {
     var services = [NSDictionary]()
     var serviceOccurrences = [String: Int]()
     for service in discoveredServices {
@@ -96,6 +96,16 @@ enum OwnedCoreBluetoothProtocolRadioSupport {
       services.append([
         "uuid": serviceUUID,
         "occurrence": serviceOccurrence,
+        "primary": service.isPrimary,
+        "includedServices": try (service.includedServices ?? []).map { target -> NSDictionary in
+          guard let index = discoveredServices.firstIndex(where: { $0 === target }) else {
+            throw NSError(domain: "UnifiedBle.Graph", code: 1,
+              userInfo: [NSLocalizedDescriptionKey: "An included service is absent from the current graph"])
+          }
+          let uuid = normalizedUUID(target.uuid.uuidString)
+          let occurrence = discoveredServices.prefix(index).filter { normalizedUUID($0.uuid.uuidString) == uuid }.count
+          return ["uuid": uuid, "occurrence": occurrence] as NSDictionary
+        },
         "characteristics": characteristics
       ] as NSDictionary)
     }
@@ -368,11 +378,28 @@ struct PendingNotify {
 struct PendingDiscovery {
   let operationIdentifier: String
   let completion: (NSDictionary?, NSError?) -> Void
-  var awaitingCharacteristics: Int
-  var awaitingDescriptors: Int
+  var awaitingServices = true
+  var cancelled = false
+  var completionDelivered = false
+  var characteristicCallbacks = Set<ObjectIdentifier>()
+  var descriptorCallbacks = Set<ObjectIdentifier>()
+  var includeCallbacks = Set<ObjectIdentifier>()
+  var isDrained: Bool {
+    !awaitingServices && characteristicCallbacks.isEmpty && descriptorCallbacks.isEmpty && includeCallbacks.isEmpty
+  }
+  mutating func consumeIncludes(_ service: CBService) -> Bool {
+    includeCallbacks.remove(ObjectIdentifier(service)) != nil
+  }
+  mutating func consumeCharacteristics(_ service: CBService) -> Bool {
+    characteristicCallbacks.remove(ObjectIdentifier(service)) != nil
+  }
+  mutating func consumeDescriptors(_ characteristic: CBCharacteristic) -> Bool {
+    descriptorCallbacks.remove(ObjectIdentifier(characteristic)) != nil
+  }
 }
 
 struct PendingCancellationCleanup {
+  var discoveryPeers = Set<String>()
   var peerIdentifiers = Set<String>()
   /// The desired physical CCCD state after a cancelled notification transition.
   /// A cancelled subscribe must end disabled; a cancelled unsubscribe must restore

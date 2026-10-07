@@ -83,6 +83,47 @@ beforeEach(() => {
 })
 
 describe('R01 native-owned manager', () => {
+  test.each(['android', 'apple'])(
+    'parameter controls fail closed through the real %s environment factory',
+    async platform => {
+      harness = rustCoreHarness({ platform })
+      const manager = await createReactNativeBleManagerWithEnvironment(environment())
+      try {
+        const backend = manager.attachedBackend.backend
+        const peer =
+          platform === 'apple'
+            ? backend.peerIdForNativeId('A0:9E:1A:00:00:01')
+            : backend.connections.peerFromAddress({ address: 'A0:9E:1A:00:00:01', addressType: 'public' })
+        const connection = await manager.connect(peer, { signal: null, deadline: null })
+        expectParity(connection, InternalShapes.Connection, 'connection')
+        await expect(connection.parameters()).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+        await expect(connection.parameterEvents()).rejects.toMatchObject({
+          normalized: { code: 'capability.unsupported' }
+        })
+        expect(harness.native.opsInvoked('connection.parameters')).toHaveLength(0)
+        const database = await connection.discover({ signal: null, deadline: null })
+        expectParity(database, InternalShapes.DiscoveredGattDatabase, 'database')
+        const snapshot = await database.snapshot()
+        const characteristic = snapshot.characteristics[0].path
+        await expect(database.acquireWrite(characteristic, { signal: null, deadline: null })).rejects.toMatchObject({
+          normalized: { code: 'capability.unsupported' }
+        })
+        await expect(
+          database.acquireNotifications(characteristic, {
+            signal: null,
+            deadline: null,
+            delivery: { itemCapacity: 4, byteCapacity: 4096, reservedControlCapacity: 1, overflowPolicy: 'drop-oldest' }
+          })
+        ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+        expect(harness.native.opsInvoked('gatt.acquire-write')).toHaveLength(0)
+        expect(harness.native.opsInvoked('gatt.acquire-notify')).toHaveLength(0)
+        await connection.release()
+      } finally {
+        await manager.destroy()
+      }
+    }
+  )
+
   test('module boundary: no runtime lifecycle imports', () => {
     const source = fs.readFileSync(MANAGER_SOURCE, 'utf8')
     const runtimeImports = [...source.matchAll(/^import (?!\s*type)(?:[^;]+?)from '([^']+)'/gm)]
@@ -150,6 +191,8 @@ describe('R01 native-owned manager', () => {
       expect(ops(calls, 'connection.connect')).toHaveLength(1)
       expect(connection.peerId).toBe(peerId)
       const database = await connection.discover({ signal: null, deadline: null })
+      expect(typeof database.acquireWrite).toBe('function')
+      expect(typeof database.acquireNotifications).toBe('function')
       expectParity(database, InternalShapes.DiscoveredGattDatabase, 'database')
       expect(ops(calls, 'gatt.discover')).toHaveLength(1)
       const snapshot = await database.snapshot()

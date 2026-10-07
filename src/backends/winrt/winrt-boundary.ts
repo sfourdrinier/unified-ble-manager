@@ -423,6 +423,8 @@ export interface WinRtCharacteristicRecord {
 export interface WinRtServiceRecord {
   readonly uuid: string
   readonly occurrence: number
+  readonly primary?: boolean | null
+  readonly includedServices?: readonly WinRtDescriptorRecord[] | null
   readonly characteristics: readonly WinRtCharacteristicRecord[]
 }
 

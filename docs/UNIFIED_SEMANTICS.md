@@ -257,6 +257,25 @@ invalid session, connection, handle, subscription, or operation.
 
 ## 6. Scan sessions
 
+WinRT peer identities include the native public/random address type as well as
+the address bits; equal bits do not merge the two peers. The identity remains
+immutable for its native peripheral and accompanies scan, link and GATT events.
+Peer IDs are opaque: applications persist the peer reference rather than
+parsing its address from the ID. An unknown address type cannot contribute
+advertisement evidence to a known public/random identity.
+
+Windows scan platform options are `{ kind: 'winrt', mode?,
+allowExtendedAdvertisements? }`. `mode` is `active` (the package default),
+`passive`, or `none`. None receives what the system hears without initiating
+scanning; it does not emulate passive scanning. None and extended advertisement
+reception have a Windows build 19041 API floor, checked through runtime metadata.
+Extended reception defaults false and additionally requires the Windows default
+adapter to report extended-advertising support. Native refusal remains typed and
+does not substitute another mode. Each scan restores defaults when options are
+absent, and all received packets still pass through the shared evidence matcher.
+The WinRT watcher is system-wide and cannot target the selected radio. These
+remediation paths remain pending frozen-batch and Windows qualification.
+
 A scan request contains explicit filters, duplicate policy, optional merge
 policy, delivery policy, deadline, and abort signal. Empty filters mean the
 platform's broad scan, not a fabricated known-peer list. Unsupported filter
@@ -398,6 +417,21 @@ old generations.
 
 ## 9. Discovery, database epochs, and attribute paths
 
+Service `primary` is the platform's observed primary/secondary status, or `null`
+when that fact is unavailable. `includedServices` is the observed list of
+service UUID/occurrence references, or `null` when inclusion discovery is
+unavailable. An empty list asserts that discovery observed no inclusions; it
+must not substitute for an unobserved graph. Inclusion references resolve within
+the same database generation and preserve repeated UUID occurrences. Incomplete
+or stale graphs cannot create confident primary or empty-inclusion defaults.
+Both desktop and RN CoreBluetooth discovery retain exact native callback reservations after
+cancellation, failure or service invalidation until those callbacks drain or
+the connection ends. A replacement discovery is refused while that owner
+remains active; cancellation cleanup reports the remaining callback debt as
+retryable. A late callback cannot publish a canceled or failed graph. Web
+service traversal is bounded to 4,096 objects and 65,536 inclusion edges;
+exceeding either bound fails before a partial graph can be published.
+
 Discovery is explicit and connection-generation-bound. It returns a complete
 ordered snapshot of the database visible to the backend or fails with a typed
 reason. The order is discovery order, with a stable backend occurrence index
@@ -496,7 +530,13 @@ For indications, consumer delivery is the validated value callback after
 readiness; protocol acknowledgement remains stack work. A backend reports
 acknowledgement status only when it can observe it and otherwise states that
 limitation. Backpressure or an observable acknowledgement failure is a typed
-subscription failure. Physical CCCD enablement is reference counted by
+subscription failure. A soft delivery preference is distinct from a hard
+requirement. A backend that controls its CCCD mode honors a supported preference
+on the first enable; a characteristic offering only the other mode still
+subscribes in that supported mode. A hard requirement overrides the preference.
+Joining a live enable does not rewrite its mode for a preference. WinRT passes
+the selected configuration explicitly to its first CCCD write.
+Physical CCCD enablement is reference counted by
 the adapter owner. A failed enable rolls back the consumer registration and
 reports no ready event. Removal first closes consumer ingress, then decrements
 physical enablement, then resolves. An implementation MUST NOT deliver a value
@@ -622,7 +662,7 @@ is such a limit, not a measured MTU. Output larger than an advertised limit is a
 failure and invalidates the affected attachment.
 
 For React Native, bytes cross the `UnifiedBleRustCore` TurboModule as strict
-RFC 4648 padded base64 inside the JSON wire text (`ubm-mobile-wire/1`,
+RFC 4648 padded base64 inside the JSON wire text (`ubm-mobile-wire/2`,
 docs/MOBILE_RUST_WIRE.md). One pure codec encodes exactly the bytes of the
 `Uint8Array` view (a subarray sends only its own bytes) and decodes into an
 independent `Uint8Array`, with no `Buffer` or `atob`. Size is checked before
@@ -902,6 +942,17 @@ canonical runtime capability IDs are:
 | `controls.maximumWriteLength(mode)`           | `gatt:maximum-write-length`             | Authoritative mode-specific write limit for that connection.                 |
 | `controls.writeReadiness('without-response')` | `gatt:write-without-response-readiness` | Bounded readiness snapshots/events, when the backend advertises the feature. |
 
+WinRT registers `connection:parameters` from the instantiated runtime's
+`GetConnectionParameters` and `ConnectionParametersChanged` API presence.
+An absent API reports `unavailable` with the native limitation; an API-probe
+failure reports its structured platform error. Compiling a Windows target
+does not establish that those APIs are present on the host.
+Getter failure terminates the affected parameter watch with the platform's
+original detail. A native parameter broadcast gap is counted and propagated:
+the desktop provider reports the discontinuity and re-reads the current value;
+Tauri ends its bounded watch with an overflow error. Neither path turns a
+failed getter into a missing event or fabricates a measured zero value.
+
 Every control observation MUST carry typed metadata: `state`,
 `connectionGeneration`, `observedAtMonotonicMs`, `source`, `authority`, and
 `limitations`. Its measured values MUST distinguish ATT MTU, platform PDU
@@ -953,9 +1004,14 @@ capability is absent or unsupported and preserves `capability.unavailable`
 when the instantiated backend reports temporary unavailability. The
 coordinator copies the caller's bytes before asynchronous retention, waits at
 the connection FIFO head, and rechecks the generation-bound database path and
-the readiness stream at the native dispatch boundary. Abort, deadline,
-service change, disconnect, or destroy before native submission releases that
-copy, closes the readiness watch exactly once, and dispatches no write. A
+native readiness at the dispatch boundary. First-party native hosts implement
+this as one owned Rust operation; RN and IPC forward that operation. Synchronous
+native admission precedes worker scheduling, and the original budget includes
+queue time. The shared coordinator retains its readiness-watch admission only
+for backends that supply the stream mechanism without an atomic native helper.
+Abort, deadline, service change, disconnect, or destroy before native submission
+releases the owned copy and dispatches no write. A stream-based admission closes
+its readiness watch exactly once. A
 readiness close failure remains a `CleanupFailure` in manager/connection
 cleanup instead of being reduced to a trace-only success. Cancellation after
 native submission retains the ordinary uncertain commit semantics. The helper
@@ -986,13 +1042,25 @@ runtime authority, and `limited` / deterministic means that deterministic
 contract and boundary coverage exists while hosted and physical-radio
 qualification remains open.
 
-| Host/backend                            | MTU request / effective observation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | PHY read/request                                                                                                                                                             | Write-without-response readiness                                                                                                                                  | Parameters / subrate / `writeWhenReady`                                                                                                                                  |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| React Native Android                    | `limited` / deterministic. `effectiveMtu()` reads only the generation-bound value recorded by a successful `onMtuChanged`; it is unavailable before measurement.                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `limited` / deterministic. `readPhy()` is the `onPhyRead` callback result. `requestPhy()` separates callback-derived `accepted` from its optional `onPhyUpdate` observation. | `unsupported`                                                                                                                                                     | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`.                                                     |
-| React Native Apple                      | Caller-directed MTU request is `unsupported`: CoreBluetooth negotiates internally and exposes no request control. Effective ATT MTU observation is `limited` / deterministic. CoreBluetooth does not observe an ATT MTU, so `connection.controls.effectiveMtu()` reports `state: 'unavailable'` with a null ATT MTU (limitation `corebluetooth-att-mtu-not-observed`, plus `live-radio-qualification-pending`). `maximumWriteValueLength(for:)` stays the per-mode write capacity and is not published as an ATT MTU. PHY read/request is `unsupported` because CoreBluetooth exposes no application control for it. | `unsupported`                                                                                                                                                                | `limited` / deterministic. The probe is `canSendWriteWithoutResponse` and later edges are `peripheralIsReady(toSendWriteWithoutResponse:)`. Limitation `corebluetooth-write-without-response-readiness`, plus `live-radio-qualification-pending`. This is not Android auto-ready and it is not a measured ATT MTU. | `connection:parameters` and `connection:subrate` stay unsupported. `writeWhenReady` waits on the readiness stream, then writes without response, and still rejects `capability.unsupported` when readiness is not advertised. |
-| Direct CoreBluetooth Node/Electron-main | `connection:request-mtu` is unsupported because CoreBluetooth negotiates internally. Effective MTU is `limited` with `corebluetooth-att-mtu-not-observed`: CoreBluetooth does not observe an ATT MTU, so the observation is unavailable rather than a write length plus 3.                                                                                                                                                                                                                                                                                                                                           | `connection:phy` is unsupported in the current boundary.                                                                                                                     | `limited` / deterministic only when both `canSendWriteWithoutResponse` and `peripheralIsReady(toSendWriteWithoutResponse:)` are bridged; otherwise `unsupported`. | `writeWhenReady` is `limited` / deterministic when readiness is authoritative and otherwise rejects `capability.unsupported`; parameters and subrate remain unsupported. |
-| Web and Electron renderer IPC           | `unsupported`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `unsupported`                                                                                                                                                                | Web Bluetooth stays `unsupported`. Electron renderer routes `connection.write-readiness.subscribe` to the desktop core: macOS is limited when both native hooks exist; Windows and Linux answer `capability.unsupported` (`no-readiness-signal`). | Web Bluetooth stays unsupported. Electron routes `connection.parameters`: WinRT on Windows 11 build 22000 is limited (`winrt-connection-parameters-22000`); BlueZ and CoreBluetooth stay unsupported. `connection:subrate` stays unsupported. `writeWhenReady` follows the readiness route and rejects `capability.unsupported` when readiness is not advertised. |
-| Desktop Rust core (BlueZ, WinRT, Tauri) | `connection:request-mtu` is unsupported (no caller-directed negotiation through the boundary); effective MTU is `limited` — WinRT reads `GattSession.MaxPduSize` (`winrt-gattsession-max-pdu-size`), BlueZ reads the `org.bluez.GattCharacteristic1` MTU (`bluez-gatt-characteristic-mtu`; a withheld link answers `capability.unavailable`), macOS reports the ATT MTU unavailable (`corebluetooth-att-mtu-not-observed`) because a CoreBluetooth write length is not an ATT PDU, and Tauri follows its desktop OS.                                                                                                 | `unsupported`                                                                                                                                                                | macOS and Tauri route readiness, limited where CoreBluetooth reports both hooks; Windows and Linux answer `capability.unsupported` (`no-readiness-signal`). | WinRT is limited on Windows 11 build 22000, including Tauri and Electron (`winrt-connection-parameters-22000`). BlueZ and CoreBluetooth `connection:parameters` stay unsupported. `connection:subrate` stays unsupported. `writeWhenReady` follows readiness and rejects `capability.unsupported` when readiness is not advertised. |
+| Host/backend                            | MTU request / effective observation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | PHY read/request                                                                                                                                                             | Write-without-response readiness                                                                                                                                                                                                                                                                                   | Parameters / subrate / `writeWhenReady`                                                                                                                                                                                                                                                                                                                           |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| React Native Android                    | `limited` / deterministic. `effectiveMtu()` reads only the generation-bound value recorded by a successful `onMtuChanged`; it is unavailable before measurement.                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `limited` / deterministic. `readPhy()` is the `onPhyRead` callback result. `requestPhy()` separates callback-derived `accepted` from its optional `onPhyUpdate` observation. | `unsupported`                                                                                                                                                                                                                                                                                                      | `connection:parameters` is unsupported. `connection:subrate` is limited when the native SDK 36.1 public request API is present; app authorization is checked at dispatch and acceptance has no measured observation. `writeWhenReady` rejects `capability.unsupported`.                                                                                           |
+| React Native Apple                      | Caller-directed MTU request is `unsupported`: CoreBluetooth negotiates internally and exposes no request control. Effective ATT MTU observation is `limited` / deterministic. CoreBluetooth does not observe an ATT MTU, so `connection.controls.effectiveMtu()` reports `state: 'unavailable'` with a null ATT MTU (limitation `corebluetooth-att-mtu-not-observed`, plus `live-radio-qualification-pending`). `maximumWriteValueLength(for:)` stays the per-mode write capacity and is not published as an ATT MTU. PHY read/request is `unsupported` because CoreBluetooth exposes no application control for it. | `unsupported`                                                                                                                                                                | `limited` / deterministic. The probe is `canSendWriteWithoutResponse` and later edges are `peripheralIsReady(toSendWriteWithoutResponse:)`. Limitation `corebluetooth-write-without-response-readiness`, plus `live-radio-qualification-pending`. This is not Android auto-ready and it is not a measured ATT MTU. | `connection:parameters` and `connection:subrate` stay unsupported. `writeWhenReady` waits on the readiness stream, then writes without response, and still rejects `capability.unsupported` when readiness is not advertised.                                                                                                                                     |
+| Direct CoreBluetooth Node/Electron-main | `connection:request-mtu` is unsupported because CoreBluetooth negotiates internally. Effective MTU is `limited` with `corebluetooth-att-mtu-not-observed`: CoreBluetooth does not observe an ATT MTU, so the observation is unavailable rather than a write length plus 3.                                                                                                                                                                                                                                                                                                                                           | `connection:phy` is unsupported in the current boundary.                                                                                                                     | `limited` / deterministic only when both `canSendWriteWithoutResponse` and `peripheralIsReady(toSendWriteWithoutResponse:)` are bridged; otherwise `unsupported`.                                                                                                                                                  | `writeWhenReady` is `limited` / deterministic when readiness is authoritative and otherwise rejects `capability.unsupported`; parameters and subrate remain unsupported.                                                                                                                                                                                          |
+| Web and Electron renderer IPC           | `unsupported`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `unsupported`                                                                                                                                                                | Web Bluetooth stays `unsupported`. Electron renderer routes `connection.write-readiness.subscribe` to the desktop core: macOS is limited when both native hooks exist; Windows and Linux answer `capability.unsupported` (`no-readiness-signal`).                                                                  | Web Bluetooth stays unsupported. Electron routes `connection.parameters`: WinRT on Windows 11 build 22000 is limited (`winrt-connection-parameters-22000`); BlueZ and CoreBluetooth stay unsupported. `connection:subrate` stays unsupported. `writeWhenReady` follows the readiness route and rejects `capability.unsupported` when readiness is not advertised. |
+| Desktop Rust core (BlueZ, WinRT, Tauri) | `connection:request-mtu` is unsupported (no caller-directed negotiation through the boundary); effective MTU is `limited` — WinRT reads `GattSession.MaxPduSize` (`winrt-gattsession-max-pdu-size`), BlueZ reads the `org.bluez.GattCharacteristic1` MTU (`bluez-gatt-characteristic-mtu`; a withheld link answers `capability.unavailable`), macOS reports the ATT MTU unavailable (`corebluetooth-att-mtu-not-observed`) because a CoreBluetooth write length is not an ATT PDU, and Tauri follows its desktop OS.                                                                                                 | `unsupported`                                                                                                                                                                | macOS and Tauri route readiness, limited where CoreBluetooth reports both hooks; Windows and Linux answer `capability.unsupported` (`no-readiness-signal`).                                                                                                                                                        | WinRT is limited on Windows 11 build 22000, including Tauri and Electron (`winrt-connection-parameters-22000`). BlueZ and CoreBluetooth `connection:parameters` stay unsupported. `connection:subrate` stays unsupported. `writeWhenReady` follows readiness and rejects `capability.unsupported` when readiness is not advertised.                               |
+
+Windows preferred connection presets use the native
+`RequestPreferredConnectionParameters` mechanism through Node/Bun, Electron and
+Tauri. The instantiated radio checks the method and preset properties before
+advertising `connection:priority`; Windows 11 build 22000 is the API floor.
+`balanced`, `high-throughput` and `low-power` map to Balanced,
+ThroughputOptimized and PowerOptimized. Acceptance reports the request status;
+parameter reads and events independently report what the link adopted. The
+connection retains the native closeable request until replacement or teardown.
+Failed close retains that owner and blocks another request until cleanup succeeds.
+Use balanced to restore the default preference after a throughput-sensitive task.
+The current remediation batch has not yet been executed or physically qualified.
 
 Android `requestPhy()` does not treat dispatch or a preferred-PHY call as proof
 of the resulting link state: a successful `onPhyUpdate` supplies the accepted
@@ -1393,3 +1461,12 @@ descriptor reports `unavailable` or `limited` with this reason.
 No open item authorizes a guessed fallback, a hidden legacy path, a false
 success, or a weakened lifecycle rule. It only limits the feature state until
 the exact evidence is available.
+
+Android subrate presets are `default` (BALANCED), `low-latency` (OFF),
+`low-power` (LOW), and `high-throughput` (HIGH). The instantiated native backend
+probes SDK 36.1 and the actual API before advertising `connection:subrate`.
+Requests require BLUETOOTH_CONNECT and companion association or privileged
+permission; runtime refusals retain the platform's status. SUCCESS produces
+an accepted result with `observation: null`, without inventing a factor.
+See [mobile wire admission](MOBILE_RUST_WIRE.md#android-subrate-request-admission)
+for ownership, permissions, and qualification limits.

@@ -131,7 +131,7 @@ once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
 history. `4.0.28` is immutable tagged history. The unpublished
 `v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
-The next prepared candidate is `5.0.0-rc.21`. `5.0.0-rc.20` is the parent release branch and is not published history. rc.19, rc.18, rc.17, rc.16 and rc.14 are immutable published history.
+The next prepared candidate is `5.0.0-rc.21`. `5.0.0-rc.20` is immutable published history. rc.19, rc.18, rc.17, rc.16 and rc.14 are immutable published history.
 The immutable `v5.0.0-rc.15` tag remains unpublished: its publisher was cancelled
 before npm publication when the Apple architecture policy changed.
 
@@ -163,9 +163,21 @@ git tag -a v4.0.0 -m "v4.0.0"
 
 ## Releasing 5.0.0-rc.21
 
-This candidate keeps the rc.20 tree and qualifies Bun 1.4.2 as a desktop host
-for the existing Node-API addon. `bun scripts/ci/bun-desktop-host-smoke.js`
-loads the sealed prebuild and runs the synthetic central. Source daemon
+This candidate includes the PR #251 remediation batch. Before publication,
+complete the item-by-item acceptance ledger in
+[`docs/review/RC21_REMEDIATION.md`](docs/review/RC21_REMEDIATION.md) on the exact
+integrated head. The maintained source daemon is `5.87-ubm.10`, with authority
+contract `(1, 3, 1)`; older contracts fail closed. The packed qualifier executes
+the installed public desktop factory, production provider and sealed addon
+under Node and Bun 1.4.2, in CommonJS and ESM, on Linux, macOS and Windows.
+Its explicit synthetic radio proves integration and resource ownership.
+Changed BlueZ ownership and acquired-FD radio scenarios require their separate
+native-daemon and physical qualification receipts. No pending remediation
+entry or required qualification gap may be presented as closed.
+
+Retained prior qualification history follows; it does not qualify this new
+batch. `bun scripts/ci/bun-desktop-host-smoke.js` loads the sealed prebuild and
+runs the synthetic central. Source daemon
 `5.87-ubm.6` ends a finished GATT read or write hold when the call completes.
 Installing that daemon changed the glibc Linux H10 disconnect from
 `lease-released-protected` to `lease-released-indeterminate` and left the
@@ -176,7 +188,7 @@ auto-connect for an untrusted device. Installing it changed the glibc Linux
 H10 disconnect to `lease-released-protected` and left the link up, because
 the controller had already initiated the bonded link and the lease adopted
 it as borrowed. `5.87-ubm.8` releases a locally initiated link when no other
-application hold remains. The authority contract stays `(1, 2, 1)`.
+application hold remains. That prior authority contract was `(1, 2, 1)`.
 Installing `5.87-ubm.8`, the glibc Linux H10 session reported disconnect
 `released` and close `released`, and the link was down. `5.87-ubm.9` fails an
 unbonded LE attribute operation that returns Insufficient Encryption or

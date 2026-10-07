@@ -73,6 +73,7 @@ import type {
   ConnectionPhyObservation,
   ConnectionPhyRequest,
   ConnectionPriorityRequest,
+  ConnectionSubrateRequest,
   EffectiveMtuMeasurement,
   EffectiveMtuRequest,
   MtuNegotiation,
@@ -81,6 +82,7 @@ import type {
   RequestMtuRequest,
   RequestPhyRequest,
   RequestPriorityRequest,
+  RequestSubrateRequest,
   RssiMeasurement
 } from '../../backend-contract/connection-controls'
 import {
@@ -209,6 +211,7 @@ import {
   checkWriteReceipt,
   encodeBase64,
   remotePlatformDetail,
+  remoteFailureError,
   type WireAdapterState,
   type WireCleanupRecord,
   type WireCounters,
@@ -464,12 +467,14 @@ async function openBackend(
   let backend: ReactNativeRustCoreBackend
   try {
     const state = await session.invoke('adapter.state', {})
+    const controls = await session.invoke('connection.control-capabilities', {})
     backend = new ReactNativeRustCoreBackend(
       options.platform,
       session,
       options.now,
       {
         ...options.runtime,
+        androidSubrateAvailable: options.platform === 'android' && controls.subrate,
         continuationBindingAvailable:
           typeof binding.declareBackgroundContinuation === 'function' &&
           typeof binding.continuationStatus === 'function' &&
@@ -868,6 +873,9 @@ interface ReadinessWatch {
   readonly connectionGeneration: string
   readonly coreGeneration: string
   readonly stream: OwnedCoreBoundedStream<ConnectionWriteReadinessObservation<string>>
+  readonly openingCancellation: AbortController
+  openingSettled: boolean
+  failure: NormalizedBleError | null
   ordinal: number
 }
 
@@ -913,6 +921,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private readonly databases = new Map<string, DatabaseEntry>()
   private readonly subscriptions = new Map<string, SubscriptionEntry>()
   private readonly readinessWatches = new Set<ReadinessWatch>()
+  private readinessSourceFailure: NormalizedBleError | null = null
   private readonly invalidations = new Map<string, InvalidationReason>()
   private readonly eventStreams = new Set<OwnedCoreBoundedStream<BackendEvent<string>>>()
   private readonly adapterWatches = new Set<OwnedCoreBoundedStream<AdapterStateSnapshot<string>>>()
@@ -1021,6 +1030,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         connection: BackendConnection<string, string>,
         request: RequestPriorityRequest<string, Operation>
       ) => this.requestPriority(connection, request),
+      requestSubrate: <Operation extends string>(
+        connection: BackendConnection<string, string>,
+        request: RequestSubrateRequest<string, Operation>
+      ) => this.requestSubrate(connection, request),
       readPhy: <Operation extends string>(
         connection: BackendConnection<string, string>,
         request: ReadPhyRequest<string, Operation>
@@ -1073,7 +1086,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.peers = Object.freeze({
       resolve: (reference: PeerReference, options: BackendPeerQuery) => this.resolvePeer(reference, options),
       known: (options: BackendPeerQuery) => this.listPeers('peers.known', 'known', options),
-      connected: (options: BackendPeerQuery) => this.listPeers('peers.connected', 'connected', options),
+      connected: (options: BackendPeerQuery) => this.connectedPeers(options),
       bonded: (options: BackendPeerQuery) => this.bondedPeers(options),
       authorized: (options: BackendPeerQuery) => this.authorizedPeers(options),
       restored: (options: BackendPeerQuery) => this.restoredPeers(options)
@@ -1154,7 +1167,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         hostKind: 'native-mobile',
         implementationVersion: REACT_NATIVE_RUST_CORE_IMPLEMENTATION_VERSION,
         diagnostics: Object.freeze({
-          boundary: 'ubm-mobile-wire/1',
+          boundary: 'ubm-mobile-wire/2',
           transport: 'native-core-session',
           sessionId: this.session.sessionId,
           nativeBinding: this.session.buildIdentity.binding,
@@ -1348,6 +1361,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     // The session can no longer report platform facts: every stream ends
     // with the owner's failure rather than waiting forever.
     const normalized = normalizedFrom(error, `${SCOPE}.drain`)
+    this.readinessSourceFailure ??= normalized
     this.trace?.record({
       timestamp: this.now(),
       resource: 'manager',
@@ -1367,7 +1381,14 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     }
     for (const entry of this.subscriptions.values()) entry.stream.closeWithReason('source-failed', normalized)
     for (const watch of [...this.adapterWatches]) watch.closeWithReason('source-failed', normalized)
+    for (const watch of [...this.readinessWatches]) this.closeReadinessWatch(watch, 'source-failed', normalized)
     for (const stream of [...this.eventStreams]) stream.closeWithReason('source-failed', normalized)
+    for (const [operationId, pending] of this.pendingOperations) {
+      if (pending.sourceFailed !== undefined) {
+        pending.sourceFailed(normalized)
+        this.cancelDetached(operationId, `${SCOPE}.gatt.write-when-ready`)
+      }
+    }
   }
 
   private assertOperational(operation: string): void {
@@ -1417,7 +1438,14 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
    * settles: the admission it was sent with (`null` until sent) and whether
    * it was cancelled before it was sent (finding 109).
    */
-  private readonly pendingOperations = new Map<string, { admission: number | null; cancelledBeforeSend: boolean }>()
+  private readonly pendingOperations = new Map<
+    string,
+    {
+      admission: number | null
+      cancelledBeforeSend: boolean
+      sourceFailed?: (failure: NormalizedBleError) => void
+    }
+  >()
   private nextAdmission = 0
 
   /**
@@ -1561,8 +1589,17 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   }
 
   /** Tracks `operationId` until it settles and cancels it when `signal` aborts. */
-  private watchAbort(signal: AbortSignal | null, operationId: string, operation: string): () => void {
-    this.pendingOperations.set(operationId, { admission: null, cancelledBeforeSend: false })
+  private watchAbort(
+    signal: AbortSignal | null,
+    operationId: string,
+    operation: string,
+    sourceFailed?: (failure: NormalizedBleError) => void
+  ): () => void {
+    this.pendingOperations.set(operationId, {
+      admission: null,
+      cancelledBeforeSend: false,
+      ...(sourceFailed === undefined ? {} : { sourceFailed })
+    })
     const onAbort = (): void => this.cancelDetached(operationId, operation)
     signal?.addEventListener('abort', onAbort, { once: true })
     return () => {
@@ -1580,16 +1617,30 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     operationId: string,
     signal: AbortSignal | null,
     operation: string,
-    run: () => Promise<Result>
+    run: () => Promise<Result>,
+    needsLiveSource = false
   ): BackendOperationDispatch<string, Result> {
-    const removeAbort = this.watchAbort(signal, operationId, operation)
-    const completion = (async () => {
+    let failSource: ((failure: NormalizedBleError) => void) | undefined
+    const sourceFailure = needsLiveSource
+      ? new Promise<never>((_resolve, reject) => {
+          failSource = failure => reject(new BackendContractError(failure))
+        })
+      : null
+    const removeAbort = this.watchAbort(signal, operationId, operation, failSource)
+    if (needsLiveSource && this.readinessSourceFailure !== null) {
+      failSource?.(this.readinessSourceFailure)
+      this.cancelDetached(operationId, operation)
+    }
+    // Native settlement owns cancellation/cleanup debt after a public source
+    // failure. Removing the operation at the race winner would forget it.
+    const nativeCompletion = (async () => {
       try {
         return await run()
       } finally {
         removeAbort()
       }
     })()
+    const completion = sourceFailure === null ? nativeCompletion : Promise.race([sourceFailure, nativeCompletion])
     return createBackendOperationDispatch(this.identifiers.backendOperationHandle(operationId), completion, () =>
       this.cancel(operationId)
     )
@@ -1850,14 +1901,24 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       return bonded[0] ?? null
     }
     if (reference.scope !== 'origin') throw contractError('peer.scope-mismatch', 'connection', operation)
-    const record = await this.invoke('peers.resolve', {
-      reference: {
-        opaqueId: reference.opaqueId,
-        version: reference.version,
-        backendId: reference.backendId,
-        scope: reference.scope
-      }
-    })
+    const operationId = this.mintOperationId('peers-resolve')
+    const removeAbort = this.watchAbort(options.signal ?? null, operationId, operation)
+    let record: WirePeerRecord | null
+    try {
+      record = await this.invoke('peers.resolve', {
+        reference: {
+          opaqueId: reference.opaqueId,
+          version: reference.version,
+          backendId: reference.backendId,
+          scope: reference.scope
+        },
+        operationId,
+        ...this.budget(options, operation)
+      })
+    } finally {
+      removeAbort()
+    }
+    this.assertOperational(operation)
     if (record === null) {
       if (!this.askDirectoryAvailable) return null
       const authorized = await this.authorizedPeers({ ...options, references: [reference] })
@@ -1868,7 +1929,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   }
 
   private async listPeers(
-    op: 'peers.known' | 'peers.connected',
+    op: 'peers.known',
     name: string,
     options: BackendPeerQuery
   ): Promise<readonly BackendPeerRecord<string>[]> {
@@ -1907,6 +1968,42 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     )
     return this.filterReferences(
       options.sources !== undefined && !options.sources.includes('origin-authorized') ? [] : records,
+      options,
+      operation
+    )
+  }
+
+  private async connectedPeers(options: BackendPeerQuery): Promise<readonly BackendPeerRecord<string>[]> {
+    const operation = `${SCOPE}.peers.connected`
+    this.assertOperational(operation)
+    const services = options.services ?? []
+    if (this.platform === 'apple' && services.length === 0)
+      throw contractError('capability.unsupported', 'connection', `${operation}.services-required`)
+    if (this.platform === 'android' && services.length > 0)
+      throw contractError('capability.unsupported', 'connection', `${operation}.services`)
+    for (const reference of options.references ?? []) {
+      assertPeerReference(reference, operation)
+      if (reference.backendId !== backendIdFor(this.platform) || reference.scope !== 'origin')
+        throw contractError('peer.scope-mismatch', 'connection', operation)
+    }
+    const normalizedServices = services.map(service => String(canonicalUuid(service)))
+    const operationId = this.mintOperationId('peers-connected')
+    const removeAbort = this.watchAbort(options.signal ?? null, operationId, operation)
+    let records: readonly WirePeerRecord[]
+    try {
+      records = await this.invoke('peers.connected', {
+        operationId,
+        services: normalizedServices,
+        ...this.budget(options, operation)
+      })
+    } finally {
+      removeAbort()
+    }
+    this.assertOperational(operation)
+    return this.filterReferences(
+      records
+        .filter(record => options.sources === undefined || options.sources.includes(record.source))
+        .map(record => this.peerRecord(record, this.originReference(record.peerId))),
       options,
       operation
     )
@@ -1956,14 +2053,13 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     if (platform.kind !== 'android' || this.platform !== 'android') {
       throw contractError('capability.unsupported', 'scan', `${operation}.platform-options`)
     }
-    if (platform.reportDelayMs !== undefined || platform.phy !== undefined) {
-      throw contractError('capability.unsupported', 'scan', `${operation}.platform-options`)
-    }
     return {
       platform: {
         ...(platform.mode === undefined ? {} : { mode: platform.mode }),
         ...(platform.callbackType === undefined ? {} : { callbackType: platform.callbackType }),
-        ...(platform.legacy === undefined ? {} : { legacy: platform.legacy })
+        ...(platform.legacy === undefined ? {} : { legacy: platform.legacy }),
+        ...(platform.reportDelayMs === undefined ? {} : { reportDelayMs: platform.reportDelayMs }),
+        ...(platform.phy === undefined ? {} : { phy: platform.phy })
       }
     }
   }
@@ -2804,6 +2900,27 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     })
   }
 
+  private requestSubrate<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: RequestSubrateRequest<string, Operation>
+  ): BackendOperationDispatch<string, ConnectionSubrateRequest<string, Operation>> {
+    return this.control(connection, request, 'request-subrate', async (entry, operationId, budget) => {
+      const answer = await this.invoke('connection.request-subrate', {
+        peerId: entry.nativePeerId,
+        lease: entry.lease,
+        mode: request.mode,
+        operationId,
+        ...budget
+      })
+      return Object.freeze({
+        requested: request.mode,
+        accepted: answer.accepted,
+        observedAtMonotonicMs: this.now(),
+        terminal: this.terminal(request.operation.correlation)
+      })
+    })
+  }
+
   private readPhy<Operation extends string>(
     connection: BackendConnection<string, string>,
     request: ReadPhyRequest<string, Operation>
@@ -2899,7 +3016,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   ): Promise<ConnectionWriteReadinessWatch<string>> {
     const operation = `${SCOPE}.connection.write-readiness`
     this.assertOperational(operation)
+    if (this.readinessSourceFailure !== null) throw new BackendContractError(this.readinessSourceFailure)
     const entry = this.requireConnection(connection, operation)
+    const budget = this.budget(options, operation)
     const opened: { watch: ReadinessWatch | null } = { watch: null }
     const stream = new OwnedCoreBoundedStream<ConnectionWriteReadinessObservation<string>>(
       { itemCapacity: capacity(64), byteCapacity: capacity(16 * 1024), reservedControlCapacity: capacity(1) },
@@ -2914,24 +3033,42 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       connectionGeneration: String(entry.resource.connectionGeneration),
       coreGeneration: entry.coreGeneration,
       stream,
+      openingCancellation: new AbortController(),
+      openingSettled: false,
+      failure: null,
       ordinal: 0
     }
     opened.watch = watch
     this.readinessWatches.add(watch)
     const operationId = this.mintOperationId('write-readiness')
-    const removeAbort = this.watchAbort(options.signal ?? null, operationId, operation)
+    const openingSignal = watch.openingCancellation.signal
+    const removeAbort = this.watchAbort(openingSignal, operationId, operation)
+    const callerAborted = (): void =>
+      this.closeReadinessWatch(watch, 'source-failed', contractError('operation.aborted', 'core', operation).normalized)
+    options.signal?.addEventListener('abort', callerAborted, { once: true })
+    let removeOpeningListener = (): void => undefined
+    const terminated = new Promise<never>((_, reject) => {
+      const closed = (): void =>
+        reject(
+          new BackendContractError(
+            watch.failure ?? contractError('connection.stale', 'connection', `${operation}.closed`).normalized
+          )
+        )
+      openingSignal.addEventListener('abort', closed, { once: true })
+      removeOpeningListener = () => openingSignal.removeEventListener('abort', closed)
+    })
     let ready: boolean
     try {
-      ready = (
-        await this.invoke('connection.write-readiness', {
-          peerId: entry.nativePeerId,
-          lease: entry.lease,
-          operationId,
-          ...this.budget(options, operation)
-        })
-      ).ready
+      const probe = this.invoke('connection.write-readiness', {
+        peerId: entry.nativePeerId,
+        lease: entry.lease,
+        operationId,
+        ...budget
+      }).finally(removeAbort)
+      // Local termination reports the source fault immediately. A refused
+      // native cancellation retains its admission until completion/disposal.
+      ready = (await Promise.race([probe, terminated])).ready
     } catch (error) {
-      removeAbort()
       this.closeReadinessWatch(
         watch,
         'source-failed',
@@ -2939,9 +3076,12 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
           ? error.normalized
           : contractError('platform.failure', 'connection', operation).normalized
       )
-      throw error
+      throw watch.failure === null ? error : new BackendContractError(watch.failure)
+    } finally {
+      watch.openingSettled = true
+      options.signal?.removeEventListener('abort', callerAborted)
+      removeOpeningListener()
     }
-    removeAbort()
     if (!this.readinessWatches.has(watch)) {
       throw contractError('connection.stale', 'connection', `${operation}.closed`)
     }
@@ -2975,6 +3115,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     normalized: NormalizedBleError | null = null
   ): void {
     if (!this.readinessWatches.delete(watch)) return
+    watch.failure = normalized
+    if (!watch.openingSettled) watch.openingCancellation.abort()
     watch.stream.closeWithReason(reason, normalized)
   }
 
@@ -3119,6 +3261,16 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
           bytes: value,
           mode: writeOptions.mode
         }).completion,
+      writeWhenReady: async (
+        characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
+        value: BorrowedBytes,
+        writeOptions: WritePolicy
+      ): Promise<WriteReceipt<string, string>> =>
+        this.writeWhenReady(characteristic, {
+          operation: this.operationFor(writeOptions),
+          bytes: value,
+          mode: writeOptions.mode
+        }).completion,
       readDescriptor: async (
         descriptor: DescriptorPath<string, string, string, string, string, string, 'current'>,
         readOptions: PublicOperationOptions
@@ -3187,7 +3339,20 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         serviceUuid: canonicalUuid(service.uuid),
         serviceOccurrence: opaqueId(String(service.occurrence), 'service-occurrence', SCOPE)
       })
-      services.push(Object.freeze({ path: servicePath, primary: true, includedServices: Object.freeze([]) }))
+      services.push(
+        Object.freeze({
+          path: servicePath,
+          primary: service.primary,
+          includedServices:
+            service.includedServices === null
+              ? null
+              : Object.freeze(
+                  service.includedServices.map(reference =>
+                    Object.freeze({ uuid: canonicalUuid(reference.uuid), occurrence: String(reference.occurrence) })
+                  )
+                )
+        })
+      )
       for (const characteristic of service.characteristics) {
         const characteristicPath = Object.freeze({
           ...servicePath,
@@ -3352,7 +3517,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
 
   /** A write's result is the owner's receipt; its failure carries the owner's commit state. */
   private writeWith<Operation extends string>(
-    op: 'gatt.write' | 'gatt.write-descriptor',
+    op: 'gatt.write' | 'gatt.write-when-ready' | 'gatt.write-descriptor',
     nativePeerId: string,
     selector: CharacteristicSelector | DescriptorSelector,
     request: WriteRequest<string, Operation>,
@@ -3362,22 +3527,31 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const valueB64 = unwrap(encodeBase64(request.bytes))
     const operationId = this.mintOperationId('write')
     const budget = this.budget(request.operation, operation)
-    return this.dispatch(operationId, request.operation.signal, operation, async () => {
-      const receipt = unwrap(
-        checkWriteReceipt(
-          await this.invoke(op, {
-            peerId: nativePeerId,
-            selector,
-            valueB64,
-            mode: request.mode,
-            operationId,
-            ...budget
-          }),
-          request.mode
+    return this.dispatch(
+      operationId,
+      request.operation.signal,
+      operation,
+      async () => {
+        const receipt = unwrap(
+          checkWriteReceipt(
+            await this.invoke(op, {
+              peerId: nativePeerId,
+              selector,
+              valueB64,
+              mode: request.mode,
+              operationId,
+              ...budget
+            }),
+            request.mode
+          )
         )
-      )
-      return Object.freeze({ terminal: this.terminal(request.operation.correlation), commitState: receipt.commitState })
-    })
+        return Object.freeze({
+          terminal: this.terminal(request.operation.correlation),
+          commitState: receipt.commitState
+        })
+      },
+      op === 'gatt.write-when-ready'
+    )
   }
 
   private write<Operation extends string>(
@@ -3387,6 +3561,17 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const operation = `${SCOPE}.gatt.write`
     const { entry, selector } = this.resolveCharacteristic(path, operation)
     return this.writeWith('gatt.write', entry.nativePeerId, selector, request, operation)
+  }
+
+  private writeWhenReady<Operation extends string>(
+    path: CharacteristicPath<string, string, string, string, string, 'current'>,
+    request: WriteRequest<string, Operation>
+  ): BackendOperationDispatch<string, WriteResult<string, Operation>> {
+    const operation = `${SCOPE}.gatt.write-when-ready`
+    if (request.mode !== 'without-response') throw contractError('argument.invalid', 'gatt', `${operation}.mode`)
+    if (this.platform !== 'apple') throw contractError('capability.unsupported', 'connection', operation)
+    const { entry, selector } = this.resolveCharacteristic(path, operation)
+    return this.writeWith('gatt.write-when-ready', entry.nativePeerId, selector, request, operation)
   }
 
   private writeDescriptor<Operation extends string>(
@@ -3571,6 +3756,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       case 'security':
         this.onSecurity(record.peerId, record.state)
         break
+      case 'security-failed':
+        this.onSecuritySourceFailed(record.peerId, remoteFailureError(record.error))
+        break
       case 'readiness':
         this.onReadiness(record)
         break
@@ -3720,6 +3908,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         this.onSecurity(report.peerId, report.state)
       }
     }
+    for (const report of snapshot.securityFailures) {
+      this.onSecuritySourceFailed(report.peerId, remoteFailureError(report.error))
+    }
     if (snapshot.restored.length > 0) this.onRestored(snapshot.restored)
     await this.reconcileReadinessWatches()
     for (const [membership, group] of scannedGroups) {
@@ -3758,6 +3949,12 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       if (record.connectionGeneration === null) continue
       this.emitReadiness(watch, record.ready)
     }
+  }
+
+  private onSecuritySourceFailed(nativePeerId: string | null, error: BackendContractError): void {
+    if (nativePeerId === null) this.securityDelivered.clear()
+    else this.securityDelivered.delete(nativePeerId)
+    this.security?.sourceFailed(nativePeerId === null ? null : String(this.peerIdForNative(nativePeerId)), error)
   }
 
   private onSecurity(nativePeerId: string, state: WireSecurityState): void {

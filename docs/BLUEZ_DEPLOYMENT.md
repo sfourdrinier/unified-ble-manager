@@ -24,7 +24,7 @@ a host.
 
 `vendor/bluez/deployment/bundle.mjs` uses the exact upstream archive digest,
 patch and license hashes from `source-asset-manifest.json`. It refuses a source
-manifest without `distribution.linuxAuthorityContract: [1, 2, 1]`. The producer
+manifest without `distribution.linuxAuthorityContract: [1, 3, 1]`. The producer
 owner sets that readiness fact only after integrating and exercising the actual
 lease handlers; adding the field is not a substitute for those tests.
 
@@ -129,7 +129,7 @@ the current native owner could not establish the required authority contract:
 - A missing-method or interface error retains the D-Bus answer under `platform`;
   verify the deployed binary and experimental API enablement.
 - A malformed or unsupported version reply is not compatible merely because
-  the daemon is named BlueZ. Verify the exact `(1,2,1)` contract below.
+  the daemon is named BlueZ. Verify the exact `(1,3,1)` contract below.
 - `platform.domain = ubm-linux-authority`, `platform.code = observation-timeout`
   means the bounded contract observation did not complete; it is not proof that
   the peer is absent or permission was denied.
@@ -142,7 +142,7 @@ reviewed file-install, separately approved service cutover and scoped rollback
 steps above; reconnecting cannot repair a missing daemon contract.
 
 Under the freshly resolved unique daemon owner, the selected adapter must
-answer `org.unifiedblemanager.LinuxAuthority1.GetContract` with exact `(1,2,1)`.
+answer `org.unifiedblemanager.LinuxAuthority1.GetContract` with exact `(1,3,1)`.
 The lease mechanism is `LELease1.ReserveLease(deviceObjectPath, privateReservationId)` then
 `ConnectLease(token)`, with `ReleaseLease(token)` returning exactly `uttsby`:
 version, original token, physical LE generation, scoped outcome, observed-reason
@@ -171,11 +171,15 @@ physical LE generation.
 The public loss vocabulary is unchanged; the actual MGMT reason byte remains
 available as typed platform detail rather than a fabricated new public cause.
 
-After consuming an exact terminal physical/reservation release receipt, the
+After consuming an exact physical, reservation or protected logical release receipt, the
 client acknowledges its daemon record with `AckLease(token)`. A failed or held
 acknowledgment remains retryable housekeeping debt, not a reversal of the
-observed physical release. Unresolved, protected and indeterminate ownership
-is never acknowledged away. The daemon's bounded registry must support normal
+observed release. For protected logical release, revision 3 retains deferred
+cleanup under the exact physical generation in the daemon before reclaiming
+the token. It reconciles when the last protecting interest ends without
+requiring sender death. Unresolved and indeterminate ownership is never
+acknowledged away. Older lease revisions are refused at admission.
+The daemon's bounded registry must support normal
 long-lived reconnect cycles without evicting unresolved records or reusing
 identities.
 New connection admission kicks retryable acknowledgment maintenance without
@@ -206,7 +210,7 @@ public scanning or another peer's session.
 The instantiated Linux backend probes this optional mechanism. `.4` and older
 daemons still support direct scoped connection and GATT discovery, but report
 `capability.unsupported` for initial `when-available`. Installing the addon does
-not update that daemon. The tuple `(1,2,1)` remains necessary for lease authority;
+not update that daemon. The tuple `(1,3,1)` remains necessary for lease authority;
 it alone is not proof that the optional observer is implemented.
 
 BlueZ's ordinary `Device1` RSSI, manufacturer-data and service-data changes do

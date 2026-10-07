@@ -7,7 +7,7 @@ separate review and explicit host action. Do not silently apply it, enable
 experimental APIs, grant privileges or upgrade a host.
 
 The current source deployment identity is `5.87-ubm.10`, with unchanged Linux
-authority contract `(1,2,1)`. A finished GATT characteristic or descriptor
+authority contract `(1,3,1)`. A finished GATT characteristic or descriptor
 read or write holds the link only while that ATT operation is in flight.
 Connect, pair, StartNotify, and Acquire hold until the sender's bus
 connection dies. Arming auto-connect while probing profiles is daemon
@@ -61,6 +61,18 @@ fails. A dead owner's last in-flight
 operation schedules generation-fenced cleanup. Explicit pairing on the same
 attachment resumes ATT security retry. Those producer tests do not install a
 daemon and are not a physical-radio receipt.
+
+The rc.21 remediation also protects accepted pending Pair admissions, including
+Pair opening the link before the first lease. Refusal and cancellation roll back
+that admission. Foreign one-shot GATT operations are tracked before a lease peer
+exists and protect only their active lifetime. Pre-lease arrival and admission
+records retire with their physical generation; adopting a replacement generation
+does not adopt an older generation's foreign interest. Deferred acquired-FD
+failure retires the exact pending admission and socket/notification resource;
+readiness failure, reply-delivery failure and cancellation do not retain a
+placeholder that blocks the next acquisition. These corrections are
+under verification in `docs/review/RC21_REMEDIATION.md`; they do not constitute a
+new installed-daemon or controller receipt.
 
 ## Provenance and license
 
@@ -146,7 +158,7 @@ failure into full client initialization. The graph fixture includes duplicate
 native Include declarations, whose exported unique targets follow stock BlueZ
 Includes semantics, as well as missing and stale targets.
 
-## Private authority contract 1, lease revision 2, GATT revision 1
+## Private authority contract 1, lease revision 3, GATT revision 1
 
 ### Optional LE availability observer revision 1
 
@@ -178,16 +190,21 @@ cleanup refusal. These are source/protocol tests, not physical-radio receipts.
 
 ### Existing lease and GATT authority
 
-The adapter's `LinuxAuthority1.GetContract` verifies the `(1,2,1)` lease and
+The adapter's `LinuxAuthority1.GetContract` verifies the `(1,3,1)` lease and
 GATT-observer contract before native lifecycle capability admission. `LELease1`
 owns reservation, read-only recovery, connection and exact-token release;
 `PhysicalLost(o,t,y)` retains actual physical generation and raw MGMT reason.
-`ReleaseLease` returns exactly `uttsby`: revision2, original token, physical
+`ReleaseLease` returns exactly `uttsby`: revision3, original token, physical
 generation, release scope, observed-reason presence, and raw MGMT reason byte.
 The reason is retained by the exact physical-loss callback and travels in the
 operation's own reply, independent of client signal/reply scheduling. An absent
 reason has canonical byte0; reservation/protected/indeterminate receipts never
-manufacture an observed physical cause. Revision1 scope-only daemons are refused.
+manufacture an observed physical cause. Revision1 scope-only and revision2
+non-reconciling protected-release daemons are refused. Protected logical release
+is acknowledged in revision3: the daemon retains cleanup under the exact physical
+generation before reclaiming the token, and reconciles when the final protecting
+interest ends without requiring sender death. A failed disconnect remains owned
+for retry. ACK and physical loss remain separate facts.
 The real daemon-table fixture tests retained ownership, accepted late work,
 protected versus exclusive release, asynchronous MGMT refusal/retry, exact
 cancellation fences and more than 1024 interleaved completed sender cycles.

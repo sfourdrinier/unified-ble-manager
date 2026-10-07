@@ -27,11 +27,10 @@ Restoration directories: `peers.restored()` lists the peers the OS handed back a
 `manager.peers` exposes separate `known`, `connected`, `bonded`, `authorized`, and `restored` queries. A backend may report an individual category as unsupported. Web Bluetooth reports origin-authorized devices only when the browser exposes `navigator.bluetooth.getDevices()`; those references are origin-scoped and may represent disconnected or out-of-range devices. Electron and Tauri forward directory queries to their trusted host; they do not infer peer knowledge in the renderer. Support depends on the host's actual radio boundary, and an older host without these routes fails explicitly.
 
 Desktop `bonded()` reads WinRT paired Bluetooth LE inventory or the selected
-adapter's BlueZ Device1 `Paired`/`Bonded` facts. Persisted references from these
-directories resolve by exact identity against that same current native bond
+adapter's BlueZ Device1 `Paired`/`Bonded` facts. Persisted references resolve by exact identity against current native known
 inventory before `connect(reference)` acquires its scoped connection lease.
-A removed bond resolves to `null`; resolution does not scan, establish a link,
-or promote `known()` or `connected()` inventory support.
+An unbonded cached peer may still resolve; disappearance from the native cache
+returns `null`. Resolution does not scan or establish a link.
 These read-only queries neither
 scan nor acquire a connection lease. They return `bond: 'bonded'`, native
 connection status (or `unknown` when unavailable), unknown reachability, and no
@@ -79,6 +78,33 @@ resolves only the supplied references, not every peer known to macOS. Unfiltered
 Bonded, authorized and restored desktop categories remain unsupported where no
 native implementation supplies those facts.
 
+### Linux and Windows desktop retrieval
+
+The desktop `known()` route reads the current OS-visible cache independently of
+this manager's scan and connection history. Linux enumerates selected-adapter
+Device1 objects under the same daemon-owner fence as bond queries, including
+unbonded records. Windows uses the LE DeviceInformation selector and preserves
+public/random address identity in opaque references. A native disappearance
+is not replaced with an advertisement or a connection attempt.
+
+`connected()` uses a distinct OS query and does not require service criteria on
+these platforms. Such criteria are explicitly unsupported because the directory
+cannot establish the requested GATT service facts. On Linux, only positive
+`org.bluez.Bearer.LE1.Connected` evidence qualifies; aggregate Device1 connectivity
+may represent Classic and remains unknown for LE without bearer-specific proof.
+Windows uses the connected LE selector and rechecks current ConnectionStatus.
+Its LE enumeration/FromId API uses the system default adapter, so a differently
+selected adapter receives an explicit capability refusal rather than records
+attributed to the wrong radio. Runtime capability subset registration and IPC
+qualification are still part of the rc.21 remediation batch.
+
+These queries create no local connection leases. Directory names and connection
+membership are OS facts; RSSI and last-advertisement remain absent. Native result
+sets have a 4096-record bound and report an explicit refusal instead of silently
+truncating. A failed WinRT transient-object Close keeps its exact owner in an
+adapter-scoped process vault, retried on a later query, radio open or explicit
+close. Failure debt survives radio drop; no background retry is implied.
+
 The reference dashboard first makes the unfiltered query supported by Android.
 Only the specific service-filter-required refusal above causes a visible retry
 with Heart Rate Service `180d`, using the original deadline and signal. Permission
@@ -120,3 +146,22 @@ Inspect `manager.capabilities.get(...)` when the distinction between
 Permission failures are reported as `permission.denied`; they are not converted into an empty list. Android, Apple React Native, CoreBluetooth, BlueZ, WinRT, Web Bluetooth, Electron, and Tauri only advertise peer categories backed by their current native boundary. In particular, Web origin-authorized devices are not Android-style bonded peers, and unsupported categories fail with `capability.unsupported` rather than returning fabricated data.
 
 `ScanClause.peers` is an additive scan predicate. It matches only observations carrying a trusted reference with the exact same backend, scope, and opaque identity. The matcher never derives a persisted reference from an address or an untrusted public ID.
+
+### React Native system-connected retrieval
+
+Android `connected()` asks `BluetoothManager.getConnectedDevices(GATT)` for
+system GATT connections, including links owned by other applications. A service
+filter is unsupported because this API does not report GATT service membership.
+iOS `connected({ services: ['180d'] })` asks the process CoreBluetooth central's
+service-scoped system inventory; an empty service list is explicitly unsupported.
+Both return native names and a current connection fact independently of the
+manager's cache. They add no local peer ownership, assign no peripheral delegate,
+and do not scan, pair, or connect. A later query reads the OS again rather than
+retaining an immortal directory member. Original permission/platform failures
+survive; an unavailable query never becomes an empty successful list.
+
+The private mobile request carries an operation identity and the caller's
+remaining deadline, so cancellation or owner retirement suppresses late results.
+The directory is bounded at 4096 records. This source implementation and its
+scripted/native-boundary tests still require the rc.21 batch verification and
+physical qualification; they do not establish physical-radio evidence.

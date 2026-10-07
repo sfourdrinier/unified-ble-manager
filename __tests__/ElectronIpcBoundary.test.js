@@ -11,7 +11,7 @@ const { normalizeScanQuery } = require('../src/public/scan-query')
 const { snapshotScanPlan } = require('../src/backend-contract/scan-planning')
 
 function negotiated(axis) {
-  const selected = version(axis, axis === 'ipc-protocol' ? 5 : 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 6 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -369,7 +369,7 @@ function failed(resourceKind) {
           domain: 'cleanup',
           operation: `test.${resourceKind}`,
           platform: null,
-          retryability: 'transient'
+          retryability: 'never'
         }
       }
     ]
@@ -542,6 +542,13 @@ async function flushAsyncWork() {
   for (let index = 0; index < 6; index += 1) {
     await Promise.resolve()
   }
+}
+
+async function awaitRendererRetirement(binding) {
+  const releases = [...binding.renderers.values()]
+    .map(renderer => renderer.releaseResult)
+    .filter(result => result !== null)
+  await Promise.all(releases)
 }
 
 describe('Electron v4 IPC boundary', () => {
@@ -936,7 +943,7 @@ describe('Electron v4 IPC boundary', () => {
       operation: 'electron-main-router.scan-ownership'
     })
     sender.commitNavigation({ processId: 11, routingId: 21 })
-    await flushAsyncWork()
+    await awaitRendererRetirement(current.binding)
 
     expect(current.router.resources.has(String(outgoingLease.rendererLease.leaseId))).toBe(false)
     await expectIpcFailure(current.port.handler({ sender }, routeRequest(current, outgoingLease, 2)), {
@@ -1355,7 +1362,7 @@ describe('Electron v4 IPC boundary', () => {
     await bootstrap(current, sender)
 
     sender.renderProcessGone()
-    await flushAsyncWork()
+    await awaitRendererRetirement(current.binding)
 
     expect(current.router.resources).toHaveProperty('size', 0)
     expect(current.binding.renderers).toHaveProperty('size', 0)
@@ -2677,7 +2684,7 @@ describe('Electron v4 IPC boundary', () => {
         broadcast: false,
         read: true,
         writeWithResponse: true,
-        writeWithoutResponse: false,
+        writeWithoutResponse: true,
         authenticatedSignedWrites: false,
         notify: true,
         indicate: false,
@@ -2718,6 +2725,34 @@ describe('Electron v4 IPC boundary', () => {
       })),
       read: jest.fn(async () => new Uint8Array([1, 2, 3])),
       readReceipt: jest.fn(async () => ({ value: new Uint8Array([1, 2, 3]), provenance: 'read-or-notification' })),
+      writeWhenReady: jest.fn(async (_path, bytes, options) => {
+        expect(options.mode).toBe('without-response')
+        return {
+          terminal: { correlation: 'ready-write-correlation', outcome: 'succeeded', cause: null },
+          commitState: 'unknown',
+          bytesSubmitted: bytes.byteLength
+        }
+      }),
+      acquireWrite: jest.fn(async () => ({
+        mtuBytes: 23,
+        write: jest.fn(async bytes => ({
+          terminal: { correlation: 'acquired-write', outcome: 'succeeded', cause: null },
+          commitState: 'unknown',
+          bytesSubmitted: bytes.byteLength
+        })),
+        close: jest.fn(async () => released())
+      })),
+      acquireNotifications: jest.fn(async () => {
+        const values = createControlledStream()
+        return {
+          mtuBytes: 23,
+          values,
+          close: jest.fn(async () => {
+            values.close()
+            return released()
+          })
+        }
+      }),
       write: jest.fn(async (_path, bytes) => ({
         terminal: { correlation: 'write-correlation', outcome: 'succeeded', cause: null },
         commitState: 'confirmed',
@@ -2784,8 +2819,14 @@ describe('Electron v4 IPC boundary', () => {
       originalSend.call(sender, channel, event)
       for (const listener of [...listeners]) listener(event)
     }
+    let acquiredWriterHandle
     const rendererTransport = {
-      invoke: request => current.port.handler({ sender }, request),
+      invoke: async request => {
+        const response = await current.port.handler({ sender }, request)
+        if (request.kind === 'route' && request.envelope.command === 'gatt.acquire-write' && response.kind === 'route')
+          acquiredWriterHandle = response.payload.handle
+        return response
+      },
       subscribe(listener) {
         listeners.push(listener)
         return () => listeners.splice(listeners.indexOf(listener), 1)
@@ -2850,6 +2891,49 @@ describe('Electron v4 IPC boundary', () => {
       terminal: { outcome: 'succeeded' },
       commitState: 'confirmed'
     })
+    const waitingBytes = new Uint8Array([42])
+    const waitingWrite = publicCharacteristic.writeWhenReady(waitingBytes)
+    waitingBytes[0] = 99
+    await expect(waitingWrite).resolves.toMatchObject({ commitState: 'unknown' })
+    expect(database.writeWhenReady).toHaveBeenCalledTimes(1)
+    expect(database.writeWhenReady.mock.calls[0][1]).toEqual(new Uint8Array([42]))
+    const acquiredWriter = await publicCharacteristic.acquireWrite()
+    expect(acquiredWriter.mtuBytes).toBe(23)
+    const acquiredBytes = new Uint8Array([42])
+    const acquiredWrite = acquiredWriter.write(acquiredBytes)
+    acquiredBytes[0] = 99
+    await expect(acquiredWrite).resolves.toMatchObject({ commitState: 'unknown' })
+    const nativeWriter = await database.acquireWrite.mock.results[0].value
+    expect(nativeWriter.write.mock.calls[0][0]).toEqual(new Uint8Array([42]))
+    const foreignSender = createSender('client-acquired-foreign', 'window-acquired-foreign', 'session-acquired-foreign')
+    const foreignRenderer = await bootstrap(current, foreignSender)
+    await expectIpcFailure(
+      current.port.handler(
+        { sender: foreignSender },
+        commandRequest(current, foreignRenderer, 1, 'gatt.acquired-write.close', {
+          acquiredHandle: acquiredWriterHandle
+        })
+      ),
+      { code: 'ownership.denied' }
+    )
+    nativeWriter.close.mockResolvedValueOnce(failed('acquired-write'))
+    await expect(acquiredWriter.close()).resolves.toMatchObject({ state: 'release-failed' })
+    await expect(acquiredWriter.close()).resolves.toMatchObject({ state: 'released' })
+    await expect(acquiredWriter.close()).resolves.toMatchObject({ state: 'released' })
+    expect(nativeWriter.close).toHaveBeenCalledTimes(2)
+    const acquiredNotifications = await publicCharacteristic.acquireNotifications()
+    expect(acquiredNotifications.mtuBytes).toBe(23)
+    const acquiredIterator = acquiredNotifications.values[Symbol.asyncIterator]()
+    const acquiredValue = acquiredIterator.next()
+    const nativeNotifications = await database.acquireNotifications.mock.results[0].value
+    nativeNotifications.values.push({ kind: 'value', value: { value: new Uint8Array([8]), delivery: 'notification' } })
+    await expect(acquiredValue).resolves.toMatchObject({
+      value: { kind: 'value', value: { value: new Uint8Array([8]) } }
+    })
+    await acquiredIterator.return()
+    await expect(acquiredNotifications.close()).resolves.toMatchObject({ state: 'released' })
+    await expect(acquiredNotifications.close()).resolves.toMatchObject({ state: 'released' })
+    expect(nativeNotifications.close).toHaveBeenCalledTimes(1)
     const publicDescriptor = publicCharacteristic.descriptor('2901')
     await expect(publicDescriptor.read()).resolves.toEqual(new Uint8Array([4]))
     const subscription = await publicCharacteristic.subscribe()
@@ -2863,10 +2947,18 @@ describe('Electron v4 IPC boundary', () => {
     await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
     const disconnectSubscription = await publicCharacteristic.subscribe()
     const pendingNotification = disconnectSubscription.values[Symbol.asyncIterator]().next()
+    const writerAtDisconnect = await publicCharacteristic.acquireWrite()
+    const notificationsAtDisconnect = await publicCharacteristic.acquireNotifications()
+    const nativeWriterAtDisconnect = await database.acquireWrite.mock.results[1].value
+    const nativeNotificationsAtDisconnect = await database.acquireNotifications.mock.results[1].value
     await expect(publicConnection.release()).resolves.toMatchObject({ state: 'released', failures: [] })
     await expect(publicConnection.release()).resolves.toEqual({ state: 'released', failures: [] })
     await expect(pendingNotification).resolves.toMatchObject({ done: false, value: { kind: 'terminal' } })
     await expect(disconnectSubscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(writerAtDisconnect.close()).resolves.toMatchObject({ state: 'released' })
+    await expect(notificationsAtDisconnect.close()).resolves.toMatchObject({ state: 'released' })
+    expect(nativeWriterAtDisconnect.close).toHaveBeenCalledTimes(1)
+    expect(nativeNotificationsAtDisconnect.close).toHaveBeenCalledTimes(1)
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
   })
 
@@ -3248,8 +3340,10 @@ describe('Electron v4 IPC boundary', () => {
       error: deliveryFailure
     })
     expect(subscription.remove).toHaveBeenCalledTimes(1)
-    expect(disconnect).toHaveBeenCalledTimes(1)
+    // Destroy joins the already-owned renderer release; a fixed microtask count
+    // does not establish that its asynchronous cleanup has settled.
     await expect(current.binding.destroy()).resolves.toEqual(released())
+    expect(disconnect).toHaveBeenCalledTimes(1)
     expect(current.router.resources.has(String(renderer.rendererLease.leaseId))).toBe(false)
   })
 

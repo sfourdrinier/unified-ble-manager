@@ -40,6 +40,8 @@ export type {
   GattDatabaseSnapshot,
   GattService,
   GattCharacteristic,
+  GattAcquiredWriter,
+  GattAcquiredNotifications,
   GattDescriptor,
   GattSubscription,
   GattValueEvent,
