@@ -71,6 +71,22 @@
     "final-lab-owned-resource-cleanup.log": {
       "original_sha256": "75f0c23a744f4c6d4c9e1e6186adde38d983fe5a3793ecc43cdb34fec687d803",
       "lf_normalized_sha256": "75f0c23a744f4c6d4c9e1e6186adde38d983fe5a3793ecc43cdb34fec687d803"
+    },
+    "rust-workspace-final-21e4adbc.log": {
+      "original_sha256": "4f6be10c65dd1b9d8e6b52b601848f5a2ff68f7654c1116ac09eff2a2755ad33",
+      "lf_normalized_sha256": "4f6be10c65dd1b9d8e6b52b601848f5a2ff68f7654c1116ac09eff2a2755ad33"
+    },
+    "docs-final-f6bb34d7.log": {
+      "original_sha256": "59cfe4e2e5a2e3fbe1d0bca6749c608f665158b2ae32d42204e4372b3e068152",
+      "lf_normalized_sha256": "59cfe4e2e5a2e3fbe1d0bca6749c608f665158b2ae32d42204e4372b3e068152"
+    },
+    "preflight-final-f6bb34d7.log": {
+      "original_sha256": "c201dd0da34fe20c04b3575292f562e745d9c5c154666eb13e3633c3a0e08871",
+      "lf_normalized_sha256": "c201dd0da34fe20c04b3575292f562e745d9c5c154666eb13e3633c3a0e08871"
+    },
+    "preflight-final-a5b3f5e2.log": {
+      "original_sha256": "f36e4ef4774c6741b7aef5009e8553c3f06446c1354bdbf14da8c25e163ad426",
+      "lf_normalized_sha256": "f36e4ef4774c6741b7aef5009e8553c3f06446c1354bdbf14da8c25e163ad426"
     }
   }
 }

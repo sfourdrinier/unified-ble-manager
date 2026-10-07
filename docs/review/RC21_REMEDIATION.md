@@ -1,22 +1,27 @@
 # PR #251 rc.21 remediation
 
-Status: All 35 review items retain item-by-item implementation and acceptance
-records. R2-01 remains open only for the collected final Rust gate corrections:
-missing test-only logging dependency and redundant Windows iterator conversion.
-The same collected batch addresses the two newest automated findings: Tauri
-opening-gap stale replay and malformed IPC observation metadata. Their regressions
-are included before this batch is frozen.
+Status: All 35 review items have retained source, regression and acceptance
+records in [closure.json](rc21-round2/closure.json). All runtime corrections and
+subsequent automated feedback are collected. The final gate follow-up includes
+the logging dev-dependency, warning-free Windows iterator/cancellation expressions,
+owned Android artifact refresh, Tauri opening-gap ordering and strict IPC metadata.
+Full Linux Rust workspace Clippy (`-D warnings`) and tests pass at `21e4adbc`.
+The final combined package/preflight and exact-head PR CI are the remaining gates;
+current PR #251 checks determine release readiness. No failing historical receipt
+is overwritten or reclassified by a later pass.
+
 At runtime head `9916500f`, all four JS lanes, three packed Node/Bun lanes, three
 Tauri lanes and both Android builds pass. Clean Linux preflight passes 430 suites /
 5,415 tests. The canonical `0d5f4cb9` no-publication gate passes all 18 jobs.
 Live held Pair success now passes, completing the requested Pair outcome set.
-The full indexed source/regression record is [closure.json](rc21-round2/closure.json);
-current and failed receipts are in [final-batch-evidence](rc21-round2/final-batch-evidence/README.md).
+Current and failed receipts are in [final-batch-evidence](rc21-round2/final-batch-evidence/README.md).
 
 Windows default-profile Bun ESM can still wait in OS encrypted MIDI descriptor
 initialization. It now times out and reports retained retirement debt promptly.
 Bun ESM passes the isolated 13-service RF profile; this does not erase the default
 profile limitation. No physical H10/mobile proof or support-label promotion is claimed.
+The prior R1 same-attachment ATT security retry remains source/control-qualified;
+held SMP pairing success does not establish that separate physical ATT scenario.
 Historical batch notes below describe their own heads and are superseded by this
 current ledger when they say a now-completed check was pending.
 

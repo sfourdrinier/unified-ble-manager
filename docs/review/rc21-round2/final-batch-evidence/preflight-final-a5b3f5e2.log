@@ -1,0 +1,30 @@
+[1mpreflight[0m FETCH_HEAD (a5b3f5e22)
+  workspace: /home/sfourdrinier/.cache/ubm-preflight/tree-a5b3f5e22
+  cargo target (shared): /home/sfourdrinier/.cache/ubm-preflight/cargo-target
+
+[1m▶ install (frozen lockfile)[0m
+  ✓ 7s
+[1m▶ cargo cache (locked, all targets)[0m
+[1m▶ package + tauri-plugin (parallel)[0m
+
+[1m── summary ──[0m
+[31m  ✗ package          32s  (exit 1)[0m
+      Diff in /home/sfourdrinier/.cache/ubm-preflight/tree-a5b3f5e22/crates/ubm-desktop/tests/../../../vendor/btleplug/src/active_operations.rs:112:
+                               .remove(&id);
+                       }
+                       Ok(true) => {
+      -                    if cancel_on_retirement
+      -                        && let Err(error) = operation.cancel()
+      -                    {
+      +                    if cancel_on_retirement && let Err(error) = operation.cancel() {
+                               failures.push((stage, RetirementError::Native(error)));
+                           }
+                           failures.push((stage, RetirementError::Pending));
+      full log: /home/sfourdrinier/.cache/ubm-preflight/package.log
+[32m  ✓ tauri-plugin     32s[0m
+[33m  – android          skipped (--fast; includes Expo reference typecheck)[0m
+  total 39s
+
+Not covered: windows/macos legs, the apple job, CoreBluetooth and WinRT
+boundaries, the Node matrix, and the runner OS. Push for those.
+workspace kept: /home/sfourdrinier/.cache/ubm-preflight/tree-a5b3f5e22

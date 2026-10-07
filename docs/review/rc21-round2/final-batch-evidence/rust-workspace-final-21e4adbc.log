@@ -1,0 +1,1904 @@
+Previous HEAD position was f6bb34d74 Close final review gaps and retain runtime qualification evidence
+HEAD is now at 21e4adbc8 Keep portable retirement controls warning-free
+    Blocking waiting for file lock on build directory
+   Compiling btleplug v0.12.0 (/tmp/ubm-rc21-final-rust-workspace/vendor/btleplug)
+   Compiling ubm-desktop v0.1.0 (/tmp/ubm-rc21-final-rust-workspace/crates/ubm-desktop)
+   Compiling uniffi_build v0.32.1
+   Compiling uniffi v0.32.1
+   Compiling ubm5_uniffi_echo v0.1.0 (/tmp/ubm-rc21-final-rust-workspace/bindings/uniffi)
+    Checking ubm-mobile v0.1.0 (/tmp/ubm-rc21-final-rust-workspace/crates/ubm-mobile)
+    Checking ubm5_napi_echo v0.1.0 (/tmp/ubm-rc21-final-rust-workspace/bindings/napi)
+    Checking ubm5_jni_echo v0.1.0 (/tmp/ubm-rc21-final-rust-workspace/bindings/jni)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.01s
+   Compiling fastrand v2.5.0
+   Compiling ubm-core v0.1.0 (/tmp/ubm-rc21-final-rust-workspace/crates/ubm-core)
+   Compiling winnow v1.0.4
+   Compiling ubm-desktop v0.1.0 (/tmp/ubm-rc21-final-rust-workspace/crates/ubm-desktop)
+   Compiling rustix v1.1.4
+   Compiling minimal-lexical v0.2.1
+   Compiling indexmap v2.14.2
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling serde_json v1.0.151
+   Compiling semver v1.0.28
+   Compiling serde_spanned v1.1.1
+   Compiling smawk v0.3.3
+   Compiling plain v0.2.3
+   Compiling scroll_derive v0.12.1
+   Compiling camino v1.2.6
+   Compiling serde v1.0.229
+   Compiling getrandom v0.4.3
+   Compiling fs-err v3.3.1
+   Compiling cargo-platform v0.3.3
+   Compiling uniffi_core v0.32.1
+   Compiling aho-corasick v1.1.5
+   Compiling simdutf8 v0.1.5
+   Compiling jni-sys-macros v0.4.1
+   Compiling combine v4.6.8
+   Compiling ubm5_napi_echo v0.1.0 (/tmp/ubm-rc21-final-rust-workspace/bindings/napi)
+   Compiling ubm5_jni_echo v0.1.0 (/tmp/ubm-rc21-final-rust-workspace/bindings/jni)
+   Compiling napi v2.16.17
+   Compiling textwrap v0.16.4
+   Compiling futures-lite v2.6.1
+   Compiling nom v7.1.3
+   Compiling rustc_version v0.4.1
+   Compiling simd_cesu8 v1.2.0
+   Compiling toml v1.1.6+spec-1.1.0
+   Compiling jni-macros v0.22.4
+   Compiling jni-sys v0.4.1
+   Compiling scroll v0.12.0
+   Compiling enumflags2 v0.7.12
+   Compiling zcheapstr v1.1.0
+   Compiling zvariant_utils v4.2.0
+   Compiling serde-xml-rs v0.8.2
+   Compiling basic-toml v0.1.10
+   Compiling uniffi_internal_macros v0.32.1
+   Compiling goblin v0.8.2
+   Compiling cargo_metadata v0.23.1
+   Compiling bluez-async v0.8.2 (/tmp/ubm-rc21-final-rust-workspace/vendor/bluez-async)
+   Compiling regex-automata v0.4.18
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling askama_parser v0.16.1
+   Compiling ubm-fake-radio v0.1.0 (/tmp/ubm-rc21-final-rust-workspace/crates/ubm-fake-radio)
+   Compiling tempfile v3.27.0
+   Compiling weedle2 v5.0.0
+   Compiling toml_edit v0.25.15+spec-1.1.0
+   Compiling uniffi_pipeline v0.32.1
+   Compiling uniffi_meta v0.32.1
+   Compiling ubm5_wasm_echo v0.1.0 (/tmp/ubm-rc21-final-rust-workspace/bindings/wasm)
+   Compiling proc-macro-crate v3.5.0
+   Compiling zvariant_derive v5.15.0
+   Compiling btleplug v0.12.0 (/tmp/ubm-rc21-final-rust-workspace/vendor/btleplug)
+   Compiling zvariant v5.15.0
+   Compiling uniffi_macros v0.32.1
+   Compiling regex v1.13.1
+   Compiling napi-derive-backend v1.0.75
+   Compiling uniffi_udl v0.32.1
+   Compiling askama_derive v0.16.1
+   Compiling jni v0.22.4
+   Compiling napi-derive v2.16.13
+   Compiling zbus_names v4.3.4
+   Compiling zbus_macros v5.19.0
+   Compiling askama_macros v0.16.1
+   Compiling askama v0.16.1
+   Compiling zbus v5.19.0
+   Compiling uniffi_bindgen v0.32.1
+   Compiling ubm-mobile v0.1.0 (/tmp/ubm-rc21-final-rust-workspace/crates/ubm-mobile)
+   Compiling uniffi_build v0.32.1
+   Compiling uniffi v0.32.1
+   Compiling ubm5_uniffi_echo v0.1.0 (/tmp/ubm-rc21-final-rust-workspace/bindings/uniffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 40.21s
+
+running 192 tests
+test central::tests::cancel_across_boundary_settles_once_and_stays_clean ... ok
+test central::tests::capability_truth_gates_and_parity_survives ... ok
+test central::tests::cln01_failed_disconnect_retained_and_reported ... ok
+test central::tests::cln02_link_loss_races_disconnect_exactly_once ... ok
+test central::tests::controls_are_typed_acceptance_without_proof ... ok
+test central::tests::current_shutdown_receipt_reconciles_only_confirmed_peer_debt ... ok
+test central::tests::descriptor_read_write_crosses_with_cccd_guard ... ok
+test central::tests::disconnecting_link_refuses_new_connection_leases ... ok
+test central::tests::duplicate_completion_settles_once ...      Running unittests src/lib.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/ubm_core-c66d85eba92950e8)
+ok
+test central::tests::expire_sweep_settles_queued_timeouts ... ok
+test central::tests::explicit_rediscovery_invalidates_old_hubs_before_replacement ... ok
+test central::tests::f04_rediscovery_resolves_current_without_ambiguity ... ok
+test central::tests::f04_repeated_rediscovery_reclaims_paths_and_hubs ... ok
+test central::tests::f06_multi_eviction_drops_same_payloads ... ok
+test central::tests::f06_replacement_retains_newest_bytes ... ok
+test central::tests::f111_values_held_at_invalidation_drain_before_it ... ok
+test central::tests::f12_cancelled_subscriber_never_revives ... ok
+test central::tests::f12_last_unsubscribe_during_enable_stages_real_disable ... ok
+test central::tests::f15_destroy_progresses_with_small_batches ... ok
+test central::tests::f15_legacy_destroy_recycles_small_batches_and_merges_releases ... ok
+test central::tests::f15_shutdown_release_keeps_winner_for_late_settlers ... ok
+test central::tests::f16_connected_peers_pin_against_eviction ... ok
+test central::tests::f16_discovery_pressure_keeps_target_admissible ... ok
+test central::tests::f16_full_pinned_cache_reports_quota ... ok
+test central::tests::f19_collision_migrates_live_references ... ok
+test central::tests::f19_collision_prefers_live_link_over_terminal ... ok
+test central::tests::f19_collision_with_live_security_on_both_rejects ... ok
+test central::tests::f19_collision_with_two_live_links_rejects ... ok
+test central::tests::f25_invalid_contender_cannot_settle_live_work ... ok
+test central::tests::f38_confirmed_release_clears_that_peers_disconnect_failures ... ok
+test central::tests::f38_unreleased_peer_keeps_its_failure_when_another_releases ... ok
+test central::tests::f95_default_bounds_are_protocol_limits_sized_per_database ... ok
+test central::tests::f98_the_subscribe_property_gate_follows_the_radio ... ok
+test central::tests::final_release_ends_link_explicit_disconnect_ends_with_borrowers ... ok
+test central::tests::gatt01_occurrence_resolves_duplicates_uuid_only_ambiguous ... ok
+test central::tests::gatt02_service_change_invalidates_old_generation ... ok
+test central::tests::gatt03_shared_enablement_survives_single_removal ... ok
+test central::tests::gatt04_pre_ready_values_quarantine_never_deliver ... ok
+test central::tests::gatt_caller_lease_owns_admission_not_topology_owner ... ok
+test central::tests::handshake_gate_blocks_admission ... ok
+test central::tests::holds_lease_answers_only_for_the_lease_on_the_link ... ok
+test central::tests::issued_scan_identity_refuses_a_generic_operation_relabelled_as_scan ... ok
+test central::tests::l1_path_bound_rejects_directly ... ok
+test central::tests::l1_peer_and_connection_bounds_reject_directly ... ok
+test central::tests::l1_subscription_hub_and_consumer_bounds_reject_directly ... ok
+test central::tests::l1_unbounded_tables_do_not_wedge_admission ... ok
+test central::tests::l2_rekey_moves_security_exchange ... ok
+test central::tests::l3_empty_generation_denied_and_epoch_bounded ... ok
+test central::tests::lease_transfer_validates_and_checks_generation ... ok
+test central::tests::long_write_plans_and_fails_partially ... ok
+test central::tests::m1_success_release_reclaims_aggregate_admission ... ok
+test central::tests::m2_disconnect_and_link_release_invalidate_hubs ... ok
+test central::tests::m2_length_only_delivery_buffers_nothing ... ok
+test central::tests::m2_notification_values_buffer_fifo_and_recycle ... ok
+test central::tests::m2_overflow_keeps_buffered_values_then_terminal ... ok
+test central::tests::m2_peer_loss_invalidates_hubs_and_blocks_delivery ... ok
+test central::tests::m2_unsubscribe_ready_goes_through_removing ... ok
+test central::tests::m5_subscribe_cycles_do_not_grow_the_consumer_list ... ok
+test central::tests::m5_terminal_removal_releases_orphan_cccd ... ok
+test central::tests::native_start_refusal_after_early_stop_releases_scan_arbitration ... ok
+test central::tests::new_borrower_reclaims_path_after_only_closing_lease_remains ... ok
+test central::tests::ops01_cancelled_queue_never_reaches_radio ... ok
+test central::tests::ops02_timed_out_write_is_unknown_without_duplicate ... ok
+test central::tests::ops03_contention_bounds_hold_and_cleanup_flows ... ok
+test central::tests::ops04_shutdown_terminates_owned_work_bounded ... ok
+test central::tests::own01_default_second_connect_shares ... ok
+test central::tests::own01_opt_out_exclusive_second_connect_rejected ... ok
+test central::tests::own01_shared_link_grants_borrow_lease ... ok
+test central::tests::own02_foreign_handle_rejected_before_radio ... ok
+test central::tests::own03_late_completion_cannot_touch_new_link ... ok
+test central::tests::own04_canonical_change_keeps_native_ref ... ok
+test central::tests::own05_borrower_exit_keeps_restoration ... ok
+test central::tests::own06_adapter_reset_invalidates_and_settles_truthfully ... ok
+test central::tests::peer_resolution_keys_and_rejects ... ok
+test central::tests::read_and_write_leave_the_property_answer_to_the_os ... ok
+test central::tests::read_write_round_trip_with_success_receipt ... ok
+test central::tests::registered_capabilities_include_optional_rows_without_fabrication ... ok
+test central::tests::release_final_lease_ends_link ... ok
+test central::tests::released_scan_history_is_bounded_but_recent_state_and_issued_identity_remain ... ok
+test central::tests::remove_during_enable_reconciles_late_completion ... ok
+test central::tests::resource_counters_aggregate_live_state ... ok
+test central::tests::retired_borrower_path_uses_remaining_nonclosing_lease ... ok
+test central::tests::retired_closing_borrower_does_not_poison_later_lease_reuse ... ok
+test central::tests::scan_lifecycle_stop_needs_platform_confirm ... ok
+test central::tests::scan_request_accepts_explicit_shape ... ok
+test central::tests::scan_residuals_and_bad_fields_fail_closed ... ok
+test central::tests::scan_start_failure_reaches_failed ... ok
+test central::tests::scan_tables_reject_off_table_steps ... ok
+test central::tests::scoped_gatt_rejects_foreign_leases_and_keeps_consumer_parent ... ok
+test central::tests::second_physical_scan_rejected_first_unchanged ... ok
+test central::tests::security_ops_fail_closed_without_availability ... ok
+test central::tests::service_change_invalidates_subscriptions ... ok
+test central::tests::shared_scan_gets_independent_lease_stream ... ok
+test central::tests::str01_control_survives_data_overflow ... ok
+test central::tests::str02_subscription_overflow_is_bounded_and_terminal ... ok
+test central::tests::transferred_path_uses_remaining_live_lease_for_implicit_admission ... ok
+test central::tests::undiscovered_read_needs_discovery ... ok
+test central::tests::upstream_loss_follows_each_consumers_overflow_policy ... ok
+test central::tests::uuid_canonicalizes_16_bit_forms ... ok
+test central::tests::vectors_and_corrections_cross_check ... ok
+test central::tests::write_validation_order_matches_contract ... ok
+test codec::tests::decode_accepts_absent_operation_id_for_ts_shaped_json ... ok
+test codec::tests::decode_accepts_whitespace_and_field_reorder ... ok
+test codec::tests::decode_rejects_bad_failures ... ok
+test codec::tests::decode_rejects_bad_state_and_inconsistent_records ... ok
+test codec::tests::decode_rejects_oversize_input ... ok
+test codec::tests::kernel_failed_record_round_trips_through_wire ... ok
+test codec::tests::mismatched_wire_does_not_match_live_record ... ok
+test codec::tests::released_record_encodes_canonically ... ok
+test codec::tests::released_record_with_operation_id_encodes ... ok
+test codec::tests::wire_escapes_survive_host_string_crossings ... ok
+test contracts::tests::attachment_scope_rejects_foreign_handles ... ok
+test contracts::tests::capacity_and_timeout_boundaries ... ok
+test contracts::tests::contender_mapping_covers_all_kinds ... ok
+test contracts::tests::contract_fix_rulings ... ok
+test contracts::tests::core_error_display_and_empty_operation_guard ... ok
+test contracts::tests::deadlines_are_absolute_and_monotonic ... ok
+test contracts::tests::effective_maxima_take_the_minimum ... ok
+test contracts::tests::error_code_wire_strings_round_trip ... ok
+test contracts::tests::frozen_numeric_table ... ok
+test contracts::tests::frozen_revision_constants ... ok
+test contracts::tests::generations_are_opaque ... ok
+test contracts::tests::i64_boundary_fixtures ... ok
+test contracts::tests::negotiated_axis_carries_both_offers ... ok
+test contracts::tests::peer_domains_and_session_keys ... ok
+test contracts::tests::recovery_catalog_covers_every_code ... ok
+test contracts::tests::terminal_kind_wire_strings ... ok
+test contracts::tests::terminal_records_hold_exactly_one_outcome ... ok
+test contracts::tests::u64_boundary_fixtures ... ok
+test contracts::tests::version_negotiation_selects_highest_common ... ok
+test ownership::red_probes::duplicate_completion_is_suppressed ... ok
+test ownership::red_probes::stale_generation_completion_is_rejected ... ok
+test ownership::tests::admission_bound_is_enforced ... ok
+test ownership::tests::admit_dispatch_complete_success_receipt ... ok
+test ownership::tests::cancel_after_dispatch_receipt ... ok
+test ownership::tests::cancel_before_dispatch_receipt ... ok
+test ownership::tests::cleanup_failure_new_round_trips_revival_fields ... ok
+test ownership::tests::cleanup_records_reject_mixed_states ... ok
+test ownership::tests::contender_and_effect_wire_strings ... ok
+test ownership::tests::disconnect_paths_invalidate_before_settlement ... ok
+test ownership::tests::duplicate_admit_is_rejected ... ok
+test ownership::tests::expiry_sweep_settles_timed_out ... ok
+test ownership::tests::failed_release_is_retained_never_swallowed ... ok
+test ownership::tests::foreign_attachment_is_rejected_before_effects ... ok
+test ownership::tests::full_effect_batch_blocks_mutation ... ok
+test ownership::tests::handshake_gate_blocks_admission ... ok
+test ownership::tests::invalid_contender_is_ignored ... ok
+test ownership::tests::kernel_config_rejects_zero_bounds ... ok
+test ownership::tests::live_release_is_rejected ... ok
+test ownership::tests::per_owner_lease_bound_is_enforced ... ok
+test ownership::tests::retained_backpressure_forces_drain ... ok
+test ownership::tests::scan_and_connection_arbitration ... ok
+test ownership::tests::shutdown_honors_max_effects_per_call ... ok
+test ownership::tests::shutdown_sequence_retains_cleanup ... ok
+test ownership::tests::stale_generations_never_mutate ... ok
+test ownership::tests::sweep_truncation_resumes ... ok
+test ownership::tests::terminal_operations_suppress_late_callbacks ... ok
+test ownership::tests::timeout_after_dispatch_is_unknown_commit ... ok
+test ownership::tests::undispatched_success_is_rejected ... ok
+test ownership::tests::unknown_operations_are_rejected ... ok
+test profiles::tests::battery_level_round_trip_and_rejections ... ok
+test profiles::tests::blood_pressure_and_device_information_vectors ... ok
+test profiles::tests::blood_pressure_truncated_optional_tail ... ok
+test profiles::tests::date_time_range_rejections ... ok
+test profiles::tests::heart_rate_measurement_vectors ... ok
+test profiles::tests::ieee11073_and_thermometer_vectors ... ok
+test profiles::tests::ieee11073_negative_mantissa_round_trip_is_byte_exact ... ok
+test profiles::tests::ieee11073_reserved_mantissas_reject_on_decode ... ok
+test profiles::tests::ieee11073_special_values_decode ... ok
+test profiles::tests::profile_codec_and_ble_error_identities_stay_disjoint ... ok
+test profiles::tests::profile_codec_catalog_is_frozen_wire_exact_and_resolvable ... ok
+test profiles::tests::profile_paths_reject_duplicates_without_occurrence ... ok
+test profiles::tests::profile_paths_resolve_through_real_central ... ok
+test profiles::tests::profile_selector_short_sig_uuids_resolve_like_helper ... ok
+test profiles::tests::thermometer_negative_paths ... ok
+test streams::tests::admission_matrix_per_policy ... ok
+test streams::tests::aggregate_accounts_eviction_net_delta ... ok
+test streams::tests::aggregate_budget_boundary ... ok
+test streams::tests::byte_budget_boundary ... ok
+test streams::tests::control_shares_the_byte_budget ... ok
+test streams::tests::empty_queue_eviction_admits_nothing ... ok
+test streams::tests::error_policy_closes_ingress_once ... ok
+test streams::tests::f05_retaining_push_evicts_until_fit_or_drops ... ok
+test streams::tests::f05_set_aggregate_matches_multi_eviction ... ok
+test streams::tests::f05_variable_payload_sweep_holds_bounds_every_step ... ok
+test streams::tests::frozen_stream_defaults ... ok
+test streams::tests::item_budget_boundary ... ok
+test streams::tests::limit_validation_boundaries ... ok
+test streams::tests::release_frees_oldest_first ... ok
+test streams::tests::reserved_control_bypasses_full_data ... ok
+test streams::tests::set_rejects_bad_indices_caps_and_counts ... ok
+test streams::tests::stream_names_and_policies_round_trip ... ok
+
+test result: ok. 192 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 5 tests
+test residual1_cancelled_reaped_stop_failure_reaches_failed ... ok
+test residual1_cancelled_reaped_stop_restarts_cleanly ... ok
+test residual2_expire_sweep_fails_timed_out_scan_session ... ok
+test residual2_late_start_after_cancel_reap_never_activates ... ok
+test residual2_late_start_after_timeout_never_activates ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 416 tests
+     Running tests/scan_residuals.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/scan_residuals-182733a857c5336f)
+     Running unittests src/lib.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/ubm_desktop-e24f323d75803bb3)
+test acquired_gatt::linux::close_tests::retry_after_reported_close_failure_never_closes_a_reused_descriptor ... ok
+test acquired_gatt::ownership::tests::lease_retirement_does_not_end_another_owners_transport ... ok
+test acquired_gatt::ownership::tests::parent_scope_capacity_and_abandoned_openings_have_no_history ... ok
+test acquired_gatt::ownership::tests::retirement_wakes_openings_and_preserves_the_original_terminal ... ok
+test acquired_gatt::tests::cancelled_close_attempt_retains_a_retry_owner ... ok
+test acquired_gatt::tests::close_wakes_a_held_receive_and_releases_every_descriptor_reference ... ok
+test acquired_gatt::tests::oversized_packet_and_failed_send_remain_explicit_faults ... ok
+test acquired_gatt::tests::seqpacket_transport_preserves_empty_payload_and_distinguishes_hup ... ok
+test boundary::tests::an_os_long_write_bounds_only_the_command ... ok
+test boundary::tests::close_releases_all_live_subscriptions ... ok
+test boundary::tests::delivery_requirement_reaches_the_radio_and_the_observation_returns ... ok
+test boundary::tests::discover_gate_holds_the_call_until_released ... ok
+test boundary::tests::events_replay_in_order_then_close ... ok
+test boundary::tests::f14_close_retains_per_scope_receipts ... ok
+test boundary::tests::injected_faults_carry_contract_identities ... ok
+test boundary::tests::pairing_a_bonded_peer_answers_already_paired ... ok
+test boundary::tests::property_flags_map_to_core_bits ... ok
+test boundary::tests::scripted_peers_are_listed ... ok
+test btleplug_backend::tests::a_bluez_failed_answer_keeps_the_operation_name_on_every_os ... ok
+test btleplug_backend::tests::a_failure_without_a_platform_answer_keeps_the_operation_name_on_every_os ... ok
+test btleplug_backend::tests::a_link_operation_on_a_lost_link_is_connection_lost ... ok
+test btleplug_backend::tests::bluez_link_loss_keeps_notify_session_owned_until_explicit_retirement ... ok
+test btleplug_backend::tests::cancelling_close_keeps_every_pending_scope_owned ... ok
+test btleplug_backend::tests::close_retains_failed_scopes_until_actual_retry_succeeds ... ok
+test btleplug_backend::tests::close_scope_outcomes_skip_only_a_confirmed_missing_peer ... ok
+test btleplug_backend::tests::close_timeout_retains_debt_but_late_failure_never_revives_released_parent ... ok
+test btleplug_backend::tests::contended_event_stream_drop_is_observable ... ok
+test btleplug_backend::tests::directory_nonplatform_failures_preserve_diagnostic_detail ... ok
+test btleplug_backend::tests::directory_queued_manager_state_preserves_specific_refusal ... ok
+test btleplug_backend::tests::discovery_reports_missing_le_gatt_mechanism_without_losing_platform_answer ... ok
+test btleplug_backend::tests::empty_properties_map_to_no_bits ... ok
+test btleplug_backend::tests::f08_write_capabilities_map_to_independent_bits ... ok
+test btleplug_backend::tests::f09_same_characteristic_uuid_under_two_services_routes_only_to_owner ... ok
+test btleplug_backend::tests::f113_platform_answers_become_typed_error_fields ... ok
+test btleplug_backend::tests::f122_a_sighting_carries_its_own_data_and_label ... ok
+test btleplug_backend::tests::f127_a_listed_identity_resolves_without_a_scan ... ok
+test btleplug_backend::tests::f127_a_peer_id_names_its_os_identity ... ok
+test btleplug_backend::tests::f13_disable_failure_preserves_forwarder ... ok
+test btleplug_backend::tests::f13_unresolved_teardown_without_consumer_parks_debt ... ok
+test btleplug_backend::tests::f40_a_database_change_parks_live_cccds_and_a_link_loss_settles_them ... ok
+test btleplug_backend::tests::f43_adapter_selection_refuses_ambiguity_and_never_skips_a_withheld_identity ... ok
+test btleplug_backend::tests::f61_identical_same_uuid_instances_stay_distinct_in_handle_order ... ok
+test btleplug_backend::tests::f61_same_uuid_instances_route_by_instance ... ok
+test btleplug_backend::tests::f96_the_snapshot_is_in_discovery_order_with_per_uuid_occurrences ... ok
+test btleplug_backend::tests::f97_bluez_bounds_commands_only_by_a_reported_mtu ... ok
+test btleplug_backend::tests::failed_cccd_and_handler_removal_keep_both_errors_and_retryable_original_target ... ok
+test btleplug_backend::tests::find_peer_splits_listing_failure_from_a_real_miss ... ok
+test btleplug_backend::tests::forwarder_keys_are_per_instance ... ok
+test btleplug_backend::tests::gatt_cache_discovers_once_per_connection_not_per_verb ... ok
+test btleplug_backend::tests::gatt_cache_refresh_always_rediscovers_and_replaces ... ok
+test btleplug_backend::tests::gatt_observation_failures_are_peer_scoped_typed_and_reverifiable ... ok
+test btleplug_backend::tests::gatt_observation_getter_refusal_is_not_silent ... ok
+test btleplug_backend::tests::gatt_observation_host_watch_failure_retains_first_cause_and_retires_all ... ok
+test btleplug_backend::tests::gatt_observation_new_ready_identity_is_actual_scoped_change ... ok
+test btleplug_backend::tests::gatt_observation_timeout_is_not_a_physical_change ... ok
+test btleplug_backend::tests::gatt_peer_gate_serializes_one_peer_without_blocking_another ... ok
+test btleplug_backend::tests::gatt_work_cancellation_coalescing_and_close_are_owned_and_bounded ... ok
+test btleplug_backend::tests::held_enable_hint_keeps_unrelated_notification_and_link_event_live ... ok
+test btleplug_backend::tests::linux_disconnect_preserves_successful_release_observation ... ok
+test btleplug_backend::tests::linux_disconnect_reports_released_fact_and_independent_cleanup_refusal ... ok
+test btleplug_backend::tests::linux_disconnect_retains_both_structured_failures ... ok
+test btleplug_backend::tests::maintained_connect_preserves_every_structured_cleanup_failure ... ok
+test btleplug_backend::tests::manufacturer_sections_sort_by_company_with_verbatim_payloads ... ok
+test btleplug_backend::tests::occurrence_counts_per_uuid_not_flat_index ... ok
+test btleplug_backend::tests::occurrence_selects_among_duplicate_characteristics ... ok
+test btleplug_backend::tests::occurrence_selects_among_duplicate_descriptors ... ok
+test btleplug_backend::tests::occurrence_selects_among_duplicate_services ... ok
+test btleplug_backend::tests::original_notification_target_definite_enable_refusal_allows_retry_and_graph_retirement ... ok
+test btleplug_backend::tests::original_notification_target_enable_answer_matrix_preserves_uncertain_ownership ... ok
+test btleplug_backend::tests::original_notification_target_exact_object_retirement_settles_only_owned_scope ... ok
+test btleplug_backend::tests::original_notification_target_indeterminate_release_fences_retry_and_new_graph ... ok
+test btleplug_backend::tests::original_notification_target_retains_refused_cancelled_and_unrelated_cleanup ... ok
+test btleplug_backend::tests::original_notification_target_stream_refusal_admits_no_native_cleanup ... ok
+test btleplug_backend::tests::original_notification_target_survives_graph_replacement ... ok
+test btleplug_backend::tests::owned_corebluetooth_discovery_refusals_keep_specific_public_names ... ok
+test btleplug_backend::tests::pending_discovery_cleanup_does_not_delay_a_confirmed_link_release ... ok
+test btleplug_backend::tests::pending_winrt_discovery_cleanup_does_not_invent_a_lost_link ... ok
+test btleplug_backend::tests::platform_peer_identity_uses_the_native_event_spelling_without_folding_opaque_ids ... ok
+test btleplug_backend::tests::property_bits_cover_read_write_notify_indicate ... ok
+test btleplug_backend::tests::rediscovery_refused_original_debt_prevents_graph_publication ... ok
+test btleplug_backend::tests::rediscovery_retires_forwarders_before_new_graph_publication ... ok
+test btleplug_backend::tests::rediscovery_retires_original_debt_before_reused_native_path_enable ... ok
+test btleplug_backend::tests::selected_notification_is_the_only_cccd_write ... ok
+test btleplug_backend::tests::service_graph_preserves_unknowns_and_duplicate_uuid_inclusion_identity ... ok
+test btleplug_backend::tests::service_sections_sort_by_uuid_with_verbatim_payloads ... ok
+test btleplug_backend::tests::t_r1_a_gone_device_object_confirms_the_peer_is_released ... ok
+test btleplug_backend::tests::t_r1_a_transport_failure_is_not_release_evidence ... ok
+test btleplug_backend::tests::the_vendored_btleplug_patch_set_is_detected ... ok
+test btleplug_backend::winrt_parameter_answer_tests::disconnected_native_snapshot_and_callback_keep_one_public_loss_answer ... ok
+test btleplug_backend::winrt_parameter_answer_tests::partial_zero_samples_are_not_misclassified_as_native_disconnection ... ok
+test btleplug_backend::winrt_parameter_answer_tests::zero_latency_on_a_connected_native_answer_is_still_a_measurement ... ok
+test capabilities::tests::effective_mtu_names_its_per_os_observation ... ok
+test capabilities::tests::every_row_has_a_verdict_and_scenario ... ok
+test capabilities::tests::instance_connection_refusal_overrides_only_dependent_mechanisms ... ok
+test capabilities::tests::instance_le_availability_refusal_does_not_disable_direct_connection ... ok
+test capabilities::tests::macos_readiness_names_its_patch_or_its_absence ... ok
+test capabilities::tests::parameter_capability_uses_the_instantiated_api_refusal ... ok
+test capabilities::tests::parity_report_matches_code_and_frozen_matrix ... ok
+test capabilities::tests::per_os_verdicts_are_well_formed_and_reported ... ok
+test capabilities::tests::registration_projects_truth_into_the_core ... ok
+test capabilities::tests::windows_and_linux_readiness_is_unsupported_with_its_named_limitation ... ok
+test capabilities::tests::windows_and_linux_register_readiness_unsupported_with_its_name ... ok
+test central::adapter_tests::a_connect_deadline_without_a_link_is_connection_failed ... ok
+test central::adapter_tests::a_delayed_worker_cannot_adopt_a_database_rediscovered_after_its_admission ... ok
+test central::adapter_tests::a_link_loss_ends_a_pending_operation_the_radio_never_answers ... ok
+test central::adapter_tests::acquired_invalidation_settles_backpressure_and_parent_release_drops_the_fd ... ok
+test central::adapter_tests::acquired_write_owns_payload_and_cancelled_backpressure_has_no_effect ... ok
+test central::adapter_tests::bonded_directory_reads_native_facts_without_link_ownership_and_honors_budget ... ok
+test central::adapter_tests::cancel_unknown_operation_fails_closed ... ok
+test central::adapter_tests::cancel_while_admission_waits_refuses_publication ... ok
+test central::adapter_tests::cancelled_local_release_stage_retry_preserves_original_native_answer ... ok
+test central::adapter_tests::confirmed_link_loss_retires_only_the_old_subscription_consumer ... ok
+test central::adapter_tests::confirmed_loss_retirement_does_not_authorize_a_reused_lease ... ok
+test central::adapter_tests::connect_failure_marks_loss_and_cleans_half_open_link ... ok
+test central::adapter_tests::connect_shares_live_link_by_default ... ok
+test central::adapter_tests::deferred_connect_routes_native_and_preserves_timeout_compensation ... ok
+test central::adapter_tests::disconnect_radio_failure_stays_disconnecting ... ok
+test central::adapter_tests::disconnect_timeout_then_released_event_then_retry_already_released ... ok
+test central::adapter_tests::disconnect_timeout_with_live_link_reports_timeout ... ok
+test central::adapter_tests::discovery_refuses_duplicate_native_service_identity ... ok
+test central::adapter_tests::discovery_registers_duplicate_uuids_by_occurrence ... ok
+test central::adapter_tests::event_source_close_settles_the_owned_scan ... ok
+test central::adapter_tests::explicit_native_disconnect_closes_acquired_children_before_the_radio ... ok
+test central::adapter_tests::explicit_rediscovery_ends_a_waiting_ready_write_without_a_readiness_event ... ok
+test central::adapter_tests::explicit_rediscovery_retirement_counts_original_deadline_and_retry_keeps_debt ... ok
+test central::adapter_tests::explicit_rediscovery_retires_old_fifo_and_routing_without_physical_event ... ok
+test central::adapter_tests::f02_sequential_ops_reclaim_aggregate_and_observations ... ok
+test central::adapter_tests::f03_cancel_then_native_success_returns_cancelled ... ok
+test central::adapter_tests::f03_disconnect_during_read_returns_disconnected ... ok
+test central::adapter_tests::f03_dropped_caller_still_releases ... ok
+test central::adapter_tests::f03_dropped_connect_still_releases ... ok
+test central::adapter_tests::f03_dropped_read_descriptor_still_releases ... ok
+test central::adapter_tests::f03_dropped_subscribe_still_releases ... ok
+test central::adapter_tests::f03_dropped_write_descriptor_still_releases ... ok
+test central::adapter_tests::f03_dropped_write_still_releases ... ok
+test central::adapter_tests::f03_mtu_lookup_inside_deadline ... ok
+test central::adapter_tests::f03_read_timeout_is_end_to_end_deadline ... ok
+test central::adapter_tests::f03_requested_disconnect_during_read_is_operation_disconnected ... ok
+test central::adapter_tests::f03_service_change_during_read_returns_stale ... ok
+test central::adapter_tests::f03_shutdown_during_connect_cancels ... ok
+test central::adapter_tests::f07_flood_bounds_ingress_and_preserves_control ... ok
+test central::adapter_tests::f08_write_property_bits_are_facts_the_os_answers ... ok
+test central::adapter_tests::f10_stale_notification_rejected_after_reconnect ... ok
+test central::adapter_tests::f11_concurrent_subscribe_enables_once ... ok
+test central::adapter_tests::f14_shutdown_releases_owned_link ... ok
+test central::adapter_tests::f14_shutdown_surfaces_close_failures ... ok
+test central::adapter_tests::f15_shutdown_drives_incremental_destroy_with_pending_work ... ok
+test central::adapter_tests::f15_shutdown_record_preserves_disconnect_failure ... ok
+test central::adapter_tests::f17_invalidation_and_closure_distinguishable ... ok
+test central::adapter_tests::f17_overflow_terminal_distinguishable ... ok
+test central::adapter_tests::f18_omitted_occurrence_addresses_resolved_instance ... ok
+test central::adapter_tests::f24_connect_cleanup_releases_core_lock ... ok
+test central::adapter_tests::f25_failed_reads_settle_and_release ... ok
+test central::adapter_tests::f25_failed_writes_and_descriptors_settle_and_release ... ok
+test central::adapter_tests::failed_scan_start_releases_the_owner ... ok
+test central::adapter_tests::failed_subscribe_leaves_no_live_cccd ... ok
+test central::adapter_tests::gatt_observation_delayed_failure_preserves_new_or_reverified_same_token_graph ... ok
+test central::adapter_tests::gatt_observation_failure_preserves_cause_when_inflight_read_becomes_stale ... ok
+test central::adapter_tests::gatt_observation_failure_retires_only_matching_peer_and_can_reverify ... ok
+test central::adapter_tests::gatt_watch_failure_refuses_a_discovery_already_queued_before_failure ... ok
+test central::adapter_tests::gatt_watch_failure_refuses_inflight_discovery_publication ... ok
+test central::adapter_tests::gatt_watch_failure_retires_fifo_preserves_diagnostic_and_scan_admission ... ok
+test central::adapter_tests::h1_duplicate_uuid_instances_route_per_instance ... ok
+test central::adapter_tests::half_open_cleanup_concurrent_acquisition_cannot_publish_lost_generation ... ok
+test central::adapter_tests::half_open_cleanup_confirmed_loss_and_reset_retire_only_old_debt ... ok
+test central::adapter_tests::half_open_cleanup_delayed_drop_does_not_reopen_confirmed_shutdown_release ... ok
+test central::adapter_tests::half_open_cleanup_drop_after_late_native_success_still_compensates ... ok
+test central::adapter_tests::half_open_cleanup_later_acquisition_refreshes_retained_same_generation_debt ... ok
+test central::adapter_tests::half_open_cleanup_old_drop_guard_cannot_retain_or_disconnect_new_generation ... ok
+test central::adapter_tests::half_open_cleanup_refusal_retains_actual_cause_and_retries ... ok
+test central::adapter_tests::half_open_cleanup_refused_overlap_keeps_other_peer_usable ... ok
+test central::adapter_tests::half_open_cleanup_reset_epoch_is_published_with_generation ... ok
+test central::adapter_tests::half_open_cleanup_retry_preserves_unrelated_cached_failure ... ok
+test central::adapter_tests::half_open_cleanup_timeout_is_retried_by_shutdown ... ok
+test central::adapter_tests::half_open_cleanup_wait_honors_new_connect_budget_and_preserves_other_peer ... ok
+test central::adapter_tests::half_open_cleanup_wait_is_abort_aware_without_new_connect ... ok
+test central::adapter_tests::held_transport_close_is_bounded_and_retryable ... ok
+test central::adapter_tests::host_reported_loss_retires_exact_owned_consumer ... ok
+test central::adapter_tests::instantiated_parameter_api_overrides_the_compiled_profile_and_preserves_probe_errors ... ok
+test central::adapter_tests::l5_connect_failure_cleanup_is_bounded ... ok
+test central::adapter_tests::l6_disconnect_processed_under_notification_flood ... ok
+test central::adapter_tests::l6_services_changed_invalidates_paths ... ok
+test central::adapter_tests::l7_cancel_live_scan_operation ... ok
+test central::adapter_tests::l7_pre_ready_values_quarantine_before_enable ... ok
+test central::adapter_tests::l7_unsubscribe_disable_failure_retries ... ok
+test central::adapter_tests::lifecycle_platform_detail_is_published_with_the_original_transition ... ok
+test central::adapter_tests::linux_old_physical_loss_does_not_invalidate_new_connection ... ok
+test central::adapter_tests::long_write_is_rejected_up_front ... ok
+test central::adapter_tests::m1_write_does_not_hold_core_lock_across_mtu ... ok
+test central::adapter_tests::m2_values_observable_after_subscribe ... ok
+test central::adapter_tests::m4_open_projects_desktop_capabilities ... ok
+test central::adapter_tests::native_unsubscribe_drains_the_final_tail_before_retirement ... ok
+test central::adapter_tests::notifications_reach_the_hub_stream ... ok
+test central::adapter_tests::old_release_answer_cannot_clear_new_connection_routing_or_gatt ... ok
+test central::adapter_tests::old_release_answer_cannot_settle_newer_disconnecting_generation ... ok
+test central::adapter_tests::own_lease_release_report_does_not_depend_on_lifecycle_consumer_delivery ... ok
+test central::adapter_tests::peer_directory_capabilities_snapshot_is_instantiated_core_truth ... ok
+test central::adapter_tests::peer_directory_default_refuses_without_acquiring_a_link ... ok
+test central::adapter_tests::peer_directory_held_lookup_is_retired_by_adapter_reset ... ok
+test central::adapter_tests::peer_directory_held_lookup_is_retired_by_shutdown ... ok
+test central::adapter_tests::peer_directory_read_preserves_identity_without_owned_connection ... ok
+test central::adapter_tests::peer_directory_scripted_gate_holds_only_after_allowed_reads ... ok
+test central::adapter_tests::peer_directory_timeout_and_preabort_preserve_no_link_ownership ... ok
+test central::adapter_tests::peer_directory_uses_normal_radio_admission ... ok
+test central::adapter_tests::preferred_requests_are_lease_bound_and_cancel_deadline_cannot_publish_late_acceptance ... ok
+test central::adapter_tests::read_after_peer_loss_fails_without_radio ... ok
+test central::adapter_tests::readiness_wait_ends_on_link_loss_and_original_gatt_source_failure ... ok
+test central::adapter_tests::ready_write_cancel_and_probe_failure_keep_zero_write_effects_and_retire_admission ... ok
+test central::adapter_tests::ready_write_invalidation_interrupts_a_held_probe_without_another_readiness_event ... ok
+test central::adapter_tests::ready_write_keeps_native_admission_even_when_the_later_worker_runs_first ... ok
+test central::adapter_tests::ready_write_queued_time_consumes_its_original_deadline_and_releases_its_position ... ok
+test central::adapter_tests::requested_release_event_first_preserves_same_observation_once ... ok
+test central::adapter_tests::requested_release_publishes_its_own_native_observation_once ... ok
+test central::adapter_tests::retained_notification_fifo_remains_readable_during_and_after_shutdown ... ok
+test central::adapter_tests::retired_release_report_preserves_original_generation_across_reset_and_replacement ... ok
+test central::adapter_tests::reused_consumer_does_not_inherit_prior_link_retirement ... ok
+test central::adapter_tests::runtime_directory_subset_refuses_before_inventory_access_and_preserves_probe_failure ... ok
+test central::adapter_tests::runtime_priority_absence_and_probe_failure_are_not_advertised_as_supported ... ok
+test central::adapter_tests::scan_ingests_advertisements_and_cleans_up ... ok
+test central::adapter_tests::scoped_gatt_discovery_replacement_before_publication_is_refused ... ok
+test central::adapter_tests::scoped_gatt_invalidation_deferred_r1_preserves_published_r2 ... ok
+test central::adapter_tests::scoped_gatt_invalidation_held_routing_fences_new_discovery ... ok
+test central::adapter_tests::scoped_gatt_invalidation_held_routing_fences_subscription_admission ... ok
+test central::adapter_tests::scoped_gatt_invalidation_never_waits_for_physical_subscribe_completion ... ok
+test central::adapter_tests::scoped_gatt_old_event_preserves_r2_notification_routing ... ok
+test central::adapter_tests::scoped_gatt_subscription_gate_preserves_deadline_and_cancellation ... ok
+test central::adapter_tests::second_scan_owner_is_rejected_without_radio_effect ... ok
+test central::adapter_tests::shared_discovery_cancellation_and_deadline_are_per_caller ... ok
+test central::adapter_tests::shared_discovery_failed_attempt_and_service_change_never_reuse_stale_cache ... ok
+test central::adapter_tests::shared_discovery_joins_without_replacing_the_first_owners_paths ... ok
+test central::adapter_tests::shared_discovery_original_path_owner_release_preserves_other_lease_inflight_read ... ok
+test central::adapter_tests::shared_discovery_ready_cache_cannot_renew_an_expired_waiter_budget ... ok
+test central::adapter_tests::shared_discovery_released_leader_cannot_publish_over_surviving_owner ... ok
+test central::adapter_tests::shared_discovery_same_lease_coalesces_but_sequential_refresh_is_explicit ... ok
+test central::adapter_tests::shared_discovery_service_change_during_traversal_refuses_stale_publication ... ok
+test central::adapter_tests::shared_lease_release_deadline_retains_child_and_fences_only_its_owner ... ok
+test central::adapter_tests::shared_lease_release_keeps_overflowed_child_cleanup_after_consumer_record_retirement ... ok
+test central::adapter_tests::shared_lease_release_retains_failed_child_and_preserves_other_owners_subscription ... ok
+test central::adapter_tests::shared_lease_release_retires_exact_old_generation_consumer_without_disabling_replacement ... ok
+test central::adapter_tests::shutdown_retains_transport_failure_and_retries_after_loop_join ... ok
+test central::adapter_tests::subscription_sharing_keeps_one_cccd ... ok
+test central::adapter_tests::the_apps_release_ends_a_pending_operation_the_radio_never_answers ... ok
+test central::adapter_tests::write_without_measured_mtu_fails_closed ... ok
+test central::bounded_queue_tests::push_evicting_drops_the_oldest_and_reports_it ... ok
+test continuation::idle_recovery_tests::backlog_status_joins_autonomous_recovery_but_explicit_execution_remains_busy ... ok
+test continuation::idle_recovery_tests::idle_adapter_event_cannot_compete_with_first_wake_admission ... ok
+test continuation::idle_recovery_tests::recovery_ownership_survives_held_install_and_failed_disposal ... ok
+test continuation::idle_recovery_tests::setup_uncertainty_capacity_never_evicts_a_live_generation ... ok
+test continuation::idle_recovery_tests::setup_uncertainty_survives_other_peers_and_only_its_generation_change_clears_it ... ok
+test continuation_adapter::ingress_tests::journal_attachment_during_suspended_ingress_stays_off_runtime ... ok
+test continuation_journal::authority_tests::held_export_transaction_blocks_shared_writer_without_sqlite_busy ... ok
+test continuation_outbox::tests::control_loss_is_visible_while_data_keeps_arriving ... ok
+test continuation_outbox::tests::control_loss_record_arrives_after_a_full_drain ... ok
+test continuation_outbox::tests::seal_orders_each_admission_into_the_handoff_or_explicit_loss ... ok
+test continuation_outbox::tests::sealed_upstream_loss_is_counted_without_fabricating_payloads ... ok
+test delivery::tests::a_requirement_the_characteristic_lacks_fails_before_any_effect ... ok
+test delivery::tests::a_single_property_answers_with_certainty_on_every_platform ... ok
+test delivery::tests::a_soft_preference_selects_supported_modes_without_becoming_a_requirement ... ok
+test delivery::tests::an_undocumented_platform_never_accepts_a_requirement_it_cannot_prove ... ok
+test delivery::tests::both_properties_follow_the_documented_notify_first_rule ... ok
+test delivery::tests::f98_an_unflagged_subscribe_goes_to_an_os_that_answers_it ... ok
+test delivery::tests::this_build_uses_its_platform_rule ... ok
+test delivery::tests::windows_selects_by_rewriting_the_cccd_and_prefers_notify ... ok
+test errors::tests::a_connect_deadline_without_a_link_is_connection_failed ... ok
+test errors::tests::a_link_loss_answer_on_a_link_operation_is_connection_lost ... ok
+test errors::tests::a_platform_connect_failure_is_caller_decides ... ok
+test errors::tests::a_platform_connect_failure_is_connection_failed ... ok
+test errors::tests::a_transient_link_establishment_failure_is_caller_decides ... ok
+test errors::tests::an_authentication_or_encryption_refusal_is_platform_security ... ok
+test errors::tests::boundary_failures_carry_contract_identities ... ok
+test errors::tests::core_identity_crosses_verbatim ... ok
+test errors::tests::empty_operation_fails_closed ... ok
+test errors::tests::errors_default_to_never_retryable_without_a_commit_fact ... ok
+test errors::tests::outcome_facts_travel_with_the_error_but_not_its_identity ... ok
+test errors::tests::the_platform_detail_survives_classification ... ok
+test executor::tests::shared_handle_is_stable_across_calls ... ok
+test gatt_admission::tests::a_full_queue_refuses_without_losing_existing_slots_and_sealing_wakes_waiters ... ok
+test gatt_admission::tests::abandoning_middle_and_front_slots_retires_only_their_admission ... ok
+test gatt_admission::tests::dispatched_work_keeps_ownership_without_blocking_later_native_admission ... ok
+test gatt_admission::tests::executor_order_cannot_overtake_admission_and_peers_remain_independent ... ok
+test gatt_admission::tests::invalidation_retires_only_admissions_from_the_ended_database ... ok
+test gatt_admission::tests::repeated_successful_sessions_do_not_retain_peer_history ... ok
+test op_control::tests::a_ticket_publishes_exactly_once ... ok
+test op_control::tests::budget_counts_from_its_start_instant ... ok
+test op_control::tests::caller_budget_is_the_only_bound_when_given ... ok
+test op_control::tests::cancel_after_publication_forwards_the_exact_id ... ok
+test op_control::tests::cancel_before_publication_is_recorded_and_refuses_publication ... ok
+test op_control::tests::cancelled_resolves_immediately_when_already_requested ... ok
+test op_control::tests::cancelled_wakes_on_request_from_another_task ... ok
+test op_control::tests::settle_guard_settles_on_every_exit ... ok
+test op_control::tests::window_core_timeout_clamps_to_the_kernel_range ... ok
+test os::bluez_model::tests::a_path_without_a_handle_is_left_out ... ok
+test os::bluez_model::tests::adapter_signals_follow_the_legacy_reset_sources ... ok
+test os::bluez_model::tests::bonded_inventory_uses_native_bond_and_selected_adapter_identity ... ok
+test os::bluez_model::tests::bonded_wins_over_paired_and_absence_is_unknown ... ok
+test os::bluez_model::tests::every_instance_receives_its_own_facts_by_handle ... ok
+test os::bluez_model::tests::flags_cover_every_bluez_fact_the_legacy_backend_read ... ok
+test os::bluez_model::tests::known_inventory_is_adapter_scoped_and_le_state_does_not_borrow_classic_connectivity ... ok
+test os::bluez_model::tests::pair_errors_map_to_outcomes_or_failures ... ok
+test os::bluez_model::tests::pairing_is_possible_as_legacy_reported_it ... ok
+test os::bluez_model::tests::paths_round_trip_between_peer_ids_and_objects ... ok
+test os::linux::acquired::tests::already_closed_sender_is_observed_before_cleanup_retirement ... ignored, requires a dedicated dbus-run-session; no system Bluetooth access
+test os::linux::acquired::tests::cancelled_opening_retains_exact_parent_and_retries_without_history ... ok
+test os::linux::acquired_tests::private_bus_absent_method_and_ineligible_flags_are_explicit_without_fallback ... ignored, requires a dedicated dbus-run-session; optional method and flags admission
+test os::linux::acquired_tests::private_bus_acquired_fd_owns_a_dedicated_sender_and_closes_both ... ignored, requires a dedicated dbus-run-session; real FD, no system Bluetooth access
+test os::linux::acquired_tests::private_bus_cancelled_acquisition_retires_its_pending_sender ... ignored, requires a dedicated dbus-run-session; cancellation before the FD reply
+test os::linux::acquired_tests::private_bus_daemon_absence_cannot_publish_a_deferred_fd ... ignored, requires a dedicated dbus-run-session; daemon name vanishes before deferred publication
+test os::linux::acquired_tests::private_bus_daemon_replacement_cannot_publish_the_old_owners_deferred_fd ... ignored, requires a dedicated dbus-run-session; daemon owner changes before deferred publication
+test os::linux::acquired_tests::private_bus_invalid_mtu_retires_the_fd_and_dedicated_sender ... ignored, requires a dedicated dbus-run-session; invalid native MTU compensation
+test os::linux::discovery::tests::private_bus_address_resolution_canceled_stop_settles_original_reply ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_address_resolution_cancellation_retains_accepted_start ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_address_resolution_indeterminate_stop_remains_owned_without_resend ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_address_resolution_refused_start_has_no_stop_debt ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_address_resolution_rejects_old_owner_result_but_releases_its_discovery ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_address_resolution_reports_stop_refusal_not_success ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_address_resolution_without_discovery_never_stops_unowned_session ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_discovery_close_attempts_every_owner_and_retains_all_failures ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_discovery_close_pending_first_owner_does_not_starve_siblings ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_discovery_close_refusal_does_not_starve_successful_other_owners ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_discovery_departed_unique_owner_retires_without_contacting_replacement ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_discovery_live_owner_missing_name_error_keeps_cleanup_debt ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_budget_ends_without_connect_or_unowned_stop ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_cancellation_retires_confirmed_idle_sender ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_cancellation_settles_original_start ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_cleanup_refusal_remains_owned ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_daemon_replacement_does_not_retarget_wait ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_event_queued_before_baseline_is_not_fresh ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_malformed_signal_preserves_primary_and_cleanup_failures ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_missing_owner_preserves_wait_operation_and_platform ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_never_accepts_cached_or_stale_or_other_peer ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_other_peer_does_not_wait_for_absent_peer ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_prestart_cancellation_retires_sender_without_stop ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_prestart_failures_retire_dedicated_senders ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_queued_same_peer_retains_cleanup_debt_at_close ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_releases_only_its_sender_not_public_scan ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_retained_cancel_cleanup_and_prestart_report_own_operation ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_start_refusal_reports_own_operation ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_le_availability_unknown_revision_refuses_before_effect ... ignored, requires a dedicated dbus-run-session
+test os::linux::discovery::tests::private_bus_old_daemon_refuses_le_availability_before_scanning ... ignored, requires a dedicated dbus-run-session
+test os::linux::watch_tests::connection_evidence_retires_objects_and_owner_epochs ... ok
+test os::linux::watch_tests::private_bus_authority_contract_requires_implemented_current_versions ... ignored, requires a dedicated dbus-run-session; native client proof only
+test os::linux::watch_tests::private_bus_authority_refuses_mismatched_explicit_pin ... ignored, requires a dedicated dbus-run-session
+test os::linux::watch_tests::private_bus_authority_resolves_owner_without_host_attestation ... ignored, requires a dedicated dbus-run-session
+test os::linux::watch_tests::private_bus_bonded_snapshot_owner_replacement_refuses_old_epoch ... ignored, requires a dedicated dbus-run-session; no system Bluetooth access
+test os::linux::watch_tests::private_bus_dead_unique_owner_retires_leases_without_rebinding_or_local_cleanup ... ignored, requires a dedicated dbus-run-session; native ownership proof only
+test os::linux::watch_tests::private_bus_directories_include_unbonded_peers_but_exclude_classic_only_connected_state ... ignored, requires a dedicated dbus-run-session; no system Bluetooth access
+test os::linux::watch_tests::private_bus_gatt_watch_ready_precedes_return_and_loss_is_retained ... ignored, requires a dedicated dbus-run-session
+test os::linux::watch_tests::private_bus_gatt_watch_startup_refusal_never_reports_ready ... ignored, requires a dedicated dbus-run-session
+test os::linux::watch_tests::private_bus_le_gatt_invalidation_is_observable_and_authenticated ... ignored, requires a dedicated dbus-run-session
+test os::linux::watch_tests::private_bus_malformed_le_gatt_signal_refuses_future_admission ... ignored, requires a dedicated dbus-run-session
+test os::linux::watch_tests::private_bus_owner_resolution_does_not_attest_implemented_contract ... ignored, requires a dedicated dbus-run-session
+test os::linux::watch_tests::private_bus_split_disconnect_does_not_invalidate_a_live_database ... ignored, requires dedicated dbus-run-session, never the system bus
+test os::linux::watch_tests::private_bus_strict_le_watch_ignores_aggregate_classic_state ... ignored, requires a dedicated dbus-run-session
+test os::linux_lease::tests::acknowledgment_failure_is_retryable_housekeeping_not_physical_failure ... ok
+test os::linux_lease::tests::authoritative_no_admission_fence_retires_unknown_reservation ... ok
+test os::linux_lease::tests::cancelled_connect_retains_physical_generation_and_owner_client ... ok
+test os::linux_lease::tests::cancelled_release_waiter_preserves_late_terminal_fact_not_native_debt ... ok
+test os::linux_lease::tests::cancelled_reservation_keeps_late_token_owned_and_compensates ... ok
+test os::linux_lease::tests::duplicate_old_loss_never_releases_new_token_or_physical_generation ... ok
+test os::linux_lease::tests::duplicate_peer_refusal_does_not_allocate_unowned_sender_nonces ... ok
+test os::linux_lease::tests::early_loss_intake_overflow_is_explicit_and_compensates_acquisition ... ok
+test os::linux_lease::tests::early_losses_replay_exact_matching_generation_without_overwrite ... ok
+test os::linux_lease::tests::failed_connect_learns_only_exact_token_physical_release_and_retains_refusal ... ok
+test os::linux_lease::tests::held_acquisition_release_waiter_cancellation_does_not_lose_owned_work ... ok
+test os::linux_lease::tests::local_release_cleanup_holds_admission_until_its_synchronous_mutation_finishes ... ok
+test os::linux_lease::tests::lost_reserve_reply_recovers_original_nonce_and_token_without_reconnect ... ok
+test os::linux_lease::tests::matching_protected_release_retires_only_this_lease ... ok
+test os::linux_lease::tests::new_connection_retries_failed_ack_without_an_admission_wait ... ok
+test os::linux_lease::tests::new_peer_admission_cannot_consume_a_previous_generation_terminal_fact ... ok
+test os::linux_lease::tests::owner_query_failure_never_retires_daemon_obligations ... ok
+test os::linux_lease::tests::pending_discovery_cleanup_cannot_starve_owned_release_or_its_retained_receipt ... ok
+test os::linux_lease::tests::physical_loss_is_immediate_while_native_release_is_held ... ok
+test os::linux_lease::tests::protected_indeterminate_and_wrong_generation_remain_retryable ... ok
+test os::linux_lease::tests::protected_release_ack_failure_remains_owned_without_repeating_link_release ... ok
+test os::linux_lease::tests::release_answer_preserves_exact_observed_reason_before_retirement ... ok
+test os::linux_lease::tests::repeated_bounded_cleanup_observers_share_one_held_ack_attempt ... ok
+test os::linux_lease::tests::reservation_receipt_cannot_fabricate_physical_disconnect_reason ... ok
+test os::linux_lease::tests::reserve_reply_failure_retains_indeterminate_admission_without_creating_replacement ... ok
+test os::linux_lease::tests::retired_or_full_event_sink_refuses_late_acquisition_and_compensates ... ok
+test os::linux_lease::tests::sequential_reconnections_do_not_accumulate_consumed_terminal_debt ... ok
+test os::linux_lease::tests::still_live_refusing_owner_remains_owned_until_confirmed_death ... ok
+test os::linux_lease::tests::unknown_native_reason_is_not_inferred_from_requested_release ... ok
+test os::linux_lease::tests::vanished_owner_retires_ack_debt_without_repeating_physical_release ... ok
+test os::linux_lease::tests::vanished_owner_retires_only_its_owned_lease_without_release_or_ack ... ok
+test os::winrt_cleanup::tests::callback_queued_behind_close_has_no_effect_and_full_queue_does_not_park ... ok
+test os::winrt_cleanup::tests::cancelling_a_queued_acquisition_preserves_the_current_peer_owner ... ok
+test os::winrt_cleanup::tests::close_fences_a_held_callback_before_returning ... ok
+test os::winrt_cleanup::tests::close_rejects_an_already_queued_acquisition_when_the_owner_settles ... ok
+test os::winrt_cleanup::tests::confirmed_session_close_settles_disable_but_keeps_its_diagnostic ... ok
+test os::winrt_cleanup::tests::every_refused_watch_stage_is_the_only_stage_retried ... ok
+test os::winrt_cleanup::tests::failed_old_owner_survives_replacement_and_successful_retry_removes_only_it ... ok
+test os::winrt_cleanup::tests::held_and_refused_adapter_a_does_not_block_or_taint_adapter_b ... ok
+test os::winrt_cleanup::tests::held_vault_retry_cannot_look_clean_to_another_caller ... ok
+test os::winrt_cleanup::tests::partial_registration_keeps_later_tokens_and_failed_compensation_for_retry ... ok
+test os::winrt_cleanup::tests::peer_acquisition_reuses_healthy_owner_and_close_refuses_new_work ... ok
+test os::winrt_cleanup::tests::session_attempts_close_after_disable_refusal_and_preserves_all_failures ... ok
+test os::winrt_cleanup::tests::singular_receipt_retains_each_native_failure_and_stage ... ok
+test os::winrt_cleanup::transient_tests::failed_handler_cleanup_does_not_skip_independent_peripheral_release ... ok
+test os::winrt_cleanup::transient_tests::transient_inspection_closes_after_success_or_validation_failure ... ok
+test os::winrt_cleanup::transient_tests::transient_inspection_retains_read_and_close_failures ... ok
+test os::winrt_model::directory_inventory_tests::known_inventory_includes_connected_unpaired_peers_without_starting_a_scan ... ok
+test os::winrt_model::tests::a_listed_address_reopens_without_a_scan ... ok
+test os::winrt_model::tests::a_named_adapter_is_selected_even_when_it_is_not_the_default ... ok
+test os::winrt_model::tests::an_adapter_missing_from_the_first_enumeration_is_lost ... ok
+test os::winrt_model::tests::deployment_follows_get_current_package_full_name ... ok
+test os::winrt_model::tests::device_access_statuses_follow_the_legacy_addon ... ok
+test os::winrt_model::tests::explicit_address_target_requires_both_native_address_and_type ... ok
+test os::winrt_model::tests::no_name_selects_the_default_then_a_sole_adapter_and_never_guesses ... ok
+test os::winrt_model::tests::pairing_statuses_follow_the_legacy_addon ... ok
+test os::winrt_model::tests::peer_ids_parse_to_48_bit_addresses ... ok
+test os::winrt_model::tests::presence_reports_loss_and_return_once_after_enumeration ... ok
+test os::winrt_model::tests::the_radio_is_read_only_with_granted_access ... ok
+test parameter_source::tests::actual_callback_failure_and_source_close_are_explicit_radio_events ... ok
+test parameter_source::tests::live_source_capacity_is_reclaimed_without_retaining_retirement_history ... ok
+test parameter_source::tests::replacement_and_retirement_reject_queued_callbacks_from_the_old_source ... ok
+test parameter_source::tests::vendor_lag_discards_retained_pre_reconciliation_values_and_preserves_queued_failure ... ok
+
+test result: ok. 366 passed; 0 failed; 50 ignored; 0 measured; 0 filtered out; finished in 11.53s
+
+
+running 6 tests
+test a_requested_adapter_is_the_one_the_central_opens_on ...      Running tests/adapter_and_rssi.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/adapter_and_rssi-90c2cae16a19f27c)
+ok
+test adapter_state_reads_the_radio_and_changes_are_published ... ok
+test connected_rssi_reads_the_radio_for_the_lease_holder ... ok
+test rssi_is_bounded_by_the_budget_and_unmeasured_is_unsupported ... ok
+test rssi_is_refused_on_a_link_that_is_not_connected ... ok
+test rssi_link_loss_is_connection_lost ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/adapter_loss.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/adapter_loss-bc21084aa9eb314e)
+
+running 13 tests
+test a_gateless_radio_and_an_unreported_fact_admit ... ok
+test a_power_loss_tears_down_everything_live_and_advances_the_generation ... ok
+test a_radio_without_teardown_reports_the_state_only ... ok
+test a_removed_adapter_or_restarted_daemon_resets_and_reads_unavailable ... ok
+test adapter_reads_racing_a_reset_answer_the_post_transition_state ... ok
+test corebluetooth_admission_refuses_before_any_effect_in_legacy_order ... ok
+test corebluetooth_cleanup_stays_admitted_while_winrt_gates_unsubscribe ... ok
+test one_loss_resets_once_and_power_on_ends_the_loss ... ok
+test the_connection_write_limit_needs_no_discovery ... ok
+test the_duplicate_policy_reaches_the_radio ... ok
+test the_first_usable_state_is_awaited_within_the_bound ... ok
+test the_name_prefix_reaches_the_radio ... ok
+test winrt_admission_reads_availability_before_authorization ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+
+running 15 tests
+test private_bus_abandoned_queued_cleanup_cannot_release_a_later_external_link ... ignored, requires a dedicated dbus-run-session
+test private_bus_absent_le_method_has_no_fabricated_cleanup_debt ... ignored, requires a dedicated dbus-run-session
+test private_bus_absent_le_method_stays_released_after_owner_departure ... ignored, requires a dedicated dbus-run-session
+test private_bus_adapter_cleanup_routes_the_public_peer_to_native_le_release ... ignored, requires a dedicated dbus-run-session
+test private_bus_cancelled_release_reuses_accepted_reply_before_retry ... ignored, requires a dedicated dbus-run-session
+test private_bus_cancelled_wait_retains_late_le_acquisition_for_cleanup ... ignored, requires a dedicated dbus-run-session
+test private_bus_indeterminate_release_never_resends_or_admits_new_connect ... ignored, requires a dedicated dbus-run-session
+test private_bus_le_confirmation_timeout_is_not_reported_as_service_discovery ... ignored, requires a dedicated dbus-run-session
+test private_bus_le_connect_does_not_add_classic_bearer ... ignored, requires a dedicated dbus-run-session
+test private_bus_le_release_preserves_other_apps_classic_bearer ... ignored, requires a dedicated dbus-run-session
+test private_bus_owner_pin_applies_to_gatt_directory_and_replacement_refuses ... ignored, requires a dedicated dbus-run-session
+test private_bus_public_peer_identity_releases_accepted_le_without_a_directory_read ... ignored, requires a dedicated dbus-run-session
+test private_bus_refused_connect_retries_after_exact_cleanup_with_or_without_partial_link ... ignored, requires a dedicated dbus-run-session
+test private_bus_scoped_release_refusal_is_retryable_without_classic_effects ... ignored, requires a dedicated dbus-run-session
+test private_bus_wrong_or_well_known_owner_refuses_before_effects ... ignored, requires a dedicated dbus-run-session
+
+test result: ok. 0 passed; 0 failed; 15 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 8 tests
+test match_cleanup::tests::active_owned_stream_is_not_a_clean_close_and_other_scope_is_unaffected ... ok
+test match_cleanup::tests::held_removal_survives_bounded_wait_and_fences_new_acquire ...      Running tests/bluez_bearer_scope.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/bluez_bearer_scope-500d38bcb84fe472)
+     Running tests/bluez_match_cleanup.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/bluez_match_cleanup-449df2d82b969a04)
+ok
+test match_cleanup::tests::last_release_during_a_noop_flight_keeps_a_removal_attempt ... ok
+test match_cleanup::tests::refusal_is_retained_and_retry_does_not_poison_success ... ok
+test match_cleanup::tests::refused_add_does_not_release_another_accepted_rule ... ok
+test match_cleanup::tests::server_absence_is_idempotent_but_local_missing_token_is_not ... ok
+test match_cleanup::tests::shared_rule_removes_only_after_last_adapter_lease ... ok
+test owned_match_cleanup_is_a_required_production_vendor_patch ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 1 test
+test private_bus_stream_drop_keeps_server_rule_and_other_scope_ownership_consistent ... ignored, run on a fresh private bus with dbus-run-session; never the system bus
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 5 tests
+test cancelled_persistence_reservation_restores_previous_execution_authority ... ok
+test capped_prefix_is_replayable_and_ack_does_not_dispose_tail ... ok
+test declaration_reservation_rejects_a_stale_wake_after_persistence_commits ...      Running tests/bluez_private_bus.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/bluez_private_bus-72a290e71b2ad2b1)
+     Running tests/continuation.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/continuation-f38b2211baed7b56)
+ok
+test malformed_drain_retains_valid_prefix_behind_acknowledgement ... ok
+test opaque_desktop_peers_preserve_case_and_never_alias_declaration_authority ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 25 tests
+test claim_counts_values_arriving_while_native_unsubscribe_is_held ... ok
+test claim_preserves_another_clients_connection_lease ...      Running tests/continuation_adapter.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/continuation_adapter-094f45682af17fb9)
+ok
+test desktop_native_setup_observes_early_reply_but_waits_for_att_and_retains_data ... ok
+test durable_native_values_survive_radio_claim_and_restart_without_double_delivery ... 
+running 1 test
+test durable_native_values_survive_radio_claim_and_restart_without_double_delivery ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.03s
+
+ok
+test failed_discovery_continuation_link_is_released_by_its_parent ... ok
+test failed_native_connect_is_compensated_by_central_not_disposed_as_acquired ... ok
+test failed_parent_release_keeps_claim_retryable ... ok
+test held_second_subscribe_does_not_block_existing_route_collection ... ok
+test independent_store_stop_is_observed_without_waiting_for_sensor_ingress ... 
+running 1 test
+test independent_store_stop_is_observed_without_waiting_for_sensor_ingress ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.01s
+
+ok
+test native_collection_and_replayable_claim_need_no_ui ... ok
+test native_supervisor_recovers_a_dropped_link_without_ui_requests ... ok
+test pinned_declaration_precheck_compares_full_normalized_identity ... ok
+test process_shutdown_after_confirmed_link_loss_allows_child_retirement ... ok
+test process_shutdown_pending_is_not_child_release_authority ... ok
+test process_shutdown_retry_then_claim_recognizes_confirmed_parent_release ... ok
+test process_shutdown_success_allows_explicit_later_claim_disposal ... ok
+test recording_stop_during_held_setup_prevents_late_success_and_keeps_release_reachable ... 
+running 1 test
+test recording_stop_during_held_setup_prevents_late_success_and_keeps_release_reachable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.01s
+
+ok
+test refused_connect_does_not_invent_a_session_release_obligation ... ok
+test refused_subscribe_keeps_provisional_route_available_for_cleanup ... ok
+test reopened_recording_uses_a_distinct_session_epoch_before_new_ingress ... 
+running 1 test
+test reopened_recording_uses_a_distinct_session_epoch_before_new_ingress ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.02s
+
+ok
+test repeat_is_idempotent_but_link_loss_starts_a_new_generation ... ok
+test retained_data_is_bounded_and_overflow_terminal_is_once_only ... ok
+test sealed_full_backlog_counts_disposal_tail_once_without_overflow_terminal ... ok
+test shutdown_refuses_native_restart_on_the_same_radio_owner ... ok
+test unattached_recording_can_retry_after_directory_configuration ... 
+running 1 test
+test unattached_recording_can_retry_after_directory_configuration ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.01s
+
+ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+
+running 14 tests
+test attachment_and_loss_admission_have_one_order ...      Running tests/continuation_durable_loss.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/continuation_durable_loss-c9757918db5d59be)
+ok
+test attachment_refuses_data_delivered_controls_and_consumer_controls ... ok
+test attachment_replays_undelivered_loss_and_peer_scoped_controls_once ... ok
+test attachment_reports_queued_control_quota_failure_and_retains_committed_prefix ... ok
+test attachment_retains_full_queue_loss_without_fabricating_upstream_counts ... ok
+test coalesced_loss_failed_append_exposes_storage_failure ... ok
+test coalesced_loss_quota_failure_is_reported_and_retained ... ok
+test coalesced_loss_survives_process_exit_without_destructor_flush ... 
+running 1 test
+ok
+test durable_loss_matches_coalesced_memory_loss ... ok
+test durable_values_between_loss_reports_do_not_hide_a_delta ... ok
+test full_memory_control_queue_does_not_suppress_durable_loss ... ok
+test loss_exit_worker ... ok
+test prepared_loss_prefix_is_immutable_and_later_delta_survives_reopen ... ok
+test single_and_mixed_loss_deltas_survive_reopen_and_seal ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.01s
+
+     Running tests/continuation_journal.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/continuation_journal-e0c4e779bc128801)
+
+running 37 tests
+test authority_capacity_refuses_only_new_ids_and_releases_unpinned_handles ... 
+running 1 test
+test authority_capacity_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.49s
+
+ok
+test authority_capacity_worker ... ok
+test cached_authority_refuses_directory_replacement_at_the_same_path ... ok
+test cached_authority_refuses_replaced_journal_and_keeps_original_owner ... ok
+test capacity_retains_owned_data_and_clear_requires_stop_and_invalidates_old_tokens ... ok
+test corrupt_unknown_schema_and_identity_mismatch_fail_closed ... ok
+test crash_worker ... ok
+test disk_quota_includes_database_and_live_rollback_journal ... ok
+test durable_failure_prevents_ack_observation_and_preserves_storage_cause ... ok
+test durable_outbox_bypasses_volatile_cap_and_native_seal_never_acknowledges ... ok
+test durable_registration_is_immutable_and_control_records_have_one_durable_copy ... ok
+test evicted_journals_reopen_the_same_prepared_token_without_acknowledging ... ok
+test eviction_pressure_preserves_unpersisted_failure_truth_across_controllers ... ok
+test foreign_process_is_refused_before_export_can_contend_with_the_writer ... 
+running 1 test
+test process_authority_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
+
+ok
+test incompatible_wal_mode_and_deep_metadata_are_refused_without_rewriting ... ok
+test independent_handles_share_one_cursor_and_transactional_counters ... ok
+test independent_registries_share_live_authority_and_serialize_export_with_ingress ... ok
+test independent_stop_then_late_ingress_retires_one_thousand_journals ... 
+running 1 test
+test independent_stop_then_late_ingress_retires_one_thousand_journals ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 6.12s
+
+ok
+test input_and_prepared_bounds_fail_without_mutating_the_owned_prefix ... ok
+test offline_handle_stop_seals_live_outbox_without_fabricating_collection_failure ... ok
+test oversized_existing_file_is_rejected_before_integrity_scan ... ok
+test prepared_prefix_and_ack_receipt_survive_restart_without_losing_later_data ... ok
+test process_authority_worker ... ok
+test process_exit_before_ack_replays_and_exit_after_ack_does_not_resurrect ... 
+running 1 test
+
+running 1 test
+ok
+test process_exit_releases_authority_and_cold_reopen_preserves_rows ... 
+running 1 test
+test process_authority_worker ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
+
+ok
+test recording_task_uses_blocking_pool_and_redacts_join_failure_payload ... ok
+test registry_bounds_inactive_handles_across_one_thousand_ids_and_preserves_active_owner ... ok
+test registry_retains_owner_and_reopens_persisted_identity_without_path_input ... ok
+test simultaneous_handles_serialize_or_report_busy_without_losing_records ... ok
+test sqlite_failures_preserve_safe_native_code_and_operation ... ok
+test stop_survives_restart_and_empty_or_unwritable_locations_never_become_fresh_recordings ... ok
+test stopped_refusal_does_not_erase_or_unpin_real_uncommitted_failure ... ok
+test symlink_authority_is_refused_before_creating_the_recording ... ok
+test symlink_destination_is_refused_without_changing_target ... ok
+test terminal_collection_failure_stops_admission_and_survives_restart ... ok
+test unpersistable_collection_failure_remains_owned_and_honestly_reported ... ok
+test writer_lock_failure_is_explicit_and_never_claimed_as_persisted_loss ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.62s
+
+     Running tests/continuation_observer.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/continuation_observer-a6c635a668f8cfd3)
+
+running 3 tests
+test dropped_observation_releases_admission_and_seal_refuses_new_observation ... ok
+test observation_is_armed_before_ingress_and_never_consumes_retained_records ... ok
+test terminal_closes_pending_observation_without_consuming_the_terminal ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 12 tests
+test application_success_does_not_override_att_failure_or_allow_same_generation_retry ... ok
+test changed_setup_cannot_replace_owned_declaration_and_no_reply_step_still_writes ... ok
+test durable_setup_write_receives_only_the_budget_remaining_after_observer_admission ...      Running tests/continuation_setup.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/continuation_setup-5ee16d4273a63640)
+
+running 1 test
+test durable_setup_write_receives_only_the_budget_remaining_after_observer_admission ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.06s
+
+ok
+test early_application_reply_is_retained_and_setup_runs_once_per_generation ... ok
+test link_negotiation_precedes_setup_and_reports_actual_mtu_once_per_connection ... ok
+test malformed_setup_is_rejected_before_native_session_opens ... ok
+test matching_rejection_is_specific_and_unrelated_reply_times_out ... ok
+test native_session_and_ack_observer_never_run_storage_on_runtime_thread ... 
+running 1 test
+test native_session_and_ack_observer_never_run_storage_on_runtime_thread ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.03s
+
+ok
+test only_explicit_unsupported_policy_can_continue_past_link_refusal ... ok
+test optional_final_byte_rejects_multipart_reply_and_accepts_absent_or_zero ... ok
+test queued_durable_setup_write_cannot_start_after_its_deadline ... 
+running 1 test
+test queued_durable_setup_write_cannot_start_after_its_deadline ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.11s
+
+ok
+test setup_deadline_includes_blocked_durable_observer_registration ... 
+running 1 test
+test setup_deadline_includes_blocked_durable_observer_registration ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.05s
+
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+
+running 5 tests
+test a_database_at_the_att_handle_space_registers_whole ...      Running tests/database_bounds.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/database_bounds-4cce088130409d16)
+ok
+test a_database_larger_than_the_att_handle_space_fails_discovery_whole ... ok
+test a_large_database_many_subscriptions_and_links_register_whole ... ok
+test a_malformed_os_uuid_fails_discovery_whole ... ok
+test one_lease_runs_legacy_concurrency_on_many_links_and_consumers ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.95s
+
+
+running 4 tests
+test a_denied_service_stays_in_the_discovered_tree ... ok
+test discovered_paths_rejects_unknown_peer ... ok
+test discovered_paths_reports_every_registered_level ... ok
+test discovered_paths_requires_discovery ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 4 tests
+test connected_effective_mtu_reads_the_radio_for_the_lease_holder ... ok
+test effective_mtu_is_refused_on_a_link_that_is_not_connected ... ok
+test effective_mtu_link_loss_is_connection_lost ... ok
+test unmeasured_effective_mtu_is_unobserved ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 1 test
+     Running tests/discovered_paths.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/discovered_paths-88a37289703925d6)
+     Running tests/effective_mtu.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/effective_mtu-428bead2aa61f86a)
+     Running tests/event_vocabulary.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/event_vocabulary-a356fe92ff17c6f6)
+test every_desktop_os_names_each_event_as_the_table_does ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+
+
+running 5 tests
+test a_host_identity_that_cannot_name_the_scope_fails_the_open ... ok
+test an_empty_desktop_owner_or_backend_label_fails_the_open_as_before ... ok
+test the_central_takes_its_attachment_from_the_owning_host_at_open_and_after_a_reset ... ok
+test the_desktop_identity_names_every_scope_as_the_desktop_hosts_always_did ... ok
+test the_desktop_profile_carries_the_desktop_identity ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 4 tests
+test directed_pairing_generation_stays_closed_without_the_hosts_controller ... ok
+test every_legacy_capability_row_is_available_on_the_rust_path_per_os ... ok
+test every_legacy_feature_has_a_rust_surface ... ok
+test rows_the_legacy_backends_left_unsupported_stay_unsupported ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 9 tests
+test a_slow_receiver_sees_lagged_never_a_silent_gap ... ok
+test an_unproven_delivery_requirement_is_undone_not_accepted ...      Running tests/host_identity.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/host_identity-3db2653baa579ac7)
+     Running tests/legacy_parity.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/legacy_parity-39c2bf7f85771489)
+     Running tests/lifecycle_events.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/lifecycle_events-f29c246786ec432b)
+ok
+test delivery_requirements_reach_the_radio_and_joins_are_checked ... ok
+test events_nobody_observes_are_counted ... ok
+test idle_link_loss_publishes_link_lost_and_ends_the_stream ... ok
+test requested_release_publishes_released_exactly_once ... ok
+test service_change_publishes_and_invalidates_with_its_cause ... ok
+test the_observer_is_signalled_for_security_readiness_and_scan_end ... ok
+test the_observer_sees_advertisements_values_and_the_same_lifecycle_events ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+
+running 1 test
+test f14_close_one_central_leaves_others_operational ...      Running tests/lifetime.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/lifetime-379885cddac159ff)
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 5 tests
+test a_burst_before_the_host_polls_is_retained_up_to_the_public_maximum ...      Running tests/macos_advertisement_extras.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/macos_advertisement_extras-27c07000568feb96)
+     Running tests/notification_loss.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/notification_loss-5672549565057b66)
+ok
+test a_lossy_subscriber_counts_a_loss_and_stays_live ... ok
+test lost_adapter_events_are_counted ... ok
+test the_central_ends_an_error_policy_stream_with_the_counted_loss ... ok
+test values_held_at_invalidation_drain_before_it ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+
+running 14 tests
+test a_connect_without_a_budget_waits_until_the_os_answers_or_the_caller_cancels ... ok
+test backstop_applies_only_without_a_budget ... ok
+test cancel_before_admission_never_reaches_the_radio ... ok
+test cancel_during_connect_releases_the_half_open_link ... ok
+test cancel_targets_exactly_one_of_two_dispatched_writes ... ok
+test connect_success_before_cancel_keeps_the_handle_and_the_lease ... ok
+test discovery_is_bounded_and_retryable ... ok
+test dispatched_write_expiry_is_never_retryable ... ok
+test held_discovery_on_one_peer_never_stalls_another ... ok
+test long_budget_above_thirty_seconds_is_honoured ...      Running tests/op_control.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/op_control-331ad511ee259437)
+ok
+test pairing_without_a_budget_waits_for_the_os_and_its_cancel ... ok
+test queued_time_counts_against_the_budget ... ok
+test short_budget_times_out_a_held_read ... ok
+test zero_budget_makes_no_radio_call ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+running 25 tests
+test a_cancelled_pair_asks_the_os_to_cancel_and_reports_a_won_bond ... ok
+test a_directed_generation_is_refused_where_the_capability_is_not_registered ... ok
+test a_directed_generation_needs_the_hosts_privileged_controller ... ok
+test a_failed_generation_restore_is_counted_never_swallowed ... ok
+test a_link_loss_answer_is_connection_lost_through_the_central ... ok
+test a_transient_connect_failure_is_caller_decides_through_the_central ... ok
+test adapter_authorization_is_the_os_answer_or_unsupported ... ok
+test address_targeting_validates_then_makes_the_peer_known ... ok
+test advertisement_extras_reach_the_host_verbatim ... ok
+test an_os_ended_scan_is_released_and_reported ...      Running tests/parity_ops.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/parity_ops-20728de8ceaddf91)
+ok
+test an_os_long_write_link_carries_a_whole_attribute_value_with_response ... ok
+test an_unflagged_subscribe_reaches_only_an_os_that_answers_it ... ok
+test bluez_bus_choice_is_carried_and_never_silently_replaced ... ok
+test characteristic_facts_ride_the_discovered_paths ... ok
+test connection_parameters_are_read_and_reported_per_connection ... ok
+test f40_a_failed_release_after_a_service_change_is_reported_and_retried ... ok
+test f40_unsubscribe_after_a_service_change_still_disables_the_cccd ... ok
+test f41_a_dispatched_write_failure_of_any_code_is_commit_unknown_never_retryable ... ok
+test maximum_write_length_is_per_mode_and_matches_what_write_enforces ... ok
+test one_ceremony_per_peer_and_cancel_reads_the_ceremonys_own_answer ... ok
+test pair_publishes_the_ceremonys_state_and_unpair_publishes_the_release ... ok
+test security_state_reads_the_os_answer_and_unsupported_stays_unsupported ... ok
+test the_platform_answer_survives_the_central ... ok
+test watch_probe_refuses_a_preexisting_failed_source_without_refusing_an_ordinary_snapshot ... ok
+test write_readiness_is_probed_and_reported_per_connection ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+
+running 2 tests
+test aliases_are_refused_before_ownership_and_native_events_retire_the_canonical_owner ... ok
+test opaque_case_sensitive_radio_ids_are_not_case_folded ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 12 tests
+test a_refused_disable_keeps_the_platform_answer ... ok
+test f07_byte_reservation_never_overshoots_under_concurrency ... ok
+test f07_control_disconnect_delivered_under_flood ...      Running tests/peer_identity_admission.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/peer_identity_admission-a8f526e0d8315ed8)
+     Running tests/production_ingress.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/production_ingress-e073132812e9a1a0)
+ok
+test f07_flood_real_forwarder_exact_drops_and_byte_bounds ... ok
+test f09_same_characteristic_uuid_two_services_routes_only_to_owner ... ok
+test f129_a_drained_forwarder_delivers_its_buffered_values_or_their_loss ... ok
+test f131_an_ingress_drop_is_reported_on_its_subscription ... ok
+test f13_disable_failure_keeps_values_flowing_until_retry_succeeds ... ok
+test f13_the_stream_opens_before_the_enable ... ok
+test f61_same_uuid_instances_of_one_scope_route_to_their_own_forwarders ... ok
+test fake_control_overload_is_counted_not_silent ... ok
+test reconnect_retires_only_owned_notify_session_and_retains_failed_or_cancelled_cleanup ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+
+running 2 tests
+test closed_radio_drops_off_context ... ignored, hardware: cargo test -p ubm-desktop --test radio_drop_safety -- --ignored
+test unclosed_radio_drops_off_context ... ignored, hardware: cargo test -p ubm-desktop --test radio_drop_safety -- --ignored
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test a_never_observed_peer_is_not_found_without_a_scan ... ignored, hardware: cargo test -p ubm-desktop --test reconnect_without_rescan -- --ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 3 tests
+test a_lease_and_consumer_a_reset_ended_release_as_already_released ... ok
+test a_lease_never_held_is_still_not_found_after_a_reset ... ok
+test a_link_lost_before_the_reset_also_releases_as_already_released ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+
+running 18 tests
+test concurrent_scan_stops_share_one_radio_call ... ok
+test confirmed_release_with_indeterminate_discovery_debt_is_terminal_and_reconnectable ... ok
+test core_lock_is_free_while_a_release_is_held ... ok
+test failed_disconnect_keeps_the_link_and_the_retry_reaches_the_radio ... ok
+test failed_scan_stop_keeps_the_scan_and_the_retry_reaches_the_radio ... ok
+test failed_start_compensation_keeps_the_original_scan_retry_handle ... ok
+test failed_unsubscribe_keeps_delivery_and_the_retry_reaches_the_radio ... ok
+test hung_scan_stop_is_bounded_and_retained ... ok
+test hung_unsubscribe_is_bounded_and_blocks_a_racing_enable ... ok
+test shutdown_confirms_link_release_but_reports_independent_discovery_debt ... ok
+test shutdown_keeps_an_inflight_stop_single_flight_and_observes_late_success ... ok
+test shutdown_keeps_provisional_discovery_cause_when_final_accounting_times_out ...      Running tests/radio_drop_safety.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/radio_drop_safety-b1d2e34b331c6cb9)
+     Running tests/reconnect_without_rescan.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/reconnect_without_rescan-f421ad6e5df77f7a)
+     Running tests/release_after_reset.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/release_after_reset-e619f0f71534dd18)
+     Running tests/release_retention.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/release_retention-a742c064329f1199)
+ok
+test shutdown_reconciles_discovery_cleanup_confirmed_by_final_transport_retry ... ok
+test shutdown_record_is_released_after_a_successful_disconnect_retry ... ok
+test shutdown_record_keeps_a_release_that_was_never_won ... ok
+test shutdown_reports_a_scan_stop_that_never_succeeded ... ok
+test shutdown_retries_exact_scan_without_poisoning_success_with_old_failure ... ok
+test stop_for_a_foreign_scan_id_never_touches_the_radio ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.20s
+
+
+running 23 tests
+test cancelled_start_with_successful_compensation_allows_same_central_restart ... ok
+test cancelled_unpublished_cleanup_retry_retains_debt_for_later_caller ... ok
+test cancelled_unpublished_start_cleanup_is_retried_before_next_start ... ok
+test concurrent_unpublished_cleanup_retries_share_stop_without_touching_new_owner ... ok
+test early_stop_then_native_start_refusal_allows_same_central_restart ... ok
+test held_unpublished_cleanup_retry_obeys_new_caller_budget ... ok
+test native_start_refusal_while_early_stop_fails_allows_restart ... ok
+test native_start_refusal_while_early_stop_is_inflight_allows_restart ... ok
+test r14a_stop_success_releases_core_scan ... ok
+test r14b_stop_wins_over_inflight_start ... ok
+test r14c_shutdown_during_start_leaves_no_scan ... ok
+test r15_double_cancel_after_abort_maps_to_settled_terminal ... ok
+test r15_failed_stop_retains_scan_then_retry_settles_terminal ... ok
+test r15_late_cancel_after_stop_maps_to_settled_terminal ... ok
+test r5_completed_scan_tickets_are_bounded_without_losing_recent_duplicate_semantics ... ok
+test r5_foreign_scan_ticket_is_rejected_without_consuming_local_terminal ... ok
+test r5_forged_non_scan_operation_cannot_become_an_expired_scan_ticket ... ok
+test r5_future_local_namespace_ticket_is_not_misreported_as_expired ... ok
+test r5_old_generation_scan_ticket_cannot_stop_a_replacement_scan ... ok
+test refused_early_stop_then_native_start_refusal_allows_restart ... ok
+test refused_unpublished_cleanup_retry_retains_exact_identity ...      Running tests/scan_handoff.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/scan_handoff-6d4c40b22820a597)
+ok
+test successful_lost_start_compensation_allows_same_central_restart ... ok
+test timed_out_unpublished_start_cleanup_is_retried_before_next_start ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/scan_observation_metadata.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/scan_observation_metadata-c94af25d29edaad5)
+
+running 6 tests
+test a_connected_then_disconnected_peer_is_re_observed_when_a_new_scan_starts ... ok
+test advertisement_queue_retains_a_burst_the_host_has_not_polled ... ok
+test known_peers_are_re_observed_on_the_configured_cadence ... ok
+test replay_vendor_advertisements_preserve_matcher_facts ... ok
+test scan_response_updates_arrive_in_order ... ok
+test sightings_belong_to_the_scan_that_was_live ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.93s
+
+
+running 1 test
+test shutdown_stops_scan_and_refuses_new_work ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 4 tests
+test active_operations::tests::cancel_refusal_is_reported_and_exact_operation_remains_owned_for_retry ... ok
+test active_operations::tests::interrupted_query_requests_cancel_but_cannot_close_its_service_until_terminal ... ok
+test active_operations::tests::non_quiescent_cancellation_does_not_authorize_service_close ... ok
+test active_operations::tests::successful_query_does_not_cancel_and_does_not_retire_another_pending_query ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 10 tests
+test gatt_model::tests::a_repeated_handle_is_refused_not_overwritten ... ok
+test gatt_model::tests::access_denied_without_an_att_byte_keeps_the_service ... ok
+test gatt_model::tests::advertisement_type_keeps_connectable_and_a_scan_response_stays_unknown ... ok
+test gatt_model::tests::descriptor_enumeration_lists_only_a_successful_result ... ok
+test gatt_model::tests::only_success_passes_and_every_failure_names_its_status ... ok
+test gatt_model::tests::platform_codes_follow_the_legacy_addon ... ok
+test gatt_model::tests::repeated_uuids_stay_distinct_instances_by_handle ... ok
+test gatt_model::tests::service_data_sections_parse_by_uuid_width ... ok
+test gatt_model::tests::the_att_error_byte_rides_the_platform_detail_as_decimal_text ...      Running tests/shutdown.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/shutdown-cd1d5701e0d5eca1)
+     Running tests/winrt_discovery_retirement.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/winrt_discovery_retirement-64d90e02ed796f86)
+     Running tests/winrt_gatt_model.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/winrt_gatt_model-2aa5557d84f786fd)
+ok
+test gatt_model::tests::windows_reserved_services_are_the_os_audio_and_hid_set ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 3 tests
+test json::tests::hex_round_trip ... ok
+test json::tests::round_trip_nested_documents ... ok
+test json::tests::trailing_garbage_fails_closed ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 15 tests
+test cancel_after_dispatch_reports_receipt ... ok
+test capability_projection_reports_six_limited_rows ... ok
+test descending_settle_ordinals_suppress_after_terminal ... ok
+test duplicate_completion_suppresses ... ok
+test expiry_sweep_settles_timeouts ... ok
+test invalid_settle_mode_rejects_before_any_core_transition ... ok
+test invalidation_mid_io_settles_stale_then_rediscovers ... ok
+test lease_borrow_transfer_release_flows ... ok
+test link_loss_reports_lost_state ... ok
+test live_peer_disconnect_failure_reports_release_failed_terminal ... ok
+test overflow_terminal_is_observable ... ok
+test read_taken_echoes_scripted_bytes_after_invalidation ... ok
+test second_scan_owner_fails_with_scan_already_active ... ok
+test snapshot_bad_occurrence_fails_closed ... ok
+test vertical_scan_to_destroy_reports_real_receipts ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 23 tests
+test companion_filters::tests::malformed_selectors_never_reach_native ... ok
+test companion_filters::tests::selectors_preserve_or_and_prefix_and_exact_existing_fields ... ok
+test continuation::tests::mobile_peer_canonicalization_is_limited_to_uuid_and_mac ... ok
+test foreign::tests::cancelled_companion_remains_owned_until_native_terminal_and_is_session_scoped ... ok
+test foreign::tests::connect_section_count_tracks_distinct_peers ... ok
+test foreign::tests::unknown_power_is_an_observation_not_a_reset ... ok
+test host::signal_tests::accepted_open_cannot_publish_after_host_closes_admission ... ok
+test host::signal_tests::advertisement_batch_yields_to_deadline_without_losing_remaining_records ... ok
+test host::signal_tests::busy_scopes_past_one_batch_each_get_a_turn ... ok
+test host::signal_tests::countable_classes_coalesce_per_scope ... ok
+test host::signal_tests::distinct_value_scopes_stay_bounded_and_all_delivered ... ok
+test host::signal_tests::half_open_shutdown_receipt_preserves_native_cause_and_unrelated_failures ... ok
+test host::signal_tests::scan_deadline_marker_is_reserved_and_coalesced_under_control_pressure ... ok
+test host::signal_tests::signal_burst_is_bounded ... ok
+test radio::failure_tests::a_failure_the_platform_never_sent_says_so ... ok
+test radio::failure_tests::adapter_and_permission_kinds_keep_their_legacy_identities ... ok
+test radio::failure_tests::android_gatt_internal_error_is_a_transient_stack_failure ... ok
+test session::scan_stop_race_tests::accepted_stop_reports_retired_membership_when_expiry_wins_its_lock_wait ... ok
+test session::scan_stop_race_tests::dispose_retries_unconfirmed_companion_ui_without_releasing_another_session ... ok
+test wire::tests::args_are_exact_and_integers_safe ... ok
+test wire::tests::base64_is_strict ... ok
+test wire::tests::base64_rejects_oversize_before_decoding ... ok
+test wire::tests::base64_round_trips_edge_bytes ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+
+running 3 tests
+test a_lost_adapter_ends_live_work_and_advances_the_generations_once_per_episode ...      Running unittests src/lib.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/ubm_fake_radio-a2de97cd856aeb7a)
+     Running tests/staged_drive.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/staged_drive-8e1df95bd5099b0b)
+     Running unittests src/lib.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/ubm_mobile-459d6cfe3248c435)
+     Running tests/adapter_loss.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/adapter_loss-f3668b7ed4347b24)
+ok
+test initial_unknown_power_does_not_reset_a_connect_waiting_for_native_readiness ... ok
+test releases_after_a_loss_answer_released_as_legacy_did ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.57s
+
+
+running 2 tests
+test a_legacy_burst_of_advertisements_is_queued_whole_and_the_next_one_counted ... ok
+test a_legacy_burst_of_control_facts_is_queued_whole_and_the_next_one_counted ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/caps.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/caps-fa39097ea52f601d)
+     Running tests/continuation.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/continuation-f9b9ea9239635b1e)
+
+running 23 tests
+test authoritative_generation_change_allows_fresh_setup_after_claimed_timeout ... ok
+test claiming_initial_failure_stops_owned_retries ... ok
+test cross_claim_late_stop_cannot_advance_setup_on_an_independently_held_generation ... ok
+test durable_mobile_collection_retains_context_and_survives_native_claim ... 
+running 1 test
+test durable_mobile_collection_retains_context_and_survives_native_claim ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.03s
+
+ok
+test durable_refused_subscription_then_new_database_never_reuses_committed_identity ... 
+running 1 test
+test durable_refused_subscription_then_new_database_never_reuses_committed_identity ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.02s
+
+ok
+test foreground_claim_queues_behind_autonomous_recovery_and_prevents_another_retry ... ok
+test initial_transient_connect_failure_recovers_without_a_second_wake ... ok
+test link_loss_retries_transient_failure_and_collects_values_without_js ... ok
+test malformed_declaration_has_no_radio_effect ... ok
+test mobile_case_equivalent_peers_share_authority_and_canonical_radio_identity ... ok
+test native_claim_preserves_public_lease_until_its_own_disposal ... ok
+test native_continuation_never_wakes_an_unregistered_javascript_session ... ok
+test native_executor_connects_subscribes_and_replays_prepared_handoff ... ok
+test partial_replacement_after_link_loss_keeps_both_generations_owned ... ok
+test partial_resubscription_recovers_only_missing_selector_without_a_claim ... ok
+test pristine_apple_restored_native_setup_collects_before_att_completion_without_js ... 
+running 1 test
+test pristine_apple_restored_native_setup_collects_before_att_completion_without_js ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.02s
+
+ok
+test public_discovery_and_native_wake_share_the_same_physical_snapshot ... ok
+test public_session_disposal_preserves_native_continuation_lease ... ok
+test recording_observation_does_not_block_the_intake_runtime ... ok
+test service_change_recovers_without_another_platform_wake_or_js ... ok
+test setup_ack_before_att_completion_is_retained_and_replayed_after_native_link_recovery ... ok
+test shutdown_stops_held_execution_and_refuses_new_native_admission ... ok
+test status_observation_cannot_terminate_native_service_change_recovery ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.71s
+
+
+running 9 tests
+test failed_disposal_is_retryable_and_never_replays_acknowledged_bytes ...      Running tests/continuation_android_parity.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/continuation_android_parity-fe40ed312f288dae)
+ok
+test held_acknowledgement_refuses_new_execution_without_leaking_another_session ... ok
+test held_execution_does_not_block_state_reads_or_allow_racing_claim_or_execution ... ok
+test native_operations_preserve_direct_intent_and_foreground_scale_budgets ... ok
+test partial_subscription_failure_pins_successful_selector_identity ... ok
+test refused_connect_reports_platform_reason_and_retains_owned_cleanup ... ok
+test second_appearance_reuses_authoritative_live_link_and_subscriptions ... ok
+test second_peer_and_same_count_declaration_replacement_are_refused_without_radio_work ... ok
+test slow_discovery_uses_the_cores_completion_and_does_not_invent_a_latch_failure ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s
+
+
+running 1 test
+test both_mobile_platforms_name_each_event_as_the_table_does ...      Running tests/event_vocabulary.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/event_vocabulary-3f3e898d9de71add)
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/golden.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/golden-42457151ffedb2fd)
+
+running 1 test
+test golden_wire_vectors_are_current ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+running 5 tests
+test an_empty_host_owner_fails_the_open_in_the_mobile_namespace ... ok
+test readiness_reports_the_legacy_generations_on_both_platforms ... ok
+test session_instance_keys_are_never_reused_across_hosts ...      Running tests/identity.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/identity-ac3524d1e07993f5)
+ok
+test session_instance_keys_differ_after_drop_and_recreate ... ok
+test the_mobile_identity_names_every_scope_in_the_legacy_react_native_formats ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+
+running 1 test
+test normal_dependency_tree_excludes_fake_radio ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+running 1 test
+test offline_recording_cursor_needs_no_radio_and_is_shared_by_later_host ... 
+running 1 test
+     Running tests/no_fake_radio.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/no_fake_radio-e425cefabba135f9)
+     Running tests/offline_recording.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/offline_recording-cfffece351cfcb29)
+test offline_recording_cursor_needs_no_radio_and_is_shared_by_later_host ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 1 test
+test an_open_after_executor_shutdown_fails_in_the_mobile_namespace ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 3 tests
+test connected_query_rejects_unanswerable_service_scope_before_native_effects ...      Running tests/open_after_shutdown.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/open_after_shutdown-ff9d371ec834b783)
+     Running tests/peer_directory.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/peer_directory-7274250a6e0bf2f9)
+ok
+test foreign_reference_resolution_queries_native_inventory_without_creating_owner_state ... ok
+test native_connected_inventory_reports_foreign_unbonded_peers_without_ownership ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 4 tests
+test cancelling_replacement_while_old_scan_cleanup_is_held_settles_before_cleanup ...      Running tests/r03_scan_matrix.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/r03_scan_matrix-cf995f2b6d4e5e91)
+ok
+test cleanup_only_scan_is_stopped_before_immediate_replacement_admission ... ok
+test failed_cleanup_only_admission_retains_the_old_generation_for_retry ... ok
+test rejected_scan_compensation_matrix ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.77s
+
+
+running 2 tests
+test mobile_recording_controller_transport ... 
+running 1 test
+     Running tests/recording_peer_scope.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/recording_peer_scope-2bfd281d5a1891f4)
+test mobile_recording_controller_transport ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.03s
+
+ok
+test sustained_recording_intake_allows_second_peer_and_control_progress ... 
+running 1 test
+recording-fairness phase=write-admitted elapsed_ms=7
+recording-fairness phase=other-drain turn=0 elapsed_ms=31 drain_ms=2
+recording-fairness phase=other-drain turn=1 elapsed_ms=54 drain_ms=1
+recording-fairness phase=other-drain turn=2 elapsed_ms=78 drain_ms=2
+recording-fairness phase=other-drain turn=3 elapsed_ms=100 drain_ms=1
+recording-fairness phase=other-drain turn=4 elapsed_ms=125 drain_ms=3
+recording-fairness phase=other-invalidated elapsed_ms=127 drain_ms=2
+recording-fairness phase=response-admitted elapsed_ms=519 status=Ok(Object {"accepting": Bool(true), "bytes": Number(166277), "collectionFailure": Null, "encrypted": Bool(false), "lostRecords": Number(0), "maxBytes": Number(1048576), "maxRecords": Number(1000), "phase": String("recording"), "recordingId": String("fairness"), "records": Number(251), "runtimeFailure": Null})
+sustained intake:250 ordered telemetry values+1 setup response,5 lower-rate peer values,5 security controls,1 lifecycle transition; worst delay=3.415105ms; journal/native notification loss=0; retained journal rows=252
+test sustained_recording_intake_allows_second_peer_and_control_progress ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.53s
+
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+
+     Running tests/scan_lifetime.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/scan_lifetime-ebc62734b33e51fc)
+
+running 9 tests
+test android_finite_scan_expires_without_javascript_or_wire_drain ... ok
+test apple_finite_scan_expires_without_javascript_or_wire_drain ... ok
+test buffered_advertisement_retains_its_membership_across_restart ... ok
+test expiry_during_widening_preserves_the_new_membership ... ok
+test finite_member_expiry_preserves_a_shared_unbounded_member ... ok
+test invalid_lifetimes_are_rejected_before_radio_admission ... ok
+test refused_expiry_cleanup_remains_process_owned_after_session_disposal ... ok
+test start_finishing_after_lifetime_is_compensated_before_publication ... ok
+test stopping_then_restarting_does_not_apply_the_old_deadline ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
+
+     Running tests/session.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/session-e17d5349c89acfe9)
+
+running 85 tests
+test a_busy_consumer_does_not_keep_the_other_unpolled ... ok
+test a_claim_counts_as_the_claimants_restoration_records ... ok
+test a_claim_over_capacity_is_refused_without_consuming ... ok
+test a_connect_with_a_budget_ends_at_that_budget ... ok
+test a_connect_without_a_budget_waits_past_any_backstop_until_cancelled ... ok
+test a_late_cancel_after_thousands_of_finished_operations_is_already_terminal ... ok
+test a_phy_preference_that_cannot_apply_is_refused_before_effects ... ok
+test a_platform_cancel_is_operation_aborted_without_platform_detail ... ok
+test a_read_answered_without_provenance_is_refused ... ok
+test a_read_reports_the_radio_provenance_on_the_wire ... ok
+test a_refused_connect_leaves_no_stale_intent ... ok
+test a_refused_discovery_crosses_the_wire_whole_and_typed ... ok
+test a_requirement_the_characteristic_lacks_is_refused_on_every_platform ... ok
+test a_scoped_background_lease_outlives_the_manager_that_acquired_it ... ok
+test a_security_refusal_is_platform_security_on_both_platforms ... ok
+test a_transient_connect_failure_is_caller_decides_on_the_wire ... ok
+test a_user_or_os_wait_with_a_budget_ends_at_that_budget ... ok
+test a_user_or_os_wait_without_a_budget_waits_past_any_backstop_until_cancelled ... ok
+test a_withheld_write_limit_fails_closed_before_the_radio ... ok
+test a_write_the_platform_refused_before_sending_is_not_dispatched ... ok
+test admissions_are_strictly_increasing_and_bound_to_their_operation ... ok
+test advertisement_appearance_and_raw_record_travel_with_their_advertisement ... ok
+test an_android_gatt_failure_is_platform_failure_with_the_android_status ... ok
+test an_android_link_loss_is_connection_lost_as_legacy_reported_it ... ok
+test an_android_native_code_names_the_platform_detail_whatever_the_kind ... ok
+test an_apple_failure_carries_the_nserror_domain_and_code ... ok
+test an_apple_operation_pending_at_a_disconnect_is_connection_lost_with_its_nserror ... ok
+test an_early_cancel_survives_thousands_of_other_early_cancels ... ok
+test an_empty_phy_request_is_argument_invalid_in_the_connection_domain_as_legacy ... ok
+test an_errored_disconnect_during_a_release_is_a_loss ... ok
+test an_mtu_below_23_reaches_the_radio_as_legacy_did ... ok
+test an_operation_cut_off_by_the_apps_release_is_operation_disconnected ... ok
+test an_unscoped_session_releases_its_background_at_dispose ... ok
+test android_cccd_failures_keep_their_legacy_identity ... ok
+test android_claims_presence_restored_peers_once_per_process ... ok
+test android_connects_with_the_preferred_phys ... ok
+test android_forwards_a_hard_requirement_to_the_radio ... ok
+test android_link_controls_reach_the_radio ... ok
+test android_maximum_write_length_before_and_after_an_mtu_exchange ... ok
+test android_scan_phy_and_report_delay_reach_the_radio ... ok
+test android_writes_before_any_mtu_exchange_with_long_writes_with_response ... ok
+test apple_allows_require_indication_on_an_indicate_only_characteristic ... ok
+test apple_bounds_each_write_mode_by_corebluetooth_maximum_write_value_length ... ok
+test apple_effective_mtu_is_unobserved_without_a_radio_read ... ok
+test apple_maximum_write_length_is_corebluetooth_maximum_write_value_length ... ok
+test apple_refuses_a_phy_preference_before_effects ... ok
+test apple_refuses_android_only_controls_before_effects ... ok
+test apple_refuses_require_indication_where_corebluetooth_enables_notifications ... ok
+test apple_subrate_never_dispatches_an_android_control ... ok
+test apple_when_available_connects_without_android_auto_connect ... ok
+test cancel_before_admission_has_zero_effects ... ok
+test cancel_targets_exactly_one_operation ... ok
+test continuation_quiesce_seals_real_notification_intake_for_handoff ... ok
+test counters_are_per_session_and_return_to_baseline_independently ... ok
+test disposal_settles_after_an_admitted_operation_finishes ... ok
+test dispose_reports_release_failures_and_retries ... ok
+test encryption_source_failure_is_typed_and_survives_reconciliation ... ok
+test expired_connect_budget_frees_the_peer_for_retry ... ok
+test failed_ingress_worker_closes_admission_and_retains_its_cleanup_result ... ok
+test host_shutdown_releases_every_scoped_background_lease ... ok
+test idle_session_costs_nothing ... ok
+test ingress_overflow_is_counted_and_surfaced ... ok
+test invalid_android_batching_and_phy_options_never_reach_the_radio ... ok
+test maximum_write_length_refusals_are_contract_errors ... ok
+test overlapping_disposal_calls_share_one_failed_attempt_then_retry ... ok
+test oversize_and_malformed_args_fail_before_effects ... ok
+test polar_h10_script_runs_end_to_end ... ok
+test presence_arguments_are_validated_before_any_effect ... ok
+test presence_observation_is_an_android_service ... ok
+test presence_observe_arms_one_peer_and_unobserve_disarms ... ok
+test reconcile_answers_every_fact_a_lost_control_record_carried ... ok
+test reconcile_answers_the_restored_set_and_the_scan_membership ... ok
+test releasing_a_scope_releases_exactly_its_leases_and_retries_failures ... ok
+test restored_peers_are_claimed_once_per_process_across_managers ... ok
+test restored_peers_are_listed_and_adopted_by_connect ... ok
+test shared_topology_gatt_uses_only_the_calling_mobile_sessions_lease ... ok
+test shutdown_closes_the_radio_and_releases ... ok
+test shutdown_reports_a_platform_that_never_answers_close ... ok
+test stale_epoch_notification_never_reaches_the_new_subscription ... ok
+test subrate_preserves_bluetooth_status_codes_without_fabricating_gatt_status ... ok
+test subrate_reports_runtime_availability_and_requests_all_modes_without_inventing_observations ... ok
+test two_sessions_share_one_scan_and_one_radio ... ok
+test wake_fires_once_per_armed_period ... ok
+test write_commit_is_uncertain_after_dispatch_and_confirmed_on_response ... ok
+test write_receipts_report_what_the_platform_did ... ok
+
+test result: ok. 85 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.28s
+
+     Running tests/shutdown_retry.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/shutdown_retry-d54709537ae1221e)
+
+running 1 test
+test half_open_cleanup_retry_routes_after_host_event_pump_shutdown ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+test service_change_settles_waiting_write_without_a_readiness_edge ...      Running tests/write_readiness.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/write_readiness-d18fcf23755d49a7)
+ok
+test session_admission_keeps_ready_write_before_an_ordinary_write ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/x_review.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/x_review-98f4e6ea71a645f0)
+
+running 9 tests
+test first_scanner_budget_expired_before_dispatch_has_no_cleanup_debt ... ok
+test first_scanner_refused_compensation_is_retried_without_a_member ... ok
+test r1_cancelled_queued_scan_start_leaves_no_membership ... ok
+test r1_expired_queued_scan_start_leaves_no_membership ... ok
+test r2_concurrent_starts_on_one_session_admit_exactly_one ... ok
+test r3_same_peer_connects_keep_their_own_options ... ok
+test spawned_scan_start_counts_as_the_callers_dispatched_radio_request ... ok
+test v01_expired_widening_start_ends_existing_members_after_cleanup ... ok
+test v01_expired_widening_start_retains_refused_cleanup_for_retry ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.07s
+
+     Running unittests src/lib.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/ubm5_jni_echo-f2a7f82baa513975)
+
+running 35 tests
+test core_backend::tests::byte_batch_round_trip_is_owned ... ok
+test core_backend::tests::cancel_armed_aborts_next_chunked_call ... ok
+test core_backend::tests::close_invalidates_loudly ... ok
+test core_backend::tests::destroy_drives_shutdown_and_is_idempotent ... ok
+test core_backend::tests::driving_gates_on_lifetime ... ok
+test core_backend::tests::expire_sweep_drives_the_kernel ... ok
+test core_backend::tests::revision_is_the_frozen_contract ... ok
+test core_backend::tests::revision_mismatch_rejects_loudly ... ok
+test core_backend::tests::scan_slice_roundtrip ... ok
+test core_backend::tests::seam_holds_for_the_wired_core ... ok
+test core_backend::tests::session_holds_a_real_central ... ok
+test core_backend::tests::staged_surface_drives_synthetic_steps_and_accounting ... ok
+test core_backend::tests::superseded_revision_rejects_loudly ... ok
+test core_backend::tests::u64_extremes_lossless_garbage_rejects ... ok
+test core_backend::tests::u64_range_detail_marks_overflow ... ok
+test core_backend::tests::unwired_transitions_reject_with_capability_unsupported ... ok
+test core_backend::tests::wire_message_names_code_domain_operation ... ok
+test gatt_queue::tests::drain_after_release_fails_admit_verbs_as_destroyed_data ... ok
+test gatt_queue::tests::drain_applies_many_lines_fifo_in_one_call ... ok
+test gatt_queue::tests::drain_rejects_wrong_arity_before_any_transition ... ok
+test gatt_queue::tests::drain_surfaces_effects_on_core_rejections_too ... ok
+test gatt_queue::tests::drain_surfaces_kernel_effects_and_typed_observations_without_discard ... ok
+test gatt_queue::tests::enqueue_rejects_empty_and_bounds_the_queue ... ok
+test gatt_queue::tests::notify_bounds_reject_oversize_and_count_deliveries ... ok
+test gatt_queue::tests::queued_cancel_never_reaches_radio ... ok
+test gatt_queue::tests::release_drives_real_destroy_and_stays_idempotent ... ok
+test gatt_queue::tests::scan_connect_discover_io_cycle_drives_real_central ... ok
+test gatt_queue::tests::service_change_and_adapter_reset_invalidate_paths ... ok
+test gatt_queue::tests::unknown_kind_rejects_with_capability_identity ... ok
+test mobile::tests::discovery_tree_rebuilds_pre_order ... ok
+test mobile::tests::every_request_signature_matches_the_java_interface ... ok
+test mobile::tests::jvm_smoke_compiles_the_single_shipped_java_authority ... ok
+test mobile::tests::mobile_surface_has_no_staged_path ... ok
+test mobile::tests::requests_map_to_typed_host_calls ... ok
+test mobile::tests::subrate_request_preserves_the_mode_and_native_request_id ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 68 tests
+test core_backend::tests::armed_cancel_aborts_next_dispatch ... ok
+test core_backend::tests::byte_batch_round_trip_is_owned ... ok
+test core_backend::tests::cancel_after_close_rejects_destroyed ... ok
+test core_backend::tests::cancel_before_start_aborts ... ok
+test core_backend::tests::cancel_mid_flight_aborts_worker_thread ...      Running unittests src/lib.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/ubm5_napi_echo-14efd732ff3895de)
+ok
+test core_backend::tests::cleanup_wire_codec_exercises_real_core_records ... ok
+test core_backend::tests::close_invalidates_loudly ... ok
+test core_backend::tests::destroy_drives_shutdown_and_is_idempotent ... ok
+test core_backend::tests::driving_gates_on_lifetime ... ok
+test core_backend::tests::empty_batch_round_trips ... ok
+test core_backend::tests::expire_sweep_drives_the_kernel ... ok
+test core_backend::tests::max_size_batch_round_trips ... ok
+test core_backend::tests::monotonic_ms_parses_like_the_counter_path ... ok
+test core_backend::tests::oversize_batch_rejects_with_bytes_too_large ... ok
+test core_backend::tests::revision_is_the_frozen_contract ... ok
+test core_backend::tests::revision_mismatch_rejects_loudly ... ok
+test core_backend::tests::seam_holds_for_the_wired_core ... ok
+test core_backend::tests::session_holds_a_real_central ... ok
+test core_backend::tests::staged_surface_drives_synthetic_scan_and_reports_accounting ... ok
+test core_backend::tests::superseded_revision_rejects_loudly ... ok
+test core_backend::tests::u64_extremes_are_lossless ... ok
+test core_backend::tests::u64_garbage_rejects_with_input_detail ... ok
+test core_backend::tests::u64_overflow_rejects_with_range_detail ... ok
+test core_backend::tests::unwired_transitions_reject_with_capability_unsupported ... ok
+test core_backend::tests::wire_message_names_code_domain_operation ... ok
+test dispatch::tests::advertisement_mapping_preserves_nulls_and_bytes ... ok
+test dispatch::tests::bluez_connection_policy_is_explicit_and_fail_closed ... ok
+test dispatch::tests::bonded_directory_dispatch_preserves_no_link_native_facts ... ok
+test dispatch::tests::build_identity_is_the_frozen_schema_with_the_core_revision ... ok
+test dispatch::tests::caller_release_removes_only_its_notification_consumer ... ok
+test dispatch::tests::capability_states_answer_per_desktop_os ... ok
+test dispatch::tests::close_retries_half_open_cleanup_without_losing_its_native_cause ... ok
+test dispatch::tests::connection_parameters_dispatch_uses_the_inner_radio_answer ... ok
+test dispatch::tests::deferred_connect_dispatch_uses_shared_native_lease_authority ... ok
+test dispatch::tests::delivery_mode_parses_requirements_and_rejects_loudly ... ok
+test dispatch::tests::desktop_error_carries_outcome_facts_on_the_wire ... ok
+test dispatch::tests::desktop_error_identity_passes_through_verbatim ... ok
+test dispatch::tests::directory_dispatch_preserves_os_facts_without_native_lease ... ok
+test dispatch::tests::disconnect_dispatch_preserves_and_consumes_own_native_observation ... ok
+test dispatch::tests::dispatch_error_wire_form_is_frozen ... ok
+test dispatch::tests::dispatch_forwards_transport_cleanup_failure_and_retry ... ok
+test dispatch::tests::dispatch_radio_forwards_the_unflagged_subscribe_answer ... ok
+test dispatch::tests::effective_mtu_crosses_the_boundary ... ok
+test dispatch::tests::fault_op_parses_every_gate_and_rejects_loudly ... ok
+test dispatch::tests::gatt_admission_and_disconnect_keep_the_actual_callers_lease ... ok
+test dispatch::tests::half_open_shutdown_receipt_preserves_the_native_failure ... ok
+test dispatch::tests::lifecycle_projection_preserves_platform_detail_without_changing_the_public_kind ... ok
+test dispatch::tests::linux_physical_loss_admission_forwards_exact_generation ... ok
+test dispatch::tests::platform_check_accepts_only_the_compiled_radio ... ok
+test dispatch::tests::platform_detail_crosses_the_wire_as_one_pipe_free_json_field ... ok
+test dispatch::tests::priority_dispatch_reaches_the_synthetic_radio_for_every_preset ... ok
+test dispatch::tests::rssi_adapter_state_and_events_cross_the_boundary ... ok
+test dispatch::tests::runtime_capability_rows_preserve_instance_refusal_not_static_platform_truth ... ok
+test dispatch::tests::security_address_and_write_limits_cross_the_boundary ... ok
+test dispatch::tests::selector_rejects_malformed_uuids ... ok
+test dispatch::tests::staged_gatt_accesses_report_exact_instances_grouped_by_kind ... ok
+test dispatch::tests::staged_occurrences_beyond_u32_fail_loudly ... ok
+test dispatch::tests::staged_service_graph_preserves_explicit_null_as_unknown ... ok
+test dispatch::tests::staged_services_keep_occurrences ... ok
+test dispatch::tests::staged_snapshot_validates_ranges ... ok
+test dispatch::tests::subscribe_carries_the_requirement_and_reports_the_observation ... ok
+test dispatch::tests::synthetic_flow_runs_ops_in_rust ... ok
+test dispatch::tests::synthetic_stop_scan_targets_only_its_own_scan ... ok
+test dispatch::tests::synthetic_timeout_and_dispose_refuse_loudly ... ok
+test dispatch::tests::ticket_cancel_before_admission_aborts_without_a_radio_call ... ok
+test dispatch::tests::ticket_cancel_forwards_to_the_blocked_operation ... ok
+test dispatch::tests::trusted_recording_controls_use_shared_persisted_cursor ... ok
+test dispatch::tests::write_mode_defaults_and_rejects_loudly ... ok
+
+test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+
+running 27 tests
+test core_backend::tests::byte_batch_round_trip_is_owned ... ok
+test core_backend::tests::cancel_armed_aborts_next_chunked_call ... ok
+test core_backend::tests::cancel_mid_flight_aborts_worker_thread ...      Running unittests src/lib.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/ubm5_uniffi_echo-a820096e237ce65d)
+ok
+test core_backend::tests::close_invalidates_loudly_and_idempotently ... ok
+test core_backend::tests::close_maps_poison_loudly ... ok
+test core_backend::tests::destroy_drives_shutdown_and_is_idempotent ... ok
+test core_backend::tests::driving_gates_on_revision_and_close ... ok
+test core_backend::tests::expire_sweep_drives_the_kernel ... ok
+test core_backend::tests::foreign_revision_fails_closed_on_every_call ... ok
+test core_backend::tests::revision_is_the_frozen_contract ... ok
+test core_backend::tests::seam_holds_for_the_wired_core ... ok
+test core_backend::tests::session_holds_a_real_central ... ok
+test core_backend::tests::superseded_revision_fails_closed_on_every_call ... ok
+test core_backend::tests::u64_extremes_lossless_garbage_rejects ... ok
+test core_backend::tests::u64_range_detail_marks_overflow ... ok
+test core_backend::tests::unwired_transitions_reject_with_capability_unsupported ... ok
+test mobile::tests::companion_filters_survive_the_actual_uniffi_request_codec ... ok
+test mobile::tests::connect_carries_the_preferred_phys ... ok
+test mobile::tests::mobile_surface_has_no_staged_path ... ok
+test mobile::tests::udl_mobile_host_answers_through_the_foreign_radio ... ok
+test tests::production_surface_has_no_panic_probe ... ok
+test tests::udl_ble_scan_slice_runs_real_kernel_transitions ... ok
+test tests::udl_surface_cancels_chunked_work ... ok
+test tests::udl_surface_drives_staged_synthetic_steps ... ok
+test tests::udl_surface_drives_the_transition_core ... ok
+test tests::udl_surface_gates_revision_and_close ... ok
+test tests::udl_surface_round_trips ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+running 22 tests
+test core_backend::tests::byte_batch_round_trip_is_owned ... ok
+test core_backend::tests::destroy_drives_shutdown_and_is_idempotent ... ok
+test core_backend::tests::driving_fails_closed_before_init ... ok
+test core_backend::tests::expire_sweep_drives_the_kernel ... ok
+test core_backend::tests::foreign_revision_rejects_closed ... ok
+test core_backend::tests::init_constructs_a_real_central ... ok
+test core_backend::tests::oversize_rejects_max_ok ... ok
+test core_backend::tests::reinit_with_different_revision_rejects ... ok
+test core_backend::tests::revision_is_the_frozen_contract ... ok
+test core_backend::tests::seam_holds_for_the_wired_core ... ok
+test core_backend::tests::staged_surface_drives_synthetic_steps_and_accounting ... ok
+test core_backend::tests::stream_cancel_reports_aborted_exactly_once ... ok
+test core_backend::tests::stream_guards_reject_loudly ... ok
+test core_backend::tests::stream_round_trip_then_consumed ... ok
+test core_backend::tests::streams_are_independent ... ok
+test core_backend::tests::superseded_revision_rejects_closed ... ok
+test core_backend::tests::u64_extremes_lossless_garbage_rejects ... ok
+test core_backend::tests::u64_range_detail_marks_overflow ... ok
+test core_backend::tests::unwired_transitions_reject_with_capability_unsupported ... ok
+test core_backend::tests::wire_message_names_code_domain_operation ... ok
+test raw_abi::tests::abi_rejects_null_loudly ... ok
+test raw_abi::tests::abi_round_trip_copies_and_frees ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/sfourdrinier/.cache/ubm-preflight/cargo-target/debug/deps/ubm5_wasm_echo-69abc3c8e10a8778)
+   Doc-tests ubm_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm_desktop
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm_fake_radio
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm_mobile
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm5_jni_echo
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm5_napi_echo
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm5_uniffi_echo
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm5_wasm_echo
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

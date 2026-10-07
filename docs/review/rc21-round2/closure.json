@@ -1629,7 +1629,7 @@
       "regression_suites": [
         "__tests__/backends/desktop/desktop-public-acquired-gatt.test.js",
         "crates/ubm-desktop/src/os/bluez_acquired_tests.rs",
-        "retained final-evidence/acquired-mtu-backpressure-qualification.cjs (pending retention commit)"
+        "docs/review/rc21-round2/twelfth-batch-evidence/acquired-mtu-backpressure-qualification.cjs"
       ],
       "verification_status": "Verified: actual Node/Bun installed-daemon acquired write/notify, conflicts, abort, HUP/link loss, reconnect and fresh generation; native synthetic MTU change/backpressure/close controls remain separately labeled.",
       "historical_evidence": "Owned public/provider/NAPI/IPC, socket/backpressure/cancel/HUP and daemon-interest controls pass. Actual installed-daemon Node/Bun write/notify routes pass with native MTU, bytes, conflicts and zero counters. Remaining live HUP/reconnect/lifetime scenarios and final combined gate are outstanding; simulated RF peripheral is not a physical H10 receipt.",
@@ -2041,6 +2041,12 @@
       "tauri_lanes": "3 passed",
       "android_builds": "2 passed",
       "rust_workspace": "3 failed: missing logging dev dependency and redundant iterator conversion; corrected in collected gate batch"
+    },
+    "rust_workspace": {
+      "source_head": "21e4adbc8ac12df5c2ce77fa011708a1462b01f0",
+      "clippy_all_targets": "passed with -D warnings",
+      "test_workspace": "passed --no-fail-fast --test-threads=1",
+      "receipt": "final-batch-evidence/rust-workspace-final-21e4adbc.log"
     }
   },
   "additional_followup": {
@@ -2078,5 +2084,122 @@
         "regression": "18 malformed metadata terminal and release scenarios in connection-cleanup.test.js"
       }
     ]
-  }
+  },
+  "previous_review_dispositions": [
+    {
+      "id": "F01",
+      "baseline_disposition": "Closed in source",
+      "baseline_detail": "Real uncached WinRT descriptor enumeration and indexing replace empty success. Native radio not run here.",
+      "current_disposition": "Original source defect remains closed; current collected source/native regression gates retain coverage."
+    },
+    {
+      "id": "F02",
+      "baseline_disposition": "Original scenario closed",
+      "baseline_detail": "An earlier committed external Connect now protects a borrowed lease. R2-02 and R2-05 are different still-unprotected operations.",
+      "current_disposition": "Original source defect remains closed; current collected source/native regression gates retain coverage."
+    },
+    {
+      "id": "F03",
+      "baseline_disposition": "Original hard-requirement defect closed",
+      "baseline_detail": "Both hard modes are forwarded, and subscription keys distinguish requirements. Soft preference remains R2-19.",
+      "current_disposition": "Original source defect remains closed; current collected source/native regression gates retain coverage."
+    },
+    {
+      "id": "F04",
+      "baseline_disposition": "Closed in source at final head",
+      "baseline_detail": "The last commit adds the missing Tauri service-row restriction projection; R2-21 is closed. Primary/includes metadata is a separate surviving finding, R2-22.",
+      "current_disposition": "Original source defect remains closed; current collected source/native regression gates retain coverage."
+    },
+    {
+      "id": "F05",
+      "baseline_disposition": "Partial",
+      "baseline_detail": "Simple name/service split works. Split nonempty lists, ingress filtering and new cache faults remain: R2-12\u201315.",
+      "current_disposition": "Residual defects corrected and verified by corresponding R2 items and joined public/native gates; runtime qualification limits remain explicit."
+    },
+    {
+      "id": "F06",
+      "baseline_disposition": "Closed",
+      "baseline_detail": "FIFO dirty-scope scheduling fixes starvation beyond one 32-scope batch; full mobile Rust suite passed.",
+      "current_disposition": "Original source defect remains closed; current collected source/native regression gates retain coverage."
+    },
+    {
+      "id": "F07",
+      "baseline_disposition": "Partial",
+      "baseline_detail": "Immediate rejected admissions roll back. Deferred acquired-socket failures still leak: R2-04.",
+      "current_disposition": "Residual defects corrected and verified by corresponding R2 items and joined public/native gates; runtime qualification limits remain explicit."
+    },
+    {
+      "id": "F08",
+      "baseline_disposition": "Original scenario closed",
+      "baseline_detail": "Dead-owner cleanup resumes after the foreign read. R2-03 concerns the different newly accepted live-sender retirement.",
+      "current_disposition": "Original source defect remains closed; current collected source/native regression gates retain coverage."
+    },
+    {
+      "id": "F09",
+      "baseline_disposition": "Public result corrected; lifetime partial",
+      "baseline_detail": "Protected non-final release is logical success, but token/deferred cleanup ownership is lost: R2-03.",
+      "current_disposition": "Residual defects corrected and verified by corresponding R2 items and joined public/native gates; runtime qualification limits remain explicit."
+    },
+    {
+      "id": "F10",
+      "baseline_disposition": "Closed in source",
+      "baseline_detail": "WinRT selects the initial CCCD mode before enabling; the old Indicate-then-Notify sequence is removed.",
+      "current_disposition": "Original source defect remains closed; current collected source/native regression gates retain coverage."
+    },
+    {
+      "id": "F11",
+      "baseline_disposition": "Partial",
+      "baseline_detail": "Normal structured errors improved. Initial connect and compound rollback still flatten native detail: R2-20.",
+      "current_disposition": "Residual defects corrected and verified by corresponding R2 items and joined public/native gates; runtime qualification limits remain explicit."
+    },
+    {
+      "id": "F12",
+      "baseline_disposition": "Closed",
+      "baseline_detail": "Apple when-available uses real pending connect and caller deadline/cancellation; Rust and relevant public-boundary tests passed.",
+      "current_disposition": "Original source defect remains closed; current collected source/native regression gates retain coverage."
+    },
+    {
+      "id": "F13",
+      "baseline_disposition": "Mechanism implemented; behavior incomplete",
+      "baseline_detail": "Apple RN readiness plumbing exists. New helper admission and source-failure defects remain: R2-07\u201308.",
+      "current_disposition": "Residual defects corrected and verified by corresponding R2 items and joined public/native gates; runtime qualification limits remain explicit."
+    },
+    {
+      "id": "F14",
+      "baseline_disposition": "Partial",
+      "baseline_detail": "IPC readiness/parameter streams exist and their typed error projection is now fixed. The characteristic helper remains unwired: R2-09; cumulative Tauri quota remains R2-11.",
+      "current_disposition": "Residual defects corrected and verified by corresponding R2 items and joined public/native gates; runtime qualification limits remain explicit."
+    },
+    {
+      "id": "F15",
+      "baseline_disposition": "Closed in source and deterministic checks",
+      "baseline_detail": "Apple ATT MTU remains unobserved while true per-mode write capacities stay available; no conversion of capacity to a measured ATT MTU.",
+      "current_disposition": "Original source defect remains closed; current collected source/native regression gates retain coverage."
+    },
+    {
+      "id": "F16",
+      "baseline_disposition": "Native data closed; planner partial",
+      "baseline_detail": "Legacy/extended connectability now observed truthfully; planner field inventory remains stale: R2-33.",
+      "current_disposition": "Residual defects corrected and verified by corresponding R2 items and joined public/native gates; runtime qualification limits remain explicit."
+    },
+    {
+      "id": "F17",
+      "baseline_disposition": "Partial",
+      "baseline_detail": "Low-level WinRT getter/events exist, but the real NAPI dispatch wrapper omits forwarding (R2-34), presets remain absent, and parameter semantics still have R2-16\u201318/23\u201325.",
+      "current_disposition": "Residual defects corrected and verified by corresponding R2 items and joined public/native gates; runtime qualification limits remain explicit."
+    },
+    {
+      "id": "R1",
+      "baseline_disposition": "Addressed at production control-flow level",
+      "baseline_detail": "Successful explicit LE Pair clears suppression and permits Medium-to-High retry on the same attachment. Actual SMP/controller qualification remains required.",
+      "current_disposition": "Production security retry control remains addressed; held real SMP Pair success qualified. A same-attachment ATT Medium-to-High retry has not been physically qualified and is not inferred."
+    },
+    {
+      "id": "Q1",
+      "baseline_disposition": "Partial",
+      "baseline_detail": "Both Linux source-mode and packed Bun gates pass at the final head. Actual public desktop/native integration and macOS/Windows CI coverage still remain R2-32.",
+      "current_disposition": "Residual defects corrected and verified by corresponding R2 items and joined public/native gates; runtime qualification limits remain explicit."
+    }
+  ],
+  "gate_followup": "The final combined package gate requires refreshed Android identities and rustfmt of the equivalent cancellation guard. Both are collected; current PR required checks are the authoritative final cross-platform release gate."
 }
