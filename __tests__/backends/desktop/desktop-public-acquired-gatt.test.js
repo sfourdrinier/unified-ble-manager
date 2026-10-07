@@ -40,7 +40,7 @@ async function opened() {
   await stage.stageServices('fd-peer', h.hrmServices())
   await stage.stageAcquiredGatt('fd-peer', { write: true, notify: true, mtu: 23 })
   const database = await connection.discover()
-  return { manager, connection, stage, peer, characteristic: database.characteristic('180d', '2a37') }
+  return { manager, connection, stage, peer, database, characteristic: database.characteristic('180d', '2a37') }
 }
 
 test('owned acquired write reports actual MTU, copies before waiting and releases after close', async () => {
@@ -138,12 +138,14 @@ test('acquired notifications and ordinary subscriptions refuse conflicting owner
 }, 30000)
 
 test('connection release closes acquired descendants and a changed database rejects old transports', async () => {
-  const { manager, connection, stage, characteristic } = await opened()
+  const { manager, connection, stage, database, characteristic } = await opened()
   try {
     const writer = await characteristic.acquireWrite()
     const notifications = await characteristic.acquireNotifications()
     const iterator = notifications.values[Symbol.asyncIterator]()
     const waiting = iterator.next()
+    const changes = database.changed[Symbol.asyncIterator]()
+    const changed = h.nextValue(changes, 5000)
     await stage.stageServicesChanged('fd-peer')
     await expect(waiting).resolves.toMatchObject({
       done: false,
@@ -151,6 +153,8 @@ test('connection release closes acquired descendants and a changed database reje
     })
     await expect(iterator.next()).resolves.toMatchObject({ done: true })
     await expect(writer.write(new Uint8Array([1]))).rejects.toMatchObject({ code: 'gatt.stale-handle' })
+    expect(await changed).toMatchObject({ reason: 'service-changed' })
+    await changes.return?.()
     await writer.close()
     await notifications.close()
     expect(await stage.stagedAcquiredGattCount()).toBe(0)

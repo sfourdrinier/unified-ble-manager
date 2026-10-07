@@ -85,6 +85,11 @@ All notable changes to `unified-ble-manager` are documented here.
   link loss interrupt readiness waits, and Electron/Tauri forward the helper
   through the host-owned GATT route. Batch verification remains pending.
 
+- Windows parameter snapshots and callbacks classify the native all-zero
+  disconnected getter answer as `connection.lost`, retaining its raw fields.
+  Zero peripheral latency remains valid and malformed generic samples remain
+  fail-closed. Source-batch verification is pending.
+
 - Android security observes API 36 LE encryption changes and SDK 36.1 public
   snapshots independently of bonding. Source errors retain controller status
   through the wire and reconciliation. Peer broadcasts are never cached as a

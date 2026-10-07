@@ -110,16 +110,11 @@ fn read_connection_parameters(
     }
     let winrt_error = Error::from;
     let params = device.GetConnectionParameters().map_err(winrt_error)?;
-    // ConnectionInterval is in units of 1.25ms, stored as microseconds.
-    let interval_us = (params.ConnectionInterval().map_err(winrt_error)? as u32) * 1250;
-    let latency = params.ConnectionLatency().map_err(winrt_error)? as u16;
-    // LinkTimeout is in units of 10ms, stored as microseconds.
-    let supervision_timeout_us = (params.LinkTimeout().map_err(winrt_error)? as u32) * 10_000;
-    Ok(crate::api::ConnectionParameters {
-        interval_us,
-        latency,
-        supervision_timeout_us,
-    })
+    crate::connection_parameters_source::parameter_answer(
+        params.ConnectionInterval().map_err(winrt_error)?,
+        params.ConnectionLatency().map_err(winrt_error)?,
+        params.LinkTimeout().map_err(winrt_error)?,
+    )
 }
 
 /// Outcome of one service's characteristic query.

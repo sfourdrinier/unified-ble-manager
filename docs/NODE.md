@@ -560,7 +560,11 @@ desktop provider to the real addon, with an explicitly synthetic native radio.
 The joined route checks scan/GATT events, cancellation, deadlines and late
 completion, bounded overflow, stale discovery handles, reconnect, two logical
 owners, failed cleanup and retry, adapter loss and zero native resources after
-destroy. Windows also reads and watches native connection parameters. CI runs
+destroy. Windows also reads and watches native connection parameters. Its native
+`GetConnectionParameters` all-zero disconnected answer reports `connection.lost`
+from both snapshot and callback routes, retaining the raw getter fields under
+`platform`. Zero latency on a nonzero interval/timeout remains valid; generic
+malformed samples still fail the shared numeric guard. CI runs
 the packed qualifier on Linux, macOS and Windows. These integration receipts
 remain separate from physical-radio qualification and retained support labels.
 

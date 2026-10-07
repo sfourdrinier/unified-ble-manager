@@ -1322,3 +1322,10 @@ them. The portable reservation controls and structured public-refusal mappings
 are unexecuted draft regressions, not physical CoreBluetooth qualification.
 
 WinRT scan source controls use the option-aware watcher configuration and seed a stale native UUID filter to prove it is cleared. Obsolete unused address-only construction and unstructured status-only mapping are removed; all live device construction retains complete identity and error routes retain structured native status/ATT details. Cross-target compilation is not a Windows runtime or physical receipt.
+
+The rc.21 parameter getter interprets Microsoft's documented all-zero disconnected
+answer before snapshot or callback projection. It retains the three raw getter
+fields under the WinRT platform detail; the shared public classifier reports
+`connection.lost`. Zero latency alone is not a loss. The exact portable getter
+mapper and callback mapper have joined classifier regressions; verification of
+this source batch is pending, and no Windows physical receipt is claimed.

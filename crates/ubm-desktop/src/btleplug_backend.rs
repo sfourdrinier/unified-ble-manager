@@ -3500,7 +3500,7 @@ fn disconnect_error_confirms_released(error: &btleplug::Error) -> bool {
 }
 
 /// The btleplug identity a peer id names (finding 127): the CoreBluetooth
-/// identifier, the WinRT address. `None` on Linux, where BlueZ resolves
+/// identifier, the WinRT address and address type. `None` on Linux, where BlueZ resolves
 /// peers itself, or for an id that names neither.
 fn platform_peripheral_id(peer_id: &str) -> Option<PeripheralId> {
     #[cfg(target_vendor = "apple")]
@@ -5528,6 +5528,67 @@ pub fn core_property_bits(flags: PropertyFlags) -> u8 {
 }
 
 #[cfg(test)]
+mod winrt_parameter_answer_tests {
+    use crate::DesktopError;
+    use btleplug::connection_parameters_source::{callback_answer, parameter_answer};
+    use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
+
+    fn public_error(error: btleplug::Error) -> DesktopError {
+        super::map_radio(
+            "connection.parameters",
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Platform,
+        )(error)
+        .classify_link_loss()
+    }
+
+    #[test]
+    fn disconnected_native_snapshot_and_callback_keep_one_public_loss_answer() {
+        let snapshot = parameter_answer(0, 0, 0).unwrap_err();
+        let callback = callback_answer(|| parameter_answer(0, 0, 0)).unwrap_err();
+        let snapshot = public_error(snapshot);
+        let callback = public_error(btleplug::Error::Platform(callback));
+        for error in [snapshot, callback] {
+            assert_eq!(error.code(), BleErrorCode::ConnectionLost);
+            assert_eq!(error.domain(), BleErrorDomain::Connection);
+            let platform = error
+                .platform()
+                .expect("native disconnected answer retained");
+            assert_eq!(platform.domain, "winrt");
+            assert_eq!(platform.code, "connection-parameters-disconnected");
+            for name in ["connectionInterval", "connectionLatency", "linkTimeout"] {
+                assert_eq!(
+                    platform.metadata.get(name),
+                    Some(&crate::errors::PlatformValue::Text("0".to_owned()))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zero_latency_on_a_connected_native_answer_is_still_a_measurement() {
+        let snapshot = parameter_answer(24, 0, 400).unwrap();
+        assert_eq!(snapshot.interval_us, 30_000);
+        assert_eq!(snapshot.latency, 0);
+        assert_eq!(snapshot.supervision_timeout_us, 4_000_000);
+        assert_eq!(
+            callback_answer(|| parameter_answer(24, 0, 400)),
+            Ok(snapshot)
+        );
+    }
+
+    #[test]
+    fn partial_zero_samples_are_not_misclassified_as_native_disconnection() {
+        // Their malformed values remain visible to the shared fail-closed guard.
+        for (interval, latency, timeout) in [(0, 1, 400), (24, 0, 0)] {
+            let sample = parameter_answer(interval, latency, timeout).unwrap();
+            assert_eq!(sample.interval_us, u32::from(interval) * 1250);
+            assert_eq!(sample.supervision_timeout_us, u32::from(timeout) * 10_000);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use ubm_core::contracts::BleErrorCode;
     #[test]
@@ -5841,7 +5902,7 @@ mod tests {
     }
 
     /// Finding 127: a peer id names the identity the OS re-resolves it by
-    /// (CoreBluetooth identifier, WinRT address); BlueZ needs none.
+    /// (CoreBluetooth identifier, WinRT address and type); BlueZ needs none.
     #[test]
     fn f127_a_peer_id_names_its_os_identity() {
         let resolved = super::platform_peripheral_id("5e0b1c9a-6c0f-4f60-a1c1-3b5f2a0e7d11");
@@ -5856,7 +5917,7 @@ mod tests {
             assert!(resolved.is_none());
             assert_eq!(
                 address.map(|id| id.to_string()).as_deref(),
-                Some("AA:BB:CC:DD:EE:FF")
+                Some("unknown:AA:BB:CC:DD:EE:FF")
             );
         } else {
             assert!(resolved.is_none() && address.is_none());
@@ -5882,10 +5943,19 @@ mod tests {
             );
         }
         #[cfg(target_os = "windows")]
-        assert_eq!(
-            super::canonical_platform_peer_id("aa:bb:cc:dd:ee:ff"),
-            "AA:BB:CC:DD:EE:FF"
-        );
+        {
+            for kind in ["public", "random", "unknown"] {
+                let input = format!("{kind}:aa:bb:cc:dd:ee:ff");
+                assert_eq!(
+                    super::canonical_platform_peer_id(&input),
+                    format!("{kind}:AA:BB:CC:DD:EE:FF")
+                );
+            }
+            assert_eq!(
+                super::canonical_platform_peer_id("aa:bb:cc:dd:ee:ff"),
+                "unknown:AA:BB:CC:DD:EE:FF"
+            );
+        }
     }
 
     #[test]
@@ -5907,12 +5977,25 @@ mod tests {
             use btleplug::platform::PeripheralId;
             let peer = "AA:BB:CC:DD:EE:FF";
             let address: btleplug::api::BDAddr = peer.parse().expect("fixture address");
-            let id = PeripheralId::from(address);
-            assert_eq!(id.to_string(), peer);
-            assert_eq!(
-                super::platform_peripheral_id(peer).map(|id| id.to_string()),
-                Some(peer.to_owned())
-            );
+            use btleplug::api::AddressType;
+            let ids = [
+                ("public", Some(AddressType::Public)),
+                ("random", Some(AddressType::Random)),
+                ("unknown", None),
+            ]
+            .map(|(kind, address_type)| {
+                let id = PeripheralId::with_address_type(address, address_type);
+                let listed = format!("{kind}:{peer}");
+                assert_eq!(id.to_string(), listed);
+                let resolved = super::platform_peripheral_id(&listed).expect("listed identity");
+                assert_eq!(resolved, id);
+                assert_eq!(resolved.address_type(), address_type);
+                id
+            });
+            assert_ne!(ids[0], ids[1]);
+            assert_ne!(ids[0], ids[2]);
+            assert_ne!(ids[1], ids[2]);
+            assert_eq!(super::platform_peripheral_id(peer), Some(ids[2].clone()));
             assert!(
                 super::platform_peripheral_id("5e0b1c9a-6c0f-4f60-a1c1-3b5f2a0e7d11").is_none()
             );

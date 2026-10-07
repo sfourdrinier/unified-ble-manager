@@ -190,7 +190,10 @@ pub fn is_link_loss_answer(platform: &PlatformDetail) -> bool {
             text("nsErrorDomain") == Some("CBErrorDomain")
                 && matches!(platform.code.as_str(), "3" | "7")
         }
-        "winrt" => platform.code == "gatt-status" && text("gattStatus") == Some("unreachable"),
+        "winrt" => {
+            platform.code == "connection-parameters-disconnected"
+                || (platform.code == "gatt-status" && text("gattStatus") == Some("unreachable"))
+        }
         "bluez-dbus" => {
             platform.code == "org.bluez.Error.NotConnected"
                 || (platform.code == "org.bluez.Error.Failed"
@@ -883,6 +886,7 @@ mod tests {
             cb("7"),
             PlatformDetail::new("winrt", "gatt-status")
                 .with_metadata("gattStatus", PlatformValue::Text("unreachable".to_owned())),
+            PlatformDetail::new("winrt", "connection-parameters-disconnected"),
             PlatformDetail::new("bluez-dbus", "org.bluez.Error.NotConnected"),
             PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed")
                 .with_message("Not connected"),
