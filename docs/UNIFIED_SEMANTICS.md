@@ -993,7 +993,9 @@ Write-without-response readiness is `unsupported` until a backend advertises
 `gatt:write-without-response-readiness`. When advertised, the backend MUST
 provide a bounded stream with a current snapshot for a late subscriber when
 that snapshot is measurable; a missed edge event alone is insufficient. A
-readiness event does not prove that a later payload was retained. Callers use
+readiness event does not prove that a later payload was retained. CoreBluetooth
+providers retain the latest generation-matched readiness state received during
+the initial probe, publishing the probe first and that newer state afterward. Callers use
 the mode-specific maximum write length and the write result's exact commit or
 unknown state.
 

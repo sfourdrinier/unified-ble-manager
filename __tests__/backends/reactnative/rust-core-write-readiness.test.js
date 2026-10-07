@@ -163,6 +163,35 @@ describe('F13 Apple write-without-response readiness', () => {
     }
   )
 
+  test('a readiness edge received during opening follows the older probe without losing its branded identity', async () => {
+    const { native, manager, backend } = await openManager('apple')
+    native.setWriteReady(DEFAULT_PEER, false)
+    const connection = await connect('apple', manager, backend)
+    native.hold('connection.write-readiness')
+    const opening = connection.writeWithoutResponseReadiness(NO_OPTIONS)
+    try {
+      await settle()
+      native.setWriteReady(DEFAULT_PEER, true)
+      await settle()
+      native.release('connection.write-readiness', { ready: false })
+      const watch = await opening
+      const iterator = watch.events[Symbol.asyncIterator]()
+      const initial = (await iterator.next()).value.value
+      const edge = (await iterator.next()).value.value
+      expect([initial.ready, edge.ready]).toEqual([false, true])
+      expect([initial.ordinal, edge.ordinal]).toEqual([1, 2])
+      expect(initial.connectionId).toBe(connection.connectionId)
+      expect(initial.connectionGeneration).toBe(connection.connectionGeneration)
+      expect(edge.connectionId).toBe(initial.connectionId)
+      expect(edge.connectionGeneration).toBe(initial.connectionGeneration)
+      expect(edge.observedAtMonotonicMs).toBeGreaterThanOrEqual(initial.observedAtMonotonicMs)
+      expect((await watch.close()).state).toBe('released')
+    } finally {
+      native.release('connection.write-readiness', { ready: false })
+      await manager.destroy()
+    }
+  })
+
   test('the probe returns the current queue flag and records the owner op', async () => {
     const { native, manager, backend } = await openManager('apple')
     const connection = await connect('apple', manager, backend)

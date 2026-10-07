@@ -605,3 +605,16 @@ pending, allowing retry after natural completion. Regression coverage was
 written before changing the Windows caller. No follow-up build or test has run;
 the affected source path must be reread before the collected verification batch.
 The live Bun scenario and successful Linux Pair receipt remain outstanding.
+
+## Latest PR readiness feedback
+
+The RN initial-probe ordering and branded readiness identity comments are
+addressed together. A production-factory regression holds the probe, drains a
+newer native edge, then supplies an older probe result; both observations retain
+the connection's actual branded identity and the newer state remains last.
+Lint/typecheck, the full 430-suite / 5,415-test package gate, and owning prepack
+with generated documentation/package-artifact checks pass locally. These are
+TypeScript provider changes; native build inputs and the WinRT/Linux live paths
+are unchanged. Clean preflight and final PR CI remain required. The earlier
+standalone docs check failed because generated HTML inputs were absent before
+prepack; the owning prepack subsequently generated and verified them.

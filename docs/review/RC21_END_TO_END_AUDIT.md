@@ -117,3 +117,17 @@ the actual registry on every desktop host rather than a separate implementation.
 Verification and live replay remain pending; this correction addresses premature
 close and does not claim to repair the underlying Windows descriptor delay.
 No complete-closure claim is made.
+
+## Final RN readiness review follow-up
+
+The latest PR feedback identified stale initial-probe ordering and erased branded
+connection identities in the RN readiness watch. The new regression holds the
+actual production-factory probe, drains a newer native readiness edge, and then
+releases an older probe answer. The provider now retains the latest state while
+opening, emits the initial sample first, then emits that state. Identity fields
+remain branded from the backend connection through both observations. Generation
+filtering precedes buffering; source failure and connection loss remove the watch
+and abort opening, so retained state cannot publish afterward. The native FIFO
+write route is unchanged. Collected local verification passes lint/typecheck, all
+430 package suites / 5,415 tests, and owning prepack with generated documentation
+and package-artifact checks. Clean preflight and final PR CI remain required.

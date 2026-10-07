@@ -8,9 +8,10 @@ All notable changes to `unified-ble-manager` are documented here.
   original caller deadline and cancellation scope, using separate child tickets.
 
 - Retain interrupted Windows native service, characteristic, inclusion and
-  descriptor queries until Windows reports completion. Discovery cancellation
-  requests native cancellation; pending work or a cancellation refusal prevents
-  service close and stays owned for cleanup retry. Connection admission retains
+  descriptor queries until Windows reports natural completion. Public cancellation
+  stops waiting without calling native Cancel, whose terminal status does not
+  establish internal GATT quiescence. Pending work prevents service close and
+  stays owned for cleanup retry. Connection admission retains
   the native owner before awaiting discovery. A cleanup refusal does not invent
   a lost connection. Combined and live verification remains pending.
 
@@ -99,6 +100,10 @@ All notable changes to `unified-ble-manager` are documented here.
   connected record; Windows selectors are limited to the default adapter and
   retain failed transient-object cleanup. Mobile and IPC route drafts use their
   native inventories; frozen-batch verification and qualification remain pending.
+
+- Buffer the latest Apple RN readiness state while its initial probe is pending,
+  then publish the probe before that newer state. Readiness watches retain their
+  branded connection identities without type assertions.
 
 - Move RN and desktop readiness writes into one bounded native FIFO operation,
   owning bytes before waiting and retaining the original budget. Database and

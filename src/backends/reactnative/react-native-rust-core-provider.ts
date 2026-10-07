@@ -869,12 +869,14 @@ type InvalidationReason = Extract<CoreStreamTerminalReason, 'connection-lost' | 
 /** One Apple write-without-response readiness watch for a single connection generation. */
 interface ReadinessWatch {
   readonly nativePeerId: string
-  readonly connectionId: string
-  readonly connectionGeneration: string
+  readonly connectionId: ConnectionWriteReadinessObservation<string>['connectionId']
+  readonly connectionGeneration: ConnectionWriteReadinessObservation<string>['connectionGeneration']
   readonly coreGeneration: string
   readonly stream: OwnedCoreBoundedStream<ConnectionWriteReadinessObservation<string>>
   readonly openingCancellation: AbortController
   openingSettled: boolean
+  /** Latest readiness state received while the initial probe is pending. */
+  bufferedReady: boolean | null
   failure: NormalizedBleError | null
   ordinal: number
 }
@@ -3029,12 +3031,13 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     )
     const watch: ReadinessWatch = {
       nativePeerId: entry.nativePeerId,
-      connectionId: String(entry.resource.connectionId),
-      connectionGeneration: String(entry.resource.connectionGeneration),
+      connectionId: entry.resource.connectionId,
+      connectionGeneration: entry.resource.connectionGeneration,
       coreGeneration: entry.coreGeneration,
       stream,
       openingCancellation: new AbortController(),
       openingSettled: false,
+      bufferedReady: null,
       failure: null,
       ordinal: 0
     }
@@ -3086,6 +3089,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       throw contractError('connection.stale', 'connection', `${operation}.closed`)
     }
     this.emitReadiness(watch, ready)
+    const bufferedReady = watch.bufferedReady
+    watch.bufferedReady = null
+    if (bufferedReady !== null) this.emitReadiness(watch, bufferedReady)
     return Object.freeze({
       events: stream,
       close: async (): Promise<CleanupRecord> => {
@@ -3097,11 +3103,14 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
 
   private emitReadiness(watch: ReadinessWatch, ready: boolean): void {
     if (!this.readinessWatches.has(watch)) return
+    if (!watch.openingSettled) {
+      watch.bufferedReady = ready
+      return
+    }
     watch.ordinal += 1
     const observation: ConnectionWriteReadinessObservation<string> = Object.freeze({
-      connectionId: watch.connectionId as ConnectionWriteReadinessObservation<string>['connectionId'],
-      connectionGeneration:
-        watch.connectionGeneration as ConnectionWriteReadinessObservation<string>['connectionGeneration'],
+      connectionId: watch.connectionId,
+      connectionGeneration: watch.connectionGeneration,
       ready,
       observedAtMonotonicMs: this.now(),
       ordinal: watch.ordinal
