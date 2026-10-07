@@ -17,10 +17,10 @@ use tokio::sync::{broadcast, watch, Mutex};
 use ubm_core::contracts::{AttachmentTuple, BleErrorCode, CommitState};
 use ubm_desktop::{
     AdapterAuthorization, AdapterAvailability, AdapterPowerState, Budget, CancelAck, CancelRequest,
-    CentralProfile, CompletionOutcome, DeliveryMode, DesktopCentral, DesktopError,
+    CentralProfile, CompletionOutcome, DeliveryMode, DesktopCentral, DesktopError, DiscoveredPath,
     InvalidationCause, LifecycleEvent, LifecycleKind, NotificationPoll, ObservedDelivery,
     OpControl, OpTicket, OperationId, PlatformDetail, PlatformValue, Retryability,
-    DiscoveredPath, ScanTerminalEvent, ServiceAccess, ShutdownReport,
+    ScanTerminalEvent, ServiceAccess, ShutdownReport,
 };
 use uuid::Uuid;
 
