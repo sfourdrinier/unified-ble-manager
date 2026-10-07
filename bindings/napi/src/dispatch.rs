@@ -3983,37 +3983,47 @@ impl UbmCentral {
             error: None,
         };
         match receiver.try_recv() {
-            Ok(event) => Ok(Some(ConnectionParametersEventInfo {
-                kind: if event.error.is_some() {
-                    "source-failed"
-                } else if event.missed != 0 {
-                    "lagged"
-                } else {
-                    "state"
+            Ok(event) => {
+                if event.missed != 0 {
+                    *receiver = receiver.resubscribe();
                 }
-                .to_owned(),
-                sequence: Some(number_wire(event.sequence, OP).map_err(to_napi)?),
-                peer_id: Some(event.peer_id),
-                connection_generation: event.connection_generation,
-                interval_us: (event.error.is_none() && event.missed == 0)
-                    .then_some(event.interval_us),
-                latency: (event.error.is_none() && event.missed == 0)
-                    .then_some(u32::from(event.latency)),
-                supervision_timeout_us: (event.error.is_none() && event.missed == 0)
-                    .then_some(event.supervision_timeout_us),
-                missed: (event.missed != 0)
-                    .then(|| number_wire(event.missed, OP))
-                    .transpose()
-                    .map_err(to_napi)?,
-                error: event
-                    .error
-                    .map(|error| DispatchError::from(error).wire_message()),
-            })),
+                Ok(Some(ConnectionParametersEventInfo {
+                    kind: if event.error.is_some() {
+                        "source-failed"
+                    } else if event.missed != 0 {
+                        "lagged"
+                    } else {
+                        "state"
+                    }
+                    .to_owned(),
+                    sequence: Some(number_wire(event.sequence, OP).map_err(to_napi)?),
+                    peer_id: Some(event.peer_id),
+                    connection_generation: event.connection_generation,
+                    interval_us: (event.error.is_none() && event.missed == 0)
+                        .then_some(event.interval_us),
+                    latency: (event.error.is_none() && event.missed == 0)
+                        .then_some(u32::from(event.latency)),
+                    supervision_timeout_us: (event.error.is_none() && event.missed == 0)
+                        .then_some(event.supervision_timeout_us),
+                    missed: (event.missed != 0)
+                        .then(|| number_wire(event.missed, OP))
+                        .transpose()
+                        .map_err(to_napi)?,
+                    error: event
+                        .error
+                        .map(|error| DispatchError::from(error).wire_message()),
+                }))
+            }
             Err(TryRecvError::Empty) => Ok(None),
-            Err(TryRecvError::Lagged(missed)) => Ok(Some(gap(
-                "lagged",
-                Some(number_wire(missed, OP).map_err(to_napi)?),
-            ))),
+            Err(TryRecvError::Lagged(missed)) => {
+                // Reconciliation reads current state before polling again.
+                // Retained pre-gap records cannot follow that fresh snapshot.
+                *receiver = receiver.resubscribe();
+                Ok(Some(gap(
+                    "lagged",
+                    Some(number_wire(missed, OP).map_err(to_napi)?),
+                )))
+            }
             Err(TryRecvError::Closed) => Ok(Some(gap("closed", None))),
         }
     }
@@ -4057,10 +4067,15 @@ impl UbmCentral {
                 missed: None,
             })),
             Err(TryRecvError::Empty) => Ok(None),
-            Err(TryRecvError::Lagged(missed)) => Ok(Some(gap(
-                "lagged",
-                Some(number_wire(missed, OP).map_err(to_napi)?),
-            ))),
+            Err(TryRecvError::Lagged(missed)) => {
+                // Reconciliation reads current state before polling again.
+                // Retained pre-gap records cannot follow that fresh snapshot.
+                *receiver = receiver.resubscribe();
+                Ok(Some(gap(
+                    "lagged",
+                    Some(number_wire(missed, OP).map_err(to_napi)?),
+                )))
+            }
             Err(TryRecvError::Closed) => Ok(Some(gap("closed", None))),
         }
     }
@@ -5843,6 +5858,146 @@ impl UbmCentral {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn control_receiver_gap_discards_retained_parameter_and_readiness_events() {
+        let central = UbmCentral::open_synthetic("control-gap".into(), None)
+            .await
+            .unwrap();
+        let (parameters, parameter_receiver) = broadcast::channel(4096);
+        let (readiness, readiness_receiver) = broadcast::channel(4096);
+        *central.connection_parameters.lock().await = parameter_receiver;
+        *central.write_readiness.lock().await = readiness_receiver;
+        for sequence in 1..=4097 {
+            parameters
+                .send(ConnectionParametersEvent {
+                    sequence,
+                    peer_id: "peer".into(),
+                    connection_generation: Some("generation".into()),
+                    interval_us: 60_000,
+                    latency: 0,
+                    supervision_timeout_us: 2_000_000,
+                    error: None,
+                    missed: 0,
+                })
+                .unwrap();
+            readiness
+                .send(WriteReadinessEvent {
+                    sequence,
+                    peer_id: "peer".into(),
+                    connection_generation: Some("generation".into()),
+                    ready: false,
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            central
+                .take_connection_parameter_event()
+                .await
+                .unwrap()
+                .unwrap()
+                .kind,
+            "lagged"
+        );
+        assert_eq!(
+            central
+                .take_write_readiness_event()
+                .await
+                .unwrap()
+                .unwrap()
+                .kind,
+            "lagged"
+        );
+        assert!(central
+            .take_connection_parameter_event()
+            .await
+            .unwrap()
+            .is_none());
+        assert!(central
+            .take_write_readiness_event()
+            .await
+            .unwrap()
+            .is_none());
+        parameters
+            .send(ConnectionParametersEvent {
+                sequence: 4098,
+                peer_id: "peer".into(),
+                connection_generation: Some("generation".into()),
+                interval_us: 30_000,
+                latency: 0,
+                supervision_timeout_us: 2_000_000,
+                error: None,
+                missed: 0,
+            })
+            .unwrap();
+        readiness
+            .send(WriteReadinessEvent {
+                sequence: 4098,
+                peer_id: "peer".into(),
+                connection_generation: Some("generation".into()),
+                ready: true,
+            })
+            .unwrap();
+        assert_eq!(
+            central
+                .take_connection_parameter_event()
+                .await
+                .unwrap()
+                .unwrap()
+                .interval_us,
+            Some(30_000)
+        );
+        assert_eq!(
+            central
+                .take_write_readiness_event()
+                .await
+                .unwrap()
+                .unwrap()
+                .ready,
+            Some(true)
+        );
+        // An upstream gap marker also reconciles: old records behind it must
+        // not overwrite the fresh read, while records sent after it survive.
+        parameters
+            .send(ConnectionParametersEvent {
+                sequence: 4099,
+                peer_id: "peer".into(),
+                connection_generation: Some("generation".into()),
+                interval_us: 0,
+                latency: 0,
+                supervision_timeout_us: 0,
+                error: None,
+                missed: 2,
+            })
+            .unwrap();
+        parameters
+            .send(ConnectionParametersEvent {
+                sequence: 4100,
+                peer_id: "peer".into(),
+                connection_generation: Some("generation".into()),
+                interval_us: 60_000,
+                latency: 0,
+                supervision_timeout_us: 2_000_000,
+                error: None,
+                missed: 0,
+            })
+            .unwrap();
+        assert_eq!(
+            central
+                .take_connection_parameter_event()
+                .await
+                .unwrap()
+                .unwrap()
+                .kind,
+            "lagged"
+        );
+        assert!(central
+            .take_connection_parameter_event()
+            .await
+            .unwrap()
+            .is_none());
+        central.close().await.unwrap();
+    }
+
     #[tokio::test]
     async fn connection_parameters_dispatch_uses_the_inner_radio_answer() {
         let radio = FakeRadio::new();

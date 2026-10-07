@@ -186,3 +186,11 @@ admission. The fixture now waits under its unchanged five-second bound for
 `queuedData == 1` and no collection error before shutdown. Its original native
 release refusal, retry success, exact retained bytes, claim replay and disposed
 receipt assertions remain unchanged. Production runtime code is unchanged.
+
+Post-publication N-API parameter/readiness broadcast lag now resets the receiver
+to the current tail before reporting a reconciliation gap. Parameter upstream
+gap markers use the same boundary. This discards retained pre-gap measurements
+that could otherwise follow the provider's fresh reread. The regression invokes
+the actual N-API polling methods after 4,097 records overflow their 4,096-record
+receivers, verifies old records are absent, verifies later parameter/readiness
+observations survive, and checks the separate upstream parameter gap path.
