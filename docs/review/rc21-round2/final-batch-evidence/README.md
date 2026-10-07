@@ -69,3 +69,12 @@ unchanged deadline before shutdown. `tauri-shutdown-final-tests.log` passes all
 test-only layout/type/style diagnostics in unchanged code are outside the
 Tauri owning CI Clippy command; no lint suppression or gate change was made.
 Native identity inputs and production runtime code remain unchanged.
+
+N-API control-gap correction: direct production polling regression passes after
+4,097 records overflow each 4,096-event control receiver, followed by post-boundary
+events and upstream parameter gap. All 68 N-API Rust tests and all-targets Clippy
+pass. Local public parameter/readiness tests initially refuse the stale addon
+identity; the owning package refresh then stops on unrelated already-stale
+Apple artifacts before addon refresh. Both failures are retained, not counted
+as passes. The provider-only ordering suite passes 10 tests. Clean final CI
+remains required for joined public/native qualification of the new identity.

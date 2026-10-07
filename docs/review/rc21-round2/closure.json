@@ -1837,7 +1837,7 @@
       "id": "R2-34",
       "priority": "P2",
       "required_outcome": "Forward native parameters through real and synthetic NAPI radios; test joined read/watch route",
-      "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
+      "implementation_commit": "90d6005153f6d1c8272dc45b400e0ac868594928",
       "implementation": ["bindings/napi/src/dispatch.rs"],
       "regression_suites": [
         "__tests__/backends/desktop/desktop-dispatch-radio-forwarding.test.js",
@@ -1847,7 +1847,7 @@
       "historical_evidence": "Real/synthetic DispatchRadio forwarding and actual joined public parameter read/watch tests pass in package and three-OS packed Node/Bun jobs at 345833ce. Final-head same-source replay pending.",
       "previous_findings": ["F17"],
       "implementation_blobs": {
-        "bindings/napi/src/dispatch.rs": "df0eec80c45df3f7d585bb269c679e53f06e52e7"
+        "bindings/napi/src/dispatch.rs": "0b202c04bcc1d5343d067d15b955ce983fc37974"
       },
       "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
       "regression_names": {
@@ -2022,6 +2022,14 @@
       "correction": "Wait for authoritative continuation queuedData == 1 before shutdown instead of a native ingress wake. Keep unchanged five-second bound and all existing cleanup retry/exact bytes/replay/disposal assertions. No production runtime changes.",
       "tests": "All 171 Tauri library tests pass locally; Windows current-head CI remains required.",
       "receipt": "final-batch-evidence/tauri-shutdown-final-tests.log"
+    },
+    "napi_control_gap": {
+      "source_head": "90d6005153f6d1c8272dc45b400e0ac868594928",
+      "thread": "discussion_r4213141816",
+      "implementation": "bindings/napi/src/dispatch.rs",
+      "regression": "control_receiver_gap_discards_retained_parameter_and_readiness_events",
+      "verification": "Actual native polling regression, 68 NAPI Rust tests and all-targets Clippy pass. Provider ordering tests pass. Joined local public tests blocked by stale addon; owning package refresh blocked by unrelated old Apple artifacts. New-identity joined qualification remains required in final CI.",
+      "receipt": "final-batch-evidence/napi-control-gap-full-tests.log"
     }
   },
   "previous_review_dispositions": [

@@ -1,0 +1,55 @@
+FAIL __tests__/backends/desktop/desktop-public-write-readiness.test.js
+  ● public readiness writes retain owned bytes and native order until the radio is ready
+
+    BackendContractError: protocol.incompatible: direct-gatt.native-boundary.version
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at identityFailure (src/desktop-core-addon.ts:169:23)
+      at identityFailure (src/desktop-core-addon.ts:212:11)
+      at verifyDesktopCoreIdentity (src/desktop-core-addon.ts:390:20)
+      at Object.bindDesktopCore [as realBinding] (__tests__/helpers/desktop-rust-core-harness.js:62:17)
+      at Object.realBinding (__tests__/backends/desktop/desktop-public-write-readiness.test.js:14:21)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at Object.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+
+FAIL __tests__/backends/desktop/desktop-public-parameters.test.js
+  ● public parameter read and watch reach the inner NAPI radio
+
+    BackendContractError: protocol.incompatible: winrt.native-boundary.version
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at identityFailure (src/desktop-core-addon.ts:169:23)
+      at identityFailure (src/desktop-core-addon.ts:212:11)
+      at verifyDesktopCoreIdentity (src/desktop-core-addon.ts:390:20)
+      at Object.bindDesktopCore [as realBinding] (__tests__/helpers/desktop-rust-core-harness.js:62:17)
+      at Object.realBinding (__tests__/backends/desktop/desktop-public-parameters.test.js:15:21)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at Object.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+
+PASS __tests__/backends/desktop/parameter-watch-ordering.test.js
+
+Test Suites: 2 failed, 1 passed, 3 total
+Tests:       2 failed, 10 passed, 12 total
+Snapshots:   0 total
+Time:        0.76 s, estimated 1 s
+Ran all test suites matching /__tests__\/backends\/desktop\/desktop-public-parameters.test.js|__tests__\/backends\/desktop\/parameter-watch-ordering.test.js|__tests__\/backends\/desktop\/desktop-public-write-readiness.test.js/i.

@@ -1,0 +1,82 @@
+   Compiling ubm5_napi_echo v0.1.0 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/bindings/napi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.28s
+     Running unittests src/lib.rs (target/debug/deps/ubm5_napi_echo-c26cd9c398ad3465)
+
+running 68 tests
+test core_backend::tests::cancel_after_close_rejects_destroyed ... ok
+test core_backend::tests::destroy_drives_shutdown_and_is_idempotent ... ok
+test core_backend::tests::byte_batch_round_trip_is_owned ... ok
+test core_backend::tests::armed_cancel_aborts_next_dispatch ... ok
+test core_backend::tests::empty_batch_round_trips ... ok
+test core_backend::tests::cancel_before_start_aborts ... ok
+test core_backend::tests::close_invalidates_loudly ... ok
+test core_backend::tests::driving_gates_on_lifetime ... ok
+test core_backend::tests::oversize_batch_rejects_with_bytes_too_large ... ok
+test core_backend::tests::monotonic_ms_parses_like_the_counter_path ... ok
+test core_backend::tests::revision_is_the_frozen_contract ... ok
+test core_backend::tests::revision_mismatch_rejects_loudly ... ok
+test core_backend::tests::cleanup_wire_codec_exercises_real_core_records ... ok
+test core_backend::tests::max_size_batch_round_trips ... ok
+test core_backend::tests::seam_holds_for_the_wired_core ... ok
+test core_backend::tests::expire_sweep_drives_the_kernel ... ok
+test core_backend::tests::session_holds_a_real_central ... ok
+test core_backend::tests::superseded_revision_rejects_loudly ... ok
+test core_backend::tests::u64_garbage_rejects_with_input_detail ... ok
+test core_backend::tests::u64_overflow_rejects_with_range_detail ... ok
+test core_backend::tests::wire_message_names_code_domain_operation ... ok
+test core_backend::tests::unwired_transitions_reject_with_capability_unsupported ... ok
+test core_backend::tests::u64_extremes_are_lossless ... ok
+test core_backend::tests::staged_surface_drives_synthetic_scan_and_reports_accounting ... ok
+test dispatch::tests::build_identity_is_the_frozen_schema_with_the_core_revision ... ok
+test dispatch::tests::bluez_connection_policy_is_explicit_and_fail_closed ... ok
+test dispatch::tests::delivery_mode_parses_requirements_and_rejects_loudly ... ok
+test dispatch::tests::desktop_error_carries_outcome_facts_on_the_wire ... ok
+test dispatch::tests::capability_states_answer_per_desktop_os ... ok
+test dispatch::tests::desktop_error_identity_passes_through_verbatim ... ok
+test dispatch::tests::advertisement_mapping_preserves_nulls_and_bytes ... ok
+test dispatch::tests::dispatch_error_wire_form_is_frozen ... ok
+test dispatch::tests::dispatch_forwards_transport_cleanup_failure_and_retry ... ok
+test dispatch::tests::dispatch_radio_forwards_the_unflagged_subscribe_answer ... ok
+test dispatch::tests::connection_parameters_dispatch_uses_the_inner_radio_answer ... ok
+test dispatch::tests::disconnect_dispatch_preserves_and_consumes_own_native_observation ... ok
+test dispatch::tests::fault_op_parses_every_gate_and_rejects_loudly ... ok
+test dispatch::tests::half_open_shutdown_receipt_preserves_the_native_failure ... ok
+test dispatch::tests::lifecycle_projection_preserves_platform_detail_without_changing_the_public_kind ... ok
+test dispatch::tests::platform_check_accepts_only_the_compiled_radio ... ok
+test dispatch::tests::platform_detail_crosses_the_wire_as_one_pipe_free_json_field ... ok
+test dispatch::tests::priority_dispatch_reaches_the_synthetic_radio_for_every_preset ... ok
+test dispatch::tests::bonded_directory_dispatch_preserves_no_link_native_facts ... ok
+test dispatch::tests::deferred_connect_dispatch_uses_shared_native_lease_authority ... ok
+test dispatch::tests::directory_dispatch_preserves_os_facts_without_native_lease ... ok
+test dispatch::tests::selector_rejects_malformed_uuids ... ok
+test dispatch::tests::staged_gatt_accesses_report_exact_instances_grouped_by_kind ... ok
+test dispatch::tests::staged_occurrences_beyond_u32_fail_loudly ... ok
+test dispatch::tests::staged_service_graph_preserves_explicit_null_as_unknown ... ok
+test dispatch::tests::staged_services_keep_occurrences ... ok
+test dispatch::tests::staged_snapshot_validates_ranges ... ok
+test dispatch::tests::caller_release_removes_only_its_notification_consumer ... ok
+test dispatch::tests::close_retries_half_open_cleanup_without_losing_its_native_cause ... ok
+test dispatch::tests::gatt_admission_and_disconnect_keep_the_actual_callers_lease ... ok
+test dispatch::tests::control_receiver_gap_discards_retained_parameter_and_readiness_events ... ok
+test dispatch::tests::effective_mtu_crosses_the_boundary ... ok
+test dispatch::tests::security_address_and_write_limits_cross_the_boundary ... ok
+test dispatch::tests::synthetic_stop_scan_targets_only_its_own_scan ... ok
+test dispatch::tests::rssi_adapter_state_and_events_cross_the_boundary ... ok
+test dispatch::tests::write_mode_defaults_and_rejects_loudly ... ok
+test core_backend::tests::cancel_mid_flight_aborts_worker_thread ... ok
+test dispatch::tests::ticket_cancel_before_admission_aborts_without_a_radio_call ... ok
+test dispatch::tests::subscribe_carries_the_requirement_and_reports_the_observation ... ok
+test dispatch::tests::runtime_capability_rows_preserve_instance_refusal_not_static_platform_truth ... ok
+test dispatch::tests::ticket_cancel_forwards_to_the_blocked_operation ... ok
+test dispatch::tests::trusted_recording_controls_use_shared_persisted_cursor ... ok
+test dispatch::tests::synthetic_flow_runs_ops_in_rust ... ok
+test dispatch::tests::synthetic_timeout_and_dispose_refuse_loudly ... ok
+
+test result: ok. 68 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+   Doc-tests ubm5_napi_echo
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

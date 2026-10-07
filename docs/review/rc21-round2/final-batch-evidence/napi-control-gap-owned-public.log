@@ -1,0 +1,57 @@
+
+> unified-ble-manager@5.0.0-rc.21 pretest:package /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> pnpm prepack && node scripts/ci/build-napi-addon.js
+
+
+> unified-ble-manager@5.0.0-rc.21 prepack /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> node scripts/ci/build-package.js
+
+
+> unified-ble-manager@5.0.0-rc.21 clean:plugin /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> del-cli plugin/build
+
+
+> unified-ble-manager@5.0.0-rc.21 native-protocol:check /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> node scripts/native-protocol/generate-native-protocol.js --check
+
+
+> unified-ble-manager@5.0.0-rc.21 validate:evidence /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> node scripts/evidence/validate-current-evidence.js
+
+Evidence manifest validation passed for 3 file(s).
+native-build-identity: current (src/generated/native-build-identity.ts)
+
+> unified-ble-manager@5.0.0-rc.21 build:plugin /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> tsc --build plugin
+
+ℹ [commonjs] Cleaning up previous build at lib/commonjs
+ℹ [module] Cleaning up previous build at lib/module
+ℹ [typescript] Cleaning up previous build at lib/typescript
+ℹ [typescript] Generating type definitions with tsc
+ℹ [commonjs] Compiling 331 files in src with babel
+ℹ [module] Compiling 331 files in src with babel
+✔ [module] Wrote files to lib/module
+✔ [commonjs] Wrote files to lib/commonjs
+✔ [typescript] Wrote definition files to lib/typescript
+native-build-identity: staged uniffi artifacts were not built from these sources:
+  sourceDigest: staged "c92434b50479d4d7ffbd634ef80c9c90e3fffe8e57ff3c081697ee86d98e236c", sources c1078d725c567a19ee2fcc584aa7c9eb996a9ba7cbcdef948408fff6e6c1d4ed
+Rebuild them:
+  UBM_NATIVE_BUILD=source pnpm --dir /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21 native:apple:prepare   (or: sh /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/ios/build-rust-core.sh)
+/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/scripts/ci/build-package.js:24
+    throw new Error(`${command} ${args.join(' ')} failed with exit code ${String(result.status)}`)
+    ^
+
+Error: /Users/sfourdrinier/.nvm/versions/node/v22.23.2/bin/node scripts/release/generate-build-fingerprint.js failed with exit code 1
+    at run (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/scripts/ci/build-package.js:24:11)
+    at Object.<anonymous> (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/scripts/ci/build-package.js:41:1)
+    at Module._compile (node:internal/modules/cjs/loader:1781:14)
+    at Object..js (node:internal/modules/cjs/loader:1913:10)
+    at Module.load (node:internal/modules/cjs/loader:1505:32)
+    at Function._load (node:internal/modules/cjs/loader:1309:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:254:19)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)
+    at node:internal/main/run_main_module:36:49
+
+Node.js v22.23.2
+ ELIFECYCLE  Command failed with exit code 1.
+ ELIFECYCLE  Command failed with exit code 1.
