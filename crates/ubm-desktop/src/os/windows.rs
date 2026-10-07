@@ -59,9 +59,9 @@ use super::winrt_cleanup::{
     CallbackGate, CleanupStages, PeerAdmission, RetryVault, release_session_stages, retain_failed,
 };
 use super::winrt_model::{
-    AdapterPresence, ListedAdapter, PairingStatus, PresenceChange, PresenceReport, RadioAccess,
-    UnpairingStatus, address_of_peer, deployment_from_status, pairing_status, radio_access,
-    select_listed, unpairing_status,
+    AdapterPresence, DirectoryQuery, ListedAdapter, PairingStatus, PresenceChange, PresenceReport,
+    RadioAccess, UnpairingStatus, address_of_peer, deployment_from_status, pairing_status,
+    radio_access, select_listed, unpairing_status,
 };
 use crate::boundary::{
     AdapterLossCause, BondState, HostDeployment, PairOutcome, RadioEvent, SecurityState,
@@ -175,22 +175,6 @@ pub(crate) struct WinRt {
     sessions: StdMutex<HashMap<String, Vec<Maintained>>>,
     session_admission: PeerAdmission,
     adapter_watch: StdMutex<Option<AdapterWatch>>,
-}
-
-#[derive(Clone, Copy)]
-enum DirectoryQuery {
-    Known,
-    Connected,
-    Bonded,
-}
-impl DirectoryQuery {
-    fn operation(self) -> &'static str {
-        match self {
-            Self::Known => "peers.known",
-            Self::Connected => "peers.connected",
-            Self::Bonded => "peers.bonded",
-        }
-    }
 }
 
 impl WinRt {
@@ -343,7 +327,7 @@ impl WinRt {
         )
         .map_err(|error| winrt(OP, error))?;
         Ok((
-            (!known).then_some("winrt-known-directory-api-unavailable"),
+            (!known || !connected).then_some("winrt-known-directory-api-unavailable"),
             (!connected).then_some("winrt-connected-directory-api-unavailable"),
         ))
     }
@@ -368,26 +352,36 @@ impl WinRt {
             )
             .with_detail(limitation));
         }
-        let selector = match kind {
-            DirectoryQuery::Bonded => BluetoothLEDevice::GetDeviceSelectorFromPairingState(true),
-            DirectoryQuery::Known => BluetoothLEDevice::GetDeviceSelector(),
-            DirectoryQuery::Connected => BluetoothLEDevice::GetDeviceSelectorFromConnectionStatus(
-                BluetoothConnectionStatus::Connected,
-            ),
-        }
-        .map_err(|error| winrt(operation, error))?;
-        let devices = DeviceInformation::FindAllAsyncAqsFilter(&selector)
-            .map_err(|error| winrt(operation, error))?
-            .await
+        // The generic LE selector omits some currently connected, unpaired
+        // peers. Include the native connected inventory without starting the
+        // unpaired discovery selector (which can initiate a radio scan).
+        let mut devices = Vec::new();
+        for scope in kind.scopes() {
+            let selector = match scope {
+                DirectoryQuery::Bonded => {
+                    BluetoothLEDevice::GetDeviceSelectorFromPairingState(true)
+                }
+                DirectoryQuery::Known => BluetoothLEDevice::GetDeviceSelector(),
+                DirectoryQuery::Connected => {
+                    BluetoothLEDevice::GetDeviceSelectorFromConnectionStatus(
+                        BluetoothConnectionStatus::Connected,
+                    )
+                }
+            }
             .map_err(|error| winrt(operation, error))?;
-        let devices: Vec<_> = devices.into_iter().collect();
-        if devices.len() > 4096 {
-            return Err(DesktopError::new(
-                BleErrorCode::CapabilityLimited,
-                BleErrorDomain::Capability,
-                operation,
-            )
-            .with_detail("the native peer directory exceeds its 4096-record bound"));
+            let records = DeviceInformation::FindAllAsyncAqsFilter(&selector)
+                .map_err(|error| winrt(operation, error))?
+                .await
+                .map_err(|error| winrt(operation, error))?;
+            devices.extend(records.into_iter());
+            if devices.len() > 4096 {
+                return Err(DesktopError::new(
+                    BleErrorCode::CapabilityLimited,
+                    BleErrorDomain::Capability,
+                    operation,
+                )
+                .with_detail("the native peer directory exceeds its 4096-record bound"));
+            }
         }
         let mut peers = Vec::new();
         for information in devices {

@@ -99,6 +99,8 @@ pub mod connection_parameters_source;
 mod discovery_reservations;
 #[cfg(any(target_os = "windows", test))]
 mod request_lifetime;
+#[cfg(any(target_os = "windows", test))]
+mod active_operations;
 
 /// UBM patch (UBM_PATCHES.md #10): the notification stream every platform
 /// peripheral hands out, exported so the desktop core's tests drive the

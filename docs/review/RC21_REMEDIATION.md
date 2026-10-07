@@ -1,6 +1,12 @@
 # PR #251 rc.21 remediation
 
-Status: Current working record. No item is closed merely because its implementation changed.
+Status: Incomplete. All 35 review items remain tracked in existing PR #251.
+Checkpoint `345833ce3f4b220c06e8055bd8115dd3d3e071d5` passes complete CI and
+non-publishing candidate qualification. The current directory/native-lifetime follow-up passes local combined checks;
+its clean preflight, Windows compilation and live replay remain pending.
+The previous live Windows Bun discovery and native disconnect stalled; remaining
+Linux lifecycle scenarios are still required. Historical receipts below do not
+establish final closure.
 
 Review baseline: `b80542f39144949738b04dc7d19b4a7ee52cc8c6`.
 Remediation baseline: `a94bee1e3c875c3471000f26b42555776d74f5b3`.
@@ -73,12 +79,13 @@ scenarios reproduced and all six positive controls passed.
 functions against controlled boundaries; they demonstrate control-flow decisions,
 not measured controller teardown or physical-radio qualification.
 
-Read-only lab inventory found a configured Linux host with BlueZ build dependencies,
+The initial read-only lab inventory found a configured Linux host with BlueZ build dependencies,
 a running `5.87-ubm.9` daemon, one host controller and a simulated Polar H10
 controller. That simulation is not a physical peripheral receipt. Local mobile
 tools expose iOS 18.2/26.5 simulators and an Android API 36.0 emulator, with no
 physical device listed. SDK 36.1 hardware qualification and Windows radio access
-are not established by that inventory. No installed daemon has been changed.
+were not established by that initial inventory. Subsequent owner-approved daemon
+activation and Windows VM execution are recorded below and in the live plan.
 
 Write regression coverage before implementation. Complete fixes and documentation,
 freeze the batch, then execute the combined gates. A failed gate reopens the affected
@@ -430,3 +437,116 @@ The non-publishing checkpoint-4c matrix run `37652011165` is completely green,
 including source regression and every exact-candidate consumer. Its results do
 not replace the next same-head checkpoint's clean Linux preflight, CI, complete
 five-target candidate or required live Linux qualification.
+
+Checkpoint `345833ce3f4b220c06e8055bd8115dd3d3e071d5` passes full clean Linux
+preflight in 823 seconds, including both Android builds. Its non-publishing
+five-target candidate run `37657118093` is completely green. CI run
+`37657113666` passes all four JS lanes, three desktop Rust lanes, three Tauri
+lanes and joined packed Node/Bun public routes on all three desktop OSes; Apple
+jobs remain in progress at this receipt. Windows recording setup and original
+count/loss/order assertions pass without changing the original budget; response
+admission is 2,174 ms. This still does not establish the original review-head
+timeout's root cause.
+
+The user explicitly approved BlueZ activation/live tests and use of the existing
+Windows VM. The live plan records actual installed daemon, rollback, native
+controller and public operation receipts, including failed setup attempts and
+genuine Windows API/hardware refusals. Not every Linux or Windows qualification
+scenario has passed. During Windows execution, the public directory capability
+descriptions incorrectly included CoreBluetooth-only restrictions despite native
+unfiltered inventory queries succeeding. New public-provider regressions require
+those restrictions only on CoreBluetooth; the provider declaration, guide and
+changelog are corrected in the current collected follow-up batch. This reopens
+the source verification batch; no item is declared finally closed and final closure remains pending.
+
+CI `37657113666` subsequently completed successfully, including all three Apple
+jobs, at checkpoint 345833ce. Live Windows Node CJS and ESM pass supported scan
+admission, explicit native None/extended refusals, parameter read/watch and preset
+requests, GATT battery/HR operations, inventory and zero-counter cleanup. The
+full runtime matrix does not pass: Bun's instrumented discovery invocation
+exceeded the external 120-second deadline. Its parameter watch had already
+returned successfully; a second invocation without controls still reaches
+discovery, continues JS timer heartbeats, then waits in connection cleanup after
+the outer discovery deadline. The exact failed invocations are retained; they
+are not classified as harmless or conclusively Bun-specific. A matched Node
+control is in progress.
+
+A separate foreign WinRT GattSession establishes the controlled unpaired link
+before a fresh public manager exists. System-connected retrieval finds it, but
+resolving its returned typed reference returns null because the generic known
+selector omits it. The native known route now combines generic and connected
+inventories, preserving bounded retention, runtime API admission, per-object
+cleanup and typed identity. It does not invoke the unpaired discovery selector
+that could start a scan. A portable production query-plan regression and the
+retained actual public failing round-trip probe precede the implementation
+correction. Owning artifact refresh and complete combined verification of these
+collected corrections remain pending.
+
+The matched Node control subsequently completes native discovery (48 registered
+paths) and native disconnect against the same foreign-owned Windows link where
+Bun stalls. Its later scan-mode refusal assertion fails independently; that
+qualifier failure is retained and does not erase the completed discovery and
+release evidence. Bun's native discover promise reports `operation.timed-out`
+for `discovery.complete` at the original 25-second budget. Its following native
+`disconnect` call starts and remains unsettled beyond the native cleanup budget,
+while JS heartbeat timers continue. The 120-second external guardian terminates
+only the owned test process. This is a real incomplete runtime qualification;
+its cause has not been established. Isolated Microsoft-signed debugger tools
+are being used to capture the blocked native operation before selecting a fix.
+
+The owner clarified that remediation belongs in existing PR #251, not a separate
+PR. Its release branch was fast-forwarded from a94bee1e to verified checkpoint
+345833ce, integrating all previously committed remediation without overwriting
+other work. Remaining corrections will use the same PR and release branch.
+
+The retained native stack proves that the interrupted Bun discovery's subsequent
+service close waits inside Windows `GattDeviceService.CloseServiceResources`.
+An additional lock-enumeration diagnostic exceeded its 30-second tool deadline;
+it supplies no additional lock-owner evidence and its owned test and foreign
+session were stopped/released. The collected source correction adds a shared
+native discovery operation registry, cancellation requests on interrupted awaits,
+terminal-state retirement before service close, retained cancellation refusal,
+query-stage metadata and cleanup retry. It also retains the native device before
+connect awaits discovery and rejects replacement while an old query is active.
+Portable retirement and truthful-error regressions precede implementation.
+Neither the directory nor native lifetime follow-up is verified yet; this draft
+must pass owning refresh, the combined gates and affected live replay before
+integration into PR #251.
+
+## Current directory/native-lifetime batch receipt
+
+The collected source batch based on `5a7de4fddacc85bb4ae2ba27c78545c4e40852af`
+passes the final full package run: **430 suites / 5,414 tests, zero failures**.
+This includes the additional IPC control-event connection/generation identity and
+renderer receipt-clock regression in that committed head. Workspace all-target
+execution sums 80 blocks / 1,209 passes / zero failures / three ignored; the
+vendored library separately passes 63 tests, including interrupted discovery
+retirement controls. These counts are execution totals, not a deduplicated test
+inventory. Workspace clippy, Windows-target vendored clippy, doctests, plugin
+(7 suites / 67 tests), lint/typecheck, evidence, owning native status, prepack and
+release-artifact checks pass. Owning refresh seals local desktop source digest
+`81f597ddc8bfd9f40b7d329ee115e34aa4d972d04cbc4b10af1375eb7f3d89e5`.
+
+Two broader local checks remain failed, with receipts retained: the complete
+pack-install smoke requires the four other-OS prebuilds absent from the local
+macOS artifact set; Windows NAPI route cross-compilation on macOS stops at the
+bundled SQLite C compiler's missing Windows SDK `stdlib.h`. Neither gate is
+weakened or claimed passed. The clean Linux preflight and actual Windows/five-
+target candidate workflow must supply the remaining verification.
+
+Actual installed BlueZ ownership qualification now passes an accepted foreign
+read held before the first UBM lease: protected release/ACK retains the physical
+link while ATT work is active, then physically releases it after completion with
+the foreign sender still alive. A second live scenario ends an unleased generation
+through the remote controller, keeps its old read sender alive, and verifies a
+new lease can physically release: old-generation interest does not protect the
+replacement. Both restore the exact prior kernel auto-connect inventory. These
+use actual daemon/D-Bus/ATT and two native controllers with an application-
+simulated peripheral; they do not establish a physical production-peripheral
+qualification or measure internal daemon storage directly.
+
+The relevant logs, Linux scenario scripts and SHA-256 receipts are retained in
+`rc21-round2/eleventh-batch-evidence/`. Failed prior attempts remain retained in
+the original working evidence directory. Windows live discovery/cleanup and
+unpaired reference round trips, remaining Linux acquired-FD/pairing scenarios,
+final-head gates and the complete per-item closure audit remain outstanding.

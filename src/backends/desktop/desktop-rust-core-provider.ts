@@ -5829,14 +5829,18 @@ export function createDesktopRustCoreFeatureRegistry(
         sourceDigest: `${profile.platform}-rust-core-peer-known-v1`,
         tckSuiteId: 'capability.catalog-v2',
         requiredScenarioIds: [...desktopRustCoreSuiteScenarios('capability.catalog-v2')],
-        limitations: [
-          {
-            code: 'references-required',
-            explanation:
-              'Known peer retrieval resolves explicit application-scoped references; it does not enumerate every OS-known peer.',
-            affectedGuarantee: 'unfiltered OS-known enumeration'
-          }
-        ]
+        ...(profile.platform === 'corebluetooth'
+          ? {
+              limitations: [
+                {
+                  code: 'references-required',
+                  explanation:
+                    'Known peer retrieval resolves explicit application-scoped references; it does not enumerate every OS-known peer.',
+                  affectedGuarantee: 'unfiltered OS-known enumeration'
+                }
+              ]
+            }
+          : {})
       })
     )
   }
@@ -5848,14 +5852,18 @@ export function createDesktopRustCoreFeatureRegistry(
         sourceDigest: `${profile.platform}-rust-core-peer-system-connected-v1`,
         tckSuiteId: 'capability.catalog-v2',
         requiredScenarioIds: [...desktopRustCoreSuiteScenarios('capability.catalog-v2')],
-        limitations: [
-          {
-            code: 'services-required',
-            explanation:
-              'CoreBluetooth requires one or more service UUIDs for its system-connected directory. Retrieval does not acquire a connection lease.',
-            affectedGuarantee: 'unfiltered system-connected enumeration'
-          }
-        ]
+        ...(profile.platform === 'corebluetooth'
+          ? {
+              limitations: [
+                {
+                  code: 'services-required',
+                  explanation:
+                    'CoreBluetooth requires one or more service UUIDs for its system-connected directory. Retrieval does not acquire a connection lease.',
+                  affectedGuarantee: 'unfiltered system-connected enumeration'
+                }
+              ]
+            }
+          : {})
       })
     )
   }

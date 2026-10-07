@@ -1,0 +1,5 @@
+
+> unified-ble-manager@5.0.0-rc.21 release:artifacts:check /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> node scripts/release/generate-dependency-artifacts.js --check
+
+release dependency artifacts are current (2 files)

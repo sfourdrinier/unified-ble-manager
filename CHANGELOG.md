@@ -4,6 +4,23 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.0-rc.21] - 2026-10-05
 
+- Retain interrupted Windows native service, characteristic, inclusion and
+  descriptor queries until Windows reports completion. Discovery cancellation
+  requests native cancellation; pending work or a cancellation refusal prevents
+  service close and stays owned for cleanup retry. Connection admission retains
+  the native owner before awaiting discovery. A cleanup refusal does not invent
+  a lost connection. Combined and live verification remains pending.
+
+- Scope reference-only known-peer and service-filtered connected-peer capability
+  restrictions to CoreBluetooth. Linux and Windows independent native inventories
+  no longer report those unrelated restrictions. The collected qualification
+  follow-up remains under verification.
+
+- Include Windows' native connected inventory in known-peer retrieval so a
+  connected, unpaired peer returned by the system directory can resolve on a
+  fresh manager. Retrieval starts no unpaired discovery scan and acquires no
+  connection lease. Live round-trip verification of the correction is pending.
+
 - Report the documented `operation.reset` when adapter-loss teardown settles
   pending operations. Native ownership remains retained until
   acknowledgment; dispatched writes retain uncertain commit state and are never

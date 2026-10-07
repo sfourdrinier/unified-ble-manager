@@ -106,6 +106,10 @@ test('directory lookup acquires no lease; explicit public owners share and relea
   try {
     await stage.stageServices(ID, h.hrmServices())
     expect(manager.capabilities.supports('peer:system-connected')).toBe(true)
+    expect(manager.capabilities.get('peer:known').limitations.map(row => row.code)).toContain('references-required')
+    expect(manager.capabilities.get('peer:system-connected').limitations.map(row => row.code)).toContain(
+      'services-required'
+    )
     const [peer] = await manager.peers.connected({ services: ['180d'], timeoutMs: 1000 })
     expect(calls('connectedPeers')[0][1][0]).toMatchObject({
       ticket: expect.any(String),
@@ -178,6 +182,12 @@ test.each([
     )
     const stage = harness.opened.at(-1)
     try {
+      expect(manager.capabilities.get('peer:known').limitations.map(row => row.code)).not.toContain(
+        'references-required'
+      )
+      expect(manager.capabilities.get('peer:system-connected').limitations.map(row => row.code)).not.toContain(
+        'services-required'
+      )
       await stage.stageKnownDirectoryPeers([{ peerId, name: 'unbonded OS-visible peer' }])
       await stage.stageDirectoryPeers([{ peerId, name: 'foreign app connected peer' }])
       const [known] = await manager.peers.known()

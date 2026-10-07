@@ -1,0 +1,78 @@
+[
+  {
+    "file": "eleventh-directory-lifetime-package-final-head.log",
+    "sha256": "45fa67de09e64bf74662a66ac731d8b4d0c8c00d5be5670a726c6b0b1c090abd"
+  },
+  {
+    "file": "eleventh-directory-lifetime-workspace-tests.log",
+    "sha256": "040e3a097b395e2f8d1087f56d5fa60f54b2019f82d7ac48c359d2025adacbe0"
+  },
+  {
+    "file": "eleventh-directory-lifetime-vendor-tests.log",
+    "sha256": "75fe3ef606a35a4bb6884b7a0f6b042f4f3100ed53471a1493538e6fd35e2e6e"
+  },
+  {
+    "file": "eleventh-directory-lifetime-doctests.log",
+    "sha256": "d05fddff839011e7a9d1a25ccd8e1dada3fb53b6c648b6d20150da16fc7c07dd"
+  },
+  {
+    "file": "eleventh-directory-lifetime-workspace-clippy.log",
+    "sha256": "5f2433d4a84ecac3dbaad0bb69cac162cb67b1bc5d01a538660032fde1ef4002"
+  },
+  {
+    "file": "eleventh-directory-lifetime-winrt-clippy-replay.log",
+    "sha256": "1b7623ec99d73c20f8cff53e33d2183d849d8f5e268aeea069a40ab9a017f5c5"
+  },
+  {
+    "file": "eleventh-directory-lifetime-winrt-route-clippy.log",
+    "sha256": "63e009ed9f4029fd45dd681239d4430f84af15c32c63b461bbcd0aa1fff6d89b"
+  },
+  {
+    "file": "eleventh-directory-lifetime-native-refresh-final.log",
+    "sha256": "4531969eca2ac148600ce167999838d9089d720d7853fe2c1eb482848fc60a83"
+  },
+  {
+    "file": "eleventh-directory-lifetime-native-status.log",
+    "sha256": "ede40fa47c3c3b6ca2f438310e65403a1585b6e770892d3f9aa3b6f1a730913a"
+  },
+  {
+    "file": "eleventh-directory-lifetime-plugin.log",
+    "sha256": "0774d9f4e3c894fef477e3f8a5ae0c5672e33973f7a1de7bf2c47e76b188f668"
+  },
+  {
+    "file": "eleventh-directory-lifetime-lint.log",
+    "sha256": "2899c590c9f244fa6334e5df29af65eb7cb3aa3bd8a3098d7c888afd07884d86"
+  },
+  {
+    "file": "eleventh-directory-lifetime-evidence.log",
+    "sha256": "c1b3a111df3aa5e99c7d0809f94bd2bf4ebb6c799d502f5389f06dd6d022ef22"
+  },
+  {
+    "file": "eleventh-directory-lifetime-prepack.log",
+    "sha256": "cbe1705274011e0f2b86348f26a031118a716f1b98589fb4266892eef2fab154"
+  },
+  {
+    "file": "eleventh-directory-lifetime-artifacts.log",
+    "sha256": "0841035cd9841e398a1a2eb791bff3dbdf3df0e66345a975b7f6384d5a0ee5ea"
+  },
+  {
+    "file": "eleventh-directory-lifetime-pack-install.log",
+    "sha256": "7986d9bb9e4e7b0551c38ebdca16a6797e0fe573e906f189e93a0a2dea08da26"
+  },
+  {
+    "file": "bluez-live-prelease-read-autoconnect-345833ce.log",
+    "sha256": "af7995d00b751b167cac39626abaf03dc6ad1d2a6a35f930b59522eed1fd3a99"
+  },
+  {
+    "file": "bluez-live-prelease-generation-loss-345833ce.log",
+    "sha256": "348fc4921677cb7672d80dc95fff4a1ca969760734bb72d3154f8ae6380a5abb"
+  },
+  {
+    "file": "bluez-live-prelease-read-autoconnect.py",
+    "sha256": "97dac94f530c2be417cb9a6c9dad3ef5212a201529f57778825778ae50f9ab69"
+  },
+  {
+    "file": "bluez-live-prelease-generation-loss.py",
+    "sha256": "90bd765391912dcc9770d7a0da8fa14ccd56091ec5218b58c07be04867264405"
+  }
+]

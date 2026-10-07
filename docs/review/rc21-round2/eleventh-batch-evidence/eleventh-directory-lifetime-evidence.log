@@ -1,0 +1,5 @@
+
+> unified-ble-manager@5.0.0-rc.21 validate:evidence /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> node scripts/evidence/validate-current-evidence.js
+
+Evidence manifest validation passed for 3 file(s).

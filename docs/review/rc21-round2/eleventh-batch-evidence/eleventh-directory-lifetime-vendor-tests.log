@@ -1,0 +1,81 @@
+    Blocking waiting for file lock on build directory
+   Compiling btleplug v0.12.0 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/vendor/btleplug)
+warning: use of deprecated method `futures::futures_channel::mpsc::Receiver::<T>::try_next`: please use `try_recv` instead
+    --> vendor/btleplug/src/corebluetooth/internal.rs:2271:29
+     |
+2271 |             matches!(events.try_next(), Ok(None)),
+     |                             ^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+warning: `btleplug` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.06s
+     Running unittests src/lib.rs (target/debug/deps/btleplug-ebbf292ea8d4aa01)
+
+running 63 tests
+test api::bdaddr::tests::u64_to_addr ... ok
+test api::bdaddr::tests::addr_to_u64 ... ok
+test api::bleuuid::tests::to_short_string_u16 ... ok
+test api::bleuuid::tests::to_short_string_long ... ok
+test api::bdaddr::tests::display_addr ... ok
+test api::bdaddr::tests::invalid_u64_to_addr ... ok
+test api::bdaddr::tests::parse_addr ... ok
+test active_operations::tests::successful_query_does_not_cancel_and_does_not_retire_another_pending_query ... ok
+test active_operations::tests::interrupted_query_requests_cancel_but_cannot_close_its_service_until_terminal ... ok
+test active_operations::tests::cancel_refusal_is_reported_and_exact_operation_remains_owned_for_retry ... ok
+test api::bleuuid::tests::to_short_string_u32 ... ok
+test api::bleuuid::tests::uuid_from_u16_test ... ok
+test api::bleuuid::tests::uuid_from_u32_test ... ok
+test api::bleuuid::tests::uuid_to_from_u16_success ... ok
+test api::bleuuid::tests::uuid_to_from_u32_success ... ok
+test api::bleuuid::tests::uuid_to_u16_fail ... ok
+test api::bleuuid::tests::uuid_to_u32_fail ... ok
+test api::windows_scan_tests::versioned_controls_refuse_missing_runtime_or_adapter_support_without_substitution ... ok
+test connection_parameters_source::tests::callback_getter_failure_keeps_the_original_hresult_and_metadata ... ok
+test common::util::ubm_lag_tests::a_lagging_receiver_learns_what_it_missed ... ok
+test common::util::ubm_lag_tests::a_receiver_that_keeps_up_loses_nothing ... ok
+test connection_parameters_source::tests::callback_success_is_the_getter_answer_and_nonplatform_failure_stays_explicit ... ok
+test corebluetooth::adapter::directory_tests::directory_receiver_failure_after_registration_never_reports_partial_success ... ok
+test corebluetooth::adapter::directory_tests::directory_reply_registers_same_identity_without_radio_or_discovery_event ... ok
+test corebluetooth::adapter::directory_tests::directory_closed_receiver_answers_instead_of_losing_reply ... ok
+test common::adapter_manager::ubm_lag_tests::a_disconnected_peripheral_stays_known ... ok
+test corebluetooth::central_delegate::ubm_advertisement_boundary_tests::advertisement_extras_preserve_absent_and_present_empty_fields ... ok
+test corebluetooth::internal::ubm_fold_sighting_tests::a_named_packet_refreshes_the_stash_and_keeps_its_name ... ok
+test corebluetooth::internal::ubm_fold_sighting_tests::a_nameless_packet_is_labelled_with_the_stash_despite_the_gap_name ... ok
+test corebluetooth::internal::ubm_fold_sighting_tests::a_renamed_packet_replaces_the_stash ... ok
+test corebluetooth::internal::ubm_fold_sighting_tests::a_nameless_packet_without_a_report_name_is_labelled_from_the_stash ... ok
+test common::adapter_manager::ubm_lag_tests::concurrent_typed_targets_share_one_cached_identity_and_refuse_conflict ... ok
+test corebluetooth::central_delegate::ubm_advertisement_boundary_tests::manufacturer_data_requires_a_company_id_and_copies_the_payload ... ok
+test corebluetooth::internal::ubm_fold_sighting_tests::without_any_advertised_name_the_gap_seed_stands ... ok
+test common::adapter_manager::ubm_lag_tests::a_lagging_event_receiver_is_told_what_it_lost ... ok
+test corebluetooth::internal::ubm_instance_tests::same_uuid_descriptors_are_keyed_apart ... ok
+test corebluetooth::internal::ubm_instance_tests::same_uuid_services_characteristics_and_descriptors_stay_distinct ... ok
+test corebluetooth::internal::ubm_instance_tests::a_repeated_discovery_answer_keeps_the_same_instances ... ok
+test corebluetooth::internal::ubm_instance_tests::queued_reads_complete_in_order_as_read_responses ... ok
+test corebluetooth::internal::ubm_instance_tests::rejected_notification_state_answers_unsubscribe_without_forgetting_it_early ... ok
+test corebluetooth::internal::ubm_instance_tests::inclusion_metadata_preserves_same_uuid_target_and_unknowns ... ok
+test corebluetooth::internal::ubm_instance_tests::a_disconnect_of_an_unknown_peripheral_sends_no_event ... ok
+test corebluetooth::peripheral::ubm_fold_name_tests::a_first_named_sighting_reports_the_advertised_name ... ok
+test corebluetooth::peripheral::ubm_fold_name_tests::a_first_nameless_sighting_is_seeded_from_the_gap_name ... ok
+test corebluetooth::peripheral::ubm_fold_name_tests::a_nameless_rediscovery_keeps_the_advertised_name_despite_the_gap_name ... ok
+test corebluetooth::peripheral::ubm_fold_name_tests::a_nameless_rediscovery_of_a_never_named_peer_keeps_the_gap_seed ... ok
+test corebluetooth::peripheral::ubm_fold_name_tests::a_renamed_advertisement_replaces_the_merged_name ... ok
+test corebluetooth::read_notify::tests::a_read_on_an_idle_characteristic_completes_as_the_read_response ... ok
+test corebluetooth::internal::ubm_instance_tests::a_disconnect_answers_every_attribute_waiter ... ok
+test corebluetooth::internal::ubm_instance_tests::unsubscribe_is_owned_until_the_notification_state_answer ... ok
+test corebluetooth::internal::ubm_instance_tests::a_notification_before_the_read_reply_is_reported_ambiguous_and_still_notified ... ok
+test corebluetooth::read_notify::tests::a_read_while_notification_is_possible_completes_ambiguously_and_still_notifies ... ok
+test corebluetooth::read_notify::tests::a_value_with_no_pending_read_is_a_notification ... ok
+test corebluetooth::utils::core_bluetooth::tests::cbuuid_roundtrip ... ok
+test corebluetooth::utils::core_bluetooth::tests::parse_uuid_short ... ok
+test discovery_reservations::tests::cyclic_inclusions_do_not_reopen_a_completed_callback_reservation ... ok
+test discovery_reservations::tests::failure_keeps_native_callbacks_owned_until_their_actual_retirement ... ok
+test discovery_reservations::tests::foreign_and_duplicate_callbacks_do_not_drain_the_live_graph ... ok
+test request_lifetime::tests::failed_close_retains_the_exact_request_for_retry ... ok
+test ubm_platform_error_tests::a_dbus_failure_keeps_its_error_name ... ok
+test corebluetooth::utils::core_bluetooth::tests::parse_uuid_long ... ok
+test corebluetooth::internal::ubm_instance_tests::an_unknown_identifier_resolves_without_a_scan ... ok
+test discovery_reservations::tests::capacity_refusal_keeps_prior_callback_reservations_intact ... ok
+
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+

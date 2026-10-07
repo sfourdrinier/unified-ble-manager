@@ -1,0 +1,11 @@
+
+> unified-ble-manager@5.0.0-rc.21 native:status /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> node scripts/native/native-status.js
+
+android: fresh staged=sourceDigest:1bb2f641b0226c4f5e7e7a3dfa7d2bfb2ab6db807b6ef3b59e587b20de58551a bindingSchema:034ff00cd3a144242504544cb7e707a7c4a066b269cf0ab8e06add0732bacc37 current=sourceDigest:1bb2f641b0226c4f5e7e7a3dfa7d2bfb2ab6db807b6ef3b59e587b20de58551a bindingSchema:034ff00cd3a144242504544cb7e707a7c4a066b269cf0ab8e06add0732bacc37 refresh: sh android/refresh-prebuilt-jniLibs.sh
+apple: fresh staged=sourceDigest:c92434b50479d4d7ffbd634ef80c9c90e3fffe8e57ff3c081697ee86d98e236c bindingSchema:3e773467de7b05743c6884d14072a60895f67a69eea83d0ed17ea43faf23f8a1 current=sourceDigest:c92434b50479d4d7ffbd634ef80c9c90e3fffe8e57ff3c081697ee86d98e236c bindingSchema:3e773467de7b05743c6884d14072a60895f67a69eea83d0ed17ea43faf23f8a1 refresh: pnpm native:apple:prepare
+desktop: fresh staged=sourceDigest:81f597ddc8bfd9f40b7d329ee115e34aa4d972d04cbc4b10af1375eb7f3d89e5 bindingSchema:85e35476b3baeffc7678cd83ec25aa77f3c7a17293559bfc91fb684e93b866b3 current=sourceDigest:81f597ddc8bfd9f40b7d329ee115e34aa4d972d04cbc4b10af1375eb7f3d89e5 bindingSchema:85e35476b3baeffc7678cd83ec25aa77f3c7a17293559bfc91fb684e93b866b3 refresh: node scripts/ci/build-napi-addon.js --profile release --out native/desktop-core/prebuilds/darwin-arm64/ubm_desktop_core.node
+desktop:linux-x64: not-applicable (built by the CI matrix (pnpm native-prebuild:build); not built on darwin-arm64)
+desktop:linux-arm64: not-applicable (built by the CI matrix (pnpm native-prebuild:build); not built on darwin-arm64)
+desktop:win32-x64: not-applicable (built by the CI matrix (pnpm native-prebuild:build); not built on darwin-arm64)
+desktop:win32-arm64: not-applicable (built by the CI matrix (pnpm native-prebuild:build); not built on darwin-arm64)

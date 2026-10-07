@@ -839,6 +839,18 @@ impl ApiPeripheral for Peripheral {
         )
         .await?;
 
+        // Publish the native owner before awaiting connection discovery. A
+        // cancelled connect must leave its query and device available to the
+        // explicit disconnect/close retry rather than running blocking Drop.
+        let mut d = self.shared.device.lock().await;
+        if let Some(previous) = d.as_mut() {
+            previous.retire_discovery_operations()?;
+            previous.close_preferred_request()?;
+        }
+        *d = Some(device);
+        let Some(device) = d.as_mut() else {
+            return Err(Error::NotConnected);
+        };
         device.connect().await?;
         // Query the system-cached device name (GAP name) and update local_name
         if let Ok(name) = device.name() {
@@ -848,8 +860,6 @@ impl ApiPeripheral for Peripheral {
                 *local_name_guard = Some(name_str);
             }
         }
-        let mut d = self.shared.device.lock().await;
-        *d = Some(device);
         self.shared.connected.store(true, Ordering::Relaxed);
         self.emit_event(CentralEvent::DeviceConnected(self.id()));
         Ok(())
@@ -860,6 +870,7 @@ impl ApiPeripheral for Peripheral {
         let mut device = self.shared.device.lock().await;
         // Explicit failure preserves this owner for the caller's cleanup retry.
         if let Some(device) = device.as_mut() {
+            device.retire_discovery_operations()?;
             device.close_preferred_request()?;
         }
         // We need to clear the services because if this device is re-connected,
@@ -887,6 +898,7 @@ impl ApiPeripheral for Peripheral {
         let Some(device) = device.as_mut() else {
             return Err(Error::NotConnected);
         };
+        device.retire_discovery_operations()?;
         let mut gatt_services = device.discover_services().await?;
         let mut discovered = Vec::with_capacity(gatt_services.len());
         let mut visited = HashSet::new();
@@ -898,9 +910,10 @@ impl ApiPeripheral for Peripheral {
             if !visited.insert(key) {
                 continue;
             }
-            let mut graph_service = discover_service(service.clone()).await?;
+            let mut graph_service = discover_service(device, service.clone()).await?;
             if graph_service.access == gatt_model::ServiceRestriction::Open {
-                if let Some(included) = BLEDevice::get_included_services(&service)
+                if let Some(included) = device
+                    .get_included_services(&service)
                     .await
                     .map_err(|error| annotate_attribute("service", key.0, key.1, error))?
                 {
@@ -1101,7 +1114,7 @@ fn restricted_service(
 /// its own instance. A failed query keeps its platform error and names the
 /// service. A known OS-reserved UUID is recorded and not queried. An
 /// ordinary AccessDenied with no ATT byte keeps the service identity.
-async fn discover_service(service: GattDeviceService) -> Result<BLEService> {
+async fn discover_service(device: &BLEDevice, service: GattDeviceService) -> Result<BLEService> {
     let uuid = utils::to_uuid(&service.Uuid()?);
     let instance = u64::from(service.AttributeHandle()?);
     let context = |error: Error| annotate_attribute("service", uuid, instance, error);
@@ -1113,7 +1126,8 @@ async fn discover_service(service: GattDeviceService) -> Result<BLEService> {
             gatt_model::ServiceRestriction::OsReserved,
         ));
     }
-    let characteristics = match BLEDevice::get_characteristics(&service)
+    let characteristics = match device
+        .get_characteristics(&service)
         .await
         .map_err(context)?
     {
@@ -1127,10 +1141,13 @@ async fn discover_service(service: GattDeviceService) -> Result<BLEService> {
         }
         CharacteristicList::Ready(characteristics) => characteristics,
     };
-    let characteristics =
-        futures::future::try_join_all(characteristics.into_iter().map(discover_characteristic))
-            .await
-            .map_err(context)?;
+    let characteristics = futures::future::try_join_all(
+        characteristics
+            .into_iter()
+            .map(|characteristic| discover_characteristic(device, characteristic)),
+    )
+    .await
+    .map_err(context)?;
     let characteristics = index_unique(
         characteristics
             .into_iter()
@@ -1150,12 +1167,16 @@ async fn discover_service(service: GattDeviceService) -> Result<BLEService> {
     })
 }
 
-async fn discover_characteristic(characteristic: GattCharacteristic) -> Result<BLECharacteristic> {
+async fn discover_characteristic(
+    device: &BLEDevice,
+    characteristic: GattCharacteristic,
+) -> Result<BLECharacteristic> {
     let uuid = utils::to_uuid(&characteristic.Uuid()?);
     let handle = characteristic.AttributeHandle()?;
     let context =
         |error: Error| annotate_attribute("characteristic", uuid, u64::from(handle), error);
-    let descriptors = BLEDevice::get_characteristic_descriptors(&characteristic)
+    let descriptors = device
+        .get_characteristic_descriptors(&characteristic)
         .await
         .map_err(context)?
         .into_iter()

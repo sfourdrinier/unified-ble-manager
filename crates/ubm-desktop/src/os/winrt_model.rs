@@ -272,6 +272,31 @@ impl AdapterPresence {
     }
 }
 
+#[cfg(any(test, all(feature = "btleplug", target_os = "windows")))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirectoryQuery {
+    Known,
+    Connected,
+    Bonded,
+}
+#[cfg(any(test, all(feature = "btleplug", target_os = "windows")))]
+impl DirectoryQuery {
+    pub(crate) fn scopes(self) -> &'static [Self] {
+        match self {
+            Self::Known => &[Self::Known, Self::Connected],
+            Self::Connected => &[Self::Connected],
+            Self::Bonded => &[Self::Bonded],
+        }
+    }
+    pub(crate) fn operation(self) -> &'static str {
+        match self {
+            Self::Known => "peers.known",
+            Self::Connected => "peers.connected",
+            Self::Bonded => "peers.bonded",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -525,5 +550,26 @@ mod tests {
             presence.observe(PresenceReport::Added("built-in".into())),
             Some(PresenceChange::Restored)
         );
+    }
+}
+
+#[cfg(test)]
+mod directory_inventory_tests {
+    use super::DirectoryQuery;
+
+    #[test]
+    fn known_inventory_includes_connected_unpaired_peers_without_starting_a_scan() {
+        assert_eq!(
+            DirectoryQuery::Known.scopes(),
+            &[DirectoryQuery::Known, DirectoryQuery::Connected]
+        );
+        assert_eq!(DirectoryQuery::Known.operation(), "peers.known");
+        assert_eq!(
+            DirectoryQuery::Connected.scopes(),
+            &[DirectoryQuery::Connected]
+        );
+        assert_eq!(DirectoryQuery::Connected.operation(), "peers.connected");
+        assert_eq!(DirectoryQuery::Bonded.scopes(), &[DirectoryQuery::Bonded]);
+        assert_eq!(DirectoryQuery::Bonded.operation(), "peers.bonded");
     }
 }

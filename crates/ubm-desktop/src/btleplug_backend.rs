@@ -3499,6 +3499,18 @@ fn disconnect_error_confirms_released(error: &btleplug::Error) -> bool {
     }
 }
 
+#[cfg(any(test, target_os = "windows"))]
+fn winrt_disconnect_failure(error: &btleplug::Error) -> DesktopError {
+    DesktopError::new(
+        BleErrorCode::PlatformFailure,
+        BleErrorDomain::Cleanup,
+        "connection.disconnect",
+    )
+    .with_detail(error.to_string())
+    .with_os(error)
+    .classify_link_loss()
+}
+
 /// The btleplug identity a peer id names (finding 127): the CoreBluetooth
 /// identifier, the WinRT address and address type. `None` on Linux, where BlueZ resolves
 /// peers itself, or for an id that names neither.
@@ -4088,6 +4100,9 @@ impl RadioBoundary for BtleplugRadio {
                      despite the disconnect erroring: {error}"
                     );
                 } else {
+                    #[cfg(target_os = "windows")]
+                    return Err(winrt_disconnect_failure(&error));
+                    #[cfg(not(target_os = "windows"))]
                     return Err(DesktopError::new(
                         ubm_core::contracts::BleErrorCode::ConnectionLost,
                         ubm_core::contracts::BleErrorDomain::Connection,
@@ -6048,6 +6063,29 @@ mod tests {
         assert!(!super::disconnect_error_confirms_released(
             &btleplug::Error::DeviceNotFound
         ));
+    }
+
+    #[test]
+    fn pending_winrt_discovery_cleanup_does_not_invent_a_lost_link() {
+        let native = btleplug::Error::Platform(
+            btleplug::PlatformError::new(
+                "winrt",
+                "discovery-retirement-pending",
+                "query is active",
+            )
+            .with("operation", "characteristic discovery"),
+        );
+        let error = super::winrt_disconnect_failure(&native);
+        assert_eq!(
+            error.code(),
+            ubm_core::contracts::BleErrorCode::PlatformFailure
+        );
+        assert_eq!(error.domain(), ubm_core::contracts::BleErrorDomain::Cleanup);
+        assert_eq!(error.operation(), "connection.disconnect");
+        assert_eq!(
+            error.platform().unwrap().code,
+            "discovery-retirement-pending"
+        );
     }
 
     /// Findings 120 and 122: an OS sighting becomes an observation with its

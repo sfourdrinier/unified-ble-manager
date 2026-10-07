@@ -122,6 +122,11 @@ capture must qualify that acquisition boundary on their actual peripheral.
 
 ### System-connected peers on macOS
 
+Linux and Windows expose independent native known/system-connected inventories.
+Their capability descriptions do not require saved references or a service
+filter. CoreBluetooth's restrictions below apply only to that backend. A native
+inventory result describes OS membership and does not acquire a library lease.
+
 A peripheral already connected elsewhere may no longer advertise. Use
 `manager.peers.connected({ services: ['180d'], timeoutMs: 10_000 })` to retrieve
 matching CoreBluetooth peers, then `manager.connect(peer)` to acquire your own
@@ -587,3 +592,14 @@ probe keep their native order and replace the delayed probe answer. Native
 queue loss triggers reconciliation, and samples retained from before that
 reconciliation are counted as discarded rather than published afterward as
 newer observations.
+
+### Interrupted Windows discovery
+
+A discovery deadline or cancellation requests cancellation of its native service,
+characteristic, inclusion and descriptor queries. The native operation's terminal
+state determines when its GATT service objects may close. While a query remains
+active, explicit cleanup reports its retained obligation instead of calling a
+blocking service close. Retry cleanup through the same owner. A cancellation
+refusal preserves its HRESULT and query stage; a cleanup refusal alone does not
+prove physical link loss. Live Windows verification of the current correction is
+pending in the rc.21 remediation record.

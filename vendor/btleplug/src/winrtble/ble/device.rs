@@ -11,12 +11,14 @@
 //
 // Copyright (c) 2014 The Rust Project Developers
 
+use crate::active_operations::{NativeOperation, OperationPool, RetirementError};
 use crate::{
     Error, Result,
     api::BDAddr,
     winrtble::{gatt_model, utils},
 };
 use log::{debug, trace};
+use windows::core::RuntimeType;
 use windows::{
     Devices::Bluetooth::{
         BluetoothCacheMode, BluetoothConnectionStatus, BluetoothLEDevice,
@@ -28,6 +30,7 @@ use windows::{
     },
     Foundation::TypedEventHandler,
 };
+use windows_future::{AsyncStatus, IAsyncOperation};
 
 /// UBM patch (`winrt-uncached-discovery`): a non-success status of one
 /// service-discovery query, named, as the discovery's error. The result's
@@ -45,6 +48,32 @@ pub type ConnectedEventHandler = Box<dyn Fn(bool) + Send>;
 pub type MaxPduSizeChangedEventHandler = Box<dyn Fn(u16) + Send>;
 pub type ConnectionParametersHandler = Box<dyn Fn(crate::api::ConnectionParametersReport) + Send>;
 
+// Keep the typed async operation, which WinRT declares Send + Sync, rather
+// than retaining its non-agile IAsyncInfo projection across executor threads.
+trait DiscoveryControl: Send + Sync {
+    fn pending(&self) -> windows::core::Result<bool>;
+    fn cancel(&self) -> windows::core::Result<()>;
+}
+impl<T: RuntimeType + 'static> DiscoveryControl for IAsyncOperation<T> {
+    fn pending(&self) -> windows::core::Result<bool> {
+        self.Status().map(|status| status == AsyncStatus::Started)
+    }
+    fn cancel(&self) -> windows::core::Result<()> {
+        self.Cancel()
+    }
+}
+#[derive(Clone)]
+struct DiscoveryOperation(std::sync::Arc<dyn DiscoveryControl>);
+impl NativeOperation for DiscoveryOperation {
+    type Error = windows::core::Error;
+    fn pending(&self) -> windows::core::Result<bool> {
+        self.0.pending()
+    }
+    fn cancel(&self) -> windows::core::Result<()> {
+        self.0.cancel()
+    }
+}
+
 pub struct BLEDevice {
     device: BluetoothLEDevice,
     gatt_session: GattSession,
@@ -53,6 +82,7 @@ pub struct BLEDevice {
     /// Present only when this OS exposes `ConnectionParametersChanged`.
     connection_parameters_token: Option<i64>,
     services: Vec<GattDeviceService>,
+    discovery_operations: OperationPool<DiscoveryOperation>,
     preferred_request:
         crate::request_lifetime::RequestLifetime<BluetoothLEPreferredConnectionParametersRequest>,
 }
@@ -127,6 +157,60 @@ pub enum CharacteristicList {
 }
 
 impl BLEDevice {
+    async fn await_discovery<T: RuntimeType + 'static>(
+        &self,
+        operation: IAsyncOperation<T>,
+        stage: &'static str,
+    ) -> Result<T> {
+        let control = DiscoveryOperation(std::sync::Arc::new(operation.clone()));
+        let guard = self.discovery_operations.admit(control.clone(), stage);
+        let result = operation.await.map_err(Error::from);
+        match &result {
+            Ok(_) => guard.complete(),
+            Err(_) => match control.pending() {
+                Ok(false) => guard.complete(),
+                Ok(true) => drop(guard),
+                Err(error) => {
+                    drop(guard);
+                    return match result {
+                        Err(primary) => Err(Error::WithCleanup {
+                            primary: Box::new(primary),
+                            cleanup: Box::new(Error::from(error)),
+                        }),
+                        Ok(value) => Ok(value),
+                    };
+                }
+            },
+        }
+        result
+    }
+
+    /// Do not close GATT services while an interrupted native query still owns
+    /// them. Cancellation is a request; cleanup refuses with retained ownership
+    /// until WinRT reports a terminal state, permitting the same owner to retry.
+    pub fn retire_discovery_operations(&self) -> Result<()> {
+        self.discovery_operations.retire().map_err(|failures| {
+            let mut errors = failures.into_iter().map(|(stage, failure)| match failure {
+                RetirementError::Native(error) => Error::Platform(
+                    crate::PlatformError::new("winrt", "hresult", error.message().to_string())
+                        .with("hresult", gatt_model::hresult_code(error.code().0))
+                        .with("operation", stage),
+                ),
+                RetirementError::Pending => Error::Platform(
+                    crate::PlatformError::new("winrt", "discovery-retirement-pending",
+                        "The native discovery query is still active; cleanup remains owned and retryable")
+                        .with("operation", stage),
+                ),
+            });
+            let Some(mut primary) = errors.next() else {
+                return Error::Other("Native discovery retirement failed without an error".into());
+            };
+            for cleanup in errors {
+                primary = Error::WithCleanup { primary: Box::new(primary), cleanup: Box::new(cleanup) };
+            }
+            primary
+        })
+    }
     pub async fn new(
         address: BDAddr,
         address_type: Option<crate::api::AddressType>,
@@ -219,6 +303,7 @@ impl BLEDevice {
             pdu_change_token,
             connection_parameters_token,
             services: vec![],
+            discovery_operations: Default::default(),
             preferred_request: Default::default(),
         })
     }
@@ -232,7 +317,7 @@ impl BLEDevice {
             .device
             .GetGattServicesWithCacheModeAsync(cache_mode)
             .map_err(winrt_error)?;
-        let service_result = async_op.await.map_err(winrt_error)?;
+        let service_result = self.await_discovery(async_op, "service discovery").await?;
         Ok(service_result)
     }
 
@@ -284,9 +369,14 @@ impl BLEDevice {
     /// named and fails discovery. `AccessDenied` with no ATT byte keeps the
     /// service identity and reports the denial. Known OS-reserved UUIDs are
     /// not queried.
-    pub async fn get_characteristics(service: &GattDeviceService) -> Result<CharacteristicList> {
-        let result = service
-            .GetCharacteristicsWithCacheModeAsync(BluetoothCacheMode::Uncached)?
+    pub async fn get_characteristics(
+        &self,
+        service: &GattDeviceService,
+    ) -> Result<CharacteristicList> {
+        let operation =
+            service.GetCharacteristicsWithCacheModeAsync(BluetoothCacheMode::Uncached)?;
+        let result = self
+            .await_discovery(operation, "characteristic discovery")
             .await?;
         let status = result.Status()?;
         let att_error = utils::protocol_att_error(result.ProtocolError());
@@ -310,10 +400,13 @@ impl BLEDevice {
     }
 
     pub async fn get_included_services(
+        &self,
         service: &GattDeviceService,
     ) -> Result<Option<Vec<GattDeviceService>>> {
-        let result = service
-            .GetIncludedServicesWithCacheModeAsync(BluetoothCacheMode::Uncached)?
+        let operation =
+            service.GetIncludedServicesWithCacheModeAsync(BluetoothCacheMode::Uncached)?;
+        let result = self
+            .await_discovery(operation, "included service discovery")
             .await?;
         let status = result.Status()?;
         let att_error = utils::protocol_att_error(result.ProtocolError());
@@ -339,30 +432,15 @@ impl BLEDevice {
     /// connection. This does not pair and does not read descriptor values.
     /// Subscribe still writes the CCCD through `GattCharacteristic`.
     pub async fn get_characteristic_descriptors(
+        &self,
         characteristic: &GattCharacteristic,
     ) -> Result<Vec<GattDescriptor>> {
         let operation = characteristic
             .GetDescriptorsWithCacheModeAsync(BluetoothCacheMode::Uncached)
             .map_err(Error::from)?;
-        // Clone is a second COM reference. Cancelling it cancels the
-        // operation the await is waiting on. A completed await disarms
-        // the guard so Drop does not cancel a finished query.
-        struct CancelOnDrop<T>(windows_future::IAsyncOperation<T>, bool)
-        where
-            T: windows::core::RuntimeType + 'static;
-        impl<T> Drop for CancelOnDrop<T>
-        where
-            T: windows::core::RuntimeType + 'static,
-        {
-            fn drop(&mut self) {
-                if !self.1 {
-                    let _ = self.0.Cancel();
-                }
-            }
-        }
-        let mut guard = CancelOnDrop(operation.clone(), false);
-        let result = operation.await.map_err(Error::from)?;
-        guard.1 = true;
+        let result = self
+            .await_discovery(operation, "descriptor discovery")
+            .await?;
         let status = result.Status().map_err(Error::from)?;
         let att_error = utils::protocol_att_error(result.ProtocolError());
         if gatt_model::descriptor_enumeration(status.0) == gatt_model::DescriptorEnumeration::Listed
@@ -473,6 +551,10 @@ impl BLEDevice {
 
 impl Drop for BLEDevice {
     fn drop(&mut self) {
+        if let Err(error) = self.retire_discovery_operations() {
+            log::error!("Drop: active discovery prevents GATT service close: {error}");
+            return;
+        }
         if let Err(error) = self.close_preferred_request() {
             log::error!("Drop: preferred-parameter request cleanup failed: {error}");
         }

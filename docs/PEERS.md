@@ -83,8 +83,10 @@ native implementation supplies those facts.
 The desktop `known()` route reads the current OS-visible cache independently of
 this manager's scan and connection history. Linux enumerates selected-adapter
 Device1 objects under the same daemon-owner fence as bond queries, including
-unbonded records. Windows uses the LE DeviceInformation selector and preserves
-public/random address identity in opaque references. A native disappearance
+unbonded records. Windows combines the generic LE DeviceInformation selector
+with the current connected LE selector, preserving connected unpaired peers
+without initiating the unpaired discovery selector's scan. Opaque references
+preserve public/random address identity. A native disappearance
 is not replaced with an advertisement or a connection attempt.
 
 `connected()` uses a distinct OS query and does not require service criteria on

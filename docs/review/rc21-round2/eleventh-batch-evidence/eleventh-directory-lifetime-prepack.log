@@ -1,0 +1,45 @@
+
+> unified-ble-manager@5.0.0-rc.21 prepack /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> node scripts/ci/build-package.js
+
+
+> unified-ble-manager@5.0.0-rc.21 clean:plugin /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> del-cli plugin/build
+
+
+> unified-ble-manager@5.0.0-rc.21 native-protocol:check /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> node scripts/native-protocol/generate-native-protocol.js --check
+
+
+> unified-ble-manager@5.0.0-rc.21 validate:evidence /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> node scripts/evidence/validate-current-evidence.js
+
+Evidence manifest validation passed for 3 file(s).
+native-build-identity: current (src/generated/native-build-identity.ts)
+
+> unified-ble-manager@5.0.0-rc.21 build:plugin /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> tsc --build plugin
+
+ℹ [commonjs] Cleaning up previous build at lib/commonjs
+ℹ [module] Cleaning up previous build at lib/module
+ℹ [typescript] Cleaning up previous build at lib/typescript
+ℹ [typescript] Generating type definitions with tsc
+ℹ [commonjs] Compiling 331 files in src with babel
+ℹ [module] Compiling 331 files in src with babel
+✔ [module] Wrote files to lib/module
+✔ [commonjs] Wrote files to lib/commonjs
+✔ [typescript] Wrote definition files to lib/typescript
+build-fingerprint: sealed 1105 inputs -> lib/ubm-build-fingerprint.json (1a614f30c5a0)
+
+> unified-ble-manager@5.0.0-rc.21 docs:check /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> node scripts/docs/generate-backend-sdk-reference.js --check && node scripts/docs/generate-platform-support.js --check && node scripts/docs/check-api-reports.js && node scripts/docs/check-generated-html.js && node scripts/docs/check-docs-index.js && prettier --check CHANGELOG.md AGENTS.md docs/NODE.md
+
+API reports checked: 24 TypeScript entrypoints; excluded metadata/config: ./app.plugin.js, ./package.json
+../../../../../var/folders/x6/fx6xhn0j7kqbv_kndmcl_4tc0000gn/T/unified-ble-manager-docs-QwdUfv/docs/index.html 134ms
+../../../../../var/folders/x6/fx6xhn0j7kqbv_kndmcl_4tc0000gn/T/unified-ble-manager-docs-QwdUfv/docs/assets/anchor.js 55ms
+../../../../../var/folders/x6/fx6xhn0j7kqbv_kndmcl_4tc0000gn/T/unified-ble-manager-docs-QwdUfv/docs/assets/site.js 15ms
+Generated HTML checked: byte-identical, root-public-safe and code examples present
+Documentation index, llms.txt, and README agent pointers are consistent.
+Checking formatting...
+All matched files use Prettier code style!
+package artifacts verified: 308 published source files; 23 exact internal runtime sources; 0 exact internal declaration-only sources; 2653 source-derived runtime, map, and declaration artifacts; 11 config-plugin source files; 22 config-plugin artifacts; 125 current entrypoint targets

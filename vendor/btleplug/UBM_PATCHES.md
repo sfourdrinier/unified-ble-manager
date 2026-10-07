@@ -1329,3 +1329,20 @@ fields under the WinRT platform detail; the shared public classifier reports
 `connection.lost`. Zero latency alone is not a loss. The exact portable getter
 mapper and callback mapper have joined classifier regressions; verification of
 this source batch is pending, and no Windows physical receipt is claimed.
+
+
+### rc.21 live Windows discovery retirement (unverified follow-up)
+
+The actual Windows Bun reproduction times out native discovery, then blocks
+inside `GattDeviceService.Close` during disconnect. Discovery queries now share
+one operation owner: service, characteristic, inclusion and descriptor awaits
+request cancellation when interrupted and retain each exact native operation
+until its status is terminal. Cancel failures are retained and reported during
+cleanup; pending status refuses close and allows retry. Replacement discovery
+and native device replacement pass through the same retirement barrier. Connect
+publishes its device owner before awaiting native service discovery so a deadline
+cannot discard its cleanup lifetime. Explicit disconnect checks the barrier before
+closing native services. Portable lifetime regressions precede these changes;
+combined target and actual Windows verification is pending. This does not claim
+that every Windows operation must accept cancellation or that a cancellation
+request proves completion.

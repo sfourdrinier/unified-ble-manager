@@ -1,0 +1,4 @@
+{"phase": "owned-kernel-auto-connect-policy", "priorDeviceList": "6c:1f:8a:a1:25:a7 (type 0)\n", "addAnswer": "Adding device with DC:56:7B:D9:E8:A4 (LE Public)\nhci0 device_flags_changed: DC:56:7B:D9:E8:A4 (LE Public)\n     supp: 0x00000009  curr: 0x00000000\n"}
+{"phase": "foreign-read-before-first-lease", "initiator": "kernel-auto-connect", "centralAdapter": "hci0", "peripheralAdapter": "hci1", "heldProcess": 3699123, "readSender": ":1.15660", "pending": true}
+{"result": "passed", "generation": 48, "receipt": "lease-released-protected", "readAnswer": {"value": [90]}, "readSenderStillAlive": ":1.15660", "physicalReleased": true, "source": "installed daemon and actual ATT over two USB controllers; simulated server held by SIGSTOP"}
+{"phase": "kernel-auto-policy-restored", "deviceList": "6c:1f:8a:a1:25:a7 (type 0)\n"}
