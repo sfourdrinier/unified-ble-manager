@@ -39,7 +39,7 @@ const limitations = Object.freeze([
   Object.freeze({
     code: 'android-link-security-measurement-unavailable',
     explanation:
-      'Bond state is observed directly. Link encryption is observed where API 36 events or the SDK 36.1 LE snapshot are available; authentication and Secure Connections are never inferred.',
+      'Bond state is observed directly. Link encryption is observed where API 36 events or the SDK 36.1 LE snapshot are available. Peer broadcasts carry no connection generation; event-only state queries and ambiguous null snapshots report unknown. Authentication and Secure Connections are never inferred.',
     affectedGuarantee:
       'authentication and Secure Connections measurement; encryption availability depends on the native runtime'
   })

@@ -67,7 +67,11 @@ test.each(['corebluetooth', 'winrt', 'bluez'])(
         { uuid: HR, occurrence: 1, primary: false, includedServices: [] },
         { uuid: BATTERY, occurrence: 0, primary: null, includedServices: null }
       ])
+      const changes = database.changed[Symbol.asyncIterator]()
+      const changed = h.nextValue(changes, 5000)
       await stage.stageServicesChanged('graph-peer')
+      expect(await changed).toMatchObject({ reason: 'service-changed' })
+      await changes.return?.()
       await stage.stageServices('graph-peer', [
         {
           uuid: HR,

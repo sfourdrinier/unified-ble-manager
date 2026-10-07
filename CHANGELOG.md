@@ -87,8 +87,9 @@ All notable changes to `unified-ble-manager` are documented here.
 
 - Android security observes API 36 LE encryption changes and SDK 36.1 public
   snapshots independently of bonding. Source errors retain controller status
-  through the wire and reconciliation; loss retires generation-bound encryption
-  facts. Authentication and Secure Connections are not inferred. Physical
+  through the wire and reconciliation. Peer broadcasts are never cached as a
+  replacement link snapshot, and ambiguous null snapshots remain unknown.
+  Authentication and Secure Connections are not inferred. Physical
   qualification remains pending.
 - Android subrate requests are wired through the native owned queue and public
   connection controls on runtime SDK 36.1 hosts with the public integer-status

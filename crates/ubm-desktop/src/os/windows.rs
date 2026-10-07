@@ -325,12 +325,7 @@ impl WinRt {
             .map_err(|error| winrt(OP, error))?
             .await
             .map_err(|error| winrt(OP, error))?;
-        if adapter
-            .DeviceId()
-            .map_err(|error| winrt(OP, error))?
-            .to_string()
-            != self.adapter_id
-        {
+        if adapter.DeviceId().map_err(|error| winrt(OP, error))? != self.adapter_id.as_str() {
             return Ok((
                 Some("winrt-directory-requires-default-adapter"),
                 Some("winrt-directory-requires-default-adapter"),

@@ -12,16 +12,16 @@ internal class AndroidEncryptionApi(fullSdk: Int, deviceClass: Class<*>) {
   }
   val snapshotAvailable: Boolean get() = snapshot != null
 
-  fun read(device: Any, connected: Boolean = false): String {
+  fun read(device: Any): String {
     val method = snapshot ?: return "unsupported"
     val status = try { method.invoke(device, 2) }
     catch (error: InvocationTargetException) { throw error.targetException }
-    // The public LE snapshot returns null for an unencrypted/disconnected device.
-    if (status == null) return if (connected) "not-encrypted" else "unknown"
+    // Null means unencrypted OR disconnected. A separate link query cannot disambiguate it atomically.
+    if (status == null) return "unknown"
     val algorithm = status.javaClass.getMethod("getAlgorithm").invoke(status)
     val keySize = status.javaClass.getMethod("getKeySize").invoke(status)
     check(algorithm is Int && keySize is Int && keySize in 1..16) { "invalid Android encryption snapshot" }
-    return when (algorithm) { 0 -> if (connected) "not-encrypted" else "unknown"; 1, 2, 3 -> "encrypted"; else -> "unknown" }
+    return when (algorithm) { 0 -> "not-encrypted"; 1, 2, 3 -> "encrypted"; else -> "unknown" }
   }
 
   companion object {

@@ -552,9 +552,7 @@ class OwnedAndroidGattRadio private constructor(
   private var adapterStateReceiver: BroadcastReceiver? = null
   private var bondStateReceiver: BroadcastReceiver? = null
   private var securityReceiverActive = false
-  private data class EncryptionObservation(val generation: Long, val state: String)
   private val connectedEncryptionGenerations = ConcurrentHashMap<String, Long>()
-  private val encryptionByDevice = ConcurrentHashMap<String, EncryptionObservation>()
   private val encryptionApi by lazy {
     AndroidEncryptionApi(securityFullSdkInt, BluetoothDevice::class.java)
   }
@@ -1076,10 +1074,13 @@ class OwnedAndroidGattRadio private constructor(
 
   private fun securityStateOf(device: BluetoothDevice, observedBond: String? = null): OwnedAndroidSecurityState {
     val key = device.address.uppercase(Locale.ROOT)
-    val encryption = if (encryptionApi.snapshotAvailable) encryptionApi.read(device,
-      bluetoothManager.getConnectionState(device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED) else if (securitySdkInt >= 36) {
+    val encryption = if (encryptionApi.snapshotAvailable) {
       val generation = connectedEncryptionGenerations[key]
-      encryptionByDevice[key]?.takeIf { generation != null && it.generation == generation }?.state ?: "unknown"
+      val observed = encryptionApi.read(device)
+      if (connectedEncryptionGenerations[key] == generation) observed else "unknown"
+    } else if (securitySdkInt >= 36) {
+      // Peer broadcasts carry no GATT generation and cannot establish this link's snapshot.
+      "unknown"
     } else "unsupported"
     return OwnedAndroidSecurityState(
       bond = observedBond ?: when (device.bondState) {
@@ -1100,8 +1101,6 @@ class OwnedAndroidGattRadio private constructor(
       admittedPeer = key
       if (gatts.containsKey(key) && !connectedEncryptionGenerations.containsKey(key)) return
       val observed = AndroidEncryptionApi.event(status, enabled)
-      val generation = connectedEncryptionGenerations[key]
-      if (generation != null) encryptionByDevice[key] = EncryptionObservation(generation, observed)
       // The broadcast's own answer wins; querying the OS again cannot replace it.
       val bond = when (device.bondState) {
         BluetoothDevice.BOND_BONDED -> "bonded"
@@ -1111,7 +1110,6 @@ class OwnedAndroidGattRadio private constructor(
       }
       onSecurityState?.invoke(key, OwnedAndroidSecurityState(bond, true, observed))
     } catch (error: Exception) {
-      admittedPeer?.let { encryptionByDevice.remove(it) }
       onSecurityFailure?.invoke(admittedPeer, error)
     }
   }
@@ -1357,7 +1355,6 @@ class OwnedAndroidGattRadio private constructor(
 
   private fun openGatt(deviceId: String, key: String, autoConnect: Boolean, phyMask: Int) {
     pendingReconnect.remove(key)
-    encryptionByDevice.remove(key)
     connectedEncryptionGenerations.remove(key)
     val a = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
     val device = try {
@@ -1414,7 +1411,6 @@ class OwnedAndroidGattRadio private constructor(
     pendingGattTeardowns.remove(key, GattTeardownOwner(gatt, generation))
     gatts.remove(key, gatt)
     gattGenerations.remove(key, generation)
-    encryptionByDevice[key]?.let { if (it.generation == generation) encryptionByDevice.remove(key, it) }
     gattGenerationByInstance.remove(gatt, generation)
     discovered.remove(key)
     effectiveMtuByDevice[key]?.let { state ->
@@ -2589,7 +2585,6 @@ class OwnedAndroidGattRadio private constructor(
       pending.clear()
       pendingMtu.clear()
       effectiveMtuByDevice.clear()
-      encryptionByDevice.clear()
       connectedEncryptionGenerations.clear()
       pendingRssi.clear()
       pendingPhyReads.clear()
@@ -3127,7 +3122,6 @@ class OwnedAndroidGattRadio private constructor(
         }
       } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
         connectedEncryptionGenerations.remove(key, generation)
-        encryptionByDevice.remove(key)
         try {
           onSecurityState?.invoke(id, OwnedAndroidSecurityState(
             when (gatt.device.bondState) {

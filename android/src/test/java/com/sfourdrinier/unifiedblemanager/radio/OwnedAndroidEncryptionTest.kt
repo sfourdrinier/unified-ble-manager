@@ -65,7 +65,7 @@ class OwnedAndroidEncryptionTest {
     current.attachConnectedGatt(peer, first, emptyList())
     current.nativeGattCallback().onConnectionStateChange(first, 0, BluetoothProfile.STATE_CONNECTED)
     current.receiveEncryptionChange(device, BluetoothDevice.TRANSPORT_LE, 0, true)
-    assertEquals("encrypted", current.securityState(peer).encryption)
+    assertEquals("unknown", current.securityState(peer).encryption)
     current.nativeGattCallback().onConnectionStateChange(first, 8, BluetoothProfile.STATE_DISCONNECTED)
     assertEquals("unknown", current.securityState(peer).encryption)
     val second = mock(BluetoothGatt::class.java)
@@ -75,7 +75,28 @@ class OwnedAndroidEncryptionTest {
     current.nativeGattCallback().onConnectionStateChange(first, 0, BluetoothProfile.STATE_CONNECTED)
     assertEquals("unknown", current.securityState(peer).encryption)
     current.receiveEncryptionChange(device, BluetoothDevice.TRANSPORT_LE, 0, false)
-    assertEquals("not-encrypted", current.securityState(peer).encryption)
+    assertEquals("unknown", current.securityState(peer).encryption)
+  }
+
+  @Test fun delayedPeerBroadcastCannotBecomeAReplacementLinksSnapshot() {
+    val current = radio(36)
+    val states = mutableListOf<OwnedAndroidSecurityState>()
+    current.onSecurityState = { _, state -> states.add(state) }
+    val first = mock(BluetoothGatt::class.java)
+    `when`(first.device).thenReturn(device)
+    current.attachConnectedGatt(peer, first, emptyList())
+    current.nativeGattCallback().onConnectionStateChange(first, 0, BluetoothProfile.STATE_CONNECTED)
+    current.nativeGattCallback().onConnectionStateChange(first, 8, BluetoothProfile.STATE_DISCONNECTED)
+    val replacement = mock(BluetoothGatt::class.java)
+    `when`(replacement.device).thenReturn(device)
+    current.attachConnectedGatt(peer, replacement, emptyList())
+    current.nativeGattCallback().onConnectionStateChange(replacement, 0, BluetoothProfile.STATE_CONNECTED)
+    states.clear()
+    // Android's peer broadcast has no GATT generation; this may be from the old link.
+    current.receiveEncryptionChange(device, BluetoothDevice.TRANSPORT_LE, 0, true)
+    assertEquals("encrypted", states.single().encryption)
+    assertEquals("unknown", current.securityState(peer).encryption)
+    verify(manager, never()).getConnectionState(device, BluetoothProfile.GATT)
   }
 
   @Test fun failedReceiverCleanupKeepsRetryDebtButRetiresCallbacksImmediately() {

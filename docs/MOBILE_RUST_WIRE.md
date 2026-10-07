@@ -920,13 +920,16 @@ fixtures do not establish peer negotiation or radio interoperability.
 The bond receiver also owns `ACTION_ENCRYPTION_CHANGE` on API 36+. Only LE
 transport feeds LE security state. A successful broadcast reports its own
 `EXTRA_ENCRYPTION_ENABLED` answer, without a second snapshot replacing it.
-The native owner retains event-only observations under the current connected
-GATT generation; physical loss clears them before retryable GATT teardown.
+The peer broadcast carries no GATT generation. Its reported answer remains an
+event observation, but is never cached as the current link's snapshot: a delayed
+broadcast from an old link must not populate its replacement. Event-only API 36
+state queries therefore report unknown.
 SDK 36.1 adds `getEncryptionStatus(TRANSPORT_LE)` through the public API lookup.
-A null snapshot means unencrypted **or disconnected**. It becomes a
-not-encrypted observation only with a separate system GATT connection-state
-observation; otherwise it remains unknown. API 35 reports encryption
-unsupported, and API 36 before an applicable observation reports unknown.
+A null snapshot means unencrypted **or disconnected**, and remains unknown;
+a separate connection-status query cannot disambiguate it atomically. A non-null
+snapshot reports its own encryption algorithm, and a locally managed generation
+change during the getter prevents publication as a current-link fact. API 35
+reports encryption unsupported.
 
 Encryption does not establish authentication or Secure Connections. Their
 unsupported fields remain explicit until an independent platform mechanism

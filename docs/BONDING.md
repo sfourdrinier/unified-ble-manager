@@ -235,7 +235,8 @@ Android API 36 encryption changes and SDK 36.1 LE encryption snapshots are
 observations independent of bond state. The native runtime controls their
 availability. Encryption never implies authenticated pairing or Secure
 Connections; unsupported facts remain explicit. Null encryption snapshots
-are ambiguous without an independent live-link observation. Source failures
+are ambiguous and remain unknown; a separate live-link query cannot resolve them
+atomically. Event-only peer broadcasts are not cached as current-link snapshots. Source failures
 preserve their controller status and terminate watches even when native
 cleanup fails. See [mobile encryption observations](MOBILE_RUST_WIRE.md#android-encryption-observations)
 for runtime floors, correlation, permissions and qualification limits.
