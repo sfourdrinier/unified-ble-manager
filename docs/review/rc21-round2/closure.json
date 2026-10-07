@@ -6,10 +6,7 @@
       "priority": "P1",
       "required_outcome": "All required CI and package gates pass on the final head; investigate the Windows setup timeout",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        ".github/workflows/ci.yml",
-        "scripts/ci/preflight.sh"
-      ],
+      "implementation": [".github/workflows/ci.yml", "scripts/ci/preflight.sh"],
       "regression_suites": [
         "__tests__/ElectronIpcBoundary.test.js",
         "__tests__/native-protocol/AppleNativeProtocolV2.test.js"
@@ -123,19 +120,15 @@
       "priority": "P1",
       "required_outcome": "Protect accepted pending foreign Pair for its full lifetime; rollback rejected work",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "vendor/bluez/ubm-le-gatt-5.87.patch"
-      ],
-      "regression_suites": [
-        "vendor/bluez/build-test-isolated.sh"
-      ],
+      "implementation": ["vendor/bluez/ubm-le-gatt-5.87.patch"],
+      "regression_suites": ["vendor/bluez/build-test-isolated.sh"],
       "verification_status": "Verified: production lifetime/rollback controls plus installed-daemon real SMP pending Pair refusal, cancellation, sender death, pre-first-lease and held successful Pair. Explicit foreign-owner cleanup preserves external origin.",
       "historical_evidence": "Production Pair/admission controls pass. Actual installed daemon/D-Bus/SMP/controller pending Pair protection passes for refusal, cancellation, sender death and Pair opening before the first lease. Successful pairing remains outstanding; no final closure claim.",
       "previous_findings": [],
       "implementation_blobs": {
         "vendor/bluez/ubm-le-gatt-5.87.patch": "7144a8fabd9185d8a58350479dfa8851aad93627"
       },
-      "remaining_limits": "Current lab Pair returns success before the held agent callback. Numeric-confirmation fixture also failed its required precondition; no bonds or keys were deleted. Production successful-commit controls do not establish this missing live held-success combination.",
+      "remaining_limits": "Real held SMP Pair success, refusal, cancellation, sender death and pre-first-lease lifetime are verified on the installed daemon/controller fixture. This does not establish the separate prior R1 physical same-attachment ATT security retry. Earlier failed numeric-confirmation and premature-success fixtures remain historical receipts.",
       "regression_names": {
         "vendor/bluez/build-test-isolated.sh": [
           "unit/test-ubm-le-lease: prelease_lifetimes (complete maintained producer with controlled external boundaries)"
@@ -147,19 +140,11 @@
       "priority": "P2",
       "required_outcome": "Retain reconciliation ownership for protected logical lease release and reclaim daemon tokens",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "vendor/bluez/ubm-le-gatt-5.87.patch",
-        "crates/ubm-desktop/src/os/linux_lease.rs"
-      ],
-      "regression_suites": [
-        "crates/ubm-desktop/tests/bluez_bearer_scope.rs"
-      ],
+      "implementation": ["vendor/bluez/ubm-le-gatt-5.87.patch", "crates/ubm-desktop/src/os/linux_lease.rs"],
+      "regression_suites": ["crates/ubm-desktop/tests/bluez_bearer_scope.rs"],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Production protocol/retry/replay controls pass. Actual daemon integration passes 1,200 protected cycles with two live lease senders and foreign notification ownership; held foreign read with a live sender passes physical deferred cleanup after completion. Final evidence reconciliation remains required.",
-      "previous_findings": [
-        "F09",
-        "F08"
-      ],
+      "previous_findings": ["F09", "F08"],
       "implementation_blobs": {
         "vendor/bluez/ubm-le-gatt-5.87.patch": "7144a8fabd9185d8a58350479dfa8851aad93627",
         "crates/ubm-desktop/src/os/linux_lease.rs": "3ed8ba5810a22dbbe925d371543aa3eed5d14a4a"
@@ -190,18 +175,11 @@
       "priority": "P2",
       "required_outcome": "Abandon admission when deferred acquired-FD delivery fails, preserving other interest",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "vendor/bluez/ubm-le-gatt-5.87.patch"
-      ],
-      "regression_suites": [
-        "vendor/bluez/build-test-isolated.sh",
-        "crates/ubm-desktop/src/os/bluez_acquired_tests.rs"
-      ],
+      "implementation": ["vendor/bluez/ubm-le-gatt-5.87.patch"],
+      "regression_suites": ["vendor/bluez/build-test-isolated.sh", "crates/ubm-desktop/src/os/bluez_acquired_tests.rs"],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Complete immediate/deferred write and notify failure controls pass with exact-admission cleanup. Actual public Node/Bun acquisition, conflict, abort and zero-resource cleanup pass against installed daemon. Fault controls and RF-positive routes retain their separate evidence levels; remaining live FD lifetime scenarios are outstanding.",
-      "previous_findings": [
-        "F07"
-      ],
+      "previous_findings": ["F07"],
       "implementation_blobs": {
         "vendor/bluez/ubm-le-gatt-5.87.patch": "7144a8fabd9185d8a58350479dfa8851aad93627"
       },
@@ -225,12 +203,8 @@
       "priority": "P2",
       "required_outcome": "Track foreign one-shot operations before the first UBM lease",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "vendor/bluez/ubm-le-gatt-5.87.patch"
-      ],
-      "regression_suites": [
-        "vendor/bluez/build-test-isolated.sh"
-      ],
+      "implementation": ["vendor/bluez/ubm-le-gatt-5.87.patch"],
+      "regression_suites": ["vendor/bluez/build-test-isolated.sh"],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Production early operation controls pass. Actual accepted ATT read before first ReserveLease remains protected across release/ACK, then permits physical disconnect after completion while its foreign sender remains alive. Failure/cancellation/removal/generation controls are retained separately.",
       "previous_findings": [],
@@ -249,12 +223,8 @@
       "priority": "P2",
       "required_outcome": "Clean pre-lease arrival/admission state on physical loss",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "vendor/bluez/ubm-le-gatt-5.87.patch"
-      ],
-      "regression_suites": [
-        "vendor/bluez/build-test-isolated.sh"
-      ],
+      "implementation": ["vendor/bluez/ubm-le-gatt-5.87.patch"],
+      "regression_suites": ["vendor/bluez/build-test-isolated.sh"],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Repeated no-peer loss/storage controls pass. Actual remote controller loss of an unleased generation followed by a new lease passes: old sender/admission does not protect the replacement, and prior kernel auto-connect inventory is restored. Live execution does not directly measure internal daemon maps.",
       "previous_findings": [],
@@ -283,9 +253,7 @@
       ],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "RN, desktop, core and public readiness suites pass in the full 430-suite package gate; native mobile/workspace admission and generation controls pass. Current final-head replay pending; no physical-radio evidence inferred.",
-      "previous_findings": [
-        "F13"
-      ],
+      "previous_findings": ["F13"],
       "implementation_blobs": {
         "src/backends/reactnative/react-native-rust-core-manager.ts": "4da1b36244748ebd35a76cde7d31d55caf6e2661",
         "crates/ubm-mobile/src/session.rs": "65a624fee9ac45c6a830adac7f755d107e70b669"
@@ -313,17 +281,11 @@
       "priority": "P2",
       "required_outcome": "RN readiness source failures terminalize independently of cleanup",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "src/backends/reactnative/react-native-rust-core-provider.ts"
-      ],
-      "regression_suites": [
-        "__tests__/backends/reactnative/rust-core-write-readiness.test.js"
-      ],
+      "implementation": ["src/backends/reactnative/react-native-rust-core-provider.ts"],
+      "regression_suites": ["__tests__/backends/reactnative/rust-core-write-readiness.test.js"],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "RN public readiness source-terminal, cleanup refusal, held opening and later-admission controls pass in the full package gate. Current final-head replay pending.",
-      "previous_findings": [
-        "F13"
-      ],
+      "previous_findings": ["F13"],
       "implementation_blobs": {
         "src/backends/reactnative/react-native-rust-core-provider.ts": "d50471771231137cb8ce6e43a0c9b69cf05f71d9"
       },
@@ -347,19 +309,14 @@
       "priority": "P2",
       "required_outcome": "IPC characteristic writeWhenReady uses the supported readiness route",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "src/ipc/public-manager.ts",
-        "native/tauri/src/btleplug_dispatcher.rs"
-      ],
+      "implementation": ["src/ipc/public-manager.ts", "native/tauri/src/btleplug_dispatcher.rs"],
       "regression_suites": [
         "__tests__/ipc/public-manager-controls.test.js",
         "native/tauri/src/dispatcher_packet_b_tests.rs"
       ],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Public IPC/Electron/Tauri helper forwarding, byte ownership and queue controls pass in package/Tauri gates. Current final-head replay pending.",
-      "previous_findings": [
-        "F14"
-      ],
+      "previous_findings": ["F14"],
       "implementation_blobs": {
         "src/ipc/public-manager.ts": "50da03b29020fe14ba802b477cddcec084f6e66c",
         "native/tauri/src/btleplug_dispatcher.rs": "3fdf72e14e5cb009b7fc9a01b22885f573bf7bb1"
@@ -499,12 +456,8 @@
       "priority": "P2",
       "required_outcome": "Preserve public IPC control-stream errors",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "src/ipc/public-manager.ts"
-      ],
-      "regression_suites": [
-        "__tests__/ipc/public-manager-controls.test.js"
-      ],
+      "implementation": ["src/ipc/public-manager.ts"],
+      "regression_suites": ["__tests__/ipc/public-manager-controls.test.js"],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Already fixed at review baseline; retained IPC control-stream public error regression passes in the full package gate. Final-head replay pending.",
       "previous_findings": [],
@@ -536,13 +489,8 @@
       "priority": "P2",
       "required_outcome": "Live-watch quotas and bounded replay history remain independent",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "native/tauri/src/connection_parameters.rs",
-        "native/tauri/src/write_readiness.rs"
-      ],
-      "regression_suites": [
-        "native/tauri/src/dispatcher_packet_b_tests.rs"
-      ],
+      "implementation": ["native/tauri/src/connection_parameters.rs", "native/tauri/src/write_readiness.rs"],
+      "regression_suites": ["native/tauri/src/dispatcher_packet_b_tests.rs"],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Real Tauri dispatcher quota/history controls and 600-cycle reclamation pass in the Tauri gate on all three OSes at 345833ce. Final-head gate pending.",
       "previous_findings": [],
@@ -669,19 +617,14 @@
       "priority": "P2",
       "required_outcome": "Union keyed list evidence and retain required packets through native ingress",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "src/backend-contract/scan-evidence.ts",
-        "vendor/btleplug/src/winrtble/ble/watcher.rs"
-      ],
+      "implementation": ["src/backend-contract/scan-evidence.ts", "vendor/btleplug/src/winrtble/ble/watcher.rs"],
       "regression_suites": [
         "__tests__/public/scan-evidence.test.js",
         "__tests__/backends/desktop/desktop-rust-core-provider.test.js"
       ],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Split-service-list union and conservative native ingress controls pass in package/native gates; Windows packed/public route passes at 345833ce. Final-head gate pending; controlled evidence is not hardware proof.",
-      "previous_findings": [
-        "F05"
-      ],
+      "previous_findings": ["F05"],
       "implementation_blobs": {
         "src/backend-contract/scan-evidence.ts": "99ff5dbea03630b0fb43bc42f53a028ae9703c6d",
         "vendor/btleplug/src/winrtble/ble/watcher.rs": "02903a1ea02bed3466191fa474ab4e9b26c3566f"
@@ -777,12 +720,8 @@
       "priority": "P2",
       "required_outcome": "Expire each carried scan fact independently",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "src/backend-contract/scan-evidence.ts"
-      ],
-      "regression_suites": [
-        "__tests__/public/scan-evidence.test.js"
-      ],
+      "implementation": ["src/backend-contract/scan-evidence.ts"],
+      "regression_suites": ["__tests__/public/scan-evidence.test.js"],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Per-fact freshness and downstream nonrenewal regressions pass in the full package gate. Final-head replay pending.",
       "previous_findings": [],
@@ -814,10 +753,7 @@
       "priority": "P2",
       "required_outcome": "Complete scan peer identity prevents cross-peer evidence borrowing",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "src/backend-contract/scan-evidence.ts",
-        "src/backends/desktop/desktop-rust-core-provider.ts"
-      ],
+      "implementation": ["src/backend-contract/scan-evidence.ts", "src/backends/desktop/desktop-rust-core-provider.ts"],
       "regression_suites": [
         "__tests__/public/scan-evidence.test.js",
         "__tests__/backends/desktop/desktop-rust-core-provider.test.js"
@@ -920,12 +856,8 @@
       "priority": "P2",
       "required_outcome": "Expire inactive scan peers globally and bound retention",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "src/backend-contract/scan-evidence.ts"
-      ],
-      "regression_suites": [
-        "__tests__/public/scan-evidence.test.js"
-      ],
+      "implementation": ["src/backend-contract/scan-evidence.ts"],
+      "regression_suites": ["__tests__/public/scan-evidence.test.js"],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Global expiry and bounded peer/fact retention controls pass in the full package gate. Final-head replay pending.",
       "previous_findings": [],
@@ -983,9 +915,7 @@
           "a malformed report during acquisition retains its own source failure",
           "initial buffering overflow reports the source fault rather than a stale connection"
         ],
-        "native/tauri/src/connection_parameters.rs": [
-          "opening_parameter_read_keeps_the_caller_budget_and_cancel"
-        ]
+        "native/tauri/src/connection_parameters.rs": ["opening_parameter_read_keeps_the_caller_budget_and_cancel"]
       }
     },
     {
@@ -1026,13 +956,8 @@
       "priority": "P2",
       "required_outcome": "Lost-link errors retain shared vocabulary for parameter operations",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "crates/ubm-desktop/src/errors.rs",
-        "vendor/btleplug/src/connection_parameters_source.rs"
-      ],
-      "regression_suites": [
-        "crates/ubm-desktop/src/errors.rs"
-      ],
+      "implementation": ["crates/ubm-desktop/src/errors.rs", "vendor/btleplug/src/connection_parameters_source.rs"],
+      "regression_suites": ["crates/ubm-desktop/src/errors.rs"],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Native/shared loss vocabulary controls pass. Additional all-zero WinRT answer now preserves raw native fields and connection.lost; exact native mapper/classifier controls pass locally. Latest combined batch and final-head Windows CI pending.",
       "previous_findings": [],
@@ -1073,9 +998,7 @@
       ],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Separate preference/requirement forwarding and supported selection controls pass in native/provider gates. Final-head Windows gate pending; physical CCCD behavior is not established by fixtures.",
-      "previous_findings": [
-        "F03"
-      ],
+      "previous_findings": ["F03"],
       "implementation_blobs": {
         "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca",
         "vendor/btleplug/src/winrtble/peripheral.rs": "d0c56d35b04b7f97002c79363dbb8e8aa39f5d86"
@@ -1167,19 +1090,11 @@
       "priority": "P2",
       "required_outcome": "Preserve structured WinRT primary and cleanup failures and retry cleanup",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "vendor/btleplug/src/winrtble/ble/device.rs",
-        "vendor/btleplug/src/winrtble/peripheral.rs"
-      ],
-      "regression_suites": [
-        "vendor/btleplug/src/winrtble/gatt_model.rs",
-        "crates/ubm-desktop/src/os/winrt_cleanup.rs"
-      ],
+      "implementation": ["vendor/btleplug/src/winrtble/ble/device.rs", "vendor/btleplug/src/winrtble/peripheral.rs"],
+      "regression_suites": ["vendor/btleplug/src/winrtble/gatt_model.rs", "crates/ubm-desktop/src/os/winrt_cleanup.rs"],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Structured discovery/CCCD primary and cleanup failure, original-target retention and cleanup retry controls pass in native gates. Final-head Windows gate pending; native fault controls retain their evidence level.",
-      "previous_findings": [
-        "F11"
-      ],
+      "previous_findings": ["F11"],
       "implementation_blobs": {
         "vendor/btleplug/src/winrtble/ble/device.rs": "99d9e3a0dd5cc991e4636bd686211384181e1a41",
         "vendor/btleplug/src/winrtble/peripheral.rs": "d0c56d35b04b7f97002c79363dbb8e8aa39f5d86"
@@ -1223,18 +1138,11 @@
       "priority": "P2",
       "required_outcome": "Propagate Tauri service restrictions",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "native/tauri/src/btleplug_dispatcher.rs"
-      ],
-      "regression_suites": [
-        "__tests__/tauri-gatt-database.test.js",
-        "native/tauri/src/dispatcher_packet_b_tests.rs"
-      ],
+      "implementation": ["native/tauri/src/btleplug_dispatcher.rs"],
+      "regression_suites": ["__tests__/tauri-gatt-database.test.js", "native/tauri/src/dispatcher_packet_b_tests.rs"],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Already fixed at review baseline; retained Tauri restriction serialization controls pass in the full Tauri gate. Final-head replay pending.",
-      "previous_findings": [
-        "F04"
-      ],
+      "previous_findings": ["F04"],
       "implementation_blobs": {
         "native/tauri/src/btleplug_dispatcher.rs": "3fdf72e14e5cb009b7fc9a01b22885f573bf7bb1"
       },
@@ -1362,7 +1270,7 @@
       "id": "R2-22",
       "priority": "P2",
       "required_outcome": "Carry observed primary/included-service graph facts and occurrence identity",
-      "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
+      "implementation_commit": "9b74ab3ee1f620421a39b67c51551a599ebfc571",
       "implementation": [
         "crates/ubm-desktop/src/boundary.rs",
         "src/backends/desktop/desktop-rust-core-provider.ts",
@@ -1375,7 +1283,7 @@
         "__tests__/tauri-gatt-database.test.js",
         "__tests__/backends/reactnative/rust-core-discovery-failure.test.js"
       ],
-      "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
+      "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks. Post-candidate invalidated-service callback reservations and cleanup retirement pass in the complete Apple native executable harness; exact old-object callbacks cannot consume replacement reservations.",
       "historical_evidence": "Observed/unknown primary and inclusion graph propagation, duplicate service occurrence and missing-target refusal controls pass across package/mobile/Tauri gates. Node 24 invalidation synchronization repair passes at 345833ce. Final-head replay pending.",
       "previous_findings": [],
       "implementation_blobs": {
@@ -1383,7 +1291,7 @@
         "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca",
         "src/backends/reactnative/react-native-rust-core-manager.ts": "4da1b36244748ebd35a76cde7d31d55caf6e2661",
         "native/tauri/src/btleplug_dispatcher.rs": "3fdf72e14e5cb009b7fc9a01b22885f573bf7bb1",
-        "ios/Owned/OwnedCoreBluetoothProtocolRadioDiscovery.swift": "8b11503d02093446fc9ff8d8184c2c6d7eb77a51"
+        "ios/Owned/OwnedCoreBluetoothProtocolRadioDiscovery.swift": "d409077096381de5476eea668774eb77d3c8a3b8"
       },
       "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
       "regression_names": {
@@ -1415,9 +1323,7 @@
       ],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Preferred preset route, runtime admission and explicit request lifetime controls pass in native and joined public-provider gates. Final-head Windows gate pending; requested preset remains distinct from measured outcome.",
-      "previous_findings": [
-        "F17"
-      ],
+      "previous_findings": ["F17"],
       "implementation_blobs": {
         "vendor/btleplug/src/winrtble/ble/device.rs": "99d9e3a0dd5cc991e4636bd686211384181e1a41",
         "crates/ubm-desktop/src/os/windows.rs": "6b55d94823b704887512b386829ff74efacdd971",
@@ -1470,9 +1376,7 @@
         "vendor/btleplug/src/winrtble/ble/device.rs",
         "src/backends/desktop/desktop-rust-core-provider.ts"
       ],
-      "regression_suites": [
-        "crates/ubm-desktop/src/capabilities.rs"
-      ],
+      "regression_suites": ["crates/ubm-desktop/src/capabilities.rs"],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Instantiated runtime API-presence/refusal capability controls pass in native/provider gates. Final-head Windows gate pending; compiled target alone is not support evidence.",
       "previous_findings": [],
@@ -1812,24 +1716,19 @@
       "priority": "P2",
       "required_outcome": "Qualify the actual packed public desktop provider/native integration under Node/Bun on three OSes",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "scripts/ci/bun-packed-desktop-acceptance.js",
-        ".github/workflows/ci.yml"
-      ],
+      "implementation": ["scripts/ci/bun-packed-desktop-acceptance.js", ".github/workflows/ci.yml"],
       "regression_suites": [
         "__tests__/PackedBunDesktopAcceptance.test.js",
         "scripts/ci/bun-packed-desktop-acceptance.js"
       ],
-      "verification_status": "Verified: same-head current PR packed lanes pass Node/Bun CJS/ESM actual public/provider/native controlled-radio integration on Linux, macOS and Windows. Source/packed/live scopes remain distinct; default-profile WinRT MIDI delay remains a live interoperability limitation.",
+      "verification_status": "Three-OS packed Node/Bun CJS/ESM actual public/provider/native controlled-radio integration passes at 9916500f. Final 9b74ab3e current-runtime-head CI is queued and remains required; source/packed/live scopes are distinct.",
       "historical_evidence": "Actual installed public host factory/default provider/sealed NAPI dispatch passes Node/Bun CJS/ESM on Linux, macOS and Windows at 345833ce, with cancellation/deadline/late completion, events, invalidation and zero cleanup counters. Native radio is explicitly synthetic; final-head same-source matrix pending.",
-      "previous_findings": [
-        "Q1"
-      ],
+      "previous_findings": ["Q1"],
       "implementation_blobs": {
         "scripts/ci/bun-packed-desktop-acceptance.js": "6ee307c0bab2a5106891544512cbbb620ec62787",
         ".github/workflows/ci.yml": "e1555fe661711ac70e48dcae15050533dc7a2613"
       },
-      "remaining_limits": "Canonical integration uses explicitly injected synthetic native radio. Separate Windows Bun actual-radio discovery timed out and cleanup hung at f0; retirement correction is source-reviewed and Linux-portable regressions pass, but new Windows live replay remains pending.",
+      "remaining_limits": "Packed three-OS integration uses explicitly injected synthetic native radio. Separate canonical 0d5f4cb9 Windows live Node CJS/ESM and Bun CJS default 14-service profile pass; Bun ESM passes the isolated 13-service no-MIDI profile. Default MIDI-enabled Bun ESM native metadata delay remains; prompt structured discovery-retirement-pending cleanup refusals are verified. Failed loss/retry coordinator does not prove natural-completion retry or zero cleanup in that fault scenario.",
       "regression_names": {
         "__tests__/PackedBunDesktopAcceptance.test.js": [
           "exports the six public manager scenario ids and does not pack on import",
@@ -1844,18 +1743,14 @@
       "priority": "P3",
       "required_outcome": "Scan planner reports native connectability accurately",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "src/backends/desktop/desktop-rust-core-provider.ts"
-      ],
+      "implementation": ["src/backends/desktop/desktop-rust-core-provider.ts"],
       "regression_suites": [
         "__tests__/backends/winrt/winrt-scan-planner.test.js",
         "__tests__/backends/desktop/desktop-rust-core-provider.test.js"
       ],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "WinRT planning connectability regression passes in the full package gate. Final-head replay pending.",
-      "previous_findings": [
-        "F16"
-      ],
+      "previous_findings": ["F16"],
       "implementation_blobs": {
         "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca"
       },
@@ -1943,18 +1838,14 @@
       "priority": "P2",
       "required_outcome": "Forward native parameters through real and synthetic NAPI radios; test joined read/watch route",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "bindings/napi/src/dispatch.rs"
-      ],
+      "implementation": ["bindings/napi/src/dispatch.rs"],
       "regression_suites": [
         "__tests__/backends/desktop/desktop-dispatch-radio-forwarding.test.js",
         "__tests__/backends/desktop/desktop-public-parameters.test.js"
       ],
       "verification_status": "Verified by collected package/native/platform regression gates; latest complete clean Linux preflight passes 430 suites / 5433 tests. Final release-wide cross-platform gate is recorded by PR251 required checks.",
       "historical_evidence": "Real/synthetic DispatchRadio forwarding and actual joined public parameter read/watch tests pass in package and three-OS packed Node/Bun jobs at 345833ce. Final-head same-source replay pending.",
-      "previous_findings": [
-        "F17"
-      ],
+      "previous_findings": ["F17"],
       "implementation_blobs": {
         "bindings/napi/src/dispatch.rs": "df0eec80c45df3f7d585bb269c679e53f06e52e7"
       },
@@ -1973,9 +1864,7 @@
       "priority": "P2",
       "required_outcome": "Implement RN internal parameter methods and bridge shapes together",
       "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
-      "implementation": [
-        "src/backends/reactnative/react-native-rust-core-manager.ts"
-      ],
+      "implementation": ["src/backends/reactnative/react-native-rust-core-manager.ts"],
       "regression_suites": [
         "__tests__/backends/reactnative/rust-core-bridge-shape.test.js",
         "__tests__/backends/reactnative/r01-native-manager.test.js"
@@ -2071,7 +1960,7 @@
       "source_review": "complete",
       "portable_actual_registry_regressions": "pass in clean Linux combined gate",
       "windows_native_compilation": "passed in current owning candidate workflow",
-      "live_replay": "Bun CJS actual default WinRT factory/native parameters, three presets, 14 services, battery read, heart-rate notify, directory and zero cleanup passed against sealed canonical 0d5f4cb9; no pending fault branch was entered. Node CJS and ESM full public matrix pass. Bun ESM full-success case fails during discovery; cleanup returns structured discovery-retirement-pending without hanging. Explicit pending/loss/retry qualification is in progress.",
+      "live_replay": "Canonical 0d5f4cb9 live default-profile Node CJS/ESM and Bun CJS public matrices pass with zero owned resources. Default-profile Bun ESM reaches the discovery deadline and returns prompt structured retirement refusal. Bun ESM isolated no-MIDI 13-service public matrix passes with zero owned resources. Explicit pending/loss/retry coordinator failed its marker deadline; natural-completion retry and zero cleanup in that fault scenario remain unverified.",
       "remaining_primary_failure": "Underlying delayed native descriptor materialization is not claimed fixed.",
       "pending_fault_receipt": "The Bun ESM native deadline and two prompt structured pending-retirement refusals were observed. The controlled Disconnect precondition was false because the exact peripheral was already disconnected. The coordinator missed its marker deadline; natural-completion/retry/zero cleanup was NOT verified in that failed attempt."
     },
@@ -2102,12 +1991,23 @@
     ],
     "serialization_boundary": {
       "implementation": "src/electron/renderer.ts",
-      "regression_suites": [
-        "__tests__/ipc/connection-cleanup.test.js"
-      ],
+      "regression_suites": ["__tests__/ipc/connection-cleanup.test.js"],
       "required_outcome": "Non-finite IPC values terminalize owned event streams and preserve original protocol failure without escaping callback; acknowledge malformed host event."
     },
-    "cleanup_after_event_source_death": "All 18 invalid metadata regressions pass, including serialization failures, routed teardown, original protocol cause and blocked new operations. Public aggregate/provisional controls verify actual failed-release receipts, cleanup dispatch, retained debt and successful lease retry."
+    "cleanup_after_event_source_death": "All 18 invalid metadata regressions pass, including serialization failures, routed teardown, original protocol cause and blocked new operations. Public aggregate/provisional controls verify actual failed-release receipts, cleanup dispatch, retained debt and successful lease retry.",
+    "post_candidate_feedback": {
+      "source_head": "9b74ab3ee1f620421a39b67c51551a599ebfc571",
+      "ipc_assertion_free_guards": {
+        "thread": "PRRT_kwDOT5DnRc6qIm6I",
+        "receipt": "final-batch-evidence/post-candidate-ipc.log",
+        "result": "111 tests / three suites pass; typecheck passes"
+      },
+      "apple_invalidated_discovery": {
+        "thread": "PRRT_kwDOT5DnRc6qIm6Q",
+        "receipt": "final-batch-evidence/post-candidate-apple.log",
+        "result": "Complete Apple native executable harness passes; deterministic CoreBluetooth mutable-object reservation and production retirement controls, not physical radio"
+      }
+    }
   },
   "previous_review_dispositions": [
     {
@@ -2225,5 +2125,5 @@
       "current_disposition": "Residual defects corrected and verified by corresponding R2 items and joined public/native gates; runtime qualification limits remain explicit."
     }
   ],
-  "gate_followup": "Final Linux batch is green. Native code after the full Rust gate differs only by rustfmt; later runtime corrections are confined to IPC metadata validation, source terminalization and cleanup admission. Current-head PR CI supplies the final cross-platform matrix."
+  "gate_followup": "Final clean Linux preflight passes at 10589aeeb. Post-candidate IPC and Apple Swift changes at 9b74ab3e pass one scoped batch: typecheck, 111 IPC tests, full Apple native executable harness and documentation checks. All other implementation blobs remain identical to the recorded freeze. Current-head PR CI supplies the final cross-platform matrix and remains required."
 }
