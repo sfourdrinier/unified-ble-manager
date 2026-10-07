@@ -7,12 +7,7 @@
 // that needs more than one packet is a new observation, marked
 // `core-merged`, and it does not claim an origin the radio did not report.
 
-import type {
-  AdvertisementField,
-  AdvertisementObservation,
-  ManufacturerData,
-  ServiceDataEntry
-} from './advertisement'
+import type { AdvertisementField, AdvertisementObservation, ManufacturerData, ServiceDataEntry } from './advertisement'
 import type { IpcAdvertisement } from '../ipc/manager'
 import type { Uuid } from './primitives'
 
@@ -88,7 +83,6 @@ export class ScanEvidenceSession {
     if (merged !== null && matches(merged)) return merged
     return null
   }
-
 }
 
 function remember<Carried extends { atMs: number }>(
@@ -185,9 +179,7 @@ function mergedAdvertisement<Attachment extends string>(
   const serviceData =
     raw.serviceData === null && carried.serviceData !== null ? derived(carried.serviceData) : observation.serviceData
   const connectable =
-    raw.connectable === null && carried.connectable !== null
-      ? derived(carried.connectable)
-      : observation.connectable
+    raw.connectable === null && carried.connectable !== null ? derived(carried.connectable) : observation.connectable
   const rssi = raw.rssi === null && carried.rssi !== null ? derived(carried.rssi) : observation.rssi
   added =
     localName !== observation.localName ||

@@ -2900,15 +2900,15 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const operation = `${SCOPE}.connection.write-readiness`
     this.assertOperational(operation)
     const entry = this.requireConnection(connection, operation)
-    let watch!: ReadinessWatch
+    const opened: { watch: ReadinessWatch | null } = { watch: null }
     const stream = new OwnedCoreBoundedStream<ConnectionWriteReadinessObservation<string>>(
       { itemCapacity: capacity(64), byteCapacity: capacity(16 * 1024), reservedControlCapacity: capacity(1) },
       'drop-oldest',
       () => {
-        this.readinessWatches.delete(watch)
+        if (opened.watch !== null) this.readinessWatches.delete(opened.watch)
       }
     )
-    watch = {
+    const watch: ReadinessWatch = {
       nativePeerId: entry.nativePeerId,
       connectionId: String(entry.resource.connectionId),
       connectionGeneration: String(entry.resource.connectionGeneration),
@@ -2916,6 +2916,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       stream,
       ordinal: 0
     }
+    opened.watch = watch
     this.readinessWatches.add(watch)
     const operationId = this.mintOperationId('write-readiness')
     const removeAbort = this.watchAbort(options.signal ?? null, operationId, operation)
@@ -2977,10 +2978,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     watch.stream.closeWithReason(reason, normalized)
   }
 
-  private closeReadinessWatches(
-    entry: ConnectionEntry,
-    reason: 'connection-lost' | 'owner-released'
-  ): void {
+  private closeReadinessWatches(entry: ConnectionEntry, reason: 'connection-lost' | 'owner-released'): void {
     for (const watch of [...this.readinessWatches]) {
       if (watch.nativePeerId === entry.nativePeerId && watch.coreGeneration === entry.coreGeneration) {
         this.closeReadinessWatch(watch, reason)
@@ -3009,7 +3007,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
             'source-failed',
             error instanceof BackendContractError
               ? error.normalized
-              : contractError('platform.failure', 'connection', `${SCOPE}.connection.write-readiness.reconcile`).normalized
+              : contractError('platform.failure', 'connection', `${SCOPE}.connection.write-readiness.reconcile`)
+                  .normalized
           )
         }
       }

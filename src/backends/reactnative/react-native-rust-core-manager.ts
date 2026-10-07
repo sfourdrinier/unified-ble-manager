@@ -1522,6 +1522,7 @@ class NativeGattDatabase {
     this.assertOperationAdmission(options, 'write-when-ready')
     const watch = await this.connection.writeWithoutResponseReadiness(options)
     let failure: unknown = null
+    let receipt: WriteReceipt<string, string> | null = null
     try {
       const iterator = watch.events[Symbol.asyncIterator]()
       while (true) {
@@ -1544,21 +1545,26 @@ class NativeGattDatabase {
         }
         if (streamItem.value.ready === true) break
       }
-      return await this.write(path, bytes, options)
+      receipt = await this.write(path, bytes, options)
     } catch (error) {
       failure = error
       throw error
     } finally {
       const cleanup = await watch.close()
       if (failure === null && cleanup.state === 'release-failed') {
-        throw contractError('platform.failure', 'cleanup', `${operation}.close`)
+        failure = contractError('platform.failure', 'cleanup', `${operation}.close`)
       }
     }
+    if (failure !== null) throw failure
+    if (receipt === null) throw contractError('lifecycle.invariant-violation', 'gatt', `${operation}.receipt`)
+    return receipt
   }
 
   private nextReadinessItem(
     iterator: AsyncIterator<
-      { kind: 'value'; value: { connectionId: unknown; connectionGeneration: unknown; ready: boolean } } | { kind: 'overflow' } | { kind: 'terminal'; reason: string },
+      | { kind: 'value'; value: { connectionId: unknown; connectionGeneration: unknown; ready: boolean } }
+      | { kind: 'overflow' }
+      | { kind: 'terminal'; reason: string },
       undefined,
       undefined
     >,
@@ -1566,7 +1572,9 @@ class NativeGattDatabase {
     operation: string
   ): Promise<
     IteratorResult<
-      { kind: 'value'; value: { connectionId: unknown; connectionGeneration: unknown; ready: boolean } } | { kind: 'overflow' } | { kind: 'terminal'; reason: string },
+      | { kind: 'value'; value: { connectionId: unknown; connectionGeneration: unknown; ready: boolean } }
+      | { kind: 'overflow' }
+      | { kind: 'terminal'; reason: string },
       undefined
     >
   > {

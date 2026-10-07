@@ -181,4 +181,76 @@ describe('split advertisement evidence', () => {
     const rest = await iterator.next()
     expect(rest.done).toBe(true)
   })
+
+  test('an IPC filter ages split packets from the receipt clock', async () => {
+    const address = 'A0:9E:1A:E9:B9:3D'
+    const query = normalizeScanQuery({
+      anyOf: [{ services: { all: [0x180d] }, names: { prefixes: ['Polar H10'] } }]
+    })
+    const ipcPacket = ({ name, services, address: packetAddress = address }) =>
+      Object.freeze({
+        peerId: 'peer-1',
+        address: packetAddress,
+        addressType: 'public',
+        localName: name,
+        rssi: null,
+        txPowerLevel: null,
+        serviceUuids: Object.freeze(services),
+        manufacturerData: Object.freeze([]),
+        serviceData: Object.freeze([])
+      })
+    const values = [
+      ipcPacket({ name: null, services: [canonicalUuid(HEART)] }),
+      ipcPacket({ name: 'Polar H10 0001', services: [] })
+    ]
+    const sourceFor = clockSteps => {
+      let index = 0
+      return {
+        limits: {
+          itemCapacity: capacity(8),
+          byteCapacity: capacity(4096),
+          reservedControlCapacity: capacity(1)
+        },
+        overflowPolicy: 'suspend',
+        [Symbol.asyncIterator]() {
+          return {
+            async next() {
+              if (index >= values.length) return { done: true, value: undefined }
+              const value = values[index]
+              index += 1
+              return { done: false, value: { kind: 'value', value } }
+            },
+            async return() {
+              index = values.length
+              return { done: true, value: undefined }
+            },
+            [Symbol.asyncIterator]() {
+              return this
+            }
+          }
+        },
+        close() {
+          return Promise.resolve({ state: 'released', failures: [] })
+        },
+        clockSteps
+      }
+    }
+    const read = async clockSteps => {
+      let step = 0
+      const filtered = filterScanObservations(
+        sourceFor(clockSteps),
+        query,
+        'all',
+        () => clockSteps[step++] ?? clockSteps.at(-1)
+      )
+      return filtered[Symbol.asyncIterator]().next()
+    }
+    const merged = await read([1_000, 1_000 + SCAN_EVIDENCE_WINDOW_MS])
+    expect(merged.done).toBe(false)
+    expect(merged.value.value.provenance).toBe('core-merged')
+    expect(merged.value.value.localName).toBe('Polar H10 0001')
+    expect(merged.value.value.serviceUuids).toEqual([canonicalUuid(HEART)])
+    const expired = await read([0, SCAN_EVIDENCE_WINDOW_MS + 1])
+    expect(expired.done).toBe(true)
+  })
 })

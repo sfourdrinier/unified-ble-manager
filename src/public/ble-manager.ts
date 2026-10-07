@@ -1284,7 +1284,12 @@ function publicParameterStream<Attachment extends string, Identity extends Backe
               assertPublicConnectionIdentity(connection, streamItem.value, `${operation}.identity`)
               return {
                 done: false,
-                value: publicParameterObservation(generation, streamItem.value.observedAtMonotonicMs, descriptor, streamItem.value)
+                value: publicParameterObservation(
+                  generation,
+                  streamItem.value.observedAtMonotonicMs,
+                  descriptor,
+                  streamItem.value
+                )
               }
             }
             if (streamItem.kind === 'overflow') throw contractError('stream.overflow', 'connection', operation)
@@ -1788,12 +1793,7 @@ function createPublicConnectionControls<Attachment extends string, Identity exte
         ) {
           throw contractError('protocol.violation', 'connection', 'public-connection.controls.parameters.result')
         }
-        return publicParameterObservation(
-          generation,
-          measured.observedAtMonotonicMs,
-          descriptor,
-          measured
-        )
+        return publicParameterObservation(generation, measured.observedAtMonotonicMs, descriptor, measured)
       }),
     parameterEvents: () => {
       const descriptor = internal.capability('connection:parameters')
@@ -2800,7 +2800,8 @@ function snapshotPublicAdapterState<Attachment extends string>(
 export function filterScanObservations(
   source: BoundedAsyncStream<AdvertisementObservation<string> | IpcAdvertisement>,
   query: ReturnType<typeof normalizeScanQuery>,
-  duplicates: 'coalesced' | 'all' = 'all'
+  duplicates: 'coalesced' | 'all' = 'all',
+  now: () => number = () => globalThis.performance.now()
 ): BoundedAsyncStream<PublicScanObservation> {
   return {
     limits: source.limits,
@@ -2827,7 +2828,7 @@ export function filterScanObservations(
             const matched =
               'device' in raw
                 ? evidence.matchAdvertisement(raw, matches)
-                : evidence.matchIpc(raw, 0, 'filtered-scan', matches)
+                : evidence.matchIpc(raw, now(), 'filtered-scan', matches)
             if (matched === null) continue
             const observation = projectPublicScanObservation(matched)
             if (observationMatchesScanQuery(query, observation)) {

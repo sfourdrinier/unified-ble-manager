@@ -88,9 +88,7 @@ export interface GattServiceRestriction {
 }
 
 /** Map a native service-access label onto the public restriction. */
-export function serviceAccessRestriction(
-  access: string | null | undefined
-): GattServiceRestriction | undefined {
+export function serviceAccessRestriction(access: string | null | undefined): GattServiceRestriction | undefined {
   if (access === 'os-reserved') {
     return Object.freeze({ state: 'restricted', reason: 'os-reserved', gattStatus: null, attError: null })
   }

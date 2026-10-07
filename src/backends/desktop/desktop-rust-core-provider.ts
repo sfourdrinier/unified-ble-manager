@@ -1270,10 +1270,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
               connection: BackendConnection<string, string>,
               request: ConnectionParametersRequest<string, Operation>
             ) => this.readConnectionParameters(connection, request),
-            parameterEvents: (
-              connection: BackendConnection<string, string>,
-              options?: PublicOperationOptions
-            ) => this.watchConnectionParameters(connection, options)
+            parameterEvents: (connection: BackendConnection<string, string>, options?: PublicOperationOptions) =>
+              this.watchConnectionParameters(connection, options)
           }
         : {})
     })
@@ -3219,8 +3217,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     for (const watch of [...this.readinessWatches]) {
       if (watch.record.nativePeerId !== event.peerId) continue
-      const generation =
-        typeof event.connectionGeneration === 'string' ? event.connectionGeneration : null
+      const generation = typeof event.connectionGeneration === 'string' ? event.connectionGeneration : null
       const generationMatches = generation !== null && generation === watch.record.coreGeneration
       // A missing generation must not update every watch of this peer.
       // Buffer it until the probe settles; replay applies only a matching one.
@@ -5191,8 +5188,7 @@ export function desktopRustCoreWiring(states: readonly DesktopRustCoreCapability
     ),
     connectionParameters: states.some(
       row =>
-        row.id === BUILT_IN_FEATURE_IDS.connectionParameters &&
-        (row.state === 'supported' || row.state === 'limited')
+        row.id === BUILT_IN_FEATURE_IDS.connectionParameters && (row.state === 'supported' || row.state === 'limited')
     )
   })
 }

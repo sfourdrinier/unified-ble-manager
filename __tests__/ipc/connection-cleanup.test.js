@@ -147,6 +147,20 @@ async function createConnectedIpc(behavior) {
         )
       if (command === 'gatt.unsubscribe') return behavior.gattUnsubscribe()
       if (command === 'connection.rssi') return { kind: 'route', payload: { rssi: -42 } }
+      if (command === 'connection.parameters.subscribe') {
+        return (
+          behavior.parametersSubscribe?.(payload) ?? { kind: 'route', payload: { state: 'released', failures: [] } }
+        )
+      }
+      if (command === 'connection.parameters.unsubscribe') {
+        return behavior.parametersUnsubscribe?.() ?? { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+      if (command === 'connection.write-readiness.subscribe') {
+        return behavior.readinessSubscribe?.(payload) ?? { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+      if (command === 'connection.write-readiness.unsubscribe') {
+        return behavior.readinessUnsubscribe?.() ?? { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
       return { kind: 'route', payload: { state: 'released', failures: [] } }
     },
     subscribe() {
@@ -163,6 +177,76 @@ async function createConnectedIpc(behavior) {
   expect(commands).toContain('connection.events.ready')
   return { ipc, connection, commands }
 }
+
+function releaseFailed(resourceKind, operation) {
+  return {
+    kind: 'route',
+    payload: {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind,
+          error: {
+            code: 'platform.failure',
+            domain: 'connection',
+            operation,
+            platform: null,
+            retryability: 'caller-decides'
+          }
+        }
+      ]
+    }
+  }
+}
+
+describe('admitted control watches', () => {
+  test.each([
+    [
+      'parameterEvents',
+      'parametersSubscribe',
+      'parametersUnsubscribe',
+      'ipc-manager.connection-parameters-handle',
+      'IPC connection-parameter watch admission cleanup failed'
+    ],
+    [
+      'writeReadiness',
+      'readinessSubscribe',
+      'readinessUnsubscribe',
+      'ipc-manager.write-readiness-handle',
+      'IPC write-readiness watch admission cleanup failed'
+    ]
+  ])(
+    '%s keeps a failed unsubscribe after the host has admitted the watch',
+    async (method, subscribeHook, unsubscribeHook, operation, message) => {
+      let unsubscribes = 0
+      const { ipc, connection } = await createConnectedIpc({
+        [subscribeHook]: () => ({ kind: 'route', payload: { handle: 'not-the-client-handle' } }),
+        [unsubscribeHook]: () => {
+          unsubscribes += 1
+          return unsubscribes === 1
+            ? releaseFailed(method, operation)
+            : { kind: 'route', payload: { state: 'released', failures: [] } }
+        },
+        unsubscribe: async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }),
+        disconnect: async () => ({ kind: 'route', payload: { state: 'released', failures: [] } })
+      })
+
+      let caught = null
+      try {
+        await connection[method]()
+      } catch (error) {
+        caught = error
+      }
+      expect(caught).toBeInstanceOf(AggregateError)
+      expect(caught.message).toBe(message)
+      expect(caught.errors[0]).toMatchObject({ normalized: { code: 'protocol.malformed', operation } })
+      expect(caught.errors[1]).toMatchObject({ cleanup: { state: 'release-failed' } })
+      expect(unsubscribes).toBe(1)
+      await expect(ipc.destroy()).resolves.toMatchObject({ state: 'released' })
+      expect(unsubscribes).toBe(2)
+    }
+  )
+})
 
 describe('IPC connection cleanup independence', () => {
   test('late GATT admission after confirmed parent rejects without another native cleanup request', async () => {

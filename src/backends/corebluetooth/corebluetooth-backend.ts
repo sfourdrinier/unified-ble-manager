@@ -855,7 +855,9 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.nextIngressOrdinal += 1
     for (const consumer of [...group.consumers.values()]) {
       if (consumer.stream.isTerminal()) continue
-      const matched = group.evidence.matchAdvertisement(observation, candidate => matchesScan(consumer.options, candidate))
+      const matched = group.evidence.matchAdvertisement(observation, candidate =>
+        matchesScan(consumer.options, candidate)
+      )
       if (matched === null) continue
       const push = consumer.stream.emit(matched, advertisementByteLength(matched), String(peerId))
       if (push.terminated) {

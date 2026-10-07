@@ -491,6 +491,29 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     return session
   }
 
+  /**
+   * The host already admitted this route. A later validation or registration
+   * failure must unsubscribe, and a failed unsubscribe stays retryable debt
+   * instead of leaving an ownerless watch until the lease dies.
+   */
+  async compensateAdmittedRoute(
+    release: () => Promise<CleanupRecord>,
+    admissionError: unknown,
+    message: string
+  ): Promise<never> {
+    let cleanup: CleanupRecord
+    try {
+      cleanup = await release()
+    } catch (error) {
+      this.retainOwnerCleanupFailure(release, 'lease-owned', error)
+      throw new AggregateError([admissionError, error], message)
+    }
+    if (cleanup.state === 'released') throw admissionError
+    const cleanupError = new BleCleanupError(cleanup)
+    this.retainOwnerCleanupFailure(release, 'lease-owned', cleanupError)
+    throw new AggregateError([admissionError, cleanupError], message)
+  }
+
   /** An acquired scan without a required public plan still owns a native scan until stop or lease release confirms it. */
   async compensateFailedScanSession(session: IpcScanSession, admissionError: unknown): Promise<never> {
     const retryStop = (): Promise<CleanupRecord> => session.stop()
@@ -1414,6 +1437,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       command === 'scan.stop' ||
       command === 'connection.disconnect' ||
       command === 'connection.events.unsubscribe' ||
+      command === 'connection.parameters.unsubscribe' ||
+      command === 'connection.write-readiness.unsubscribe' ||
       command === 'gatt.unsubscribe' ||
       command === 'security.watch.unsubscribe' ||
       command === 'gatt.database.release'
@@ -1944,10 +1969,10 @@ export class IpcConnection {
         null,
         options.signal
       )
+      subscribed = true
       if (payload.handle !== handle) {
         throw contractError('protocol.malformed', 'ipc', 'ipc-manager.connection-parameters-handle')
       }
-      subscribed = true
       let closeResult: Promise<CleanupRecord> | null = null
       const close = (): Promise<CleanupRecord> => {
         if (closeResult !== null) return closeResult
@@ -1977,9 +2002,21 @@ export class IpcConnection {
       return Object.freeze({ events, close })
     } catch (error) {
       if (subscribed) {
-        await this.manager
-          .route('connection.parameters.unsubscribe', Object.freeze({ parameterEventsHandle: handle }))
-          .catch(() => undefined)
+        const release = async (): Promise<CleanupRecord> => {
+          const cleanup = cleanupRecord(
+            await this.manager.route(
+              'connection.parameters.unsubscribe',
+              Object.freeze({ parameterEventsHandle: handle })
+            )
+          )
+          if (cleanup.state === 'released') this.manager.closeStream(handle)
+          return cleanup
+        }
+        await this.manager.compensateAdmittedRoute(
+          release,
+          error,
+          'IPC connection-parameter watch admission cleanup failed'
+        )
       }
       throw error
     }
@@ -2009,10 +2046,10 @@ export class IpcConnection {
         null,
         options.signal
       )
+      subscribed = true
       if (payload.handle !== handle) {
         throw contractError('protocol.malformed', 'ipc', 'ipc-manager.write-readiness-handle')
       }
-      subscribed = true
       let closeResult: Promise<CleanupRecord> | null = null
       const close = (): Promise<CleanupRecord> => {
         if (closeResult !== null) return closeResult
@@ -2042,9 +2079,17 @@ export class IpcConnection {
       return Object.freeze({ events, close })
     } catch (error) {
       if (subscribed) {
-        await this.manager
-          .route('connection.write-readiness.unsubscribe', Object.freeze({ writeReadinessHandle: handle }))
-          .catch(() => undefined)
+        const release = async (): Promise<CleanupRecord> => {
+          const cleanup = cleanupRecord(
+            await this.manager.route(
+              'connection.write-readiness.unsubscribe',
+              Object.freeze({ writeReadinessHandle: handle })
+            )
+          )
+          if (cleanup.state === 'released') this.manager.closeStream(handle)
+          return cleanup
+        }
+        await this.manager.compensateAdmittedRoute(release, error, 'IPC write-readiness watch admission cleanup failed')
       }
       throw error
     }

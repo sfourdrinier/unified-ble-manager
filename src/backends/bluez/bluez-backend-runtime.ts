@@ -760,7 +760,9 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     )
     this.ingressOrdinal += 1
     for (const consumer of group.consumers.values()) {
-      const matched = group.evidence.matchAdvertisement(observation, candidate => matchesScan(consumer.options, candidate))
+      const matched = group.evidence.matchAdvertisement(observation, candidate =>
+        matchesScan(consumer.options, candidate)
+      )
       if (matched === null) continue
       const result = consumer.stream.emit(matched, advertisementSize(matched), String(matched.device.id))
       if (result.terminated) {

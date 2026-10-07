@@ -505,7 +505,10 @@ export class ElectronMainBleRouter {
       } else if (envelope.command === 'connection.write-readiness.subscribe') {
         response = await this.subscribeWriteReadiness(resources, envelope.payload, controller)
       } else if (envelope.command === 'connection.write-readiness.unsubscribe') {
-        response = await this.unsubscribeWriteReadiness(resources, requiredString(envelope.payload, 'writeReadinessHandle'))
+        response = await this.unsubscribeWriteReadiness(
+          resources,
+          requiredString(envelope.payload, 'writeReadinessHandle')
+        )
       } else if (envelope.command === 'connection.parameters') {
         response = await this.readConnectionParameters(resources, envelope.payload, controller)
       } else if (envelope.command === 'connection.parameters.subscribe') {
@@ -1331,9 +1334,7 @@ export class ElectronMainBleRouter {
         includedServices: service.includedServices.map(included =>
           Object.freeze({ uuid: String(included.uuid), occurrence: String(included.occurrence) })
         ),
-        ...(service.restriction === undefined
-          ? {}
-          : { restriction: serializeServiceRestriction(service.restriction) })
+        ...(service.restriction === undefined ? {} : { restriction: serializeServiceRestriction(service.restriction) })
       })
     )
     for (const characteristic of snapshot.characteristics ?? []) {

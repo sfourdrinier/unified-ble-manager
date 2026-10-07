@@ -510,7 +510,10 @@ const bytes = await battery.read({ signal: controller.signal, timeoutMs: 5000 })
     response: 'required'
   })
 } catch (error) {
-  if (!(error instanceof BleError) || (error.code !== 'gatt.not-found' &#x26;&#x26; error.code !== 'gatt.property-not-supported')) {
+  if (
+    !(error instanceof BleError) ||
+    (error.code !== 'gatt.not-found' &#x26;&#x26; error.code !== 'gatt.property-not-supported')
+  ) {
     throw error
   }
 }
@@ -592,10 +595,10 @@ const connection = await ble.connect(known.id, { intent: 'when-available', timeo
             <p>
               <code>connection.controls.requestMtu(n)</code> and <code>effectiveMtu()</code> do not behave the same
               everywhere: on Android the effective MTU is unavailable before a successful MTU exchange; on Apple there
-              is no caller-directed MTU request and the effective MTU is derived per link as
-              <code>maximumWriteValueLength(for: .withResponse) + 3</code>; on BlueZ a withheld link answers
-              <code>capability.unavailable</code>. Likewise, an Apple read issued while the characteristic notifies
-              resolves with provenance <code>read-or-notification</code>
+              is no caller-directed MTU request and the effective ATT MTU stays unavailable because CoreBluetooth does
+              not observe one (<code>maximumWriteValueLength(for:)</code> is the per-mode write capacity, not an ATT
+              MTU); on BlueZ a withheld link answers <code>capability.unavailable</code>. Likewise, an Apple read issued
+              while the characteristic notifies resolves with provenance <code>read-or-notification</code>
               (the value may be a notification); use
               <code>characteristic.readReceipt()</code> when it matters. The exact per-host rows are in
               <a href="UNIFIED_SEMANTICS.md#172-current-pr8-host-matrix"><code>UNIFIED_SEMANTICS.md</code></a

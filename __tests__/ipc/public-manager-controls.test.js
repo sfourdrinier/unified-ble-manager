@@ -421,6 +421,47 @@ describe('IPC public connection controls', () => {
     expect(readiness.value).toMatchObject({ state: 'measured', mode: 'without-response', ready: true })
   })
 
+  test('overflow and source failure close the watch and keep the platform error', async () => {
+    const { manager, ipc } = setup('limited', undefined, 'limited')
+    const closes = []
+    const watch = items => async () => ({
+      events: scriptedStream(items),
+      close: async () => {
+        closes.push(items[0].kind === 'overflow' ? 'overflow' : 'source-failed')
+        return { state: 'released', failures: [] }
+      }
+    })
+    const base = await ipc.connect('peer-1')
+    base.parameterEvents = watch([{ kind: 'overflow' }])
+    base.writeReadiness = watch([
+      {
+        kind: 'terminal',
+        reason: 'source-failed',
+        error: {
+          code: 'adapter.powered-off',
+          domain: 'adapter',
+          operation: 'connection.write-readiness.watch',
+          platform: null,
+          retryability: 'caller-decides'
+        }
+      }
+    ])
+    const connection = await manager.connect('peer-1')
+    const parameters = connection.controls.parameterEvents()[Symbol.asyncIterator]()
+    await expect(parameters.next()).rejects.toMatchObject({
+      code: 'stream.overflow',
+      operation: 'ipc-public-manager.controls.parameter-events'
+    })
+    const readiness = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+    await expect(readiness.next()).rejects.toMatchObject({
+      code: 'adapter.powered-off',
+      operation: 'connection.write-readiness.watch'
+    })
+    expect(closes).toEqual(['overflow', 'source-failed'])
+    await parameters.return()
+    await readiness.return()
+  })
+
   test('preserves unavailable readiness state in the renderer stream error', async () => {
     const { manager } = setup('unavailable')
     const connection = await manager.connect('peer-1')

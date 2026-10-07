@@ -20,7 +20,7 @@ use ubm_desktop::{
     CentralProfile, CompletionOutcome, DeliveryMode, DesktopCentral, DesktopError,
     InvalidationCause, LifecycleEvent, LifecycleKind, NotificationPoll, ObservedDelivery,
     OpControl, OpTicket, OperationId, PlatformDetail, PlatformValue, Retryability,
-    ScanTerminalEvent, ShutdownReport,
+    DiscoveredPath, ScanTerminalEvent, ServiceAccess, ShutdownReport,
 };
 use uuid::Uuid;
 
@@ -3459,16 +3459,11 @@ impl BtleplugDispatcher {
         let mut characteristic_handles = HashMap::new();
         for path in &paths {
             if seen_services.insert((path.service_uuid.clone(), path.service_occurrence)) {
-                service_records.push(object([
-                    ("uuid", string(path.service_uuid.clone())),
-                    ("occurrence", string(path.service_occurrence.to_string())),
-                    // The core does not model primary/secondary services, so
-                    // the key carries the only truthful contract value the
-                    // wire allows; the gap is a documented radio-seam
-                    // follow-up (surface `primary` through the boundary).
-                    ("primary", IpcValue::Bool(true)),
-                    ("includedServices", IpcValue::Array(Vec::new())),
-                ]));
+                service_records.push(ipc_service_record(
+                    &path.service_uuid,
+                    path.service_occurrence,
+                    service_level_access(&paths, &path.service_uuid, path.service_occurrence),
+                ));
             }
         }
         // Characteristic rows render only from characteristic-level core
@@ -5995,6 +5990,61 @@ fn is_released(value: &IpcValue) -> bool {
     )
 }
 
+/// Service-level restriction from the service row, not from a
+/// characteristic or descriptor row (those carry `None`).
+fn service_level_access(
+    paths: &[DiscoveredPath],
+    uuid: &str,
+    occurrence: u64,
+) -> Option<ServiceAccess> {
+    paths.iter().find_map(|path| {
+        if path.characteristic_uuid.is_none()
+            && path.service_uuid == uuid
+            && path.service_occurrence == occurrence
+        {
+            path.service_access
+        } else {
+            None
+        }
+    })
+}
+
+/// IPC service record. `Open` and a missing note stay unrestricted, matching
+/// the Electron serializer.
+fn ipc_service_record(uuid: &str, occurrence: u64, access: Option<ServiceAccess>) -> IpcValue {
+    let mut record = match object([
+        ("uuid", string(uuid)),
+        ("occurrence", string(occurrence.to_string())),
+        // The core does not model primary/secondary services, so the key
+        // carries the only truthful contract value the wire allows; the gap
+        // is a documented radio-seam follow-up (surface `primary` through
+        // the boundary).
+        ("primary", IpcValue::Bool(true)),
+        ("includedServices", IpcValue::Array(Vec::new())),
+    ]) {
+        IpcValue::Object(record) => record,
+        _ => unreachable!("service record is an object"),
+    };
+    if let Some(restriction) = service_restriction(access) {
+        record.insert("restriction".to_owned(), restriction);
+    }
+    IpcValue::Object(record)
+}
+
+fn service_restriction(access: Option<ServiceAccess>) -> Option<IpcValue> {
+    let (reason, gatt_status) = match access {
+        Some(ServiceAccess::OsReserved) => ("os-reserved", IpcValue::Null),
+        Some(ServiceAccess::AccessDenied) => ("access-denied", string("access-denied")),
+        Some(ServiceAccess::Open) | None => return None,
+    };
+    Some(object([
+        ("state", string("restricted")),
+        ("reason", string(reason)),
+        ("gattStatus", gatt_status),
+        ("attError", IpcValue::Null),
+    ]))
+}
+
 fn object<const N: usize>(entries: [(&str, IpcValue); N]) -> IpcValue {
     IpcValue::Object(
         entries
@@ -7115,6 +7165,79 @@ mod tests {
             assert_eq!(domain, "adapter");
             assert_eq!(operation, "tauri.core-shutdown");
         }
+    }
+}
+
+#[cfg(test)]
+mod service_restriction_tests {
+    use super::{ipc_service_record, service_level_access, string};
+    use crate::IpcValue;
+    use ubm_desktop::{DiscoveredPath, ServiceAccess};
+
+    fn path(
+        service_uuid: &str,
+        characteristic_uuid: Option<&str>,
+        access: Option<ServiceAccess>,
+    ) -> DiscoveredPath {
+        DiscoveredPath {
+            service_uuid: service_uuid.to_owned(),
+            service_occurrence: 0,
+            characteristic_uuid: characteristic_uuid.map(str::to_owned),
+            characteristic_occurrence: characteristic_uuid.map(|_| 0),
+            descriptor_uuid: None,
+            descriptor_occurrence: None,
+            properties: 0,
+            access: None,
+            service_access: access,
+        }
+    }
+
+    #[test]
+    fn characteristic_rows_do_not_hide_a_service_restriction() {
+        let paths = vec![
+            path("180f", Some("2a19"), None),
+            path("180f", None, Some(ServiceAccess::AccessDenied)),
+        ];
+        assert_eq!(
+            service_level_access(&paths, "180f", 0),
+            Some(ServiceAccess::AccessDenied)
+        );
+        let record = ipc_service_record("180f", 0, service_level_access(&paths, "180f", 0));
+        let IpcValue::Object(fields) = record else {
+            panic!("service record");
+        };
+        let expected = super::object([
+            ("state", string("restricted")),
+            ("reason", string("access-denied")),
+            ("gattStatus", string("access-denied")),
+            ("attError", IpcValue::Null),
+        ]);
+        assert_eq!(fields.get("restriction"), Some(&expected));
+    }
+
+    #[test]
+    fn an_open_service_omits_restriction() {
+        let record = ipc_service_record("180d", 1, Some(ServiceAccess::Open));
+        let IpcValue::Object(fields) = record else {
+            panic!("service record");
+        };
+        assert!(fields.get("restriction").is_none());
+        assert_eq!(fields.get("occurrence"), Some(&string("1")));
+    }
+
+    #[test]
+    fn os_reserved_restriction_has_no_gatt_status() {
+        let record = ipc_service_record("1800", 0, Some(ServiceAccess::OsReserved));
+        let IpcValue::Object(fields) = record else {
+            panic!("service record");
+        };
+        let restriction = fields.get("restriction").expect("restriction");
+        let IpcValue::Object(restriction) = restriction else {
+            panic!("restriction object");
+        };
+        assert_eq!(restriction.get("reason"), Some(&string("os-reserved")));
+        assert_eq!(restriction.get("gattStatus"), Some(&IpcValue::Null));
+        assert_eq!(restriction.get("attError"), Some(&IpcValue::Null));
     }
 }
 
