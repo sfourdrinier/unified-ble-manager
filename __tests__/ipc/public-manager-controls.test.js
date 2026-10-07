@@ -154,7 +154,17 @@ function setup(readinessState, deferredState, parametersState, priorityState) {
   }
   if (readinessState === 'limited' || readinessState === 'supported') {
     base.writeReadiness = async () => ({
-      events: scriptedStream([{ kind: 'value', value: { ready: true, observedAtMonotonicMs: 42 } }]),
+      events: scriptedStream([
+        {
+          kind: 'value',
+          value: {
+            connectionId: 'connection-1',
+            connectionGeneration: 'connection-generation-1',
+            ready: true,
+            observedAtMonotonicMs: 42
+          }
+        }
+      ]),
       close: async () => ({ state: 'released', failures: [] })
     })
   }
@@ -164,7 +174,14 @@ function setup(readinessState, deferredState, parametersState, priorityState) {
       events: scriptedStream([
         {
           kind: 'value',
-          value: { intervalUs: 7500, latency: 0, supervisionTimeoutUs: 200000, observedAtMonotonicMs: 42 }
+          value: {
+            connectionId: 'connection-1',
+            connectionGeneration: 'connection-generation-1',
+            intervalUs: 7500,
+            latency: 0,
+            supervisionTimeoutUs: 200000,
+            observedAtMonotonicMs: 42
+          }
         }
       ]),
       close: async () => ({ state: 'released', failures: [] })
@@ -445,6 +462,120 @@ describe('IPC public connection controls', () => {
     expect(parameters.value).toMatchObject({ intervalMs: 7.5, supervisionTimeoutMs: 200 })
     const readiness = await connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]().next()
     expect(readiness.value).toMatchObject({ state: 'measured', mode: 'without-response', ready: true })
+  })
+
+  test('rejects a foreign control event and stamps the renderer receipt clock', async () => {
+    const now = jest.spyOn(globalThis.performance, 'now').mockReturnValue(8_000)
+    try {
+      const { manager, ipc } = setup('limited', undefined, 'limited')
+      const closes = []
+      const base = await ipc.connect('peer-1')
+      base.parameterEvents = async () => ({
+        events: scriptedStream([
+          {
+            kind: 'value',
+            value: {
+              connectionId: 'other-connection',
+              connectionGeneration: 'connection-generation-1',
+              intervalUs: 7500,
+              latency: 0,
+              supervisionTimeoutUs: 200000,
+              observedAtMonotonicMs: 42
+            }
+          }
+        ]),
+        close: async () => {
+          closes.push('parameters')
+          return { state: 'released', failures: [] }
+        }
+      })
+      base.writeReadiness = async () => ({
+        events: scriptedStream([
+          {
+            kind: 'value',
+            value: {
+              connectionId: 'connection-1',
+              connectionGeneration: 'other-generation',
+              ready: true,
+              observedAtMonotonicMs: 42
+            }
+          },
+          {
+            kind: 'value',
+            value: {
+              connectionId: 'connection-1',
+              connectionGeneration: 'connection-generation-1',
+              ready: true,
+              observedAtMonotonicMs: 42
+            }
+          }
+        ]),
+        close: async () => {
+          closes.push('readiness')
+          return { state: 'released', failures: [] }
+        }
+      })
+      const connection = await manager.connect('peer-1')
+      const parameters = connection.controls.parameterEvents()[Symbol.asyncIterator]()
+      await expect(parameters.next()).rejects.toMatchObject({
+        code: 'protocol.violation',
+        operation: 'ipc-public-manager.controls.parameter-events'
+      })
+      const readiness = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+      await expect(readiness.next()).rejects.toMatchObject({
+        code: 'protocol.violation',
+        operation: 'ipc-public-manager.controls.write-readiness'
+      })
+      expect(closes).toEqual(['parameters', 'readiness'])
+      base.parameterEvents = async () => ({
+        events: scriptedStream([
+          {
+            kind: 'value',
+            value: {
+              connectionId: 'connection-1',
+              connectionGeneration: 'connection-generation-1',
+              intervalUs: 7500,
+              latency: 0,
+              supervisionTimeoutUs: 200000,
+              observedAtMonotonicMs: 42
+            }
+          }
+        ]),
+        close: async () => ({ state: 'released', failures: [] })
+      })
+      base.writeReadiness = async () => ({
+        events: scriptedStream([
+          {
+            kind: 'value',
+            value: {
+              connectionId: 'connection-1',
+              connectionGeneration: 'connection-generation-1',
+              ready: true,
+              observedAtMonotonicMs: 42
+            }
+          }
+        ]),
+        close: async () => ({ state: 'released', failures: [] })
+      })
+      const acceptedParameters = await connection.controls.parameterEvents()[Symbol.asyncIterator]().next()
+      expect(acceptedParameters.value).toMatchObject({
+        state: 'measured',
+        intervalMs: 7.5,
+        connectionGeneration: 'connection-generation-1',
+        observedAtMonotonicMs: 8_000
+      })
+      const accepted = await connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]().next()
+      expect(accepted.value).toMatchObject({
+        state: 'measured',
+        ready: true,
+        connectionGeneration: 'connection-generation-1',
+        observedAtMonotonicMs: 8_000,
+        limitations: expect.arrayContaining([expect.objectContaining({ code: 'ipc-receipt-timestamp' })])
+      })
+      expect(accepted.value.observedAtMonotonicMs).not.toBe(42)
+    } finally {
+      now.mockRestore()
+    }
   })
 
   test('overflow and source failure close the watch and keep the platform error', async () => {

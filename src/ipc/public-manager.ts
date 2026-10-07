@@ -716,9 +716,22 @@ async function settleIpcControlFailure(
   throw sourceError
 }
 
+function assertIpcControlEventIdentity(
+  value: { readonly connectionId?: unknown; readonly connectionGeneration?: unknown },
+  connectionId: string,
+  connectionGeneration: string,
+  operation: string
+): void {
+  if (value.connectionId !== connectionId || value.connectionGeneration !== connectionGeneration) {
+    throw contractError('protocol.violation', 'connection', operation)
+  }
+}
+
 function ipcParameterStream(
   open: (options?: { signal?: AbortSignal; deadline?: number | null }) => Promise<{
     readonly events: BoundedAsyncStream<{
+      readonly connectionId: string
+      readonly connectionGeneration: string
       readonly intervalUs: number
       readonly latency: number
       readonly supervisionTimeoutUs: number
@@ -726,6 +739,7 @@ function ipcParameterStream(
     }>
     close(): Promise<CleanupRecord>
   }>,
+  connectionId: string,
   generation: string,
   descriptor: CapabilityDescriptor
 ): AsyncIterable<ConnectionParametersObservation> {
@@ -735,6 +749,8 @@ function ipcParameterStream(
       let iterator: AsyncIterator<{
         kind: string
         value?: {
+          connectionId?: unknown
+          connectionGeneration?: unknown
           intervalUs: number
           latency: number
           supervisionTimeoutUs: number
@@ -787,11 +803,17 @@ function ipcParameterStream(
             const streamItem = item.value
             if (streamItem.kind === 'value' && streamItem.value !== undefined) {
               const measured = streamItem.value
+              assertIpcControlEventIdentity(
+                measured,
+                connectionId,
+                generation,
+                'ipc-public-manager.controls.parameter-events'
+              )
               assertConnectionParameterValues(measured, 'ipc-public-manager.controls.parameter-events')
               return {
                 done: false,
                 value: Object.freeze({
-                  ...ipcControlMetadata(generation, descriptor, measured.observedAtMonotonicMs),
+                  ...ipcControlMetadata(generation, descriptor, globalThis.performance.now()),
                   state: 'measured' as const,
                   intervalMs: measured.intervalUs / 1000,
                   peripheralLatency: measured.latency,
@@ -835,11 +857,14 @@ function ipcParameterStream(
 function ipcWriteReadinessStream(
   open: (options?: { signal?: AbortSignal; deadline?: number | null }) => Promise<{
     readonly events: BoundedAsyncStream<{
+      readonly connectionId: string
+      readonly connectionGeneration: string
       readonly ready: boolean
       readonly observedAtMonotonicMs: number
     }>
     close(): Promise<CleanupRecord>
   }>,
+  connectionId: string,
   generation: string,
   descriptor: CapabilityDescriptor
 ): AsyncIterable<WriteReadinessEvent> {
@@ -848,7 +873,12 @@ function ipcWriteReadinessStream(
       let watch: Awaited<ReturnType<typeof open>> | null = null
       let iterator: AsyncIterator<{
         kind: string
-        value?: { ready: boolean; observedAtMonotonicMs: number }
+        value?: {
+          connectionId?: unknown
+          connectionGeneration?: unknown
+          ready: boolean
+          observedAtMonotonicMs: number
+        }
         reason?: string
         error?: NormalizedBleError | null
       }> | null = null
@@ -895,10 +925,16 @@ function ipcWriteReadinessStream(
             }
             const streamItem = item.value
             if (streamItem.kind === 'value' && streamItem.value !== undefined) {
+              assertIpcControlEventIdentity(
+                streamItem.value,
+                connectionId,
+                generation,
+                'ipc-public-manager.controls.write-readiness'
+              )
               return {
                 done: false,
                 value: Object.freeze({
-                  ...ipcControlMetadata(generation, descriptor, streamItem.value.observedAtMonotonicMs),
+                  ...ipcControlMetadata(generation, descriptor, globalThis.performance.now()),
                   state: 'measured' as const,
                   mode: 'without-response' as const,
                   ready: streamItem.value.ready
@@ -970,7 +1006,7 @@ class UnsupportedIpcControlIterator<Value> implements AsyncIterator<Value> {
 }
 
 function createIpcConnectionControls(
-  connection: Pick<IpcConnection, 'readRssi' | 'effectiveMtu' | 'maximumWriteLength'> & {
+  connection: Pick<IpcConnection, 'connectionId' | 'readRssi' | 'effectiveMtu' | 'maximumWriteLength'> & {
     requestPriority?(
       priority: ConnectionPriority,
       options?: { signal?: AbortSignal; deadline?: number | null }
@@ -1153,7 +1189,12 @@ function createIpcConnectionControls(
           'ipc-public-manager.controls.parameter-events'
         )
       }
-      return ipcParameterStream(connection.parameterEvents.bind(connection), generation, descriptor)
+      return ipcParameterStream(
+        connection.parameterEvents.bind(connection),
+        connection.connectionId,
+        generation,
+        descriptor
+      )
     },
     requestSubrate: (_mode: SubrateMode, _options: OperationOptions = {}): Promise<SubrateResult> =>
       unsupportedPromise('ipc-public-manager.controls.request-subrate'),
@@ -1171,7 +1212,12 @@ function createIpcConnectionControls(
       if (descriptor === undefined || descriptor.state === 'unsupported' || connection.writeReadiness === undefined) {
         return unsupportedIpcControlStream<WriteReadinessEvent>('ipc-public-manager.controls.write-readiness')
       }
-      return ipcWriteReadinessStream(connection.writeReadiness.bind(connection), generation, descriptor)
+      return ipcWriteReadinessStream(
+        connection.writeReadiness.bind(connection),
+        connection.connectionId,
+        generation,
+        descriptor
+      )
     }
   })
 }
