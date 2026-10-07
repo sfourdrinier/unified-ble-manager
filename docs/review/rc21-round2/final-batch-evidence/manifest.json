@@ -63,6 +63,14 @@
     "ci-9916500f-failed.log": {
       "original_sha256": "5234b13db06038ea40bf3f5b1ad4a0186bc2cc8cc454dd99db81835ea0a7f121",
       "lf_normalized_sha256": "5234b13db06038ea40bf3f5b1ad4a0186bc2cc8cc454dd99db81835ea0a7f121"
+    },
+    "native-refresh-final-21e4adbc.log": {
+      "original_sha256": "cb141cf42e7bc5634b47eec7d84a8c68bd82b179c0075bfef5fb2c99f10b2863",
+      "lf_normalized_sha256": "cb141cf42e7bc5634b47eec7d84a8c68bd82b179c0075bfef5fb2c99f10b2863"
+    },
+    "final-lab-owned-resource-cleanup.log": {
+      "original_sha256": "75f0c23a744f4c6d4c9e1e6186adde38d983fe5a3793ecc43cdb34fec687d803",
+      "lf_normalized_sha256": "75f0c23a744f4c6d4c9e1e6186adde38d983fe5a3793ecc43cdb34fec687d803"
     }
   }
 }
