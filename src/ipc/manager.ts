@@ -669,7 +669,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     if (this.shutdownRequested && !this.isCleanupRoute(command)) {
       throw contractError('lifecycle.destroyed', 'ipc', 'ipc-manager.released')
     }
-    if (this.lifecycle !== 'active' || this.pumpDead) this.assertActive()
+    if (this.lifecycle !== 'active' || (this.pumpDead && !this.isCleanupRoute(command))) this.assertActive()
     if (signal?.aborted === true) {
       throw contractError('operation.aborted', 'ipc', `ipc-manager.${command}`)
     }

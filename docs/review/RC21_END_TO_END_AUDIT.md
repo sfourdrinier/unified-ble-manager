@@ -147,3 +147,8 @@ renderer event byte accounting now preserves that protocol error as an event-sou
 terminal, acknowledges the invalid host event and lets the manager retire owned
 watches. The same 18 metadata regressions cover both the serialization boundary
 and per-stream guards, including the absence of an uncaught transport callback.
+
+The final malformed-event control also covers the dead-pump route boundary:
+only existing cleanup commands remain routable under a still-active renderer
+lease. Ordinary operation/admission routes stay rejected, and a released lease
+cannot route cleanup. Source terminalization thus cannot disable its own teardown.

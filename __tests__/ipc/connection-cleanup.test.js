@@ -959,6 +959,12 @@ describe.each([
         error: { code: 'protocol.malformed' }
       })
       await watch.close()
+      if (!Number.isFinite(value)) {
+        await expect(fixture.ipc.route('adapter.state', {})).rejects.toMatchObject({
+          normalized: { code: 'lifecycle.destroyed' }
+        })
+        expect(fixture.commands).not.toContain('adapter.state')
+      }
       expect(fixture.commands).toContain(
         method === 'parameterEvents' ? 'connection.parameters.unsubscribe' : 'connection.write-readiness.unsubscribe'
       )

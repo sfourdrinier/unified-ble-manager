@@ -10,6 +10,8 @@ All notable changes to `unified-ble-manager` are documented here.
   positive safe integers, terminalizing malformed watches with owned cleanup.
   Values rejected during transport serialization also terminalize owned streams
   and preserve the protocol failure rather than escaping the event callback.
+  Event-source death permits only owned cleanup routes while the renderer lease
+  remains active; it does not permit new operations or admission.
 
 - Keep Tauri parameter-watch opening probes and reconciliation inside the
   original caller deadline and cancellation scope, using separate child tickets.
