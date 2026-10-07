@@ -586,9 +586,9 @@ mod tests {
             let (result, ()) = tokio::join!(pending, cancel);
             result
         })
-            .await
-            .expect("caller cancel ends the opening read")
-            .expect_err("a cancelled opening read is not a measurement");
+        .await
+        .expect("caller cancel ends the opening read")
+        .expect_err("a cancelled opening read is not a measurement");
         assert_eq!(
             error.identity(),
             (
