@@ -112,10 +112,10 @@ impl<T: NativeOperation> OperationPool<T> {
                         .remove(&id);
                 }
                 Ok(true) => {
-                    if cancel_on_retirement {
-                        if let Err(error) = operation.cancel() {
-                            failures.push((stage, RetirementError::Native(error)));
-                        }
+                    if cancel_on_retirement
+                        && let Err(error) = operation.cancel()
+                    {
+                        failures.push((stage, RetirementError::Native(error)));
                     }
                     failures.push((stage, RetirementError::Pending));
                 }
