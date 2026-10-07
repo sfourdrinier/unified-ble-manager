@@ -452,7 +452,11 @@ describe('IPC provisional admission', () => {
     expect(inspectIpcProvisionalAdmissionForTests(harness.ipc).unresolvedConnectionCount).toBe(1)
     harness.emitMalformed()
     await new Promise(resolve => setImmediate(resolve))
-    await expect(harness.ipc.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
+    await expect(harness.ipc.destroy()).resolves.toMatchObject({
+      state: 'release-failed',
+      failures: expect.arrayContaining([cleanupFailure])
+    })
+    expect(harness.disconnectPayloads.length).toBeGreaterThanOrEqual(2)
     expect(inspectIpcProvisionalAdmissionForTests(harness.ipc).unresolvedConnectionCount).toBe(1)
     await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(inspectIpcProvisionalAdmissionForTests(harness.ipc).unresolvedConnectionCount).toBe(0)

@@ -157,9 +157,15 @@ describe('Electron public aggregate transport health', () => {
         platform: { metadata: { attribution: 'unknown' } }
       })
       await expect(pending[1]).rejects.toMatchObject({ code: 'stream.overflow' })
-      // The dead event route prevents child unsubscription, so the failed
-      // renderer-lease receipt must report those cleanup obligations too.
-      await expect(manager.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
+      // Delivery failure preserves child cleanup admission and the refused
+      // renderer lease stays visible as a retryable release report.
+      await expect(manager.destroy()).resolves.toMatchObject({
+        state: 'release-failed',
+        failures: expect.arrayContaining([
+          expect.objectContaining({ error: expect.objectContaining({ operation: 'fixture.release' }) })
+        ])
+      })
+      expect(harness.commands).toContain('connection.events.unsubscribe')
       await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
     } finally {
       resumeInner()
@@ -184,7 +190,13 @@ describe('Electron public aggregate transport health', () => {
       platform: { metadata: { attribution: 'unknown', droppedItems: expect.any(Number) } }
     })
     await expect(pending[1]).rejects.toMatchObject({ code: 'stream.overflow' })
-    await expect(manager.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
+    await expect(manager.destroy()).resolves.toMatchObject({
+      state: 'release-failed',
+      failures: expect.arrayContaining([
+        expect.objectContaining({ error: expect.objectContaining({ operation: 'fixture.release' }) })
+      ])
+    })
+    expect(harness.commands).toContain('connection.events.unsubscribe')
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
     expect(harness.releaseAttempts).toBe(2)
   })
@@ -238,7 +250,13 @@ describe('Electron public aggregate transport health', () => {
         platform: { safeMessage: 'outer iterator exploded' }
       })
       await expect(pending[1]).rejects.toMatchObject({ code: 'platform.transport' })
-      await expect(manager.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
+      await expect(manager.destroy()).resolves.toMatchObject({
+        state: 'release-failed',
+        failures: expect.arrayContaining([
+          expect.objectContaining({ error: expect.objectContaining({ operation: 'fixture.release' }) })
+        ])
+      })
+      expect(harness.commands).toContain('connection.events.unsubscribe')
       await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
     } finally {
       eventsGetter.mockRestore()
