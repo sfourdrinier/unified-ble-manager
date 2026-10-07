@@ -2007,6 +2007,13 @@
         "receipt": "final-batch-evidence/post-candidate-apple.log",
         "result": "Complete Apple native executable harness passes; deterministic CoreBluetooth mutable-object reservation and production retirement controls, not physical radio"
       }
+    },
+    "scan_pump_error_terminal": {
+      "thread": "discussion_r4213083310",
+      "implementation": "src/public/ble-manager.ts",
+      "regression": "__tests__/public-scan-query.test.js: scan evidence exhaustion preserves its normalized cause on the public terminal",
+      "verification": "108 scan tests, typecheck and docs pass; no native runtime input changes",
+      "receipt": "final-batch-evidence/post-candidate-scan-terminal.log"
     }
   },
   "previous_review_dispositions": [

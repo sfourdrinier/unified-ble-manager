@@ -171,3 +171,10 @@ gone, the existing finish path retires cancellation debt and permits a new
 discovery; old same-UUID object callbacks cannot consume its reservations. The
 Apple executable harness checks these production methods with CoreBluetooth
 mutable fixture objects, explicitly as deterministic evidence.
+
+The subsequent scan pump review confirms that matcher exceptions previously
+ended delivery without their normalized cause. The pump now carries existing
+backend errors unchanged and explicitly normalizes unexpected JavaScript
+failures. A public manager regression exhausts all 4,096 live evidence peers
+without overflowing the input or delivery queues, checks the original
+`stream.quota` operation on the terminal and verifies one owned stop.

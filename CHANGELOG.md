@@ -4,6 +4,7 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.0-rc.21] - 2026-10-05
 
+- Preserve specific scan-evidence quota and pump errors on public scan terminal observations.
 - Retire Apple discovery reservations for invalidated service objects so missing child callbacks cannot block rediscovery; preserve unaffected reservations and ignore late old-object callbacks. Validate IPC observation fields without type assertions.
 
 - Discard retained pre-gap Tauri parameter events before opening reconciliation,

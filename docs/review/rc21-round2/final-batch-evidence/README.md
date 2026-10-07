@@ -53,3 +53,9 @@ Apple protocol/Swift/Rust harness, including actual production invalidation and
 callback reservation controls with mutable CoreBluetooth fixture objects. This
 is deterministic execution, not physical-radio evidence. No BlueZ, WinRT,
 Android runtime or native Rust identity input changed in this follow-up.
+
+The scan terminal follow-up preserves backend matcher/pump failures as normalized
+public terminal causes. `post-candidate-scan-terminal.log` passes 108 tests in two
+scan suites, including real evidence-cache quota exhaustion through the public
+manager and exact owned stop. Typecheck and docs receipts also pass. No native
+runtime inputs changed; final PR CI remains required.

@@ -893,6 +893,40 @@ describe('canonical public ScanQuery v1', () => {
     await scan.stop()
   })
 
+  test('scan evidence exhaustion preserves its normalized cause on the public terminal', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8192), byteCapacity: capacity(1024 * 1024), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const stop = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({ observations: source, stop })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan({ query: { anyOf: [{ names: { exact: ['never-matches'] } }] } })
+    const iterator = scan.observations[Symbol.asyncIterator]()
+    const terminal = iterator.next()
+    for (let peer = 0; peer <= 4096; peer += 1) source.emit(scanAdvertisement(`quota-peer-${peer}`), 32)
+    await expect(terminal).resolves.toMatchObject({
+      done: false,
+      value: {
+        kind: 'terminal',
+        reason: 'source-failed',
+        error: { code: 'stream.quota', domain: 'scan', operation: 'scan.evidence.peer-capacity', retryability: 'never' }
+      }
+    })
+    await expect(iterator.next()).resolves.toMatchObject({ done: true })
+    await scan.stop()
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+
   test('forwards a structured source-failed error through public scan observations', async () => {
     const source = new CoreBoundedStream(
       { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },

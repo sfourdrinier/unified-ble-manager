@@ -866,8 +866,17 @@ class PublicScanSessionController<Attachment extends string> {
         }
         this.accept(item.value.value)
       }
-    } catch {
-      this.finish('source-failed')
+    } catch (error) {
+      const failure =
+        error instanceof BackendContractError
+          ? error.normalized
+          : contractError('platform.failure', 'scan', 'public-scan.pump', {
+              domain: 'javascript',
+              code: error instanceof Error ? error.name : 'unknown',
+              safeMessage: error instanceof Error ? error.message : 'Unknown scan pump failure',
+              metadata: {}
+            }).normalized
+      this.finish('source-failed', failure)
     }
   }
 
