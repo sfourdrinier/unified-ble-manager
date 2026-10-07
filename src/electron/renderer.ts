@@ -486,7 +486,21 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
     }
     if (event.streamId === IPC_ATTACHMENT_STREAM_ID) this.adoptAttachment(bootstrap, event)
     const payload = Object.freeze({ streamId: event.streamId, item: event.item })
-    this.eventsStream.emit(payload, serializedByteLength(payload))
+    let bytes: number
+    try {
+      bytes = serializedByteLength(payload)
+    } catch (error) {
+      const failure =
+        error instanceof BackendContractError
+          ? error
+          : contractError('protocol.malformed', 'ipc', 'electron-renderer.event-payload')
+      // Malformed transport values must reach owned stream teardown, even when
+      // they fail serialization before a per-stream guard can inspect them.
+      this.enqueueAcknowledgement(event.eventId)
+      this.eventsStream.closeWithReason('source-failed', failure.normalized)
+      return
+    }
+    this.eventsStream.emit(payload, bytes)
     this.routeConnectionEvent(event)
     if (this.lifecycle === 'releasing') {
       this.pendingReleaseEventIds.push(event.eventId)

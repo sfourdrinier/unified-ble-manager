@@ -2047,6 +2047,12 @@
       "clippy_all_targets": "passed with -D warnings",
       "test_workspace": "passed --no-fail-fast --test-threads=1",
       "receipt": "final-batch-evidence/rust-workspace-final-21e4adbc.log"
+    },
+    "preflight_92b89ce6": {
+      "result": "failed",
+      "tauri": "passed",
+      "package": "13 failed / 5420 passed in 430 suites; IPC serialization boundary, stale generated dependency artifacts and formatted vocabulary table corrected as one collected batch",
+      "receipt": "final-batch-evidence/package-final-92b89ce6.log"
     }
   },
   "additional_followup": {
@@ -2083,7 +2089,14 @@
         "correction": "IPC parameter/readiness finite nonnegative timestamp and positive safe integer ordinal guards",
         "regression": "18 malformed metadata terminal and release scenarios in connection-cleanup.test.js"
       }
-    ]
+    ],
+    "serialization_boundary": {
+      "implementation": "src/electron/renderer.ts",
+      "regression_suites": [
+        "__tests__/ipc/connection-cleanup.test.js"
+      ],
+      "required_outcome": "Non-finite IPC values terminalize owned event streams and preserve original protocol failure without escaping callback; acknowledge malformed host event."
+    }
   },
   "previous_review_dispositions": [
     {

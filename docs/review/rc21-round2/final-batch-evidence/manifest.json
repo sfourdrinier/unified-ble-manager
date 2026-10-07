@@ -87,6 +87,22 @@
     "preflight-final-a5b3f5e2.log": {
       "original_sha256": "f36e4ef4774c6741b7aef5009e8553c3f06446c1354bdbf14da8c25e163ad426",
       "lf_normalized_sha256": "f36e4ef4774c6741b7aef5009e8553c3f06446c1354bdbf14da8c25e163ad426"
+    },
+    "preflight-final-92b89ce6.log": {
+      "original_sha256": "a169589ec6705db5f56ccefadb8130ba2e1e5311833e1ee9edb22b3ea4834cf0",
+      "lf_normalized_sha256": "a169589ec6705db5f56ccefadb8130ba2e1e5311833e1ee9edb22b3ea4834cf0"
+    },
+    "package-final-92b89ce6.log": {
+      "original_sha256": "7450c501a1d22f72cc463f648a1ffcacec7f8f7ce768121127bb908dab1dfad0",
+      "lf_normalized_sha256": "7450c501a1d22f72cc463f648a1ffcacec7f8f7ce768121127bb908dab1dfad0"
+    },
+    "final-sbom-regeneration.log": {
+      "original_sha256": "74e51388c7297b656c6e6f43c9641c9c49fb04d5fe8fef707cb61f7df8090913",
+      "lf_normalized_sha256": "74e51388c7297b656c6e6f43c9641c9c49fb04d5fe8fef707cb61f7df8090913"
+    },
+    "final-vocabulary-regeneration.log": {
+      "original_sha256": "b93c8d6b7efc8355c3482809712e91ac517cd0796574df8b1e1beb0b4c28680a",
+      "lf_normalized_sha256": "b93c8d6b7efc8355c3482809712e91ac517cd0796574df8b1e1beb0b4c28680a"
     }
   }
 }

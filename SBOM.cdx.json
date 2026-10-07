@@ -27,7 +27,7 @@
       },
       {
         "name": "unified-ble-manager:cargo-lock-sha256",
-        "value": "c60eea5a7d72b4d58fd65ee8388157fc4c95e78cad58718727221e59ee998fd2"
+        "value": "237ea61d22b8547a4690b5aef48944fa9599bd3726baf7ec14b61b7648f1340f"
       },
       {
         "name": "unified-ble-manager:rust-dependency-scope",
@@ -5125,6 +5125,7 @@
         "pkg:cargo/futures-util@0.3.34",
         "pkg:cargo/futures@0.3.34",
         "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/log@0.4.34",
         "pkg:cargo/objc2-core-bluetooth@0.2.2",
         "pkg:cargo/objc2-foundation@0.2.2",
         "pkg:cargo/objc2@0.5.2",

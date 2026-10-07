@@ -8,6 +8,8 @@ All notable changes to `unified-ble-manager` are documented here.
   preserving reports that arrive during the fresh read and the caller budget.
   Reject non-finite or negative IPC control timestamps and ordinals that are not
   positive safe integers, terminalizing malformed watches with owned cleanup.
+  Values rejected during transport serialization also terminalize owned streams
+  and preserve the protocol failure rather than escaping the event callback.
 
 - Keep Tauri parameter-watch opening probes and reconciliation inside the
   original caller deadline and cancellation scope, using separate child tickets.

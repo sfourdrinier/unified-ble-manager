@@ -28,3 +28,11 @@ The corrected fixture follows the foreign-origin contract and passes. Cleanup
 removes only the two bonds created by this test, restores both Pairable flags,
 and preserves the pre-existing user bond. USB controllers are real; the GATT
 peripheral application is simulated. No physical H10 or mobile qualification is inferred.
+
+
+The 92b89ce6 collected package run exposes 13 failures across five suites:
+eight non-finite transport values throw before the stream guard, four dependency
+artifact checks are stale after the logging dev-dependency, and one pinned
+vocabulary table was reformatted. The follow-up preserves serialization failures
+as owned stream terminals and regenerates both artifacts with their owners.
+All failures remain retained; only the subsequent collected run can establish closure.

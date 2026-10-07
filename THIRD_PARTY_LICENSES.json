@@ -11,7 +11,7 @@
     "lockfile": "pnpm-lock.yaml",
     "lockfileSha256": "503c3db14119e9532319fae77e44dddb1256ae11e23ef829d1e36fa38dbd2ae3",
     "cargoLockfile": "Cargo.lock",
-    "cargoLockfileSha256": "c60eea5a7d72b4d58fd65ee8388157fc4c95e78cad58718727221e59ee998fd2"
+    "cargoLockfileSha256": "237ea61d22b8547a4690b5aef48944fa9599bd3726baf7ec14b61b7648f1340f"
   },
   "reviewedOverrides": [
     {

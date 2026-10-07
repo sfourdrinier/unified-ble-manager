@@ -141,3 +141,9 @@ records cannot supersede it; post-boundary records remain available. IPC paramet
 and readiness guards both require finite nonnegative timestamps and positive
 safe-integer ordinals before bounded-stream admission and owned terminal cleanup.
 The new broadcast-gap and 18 malformed-metadata regressions precede implementation.
+
+The collected gate exposed the earlier serialization boundary for NaN/Infinity:
+renderer event byte accounting now preserves that protocol error as an event-source
+terminal, acknowledges the invalid host event and lets the manager retire owned
+watches. The same 18 metadata regressions cover both the serialization boundary
+and per-stream guards, including the absence of an uncaught transport callback.

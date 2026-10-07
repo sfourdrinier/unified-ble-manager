@@ -942,14 +942,16 @@ describe.each([
     })
     try {
       const watch = await fixture.connection[method]()
-      fixture.emit(streamId, {
-        connectionId: 'connection-id-1',
-        connectionGeneration: 'generation-1',
-        ...measurement,
-        observedAtMonotonicMs: 0,
-        ordinal: 1,
-        [field]: value
-      })
+      expect(() =>
+        fixture.emit(streamId, {
+          connectionId: 'connection-id-1',
+          connectionGeneration: 'generation-1',
+          ...measurement,
+          observedAtMonotonicMs: 0,
+          ordinal: 1,
+          [field]: value
+        })
+      ).not.toThrow()
       const result = await watch.events[Symbol.asyncIterator]().next()
       expect(result.value).toMatchObject({
         kind: 'terminal',
