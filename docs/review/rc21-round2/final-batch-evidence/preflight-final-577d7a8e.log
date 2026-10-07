@@ -1,0 +1,44 @@
+[1mpreflight[0m FETCH_HEAD (577d7a8e6)
+  workspace: /home/sfourdrinier/.cache/ubm-preflight/tree-577d7a8e6
+  cargo target (shared): /home/sfourdrinier/.cache/ubm-preflight/cargo-target
+
+[1m▶ install (frozen lockfile)[0m
+  ✓ 7s
+[1m▶ cargo cache (locked, all targets)[0m
+[1m▶ package + tauri-plugin (parallel)[0m
+
+[1m── summary ──[0m
+[31m  ✗ package          199s  (exit 1)[0m
+          expect(received).rejects.toMatchObject()
+      
+          Received promise resolved instead of rejected
+          Resolved to value: {"failures": [{"error": {"code": "scan.stop-failed", "domain": "scan", "operation": "fixture.release", "platform": null, "retryability": "never"}, "resourceKind": "scan"}], "state": "release-failed"}
+      
+            239 |       })
+            240 |       await expect(pending[1]).rejects.toMatchObject({ code: 'platform.transport' })
+          > 241 |       await expect(manager.destroy()).rejects.toMatchObject({ name: 'AggregateError' })
+                |             ^
+            242 |       await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+            243 |     } finally {
+            244 |       eventsGetter.mockRestore()
+      
+            at expect (node_modules/.pnpm/expect@29.7.0/node_modules/expect/build/index.js:113:15)
+            at Object.expect (__tests__/electron/public-transport-health.test.js:241:13)
+            at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+            at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      
+      
+      Test Suites: 2 failed, 428 passed, 430 total
+      Tests:       4 failed, 5429 passed, 5433 total
+      Snapshots:   0 total
+      Time:        148.233 s
+      Ran all test suites.
+       ELIFECYCLE  Command failed with exit code 1.
+      full log: /home/sfourdrinier/.cache/ubm-preflight/package.log
+[32m  ✓ tauri-plugin     199s[0m
+[33m  – android          skipped (--fast; includes Expo reference typecheck)[0m
+  total 206s
+
+Not covered: windows/macos legs, the apple job, CoreBluetooth and WinRT
+boundaries, the Node matrix, and the runner OS. Push for those.
+workspace kept: /home/sfourdrinier/.cache/ubm-preflight/tree-577d7a8e6

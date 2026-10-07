@@ -29,10 +29,18 @@ removes only the two bonds created by this test, restores both Pairable flags,
 and preserves the pre-existing user bond. USB controllers are real; the GATT
 peripheral application is simulated. No physical H10 or mobile qualification is inferred.
 
-
 The 92b89ce6 collected package run exposes 13 failures across five suites:
 eight non-finite transport values throw before the stream guard, four dependency
 artifact checks are stale after the logging dev-dependency, and one pinned
 vocabulary table was reformatted. The follow-up preserves serialization failures
 as owned stream terminals and regenerates both artifacts with their owners.
 All failures remain retained; only the subsequent collected run can establish closure.
+
+Final collected clean preflight at `10589aee` passes all Linux package/Tauri jobs,
+including 430 suites / 5,433 package tests and 7 suites / 67 plugin tests. All 18
+metadata regressions pass. The 4362c001 serialization terminal exposed blocked
+dead-pump cleanup; 577d7a8e corrects that and exposes four stale old assertions.
+Those assertions now require actual failed-release receipts, routed cleanup and
+retained retry debt; 10589aee passes them. Each failed batch remains retained.
+Cross-platform final readiness belongs to the current PR checks, not this Linux
+receipt; Android Gradle builds were excluded by --fast and remain required in CI.

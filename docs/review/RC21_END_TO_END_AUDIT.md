@@ -152,3 +152,8 @@ The final malformed-event control also covers the dead-pump route boundary:
 only existing cleanup commands remain routable under a still-active renderer
 lease. Ordinary operation/admission routes stay rejected, and a released lease
 cannot route cleanup. Source terminalization thus cannot disable its own teardown.
+
+The complete collected preflight at `10589aee` passes 430 suites / 5,433 package
+tests plus all remaining Linux package and Tauri gates. The source freeze is
+retained; final evidence reconciliation does not rerun radio scenarios or native
+builds. Required current-head PR CI supplies the cross-platform release decision.
