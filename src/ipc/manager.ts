@@ -3358,8 +3358,19 @@ function isConnectionParametersObservation(value: unknown): value is {
   readonly observedAtMonotonicMs: number
   readonly ordinal: number
 } {
-  if (typeof value !== 'object' || value === null) return false
-  const record = value as Record<string, unknown>
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('connectionId' in value) ||
+    !('connectionGeneration' in value) ||
+    !('intervalUs' in value) ||
+    !('latency' in value) ||
+    !('supervisionTimeoutUs' in value) ||
+    !('observedAtMonotonicMs' in value) ||
+    !('ordinal' in value)
+  )
+    return false
+  const record = value
   return (
     typeof record.connectionId === 'string' &&
     typeof record.connectionGeneration === 'string' &&
@@ -3385,8 +3396,17 @@ function isWriteReadinessObservation(value: unknown): value is {
   readonly observedAtMonotonicMs: number
   readonly ordinal: number
 } {
-  if (typeof value !== 'object' || value === null) return false
-  const record = value as Record<string, unknown>
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('connectionId' in value) ||
+    !('connectionGeneration' in value) ||
+    !('ready' in value) ||
+    !('observedAtMonotonicMs' in value) ||
+    !('ordinal' in value)
+  )
+    return false
+  const record = value
   return (
     typeof record.connectionId === 'string' &&
     typeof record.connectionGeneration === 'string' &&

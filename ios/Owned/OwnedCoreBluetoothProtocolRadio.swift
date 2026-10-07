@@ -583,9 +583,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     let identifier = peripheral.identifier.uuidString
     clearNotificationOwnership(forPeerIdentifier: identifier)
     servicesByPeer.removeValue(forKey: identifier)
-    if let pending = pendingDiscovery[identifier] {
-      failDiscovery(identifier, pending: pending, error: self.error(code: 1026, message: "CoreBluetooth services changed during discovery"))
-    }
+    invalidateDiscovery(identifier, services: invalidatedServices)
     failPendingGATT(for: identifier, error: self.error(code: 1027, message: "CoreBluetooth services changed"))
     delegate?.protocolRadioDidModifyServices(identifier)
   }

@@ -157,3 +157,17 @@ The complete collected preflight at `10589aee` passes 430 suites / 5,433 package
 tests plus all remaining Linux package and Tauri gates. The source freeze is
 retained; final evidence reconciliation does not rerun radio scenarios or native
 builds. Required current-head PR CI supplies the cross-platform release decision.
+
+## Post-candidate automated feedback
+
+The final candidate review identified two additional issues. IPC parameter and
+readiness validators now narrow every required field with assertion-free `in`
+guards before reading it. Existing malformed-observation controls cover the
+unchanged numeric and terminal behavior. Apple service invalidation now retires
+only callback reservations belonging to the exact invalidated service objects,
+including descriptors indexed by their admitting service. Unaffected native
+work remains owned until its callbacks drain. Once invalidated obligations are
+gone, the existing finish path retires cancellation debt and permits a new
+discovery; old same-UUID object callbacks cannot consume its reservations. The
+Apple executable harness checks these production methods with CoreBluetooth
+mutable fixture objects, explicitly as deterministic evidence.

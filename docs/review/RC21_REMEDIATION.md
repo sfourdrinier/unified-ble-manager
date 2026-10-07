@@ -10,6 +10,12 @@ is equivalent rustfmt. Final cross-platform current-head PR CI remains required
 before release; PR #251 required checks are the authoritative readiness record.
 No failing historical receipt is overwritten or reclassified by a later pass.
 
+The post-candidate automated review adds assertion-free IPC field guards and
+Apple invalidated-child callback retirement. One scoped batch passes typecheck,
+111 IPC tests and the full Apple native executable harness. It preserves live
+BlueZ/WinRT qualification and Android/native Rust identities; final current-head
+CI remains required. See the post-candidate receipts in the same evidence index.
+
 At runtime head `9916500f`, all four JS lanes, three packed Node/Bun lanes, three
 Tauri lanes and both Android builds pass. Clean Linux preflight passes 430 suites /
 5,415 tests. The canonical `0d5f4cb9` no-publication gate passes all 18 jobs.

@@ -382,10 +382,19 @@ struct PendingDiscovery {
   var cancelled = false
   var completionDelivered = false
   var characteristicCallbacks = Set<ObjectIdentifier>()
-  var descriptorCallbacks = Set<ObjectIdentifier>()
+  var descriptorCallbacks = [ObjectIdentifier: ObjectIdentifier]()
   var includeCallbacks = Set<ObjectIdentifier>()
   var isDrained: Bool {
     !awaitingServices && characteristicCallbacks.isEmpty && descriptorCallbacks.isEmpty && includeCallbacks.isEmpty
+  }
+  /// Invalidated services cannot be used again and their child callbacks may
+  /// never arrive. Exact object identities fence any late callback from a new
+  /// discovery; unaffected callback reservations still drain normally.
+  mutating func retireInvalidatedServices(_ services: [CBService]) {
+    let invalidated = Set(services.map(ObjectIdentifier.init))
+    includeCallbacks.subtract(invalidated)
+    characteristicCallbacks.subtract(invalidated)
+    descriptorCallbacks = descriptorCallbacks.filter { !invalidated.contains($0.value) }
   }
   mutating func consumeIncludes(_ service: CBService) -> Bool {
     includeCallbacks.remove(ObjectIdentifier(service)) != nil
@@ -394,7 +403,7 @@ struct PendingDiscovery {
     characteristicCallbacks.remove(ObjectIdentifier(service)) != nil
   }
   mutating func consumeDescriptors(_ characteristic: CBCharacteristic) -> Bool {
-    descriptorCallbacks.remove(ObjectIdentifier(characteristic)) != nil
+    descriptorCallbacks.removeValue(forKey: ObjectIdentifier(characteristic)) != nil
   }
 }
 

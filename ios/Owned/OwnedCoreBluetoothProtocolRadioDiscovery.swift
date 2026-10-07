@@ -75,7 +75,9 @@ extension OwnedCoreBluetoothProtocolRadio {
       failDiscovery(identifier, pending: pending, error: self.error(code: 1009, message: "The characteristic graph exceeds its bound"))
       return
     }
-    for characteristic in characteristics { pending.descriptorCallbacks.insert(ObjectIdentifier(characteristic)) }
+    for characteristic in characteristics {
+      pending.descriptorCallbacks[ObjectIdentifier(characteristic)] = ObjectIdentifier(service)
+    }
     pendingDiscovery[identifier] = pending
     for characteristic in characteristics { peripheral.discoverDescriptors(for: characteristic) }
     finishDiscoveryIfReady(identifier)
@@ -87,6 +89,12 @@ extension OwnedCoreBluetoothProtocolRadio {
     if let error { failDiscovery(identifier, pending: pending, error: error); return }
     pendingDiscovery[identifier] = pending
     finishDiscoveryIfReady(identifier)
+  }
+
+  func invalidateDiscovery(_ identifier: String, services: [CBService]) {
+    guard var pending = pendingDiscovery[identifier] else { return }
+    pending.retireInvalidatedServices(services)
+    failDiscovery(identifier, pending: pending, error: self.error(code: 1026, message: "CoreBluetooth services changed during discovery"))
   }
 
   func failDiscovery(_ identifier: String, pending source: PendingDiscovery, error: Error) {

@@ -1,0 +1,99 @@
+
+> unified-ble-manager@5.0.0-rc.21 test:native-protocol:apple /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> node scripts/native-protocol/test-apple-native-protocol.js
+
+AccessoryChoiceOwner: busy, identity, timeout/late, cancellation-before-dispatch, retired cancellation, bounded tombstone checks passed
+-- The CXX compiler identification is AppleClang 21.0.0.21000334
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Configuring done (0.4s)
+-- Generating done (0.0s)
+-- Build files have been written to: /var/folders/x6/fx6xhn0j7kqbv_kndmcl_4tc0000gn/T/unified-ble-native-protocol-CJyppy
+[ 18%] Building CXX object CMakeFiles/unified_ble_native_protocol_v2.dir/src/NativeProtocolV2Registry.cpp.o
+[ 18%] Building CXX object CMakeFiles/unified_ble_native_protocol_v2_host_test_runtime.dir/src/OwnedBinaryPayloadStore.cpp.o
+[ 18%] Building CXX object CMakeFiles/unified_ble_native_protocol_v2.dir/src/NativeProtocolControlRuntime.cpp.o
+[ 25%] Building CXX object CMakeFiles/unified_ble_native_protocol_v2_host_test_runtime.dir/tests/OwnedJsiBinaryTransportHostStub.cpp.o
+[ 37%] Building CXX object CMakeFiles/unified_ble_native_protocol_v2.dir/src/OwnedBinaryPayloadStore.cpp.o
+[ 37%] Building CXX object CMakeFiles/unified_ble_native_protocol_v2_host_test_runtime.dir/src/NativeProtocolV2Registry.cpp.o
+[ 43%] Building CXX object CMakeFiles/unified_ble_native_protocol_v2_host_test_runtime.dir/src/NativeProtocolV2Codec.cpp.o
+[ 50%] Building CXX object CMakeFiles/unified_ble_native_protocol_v2_host_test_runtime.dir/src/NativeProtocolControlRuntime.cpp.o
+[ 56%] Building CXX object CMakeFiles/unified_ble_native_protocol_v2.dir/src/NativeProtocolV2Codec.cpp.o
+[ 62%] Building CXX object CMakeFiles/unified_ble_native_protocol_v2.dir/src/OwnedJsiBinaryTransport.cpp.o
+[ 68%] Building CXX object CMakeFiles/unified_ble_corebluetooth_read_notify_provenance_tests.dir/tests/OwnedCoreBluetoothReadNotifyProvenanceTests.cpp.o
+[ 75%] Linking CXX executable unified_ble_corebluetooth_read_notify_provenance_tests
+[ 75%] Built target unified_ble_corebluetooth_read_notify_provenance_tests
+[ 81%] Linking CXX static library libunified_ble_native_protocol_v2.a
+[ 87%] Linking CXX static library libunified_ble_native_protocol_v2_host_test_runtime.a
+[ 87%] Built target unified_ble_native_protocol_v2
+[ 87%] Built target unified_ble_native_protocol_v2_host_test_runtime
+[ 93%] Building CXX object CMakeFiles/unified_ble_native_protocol_v2_tests.dir/tests/NativeProtocolV2Tests.cpp.o
+[100%] Linking CXX executable unified_ble_native_protocol_v2_tests
+[100%] Built target unified_ble_native_protocol_v2_tests
+Test project /var/folders/x6/fx6xhn0j7kqbv_kndmcl_4tc0000gn/T/unified-ble-native-protocol-CJyppy
+    Start 1: unified_ble_native_protocol_v2
+1/2 Test #1: unified_ble_native_protocol_v2 .....................   Passed    0.18 sec
+    Start 2: unified_ble_corebluetooth_read_notify_provenance
+2/2 Test #2: unified_ble_corebluetooth_read_notify_provenance ...   Passed    0.16 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   0.35 sec
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.29s
+ubm-mobile: known peripherals could not be re-read during a scan: the mobile host keeps its own peer directory
+2026-10-07 16:25:25.774 AppleRustRadioAdapterHarness[88420:90090739] [UnifiedBleRustCoreSessions] disposing session 3 at module teardown failed: {"code":"platform.failure","detail":null,"domain":"platform","operation":"session.dispose"}
+2026-10-07 16:25:25.820 AppleRustRadioAdapterHarness[88420:90090739] [UnifiedBleRustCoreSessions] disposing session 5 at module teardown failed: {"code":"platform.failure","detail":null,"domain":"platform","operation":"session.dispose"}
+[AppleRustRadioAdapterHarness] unsubscribe CBErrorDomain#0 preserved; exact-owner retry and parent disconnect passed (scripted callback only).
+[AppleRustRadioAdapterHarness] warm canonical controls preserve seed refusal, claim replay, disposal and actual wake history.
+[AppleRustRadioAdapterHarness] Rust host ↔ Swift adapter scripted exchange passed (deterministic; no physical radio).
+[test-apple-native-protocol] iOS launch observer compiled against the real generated Swift interface; no OS relaunch claim.
+[AppleContinuationStatusHarness] validated declare, status, strategy refusal, installation failure, malformed counter and lastWake passed (deterministic; no physical radio).
+2026-10-07 16:25:44.123 AppleNativeProtocolExecutionHarness[88860:90092360] [UnifiedBleProtocolAppleExecution] JavaScript fatal sink is unavailable: Apple native terminal could not be admitted to JavaScript
+2026-10-07 16:25:44.124 AppleNativeProtocolExecutionHarness[88860:90092360] [UnifiedBleProtocolAppleExecution] Apple native terminal could not be admitted to JavaScript; attachment was fatally closed to avoid stranded terminal delivery
+2026-10-07 16:25:44.132 AppleNativeProtocolExecutionHarness[88860:90092360] [UnifiedBleProtocolAppleExecution] JavaScript event delivery: controllable Apple sink failure
+
+@[native code]
+2026-10-07 16:25:44.132 AppleNativeProtocolExecutionHarness[88860:90092360] [UnifiedBleProtocolAppleExecution] Apple JavaScript event sink delivery failed after admission; attachment was fatally closed to avoid stranded terminal delivery
+2026-10-07 16:25:44.149 AppleNativeProtocolExecutionHarness[88861:90092370] [UnifiedBleProtocolAppleExecution] JavaScript fatal sink is unavailable: Apple native terminal could not be admitted to JavaScript
+2026-10-07 16:25:44.149 AppleNativeProtocolExecutionHarness[88861:90092370] [UnifiedBleProtocolAppleExecution] Apple native terminal could not be admitted to JavaScript; attachment was fatally closed to avoid stranded terminal delivery
+2026-10-07 16:25:44.156 AppleNativeProtocolExecutionHarness[88861:90092370] [UnifiedBleProtocolAppleExecution] JavaScript event delivery: controllable Apple sink failure
+
+@[native code]
+2026-10-07 16:25:44.156 AppleNativeProtocolExecutionHarness[88861:90092370] [UnifiedBleProtocolAppleExecution] Apple JavaScript event sink delivery failed after admission; attachment was fatally closed to avoid stranded terminal delivery
+2026-10-07 16:25:44.171 AppleNativeProtocolExecutionHarness[88862:90092376] [UnifiedBleProtocolAppleExecution] JavaScript fatal sink is unavailable: Apple native terminal could not be admitted to JavaScript
+2026-10-07 16:25:44.171 AppleNativeProtocolExecutionHarness[88862:90092376] [UnifiedBleProtocolAppleExecution] Apple native terminal could not be admitted to JavaScript; attachment was fatally closed to avoid stranded terminal delivery
+2026-10-07 16:25:44.179 AppleNativeProtocolExecutionHarness[88862:90092376] [UnifiedBleProtocolAppleExecution] JavaScript event delivery: controllable Apple sink failure
+
+@[native code]
+2026-10-07 16:25:44.179 AppleNativeProtocolExecutionHarness[88862:90092376] [UnifiedBleProtocolAppleExecution] Apple JavaScript event sink delivery failed after admission; attachment was fatally closed to avoid stranded terminal delivery
+TAP version 13
+# Subtest: Apple app transport executes against controlled native and React boundaries
+ok 1 - Apple app transport executes against controlled native and React boundaries
+  ---
+  duration_ms: 2208.602916
+  type: 'test'
+  ...
+# Subtest: Apple app-only adapter registers the shared Android bridge signature
+ok 2 - Apple app-only adapter registers the shared Android bridge signature
+  ---
+  duration_ms: 0.561541
+  type: 'test'
+  ...
+# Subtest: Apple warm controls retain native ownership and bounded off-main admission
+ok 3 - Apple warm controls retain native ownership and bounded off-main admission
+  ---
+  duration_ms: 0.333916
+  type: 'test'
+  ...
+1..3
+# tests 3
+# suites 0
+# pass 3
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2274.246875
+[test-apple-native-protocol] C++ protocol tests, the Apple CoreBluetooth parser, the CoreBluetooth read/notify provenance harness, the Rust mobile host ↔ Swift radio adapter harness, the Apple continuation declare/status harness, and the Apple execution CallInvoker/JSI terminal harness passed. No physical BLE radio or peripheral behavior was exercised.

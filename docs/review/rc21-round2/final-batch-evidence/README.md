@@ -44,3 +44,12 @@ Those assertions now require actual failed-release receipts, routed cleanup and
 retained retry debt; 10589aee passes them. Each failed batch remains retained.
 Cross-platform final readiness belongs to the current PR checks, not this Linux
 receipt; Android Gradle builds were excluded by --fast and remain required in CI.
+
+Post-candidate automated review: assertion-free IPC guards and invalidated Apple
+child discovery retirement. `post-candidate-typecheck.log` passes;
+`post-candidate-ipc.log` passes 111 tests across three suites, including malformed
+metadata and owned cleanup; `post-candidate-apple.log` passes the complete native
+Apple protocol/Swift/Rust harness, including actual production invalidation and
+callback reservation controls with mutable CoreBluetooth fixture objects. This
+is deterministic execution, not physical-radio evidence. No BlueZ, WinRT,
+Android runtime or native Rust identity input changed in this follow-up.

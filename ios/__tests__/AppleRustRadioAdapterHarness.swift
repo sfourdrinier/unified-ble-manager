@@ -1282,6 +1282,47 @@ final class Harness {
     check(!discovery.isDrained, "characteristic callback still owns discovery")
     check(discovery.consumeCharacteristics(discoveryService), "exact characteristic callback retires")
     check(discovery.isDrained, "canceled discovery releases only after all callback owners finish")
+    // Invalidated child objects need not deliver another CoreBluetooth callback.
+    // Retire only their reservations; valid-service work still owns its slot.
+    let staleCharacteristic = CBMutableCharacteristic(type: CBUUID(string: "2A37"), properties: [.read], value: nil, permissions: [.readable])
+    var invalidated = PendingDiscovery(operationIdentifier: "invalidated-discovery", completion: { _, _ in })
+    invalidated.awaitingServices = false
+    invalidated.includeCallbacks.insert(ObjectIdentifier(discoveryService))
+    invalidated.characteristicCallbacks.insert(ObjectIdentifier(discoveryService))
+    invalidated.descriptorCallbacks[ObjectIdentifier(staleCharacteristic)] = ObjectIdentifier(discoveryService)
+    invalidated.characteristicCallbacks.insert(ObjectIdentifier(foreignService))
+    invalidated.retireInvalidatedServices([discoveryService])
+    check(!invalidated.consumeIncludes(discoveryService), "late invalidated inclusion has no reservation")
+    check(!invalidated.consumeCharacteristics(discoveryService), "late invalidated characteristics have no reservation")
+    check(!invalidated.consumeDescriptors(staleCharacteristic), "late invalidated descriptors have no reservation")
+    check(!invalidated.isDrained, "unaffected service callback remains owned")
+    check(invalidated.consumeCharacteristics(foreignService), "unaffected callback can drain")
+    check(invalidated.isDrained, "invalidation drains without missing child callbacks")
+    var replacement = PendingDiscovery(operationIdentifier: "replacement-discovery", completion: { _, _ in })
+    replacement.awaitingServices = false
+    replacement.characteristicCallbacks.insert(ObjectIdentifier(foreignService))
+    check(!replacement.consumeCharacteristics(discoveryService), "old same-UUID callback cannot consume replacement admission")
+    check(replacement.consumeCharacteristics(foreignService), "replacement exact object remains admitted")
+    let invalidationRadio = OwnedCoreBluetoothProtocolRadio(restoreIdentifierKey: nil)
+    var invalidationCompletions = 0
+    var pendingInvalidation = PendingDiscovery(operationIdentifier: "invalidation", completion: { value, failure in
+      check(value == nil && failure?.code == 1026, "invalidation reports original service-change failure")
+      invalidationCompletions += 1
+    })
+    pendingInvalidation.awaitingServices = false
+    pendingInvalidation.includeCallbacks.insert(ObjectIdentifier(discoveryService))
+    pendingInvalidation.characteristicCallbacks.insert(ObjectIdentifier(discoveryService))
+    pendingInvalidation.descriptorCallbacks[ObjectIdentifier(staleCharacteristic)] = ObjectIdentifier(discoveryService)
+    invalidationRadio.pendingDiscovery["invalidation-peer"] = pendingInvalidation
+    var cancellationDebt = PendingCancellationCleanup()
+    cancellationDebt.discoveryPeers.insert("invalidation-peer")
+    invalidationRadio.pendingCancellationCleanup["invalidation"] = cancellationDebt
+    invalidationRadio.invalidateDiscovery("invalidation-peer", services: [discoveryService])
+    check(invalidationCompletions == 1, "invalidation completion delivered once")
+    check(invalidationRadio.pendingDiscovery["invalidation-peer"] == nil, "invalidated callbacks cannot block rediscovery")
+    check(invalidationRadio.pendingCancellationCleanup["invalidation"] == nil, "invalidated callback cleanup debt retires")
+    invalidationRadio.invalidateDiscovery("invalidation-peer", services: [discoveryService])
+    check(invalidationCompletions == 1, "duplicate invalidation cannot complete twice")
     let graph = UnifiedBleRustRadioAdapter.services(["services": [
       ["uuid": hrService, "occurrence": 0, "primary": true,
        "includedServices": [["uuid": hrService, "occurrence": 1]], "characteristics": []],
