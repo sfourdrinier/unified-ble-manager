@@ -32,9 +32,8 @@ use ubm_desktop::{
     AdapterAuthorization, AdapterPowerState, AdapterResetEvent, AdapterStatus, CancelAck,
     CharacteristicRead, ConnectionHandle, ConnectionParametersEvent, DeliveryMode, DesktopCentral,
     DesktopError, DiscoveredPath, DiscoveryReport, LifecycleEvent, NotificationPoll,
-    ObservedConnectionParameters, ObservedDelivery, OpControl,
-    OpTicket, PathSelector, PeerSnapshot, RadioBoundary, ScanStop, ScanTerminalEvent,
-    ShutdownReport,
+    ObservedConnectionParameters, ObservedDelivery, OpControl, OpTicket, PathSelector,
+    PeerSnapshot, RadioBoundary, ScanStop, ScanTerminalEvent, ShutdownReport,
 };
 
 /// GATT path selector parts (UUIDs plus optional duplicate occurrences).

@@ -10,6 +10,10 @@ use std::hash::Hash;
 /// The name of a raw `GattCommunicationStatus` (`Success` 0, `Unreachable`
 /// 1, `ProtocolError` 2, `AccessDenied` 3). A value outside the enum has
 /// no name and is reported by number.
+///
+/// The WinRT I/O path uses the typed enum in `utils.rs`. This raw mapping
+/// exists for the pure model, which the Windows library build does not call.
+#[cfg(test)]
 pub fn gatt_status_name(raw: i32) -> Option<&'static str> {
     match raw {
         0 => Some("Success"),
@@ -128,6 +132,10 @@ pub fn descriptor_enumeration(status: i32) -> DescriptorEnumeration {
 /// `Ok` for `Success`. Any other status is the failure of `stage`, with the
 /// status named: WinRT discovery never turns a failed query into an empty
 /// list.
+///
+/// Production WinRT code reports the typed `GattCommunicationStatus`. The
+/// pure model keeps this check for the tests that compile this file.
+#[cfg(test)]
 pub fn require_gatt_success(stage: &str, raw: i32) -> Result<(), String> {
     match gatt_status_name(raw) {
         Some("Success") => Ok(()),

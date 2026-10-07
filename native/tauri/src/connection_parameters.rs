@@ -20,35 +20,37 @@ impl Drop for ConnectionParameterWatch {
     }
 }
 
-fn parameter_value(
-    peer_id: &str,
-    connection_id: &str,
-    connection_generation: &str,
+struct ParameterReport<'a> {
+    peer_id: &'a str,
+    connection_id: &'a str,
+    connection_generation: &'a str,
     sequence: u64,
     interval_us: u32,
     latency: u16,
     supervision_timeout_us: u32,
     observed_at: u64,
-) -> IpcValue {
+}
+
+fn parameter_value(report: ParameterReport<'_>) -> IpcValue {
     object([
         ("kind", string("parameters")),
-        ("peerId", string(peer_id)),
-        ("connectionId", string(connection_id)),
-        ("connectionGeneration", string(connection_generation)),
-        ("sequence", IpcValue::Number(Number::from(sequence))),
-        ("ordinal", IpcValue::Number(Number::from(sequence))),
+        ("peerId", string(report.peer_id)),
+        ("connectionId", string(report.connection_id)),
+        ("connectionGeneration", string(report.connection_generation)),
+        ("sequence", IpcValue::Number(Number::from(report.sequence))),
+        ("ordinal", IpcValue::Number(Number::from(report.sequence))),
         (
             "intervalUs",
-            IpcValue::Number(Number::from(interval_us)),
+            IpcValue::Number(Number::from(report.interval_us)),
         ),
-        ("latency", IpcValue::Number(Number::from(latency))),
+        ("latency", IpcValue::Number(Number::from(report.latency))),
         (
             "supervisionTimeoutUs",
-            IpcValue::Number(Number::from(supervision_timeout_us)),
+            IpcValue::Number(Number::from(report.supervision_timeout_us)),
         ),
         (
             "observedAtMonotonicMs",
-            IpcValue::Number(Number::from(observed_at)),
+            IpcValue::Number(Number::from(report.observed_at)),
         ),
     ])
 }
@@ -153,23 +155,18 @@ impl BtleplugDispatcher {
                 return;
             }
             let mut sequence = 1u64;
-            let initial = parameter_value(
-                &peer_id,
-                &connection_id,
-                &public_generation,
+            let initial = parameter_value(ParameterReport {
+                peer_id: &peer_id,
+                connection_id: &connection_id,
+                connection_generation: &public_generation,
                 sequence,
                 interval_us,
                 latency,
                 supervision_timeout_us,
                 observed_at,
-            );
+            });
             if let Err(error) = dispatcher
-                .emit(
-                    &task_key,
-                    Some((&lease.0, &lease.1)),
-                    &stream,
-                    initial,
-                )
+                .emit(&task_key, Some((&lease.0, &lease.1)), &stream, initial)
                 .await
             {
                 let _ = dispatcher
@@ -218,16 +215,16 @@ impl BtleplugDispatcher {
                                     .as_millis()
                                     .min(MAX_SAFE_INTEGER as u128)
                                     as u64;
-                                let value = parameter_value(
-                                    &peer_id,
-                                    &connection_id,
-                                    &public_generation,
+                                let value = parameter_value(ParameterReport {
+                                    peer_id: &peer_id,
+                                    connection_id: &connection_id,
+                                    connection_generation: &public_generation,
                                     sequence,
-                                    event.interval_us,
-                                    event.latency,
-                                    event.supervision_timeout_us,
-                                    observed,
-                                );
+                                    interval_us: event.interval_us,
+                                    latency: event.latency,
+                                    supervision_timeout_us: event.supervision_timeout_us,
+                                    observed_at: observed,
+                                });
                                 if let Err(error) = dispatcher
                                     .emit(
                                         &task_key,
@@ -363,20 +360,14 @@ impl BtleplugDispatcher {
         })?;
         Ok(object([
             ("handle", string(handle)),
-            (
-                "intervalUs",
-                IpcValue::Number(Number::from(interval_us)),
-            ),
+            ("intervalUs", IpcValue::Number(Number::from(interval_us))),
             ("latency", IpcValue::Number(Number::from(latency))),
             (
                 "supervisionTimeoutUs",
                 IpcValue::Number(Number::from(supervision_timeout_us)),
             ),
             ("connectionId", string(response_connection_id)),
-            (
-                "connectionGeneration",
-                string(response_public_generation),
-            ),
+            ("connectionGeneration", string(response_public_generation)),
         ]))
     }
 

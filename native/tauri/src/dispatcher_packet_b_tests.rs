@@ -4501,10 +4501,10 @@ async fn transport_only_restrictions_match_absent_routes_and_rebind_ownership() 
             .unwrap_err();
         assert_eq!(error.operation, "tauri.route-command");
     }
-    assert!(crate::capabilities::transport_restriction(
-        "gatt:write-without-response-readiness"
-    )
-    .is_none());
+    assert!(
+        crate::capabilities::transport_restriction("gatt:write-without-response-readiness")
+            .is_none()
+    );
     let readiness = harness
         .execute(
             "connection.write-readiness.subscribe",

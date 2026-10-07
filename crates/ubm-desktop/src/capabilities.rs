@@ -1111,6 +1111,7 @@ mod tests {
         use super::{CapabilityVerdict, DesktopOs};
 
         let report = include_str!("../PARITY_GAPS.md");
+        let mut missing = Vec::new();
         for capability in DESKTOP_CAPABILITIES {
             let mut seen = HashSet::new();
             for entry in capability.per_os {
@@ -1135,13 +1136,24 @@ mod tests {
                         entry.os.as_str()
                     ),
                 }
-                let line = format!("| `{}` | {} |", capability.id, entry.os.as_str());
-                assert!(
-                    report.contains(&line),
-                    "report is missing the per-OS row `{line}`"
-                );
+                let capability_cell = format!("`{}`", capability.id);
+                let named = report.lines().any(|line| {
+                    let mut cells = line
+                        .split('|')
+                        .map(str::trim)
+                        .filter(|cell| !cell.is_empty());
+                    cells.next() == Some(capability_cell.as_str())
+                        && cells.next() == Some(entry.os.as_str())
+                });
+                if !named {
+                    missing.push(format!("| `{}` | {} |", capability.id, entry.os.as_str()));
+                }
             }
         }
+        assert!(
+            missing.is_empty(),
+            "report is missing per-OS rows: {missing:?}"
+        );
         assert_eq!(DesktopOs::ALL.len(), 3);
     }
 

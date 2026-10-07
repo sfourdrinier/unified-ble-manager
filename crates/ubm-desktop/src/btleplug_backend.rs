@@ -4411,19 +4411,19 @@ impl RadioBoundary for BtleplugRadio {
         #[cfg(target_os = "linux")]
         {
             let mtu = self.bluez()?.mtu(peer_id).await?;
-            return mtu.map(Some).ok_or_else(|| {
+            mtu.map(Some).ok_or_else(|| {
                 DesktopError::new(
                     BleErrorCode::CapabilityUnavailable,
                     BleErrorDomain::Platform,
                     "connection.effective-mtu",
                 )
                 .with_detail("BlueZ reported no GattCharacteristic1 MTU for this link")
-            });
+            })
         }
         #[cfg(target_os = "windows")]
         {
             let peripheral = self.peripheral_by_id(peer_id).await?;
-            return Ok(Some(peripheral.mtu()));
+            Ok(Some(peripheral.mtu()))
         }
         #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
@@ -4565,11 +4565,11 @@ impl RadioBoundary for BtleplugRadio {
                 )
                 .with_detail("WinRT returned no connection parameters"));
             };
-            return Ok(crate::boundary::ObservedConnectionParameters {
+            Ok(crate::boundary::ObservedConnectionParameters {
                 interval_us: params.interval_us,
                 latency: params.latency,
                 supervision_timeout_us: params.supervision_timeout_us,
-            });
+            })
         }
         #[cfg(not(target_os = "windows"))]
         {

@@ -20,7 +20,8 @@ import type {
   DescriptorPath,
   GattAccessRequirements,
   GattDatabaseChangedEvent,
-  GattDescriptorProperties
+  GattDescriptorProperties,
+  GattServiceRestriction
 } from '../backend-contract/gatt'
 import type { AttachmentRecord, HostNeutralBackendIdentity } from '../backend-contract/identity'
 import {
@@ -934,10 +935,10 @@ export class ElectronMainBleRouter {
       if (failures.length === 0) {
         resources.readinessWatches.delete(handle)
         resources.releasedHandles.add(handle)
-        return Object.freeze({ state: 'released', failures: [] })
+        return cleanupRecord({ state: 'released', failures })
       }
       watch.cleanup = null
-      return Object.freeze({ state: 'release-failed', failures })
+      return cleanupRecord({ state: 'release-failed', failures })
     })()
     watch.cleanup = tracked
     return tracked
@@ -1066,10 +1067,10 @@ export class ElectronMainBleRouter {
       if (failures.length === 0) {
         resources.parameterWatches.delete(handle)
         resources.releasedHandles.add(handle)
-        return Object.freeze({ state: 'released', failures: [] })
+        return cleanupRecord({ state: 'released', failures })
       }
       watch.cleanup = null
-      return Object.freeze({ state: 'release-failed', failures })
+      return cleanupRecord({ state: 'release-failed', failures })
     })()
     watch.cleanup = tracked
     return tracked
@@ -1330,7 +1331,9 @@ export class ElectronMainBleRouter {
         includedServices: service.includedServices.map(included =>
           Object.freeze({ uuid: String(included.uuid), occurrence: String(included.occurrence) })
         ),
-        ...(service.restriction === undefined ? {} : { restriction: service.restriction })
+        ...(service.restriction === undefined
+          ? {}
+          : { restriction: serializeServiceRestriction(service.restriction) })
       })
     )
     for (const characteristic of snapshot.characteristics ?? []) {
@@ -1489,11 +1492,11 @@ export class ElectronMainBleRouter {
     }
     const readinessCleanup = await this.releaseReadinessWatches(resources, handle)
     if (readinessCleanup.length > 0) {
-      return Object.freeze({ state: 'release-failed', failures: readinessCleanup })
+      return cleanupRecord({ state: 'release-failed', failures: readinessCleanup })
     }
     const parameterCleanup = await this.releaseParameterWatches(resources, handle)
     if (parameterCleanup.length > 0) {
-      return Object.freeze({ state: 'release-failed', failures: parameterCleanup })
+      return cleanupRecord({ state: 'release-failed', failures: parameterCleanup })
     }
     const lifecycleCleanup = await this.releaseConnectionEventSubscriptionsForConnection(resources, handle)
     if (lifecycleCleanup.state === 'release-failed') {
@@ -2495,6 +2498,15 @@ function serializeDescriptorProperties(properties: GattDescriptorProperties): Se
     write: properties.write,
     availability: Object.freeze({ ...properties.availability }),
     access: serializeAccessRequirements(properties.access)
+  })
+}
+
+function serializeServiceRestriction(restriction: GattServiceRestriction): SerializableRecord {
+  return Object.freeze({
+    state: restriction.state,
+    reason: restriction.reason,
+    gattStatus: restriction.gattStatus,
+    attError: restriction.attError
   })
 }
 

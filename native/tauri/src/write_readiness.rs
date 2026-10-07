@@ -113,12 +113,7 @@ impl BtleplugDispatcher {
                 observed_at,
             );
             if let Err(error) = dispatcher
-                .emit(
-                    &task_key,
-                    Some((&lease.0, &lease.1)),
-                    &stream,
-                    initial,
-                )
+                .emit(&task_key, Some((&lease.0, &lease.1)), &stream, initial)
                 .await
             {
                 let _ = dispatcher

@@ -47,14 +47,14 @@ use ubm_desktop::executor::desktop_runtime;
 use ubm_desktop::{
     desktop_capability_states, AdapterAuthorization, AdapterEvent, AdapterPowerState, AddressType,
     AdvertisementExtras, BluezBus, BtleplugRadio, Budget, CancelAck, CancelPairingOutcome,
-    CentralProfile, CharacteristicAccess, CompletionOutcome, DeliveryMode, DesktopCentral,
-    DesktopError, DesktopOs, DiscoveredPath, FakeRadio, FaultOp, InstanceKey, InvalidationCause,
-    LifecycleEvent, LifecycleKind, ManufacturerData, NotificationPoll, ObservationSource,
-    ObservedDelivery, OpControl, OpTicket, PairOutcome, PairRequest, PairingGeneration,
-    PairingGenerationController, PathSelector, PeerSnapshot, PlatformDetail, PlatformValue,
-    PropertyFlags, RadioBoundary, RadioCloseFailure, RadioEvent, Retryability, ScanFilterSpec,
-    ScanStop, ScanTerminalEvent, SecureConnections, SecurityEvent, SecurityState, ServiceAccess,
-    ConnectionParametersEvent, ServiceData, ServiceSnapshot, UnpairOutcome, WriteLimits,
+    CentralProfile, CharacteristicAccess, CompletionOutcome, ConnectionParametersEvent,
+    DeliveryMode, DesktopCentral, DesktopError, DesktopOs, DiscoveredPath, FakeRadio, FaultOp,
+    InstanceKey, InvalidationCause, LifecycleEvent, LifecycleKind, ManufacturerData,
+    NotificationPoll, ObservationSource, ObservedDelivery, OpControl, OpTicket, PairOutcome,
+    PairRequest, PairingGeneration, PairingGenerationController, PathSelector, PeerSnapshot,
+    PlatformDetail, PlatformValue, PropertyFlags, RadioBoundary, RadioCloseFailure, RadioEvent,
+    Retryability, ScanFilterSpec, ScanStop, ScanTerminalEvent, SecureConnections, SecurityEvent,
+    SecurityState, ServiceAccess, ServiceData, ServiceSnapshot, UnpairOutcome, WriteLimits,
     WriteReadinessEvent,
 };
 

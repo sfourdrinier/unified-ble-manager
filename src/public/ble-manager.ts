@@ -1245,7 +1245,7 @@ function publicParameterStream<Attachment extends string, Identity extends Backe
             return
           }
           const ownedWatch = watch
-          await closePublicReadinessWatch(iterator, () => ownedWatch.close(), iteratorDone)
+          await closePublicOwnedWatch(iterator, () => ownedWatch.close(), iteratorDone, 'connection parameter watch')
         })
         closing = releasing.catch(error => {
           closing = null
@@ -1474,10 +1474,19 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
   }
 }
 
-async function closePublicReadinessWatch<Attachment extends string>(
+function closePublicReadinessWatch<Attachment extends string>(
   iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<Attachment>>,
   close: () => Promise<BackendCleanupRecord>,
   iteratorDone: boolean
+): Promise<void> {
+  return closePublicOwnedWatch(iterator, close, iteratorDone, 'readiness watch')
+}
+
+async function closePublicOwnedWatch<Observation>(
+  iterator: BoundedAsyncStreamIterator<Observation>,
+  close: () => Promise<BackendCleanupRecord>,
+  iteratorDone: boolean,
+  watchName: string
 ): Promise<void> {
   let iteratorError: unknown
   if (!iteratorDone) {
@@ -1492,7 +1501,7 @@ async function closePublicReadinessWatch<Attachment extends string>(
   try {
     const cleanup = await close()
     if (cleanup.state === 'release-failed') {
-      closeError = new BleCleanupError(cleanup, 'BLE readiness watch cleanup failed')
+      closeError = new BleCleanupError(cleanup, `BLE ${watchName} cleanup failed`)
     }
   } catch (error) {
     closeError = error
@@ -1501,7 +1510,7 @@ async function closePublicReadinessWatch<Attachment extends string>(
   if (iteratorError !== undefined && closeError !== undefined) {
     throw new AggregateError(
       [rehydratePublicError(iteratorError), rehydratePublicError(closeError)],
-      'BLE readiness watch teardown failed'
+      `BLE ${watchName} teardown failed`
     )
   }
   if (iteratorError !== undefined) throw rehydratePublicError(iteratorError)

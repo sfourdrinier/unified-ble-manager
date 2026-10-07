@@ -19,7 +19,7 @@ import type { Uuid } from './primitives'
 /** Packets older than this, measured from the newest packet of that peer, leave the generation. */
 export const SCAN_EVIDENCE_WINDOW_MS = 10_000
 
-interface CarriedAdvertisement<Attachment extends string> {
+interface CarriedAdvertisement {
   atMs: number
   localName: string | null
   serviceUuids: readonly Uuid[] | null
@@ -44,7 +44,7 @@ interface CarriedIpc {
  * that scan stops. A later generation id discards the previous generation.
  */
 export class ScanEvidenceSession {
-  private readonly advertisements = new Map<string, CarriedAdvertisement<string>>()
+  private readonly advertisements = new Map<string, CarriedAdvertisement>()
   private readonly ipc = new Map<string, CarriedIpc>()
 
   /** Drop every peer. Call this when the scan generation ends. */
@@ -134,7 +134,7 @@ function presentValue<Value>(field: AdvertisementField<Value>): Value | null {
 
 function carriedFromAdvertisement<Attachment extends string>(
   observation: AdvertisementObservation<Attachment>
-): CarriedAdvertisement<Attachment> {
+): CarriedAdvertisement {
   const services = presentValue(observation.serviceUuids)
   const manufacturer = presentValue(observation.manufacturerData)
   const serviceData = presentValue(observation.serviceData)
@@ -150,10 +150,7 @@ function carriedFromAdvertisement<Attachment extends string>(
   }
 }
 
-function mergeAdvertisement<Attachment extends string>(
-  previous: CarriedAdvertisement<Attachment>,
-  incoming: CarriedAdvertisement<Attachment>
-): CarriedAdvertisement<Attachment> {
+function mergeAdvertisement(previous: CarriedAdvertisement, incoming: CarriedAdvertisement): CarriedAdvertisement {
   return {
     atMs: incoming.atMs,
     localName: incoming.localName ?? previous.localName,
@@ -171,7 +168,7 @@ function derived<Value>(value: Value): AdvertisementField<Value> {
 
 function mergedAdvertisement<Attachment extends string>(
   observation: AdvertisementObservation<Attachment>,
-  carried: CarriedAdvertisement<Attachment>
+  carried: CarriedAdvertisement
 ): AdvertisementObservation<Attachment> | null {
   const raw = carriedFromAdvertisement(observation)
   let added = false

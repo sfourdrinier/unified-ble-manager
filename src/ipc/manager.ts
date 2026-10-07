@@ -299,7 +299,7 @@ export interface IpcCharacteristicRecord extends SerializableRecord {
   readonly properties: readonly string[]
 }
 
-export interface IpcServiceRecord extends SerializableRecord {
+export interface IpcServiceRecord {
   readonly uuid: string
   readonly occurrence: string
   readonly primary: boolean

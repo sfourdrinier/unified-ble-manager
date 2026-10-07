@@ -31,14 +31,14 @@ use crate::ATTACH_REQUEST_KIND;
 use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, IpcValue};
 
 const MAX_PENDING_EVENTS: usize = 256;
+#[path = "connection_parameters.rs"]
+mod connection_parameters;
 #[path = "peer_directory.rs"]
 mod peer_directory;
 #[path = "security.rs"]
 mod security;
 #[path = "write_readiness.rs"]
 mod write_readiness;
-#[path = "connection_parameters.rs"]
-mod connection_parameters;
 const MAX_CORRELATIONS: usize = 256;
 const COMPLETED_CORRELATION_TTL: Duration = Duration::from_secs(30);
 /// Delivery pacing between core polls (scan observations and notification
@@ -1790,10 +1790,12 @@ impl BtleplugDispatcher {
             }
             "connection.parameters" => self.read_connection_parameters(caller, payload, ctl).await,
             "connection.parameters.subscribe" => {
-                self.subscribe_connection_parameters(caller, payload, ctl).await
+                self.subscribe_connection_parameters(caller, payload, ctl)
+                    .await
             }
             "connection.parameters.unsubscribe" => {
-                self.unsubscribe_connection_parameters(caller, payload).await
+                self.unsubscribe_connection_parameters(caller, payload)
+                    .await
             }
             "gatt.discover" => self.discover(caller, payload, ctl).await,
             "gatt.database.release" => self.release_database(caller, payload).await,
