@@ -64,6 +64,41 @@ fn link_ended(kind: &ubm_desktop::LifecycleKind) -> bool {
     )
 }
 
+/// One parameter read performed before the watch is published.
+///
+/// A core ticket names one operation, so this read gets its own child
+/// ticket. The child keeps the caller's absolute budget, and cancelling
+/// the caller ticket cancels the child. The caller ticket stays pending
+/// for the rest of subscribe.
+async fn connection_parameters_within_request(
+    authority: &dyn CoreAuthority,
+    peer_id: &str,
+    lease: &str,
+    parent: &OpControl,
+) -> Result<ubm_desktop::ObservedConnectionParameters, DispatchError> {
+    let child = OpControl::new(parent.budget, OpTicket::new());
+    let read = authority.connection_parameters(peer_id, lease, child.clone());
+    finish_within_caller_control(parent, &child, read).await
+}
+
+async fn finish_within_caller_control<T>(
+    parent: &OpControl,
+    child: &OpControl,
+    read: impl std::future::Future<Output = Result<T, ubm_desktop::DesktopError>>,
+) -> Result<T, DispatchError> {
+    let child_ticket = child.ticket.clone();
+    tokio::pin!(read);
+    let outcome = tokio::select! {
+        biased;
+        _ = parent.ticket.cancelled() => {
+            child_ticket.request_cancel();
+            read.await
+        }
+        result = &mut read => result,
+    };
+    outcome.map_err(|error| DispatchError::from_core(&error))
+}
+
 impl BtleplugDispatcher {
     /// Observed connection parameters for the lease holding the link.
     /// Interval and supervision timeout are microseconds.
@@ -122,10 +157,13 @@ impl BtleplugDispatcher {
         {
             return Err(DispatchError::from_core(&error));
         }
-        let mut measured = authority
-            .connection_parameters(&connection.peer_id, &connection.lease, ctl)
-            .await
-            .map_err(|error| DispatchError::from_core(&error))?;
+        let mut measured = connection_parameters_within_request(
+            authority.as_ref(),
+            &connection.peer_id,
+            &connection.lease,
+            &ctl,
+        )
+        .await?;
         // The receiver existed before the probe. Its newer observations win
         // over a delayed getter; loss requires a live re-read, never zeros.
         let mut opening_events = 0usize;
@@ -154,14 +192,13 @@ impl BtleplugDispatcher {
                     }
                     if event.missed != 0 {
                         opening_values.clear();
-                        measured = authority
-                            .connection_parameters(
-                                &connection.peer_id,
-                                &connection.lease,
-                                OpControl::unbounded(),
-                            )
-                            .await
-                            .map_err(|error| DispatchError::from_core(&error))?;
+                        measured = connection_parameters_within_request(
+                            authority.as_ref(),
+                            &connection.peer_id,
+                            &connection.lease,
+                            &ctl,
+                        )
+                        .await?;
                     } else {
                         opening_values.push_back(ubm_desktop::ObservedConnectionParameters {
                             interval_us: event.interval_us,
@@ -173,14 +210,13 @@ impl BtleplugDispatcher {
                 Ok(_) => {}
                 Err(broadcast::error::TryRecvError::Lagged(_)) => {
                     opening_values.clear();
-                    measured = authority
-                        .connection_parameters(
-                            &connection.peer_id,
-                            &connection.lease,
-                            OpControl::unbounded(),
-                        )
-                        .await
-                        .map_err(|error| DispatchError::from_core(&error))?;
+                    measured = connection_parameters_within_request(
+                        authority.as_ref(),
+                        &connection.peer_id,
+                        &connection.lease,
+                        &ctl,
+                    )
+                    .await?;
                 }
                 Err(broadcast::error::TryRecvError::Closed) => {
                     return Err(DispatchError::new(
@@ -519,5 +555,49 @@ impl BtleplugDispatcher {
             "connection",
             "tauri.connection-parameters-unsubscribe-owner",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn opening_parameter_read_keeps_the_caller_budget_and_cancel() {
+        let parent = OpControl::budget_ms(5_000);
+        let child = OpControl::new(parent.budget, OpTicket::new());
+        assert_eq!(child.budget.deadline(), parent.budget.deadline());
+        assert!(child.budget.deadline().is_some());
+
+        let started = std::sync::Arc::new(tokio::sync::Notify::new());
+        let notify = std::sync::Arc::clone(&started);
+        let child_ticket = child.ticket.clone();
+        let read = async move {
+            notify.notify_one();
+            child_ticket.cancelled().await;
+            Err::<(), ubm_desktop::DesktopError>(child_ticket.interruption("connection.parameters"))
+        };
+        let pending = finish_within_caller_control(&parent, &child, read);
+        let cancel = async {
+            started.notified().await;
+            parent.ticket.request_cancel();
+        };
+        let error = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let (result, ()) = tokio::join!(pending, cancel);
+            result
+        })
+            .await
+            .expect("caller cancel ends the opening read")
+            .expect_err("a cancelled opening read is not a measurement");
+        assert_eq!(
+            error.identity(),
+            (
+                "operation.aborted",
+                "connection",
+                "connection.parameters".to_owned()
+            )
+        );
+        assert!(child.ticket.is_cancel_requested());
+        assert!(!parent.ticket.is_settled());
     }
 }

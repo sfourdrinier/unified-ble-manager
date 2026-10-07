@@ -4,6 +4,9 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.0-rc.21] - 2026-10-05
 
+- Keep Tauri parameter-watch opening probes and reconciliation inside the
+  original caller deadline and cancellation scope, using separate child tickets.
+
 - Retain interrupted Windows native service, characteristic, inclusion and
   descriptor queries until Windows reports completion. Discovery cancellation
   requests native cancellation; pending work or a cancellation refusal prevents

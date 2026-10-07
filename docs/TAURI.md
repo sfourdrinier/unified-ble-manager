@@ -159,6 +159,9 @@ Connection-parameter watch acquisition prefers native events received during
 its initial probe over that delayed probe's answer. A native queue gap causes
 a live parameter re-read; failure ends the stream with that failure's original
 detail, rather than substituting zeros or stale cached parameters.
+The initial probe and any opening-time reconciliation keep the caller's original
+absolute deadline and cancellation scope. Each native read uses a child ticket;
+completing one read does not settle the still-opening watch request.
 
 The plugin owns one shared Rust central (`ubm-desktop`) and never serializes BLE work behind a lock of its own: a slow connect or discovery on one peer does not delay another peer's notifications, a cancel, or shutdown. The central and its radio open once, on the shared desktop executor, the first time a BLE operation needs them.
 
