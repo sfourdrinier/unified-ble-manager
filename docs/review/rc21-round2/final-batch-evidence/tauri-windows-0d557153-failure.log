@@ -1,0 +1,981 @@
+﻿2026-10-07T23:36:25.6541472Z Current runner version: '2.337.0'
+2026-10-07T23:36:25.6566223Z ##[group]Runner Image Provisioner
+2026-10-07T23:36:25.6567039Z Hosted Compute Agent
+2026-10-07T23:36:25.6567591Z Version: 20260901.588
+2026-10-07T23:36:25.6568481Z Commit: f88ec8081b781fac6c440065ac7ff9e710ce3d0b
+2026-10-07T23:36:25.6569231Z Build Date: 2026-09-01T19:56:44Z
+2026-10-07T23:36:25.6569855Z Worker ID: {40061111-13c3-412b-9d9c-86acc21ca3e6}
+2026-10-07T23:36:25.6570516Z Azure Region: westus2
+2026-10-07T23:36:25.6571081Z ##[endgroup]
+2026-10-07T23:36:25.6572505Z ##[group]Operating System
+2026-10-07T23:36:25.6573408Z Microsoft Windows Server 2025
+2026-10-07T23:36:25.6574025Z 10.0.26100
+2026-10-07T23:36:25.6574528Z Datacenter
+2026-10-07T23:36:25.6575036Z ##[endgroup]
+2026-10-07T23:36:25.6575526Z ##[group]Runner Image
+2026-10-07T23:36:25.6576081Z Image: windows-2025-vs2026
+2026-10-07T23:36:25.6576630Z Version: 20260925.250.1
+2026-10-07T23:36:25.6578343Z Included Software: https://github.com/actions/runner-images/blob/win25-vs2026/20260925.250/images/windows/Windows2025-VS2026-Readme.md
+2026-10-07T23:36:25.6579958Z Image Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20260925.250
+2026-10-07T23:36:25.6580909Z ##[endgroup]
+2026-10-07T23:36:25.6582069Z ##[group]GITHUB_TOKEN Permissions
+2026-10-07T23:36:25.6584832Z Contents: read
+2026-10-07T23:36:25.6586119Z Metadata: read
+2026-10-07T23:36:25.6586853Z PullRequests: read
+2026-10-07T23:36:25.6587411Z ##[endgroup]
+2026-10-07T23:36:25.6590076Z Secret source: Actions
+2026-10-07T23:36:25.6591003Z Cache mode: write
+2026-10-07T23:36:25.6591678Z Prepare workflow directory
+2026-10-07T23:36:25.7005711Z Prepare all required actions
+2026-10-07T23:36:25.7079176Z Getting action download info
+2026-10-07T23:36:26.0156175Z Download action repository 'actions/checkout@v7.0.0' (SHA:9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+2026-10-07T23:36:26.2879862Z Complete job name: Tauri v2 Rust (windows-latest)
+2026-10-07T23:36:26.4589317Z ##[group]Run actions/checkout@v7.0.0
+2026-10-07T23:36:26.4590368Z with:
+2026-10-07T23:36:26.4590835Z   repository: sfourdrinier/unified-ble-manager
+2026-10-07T23:36:26.4595238Z   token: ***
+2026-10-07T23:36:26.4595633Z   ssh-strict: true
+2026-10-07T23:36:26.4596029Z   ssh-user: git
+2026-10-07T23:36:26.4596437Z   persist-credentials: true
+2026-10-07T23:36:26.4596889Z   clean: true
+2026-10-07T23:36:26.4597295Z   sparse-checkout-cone-mode: true
+2026-10-07T23:36:26.4597789Z   fetch-depth: 1
+2026-10-07T23:36:26.4598176Z   fetch-tags: false
+2026-10-07T23:36:26.4598578Z   show-progress: true
+2026-10-07T23:36:26.4599035Z   lfs: false
+2026-10-07T23:36:26.4599404Z   submodules: false
+2026-10-07T23:36:26.4599813Z   set-safe-directory: true
+2026-10-07T23:36:26.4600283Z   allow-unsafe-pr-checkout: false
+2026-10-07T23:36:26.4600987Z ##[endgroup]
+2026-10-07T23:36:26.6242335Z Syncing repository: sfourdrinier/unified-ble-manager
+2026-10-07T23:36:26.6245006Z ##[group]Getting Git version info
+2026-10-07T23:36:26.6246170Z Working directory is 'D:\a\unified-ble-manager\unified-ble-manager'
+2026-10-07T23:36:26.7468927Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-10-07T23:36:27.3623507Z git version 2.55.0.windows.5
+2026-10-07T23:36:27.3675703Z ##[endgroup]
+2026-10-07T23:36:27.3693171Z Temporarily overriding HOME='D:\a\_temp\4e057265-a3db-4f0e-9baf-2689f6ab6e97' before making global git config changes
+2026-10-07T23:36:27.3699707Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-07T23:36:27.3709483Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\unified-ble-manager\unified-ble-manager
+2026-10-07T23:36:27.8441488Z Deleting the contents of 'D:\a\unified-ble-manager\unified-ble-manager'
+2026-10-07T23:36:27.8446739Z ##[group]Determining repository object format
+2026-10-07T23:36:27.8450541Z ##[endgroup]
+2026-10-07T23:36:27.8452312Z ##[group]Initializing the repository
+2026-10-07T23:36:27.8457989Z [command]"C:\Program Files\Git\bin\git.exe" init D:\a\unified-ble-manager\unified-ble-manager
+2026-10-07T23:36:29.0649487Z Initialized empty Git repository in D:/a/unified-ble-manager/unified-ble-manager/.git/
+2026-10-07T23:36:29.0701217Z [command]"C:\Program Files\Git\bin\git.exe" remote add origin https://github.com/sfourdrinier/unified-ble-manager
+2026-10-07T23:36:29.3619704Z ##[endgroup]
+2026-10-07T23:36:29.3621372Z ##[group]Disabling automatic garbage collection
+2026-10-07T23:36:29.3633791Z [command]"C:\Program Files\Git\bin\git.exe" config --local gc.auto 0
+2026-10-07T23:36:29.3938025Z ##[endgroup]
+2026-10-07T23:36:29.3939251Z ##[group]Setting up auth
+2026-10-07T23:36:29.3940244Z Removing SSH command configuration
+2026-10-07T23:36:29.3949187Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-07T23:36:29.4255394Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-07T23:36:31.8681282Z Removing HTTP extra header
+2026-10-07T23:36:31.8702068Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-07T23:36:31.9141490Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-07T23:36:32.5006025Z Removing includeIf entries pointing to credentials config files
+2026-10-07T23:36:32.5019898Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-07T23:36:32.5368683Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-07T23:36:33.1295562Z [command]"C:\Program Files\Git\bin\git.exe" config --file D:\a\_temp\git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+2026-10-07T23:36:33.1723606Z [command]"C:\Program Files\Git\bin\git.exe" config --local includeIf.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git.path D:\a\_temp\git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config
+2026-10-07T23:36:33.2132886Z [command]"C:\Program Files\Git\bin\git.exe" config --local includeIf.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git/worktrees/*.path D:\a\_temp\git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config
+2026-10-07T23:36:33.4985135Z [command]"C:\Program Files\Git\bin\git.exe" config --local includeIf.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config
+2026-10-07T23:36:33.5578469Z [command]"C:\Program Files\Git\bin\git.exe" config --local includeIf.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config
+2026-10-07T23:36:33.6100746Z ##[endgroup]
+2026-10-07T23:36:33.6101621Z ##[group]Fetching the repository
+2026-10-07T23:36:33.6128978Z [command]"C:\Program Files\Git\bin\git.exe" -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +7c43294a13e86d90cc1f47d8144ada6633e9eb83:refs/remotes/pull/251/merge
+2026-10-07T23:36:37.7415865Z From https://github.com/sfourdrinier/unified-ble-manager
+2026-10-07T23:36:37.7417974Z  * [new ref]         7c43294a13e86d90cc1f47d8144ada6633e9eb83 -> pull/251/merge
+2026-10-07T23:36:37.7471805Z ##[endgroup]
+2026-10-07T23:36:37.7472779Z ##[group]Determining the checkout info
+2026-10-07T23:36:37.7473692Z ##[endgroup]
+2026-10-07T23:36:37.7490427Z [command]"C:\Program Files\Git\bin\git.exe" sparse-checkout disable
+2026-10-07T23:36:37.8008745Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all extensions.worktreeConfig
+2026-10-07T23:36:37.8328457Z ##[group]Checking out the ref
+2026-10-07T23:36:37.8339554Z [command]"C:\Program Files\Git\bin\git.exe" checkout --progress --force refs/remotes/pull/251/merge
+2026-10-07T23:36:38.8810474Z Updating files:  99% (2493/2503)
+2026-10-07T23:36:38.8811010Z Updating files: 100% (2503/2503)
+2026-10-07T23:36:38.8811406Z Updating files: 100% (2503/2503), done.
+2026-10-07T23:36:38.8957795Z Note: switching to 'refs/remotes/pull/251/merge'.
+2026-10-07T23:36:38.8958338Z 
+2026-10-07T23:36:38.8958685Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-10-07T23:36:38.8959521Z changes and commit them, and you can discard any commits you make in this
+2026-10-07T23:36:38.8960331Z state without impacting any branches by switching back to a branch.
+2026-10-07T23:36:38.8960800Z 
+2026-10-07T23:36:38.8961102Z If you want to create a new branch to retain commits you create, you may
+2026-10-07T23:36:38.8961819Z do so (now or later) by using -c with the switch command. Example:
+2026-10-07T23:36:38.8962299Z 
+2026-10-07T23:36:38.8962508Z   git switch -c <new-branch-name>
+2026-10-07T23:36:38.8962827Z 
+2026-10-07T23:36:38.8962982Z Or undo this operation with:
+2026-10-07T23:36:38.8963253Z 
+2026-10-07T23:36:38.8963401Z   git switch -
+2026-10-07T23:36:38.8963612Z 
+2026-10-07T23:36:38.8963960Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-10-07T23:36:38.8964487Z 
+2026-10-07T23:36:38.8965090Z HEAD is now at 7c43294 Merge 0d557153cc83ac2587d391eed570c8a50ba2b457 into f702f3c116b2f45fba64cfceb94d3916cadc9baf
+2026-10-07T23:36:38.9100871Z ##[endgroup]
+2026-10-07T23:36:38.9516896Z [command]"C:\Program Files\Git\bin\git.exe" log -1 --format=%H
+2026-10-07T23:36:38.9803440Z 7c43294a13e86d90cc1f47d8144ada6633e9eb83
+2026-10-07T23:36:39.0264218Z ##[group]Run rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+2026-10-07T23:36:39.0265065Z [36;1mrustup toolchain install stable --profile minimal --component rustfmt --component clippy[0m
+2026-10-07T23:36:39.0265535Z [36;1mrustup default stable[0m
+2026-10-07T23:36:39.0783800Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+2026-10-07T23:36:39.0784354Z ##[endgroup]
+2026-10-07T23:36:42.4347745Z info: syncing channel updates for stable-x86_64-pc-windows-msvc
+2026-10-07T23:36:42.9978523Z info: latest update on 2026-10-01 for version 1.99.0 (b940084d7 2026-09-28)
+2026-10-07T23:36:43.0283341Z info: removing previous version of component rustfmt
+2026-10-07T23:36:43.0494001Z info: removing previous version of component clippy
+2026-10-07T23:36:43.0736779Z info: removing previous version of component rust-std for target x86_64-pc-windows-gnu
+2026-10-07T23:36:43.1835714Z info: removing previous version of component rust-std for target i686-pc-windows-msvc
+2026-10-07T23:36:43.2651049Z info: removing previous version of component cargo
+2026-10-07T23:36:43.3476463Z info: removing previous version of component rust-std
+2026-10-07T23:36:43.4341054Z info: removing previous version of component rustc
+2026-10-07T23:36:43.5426019Z info: downloading 7 components
+2026-10-07T23:36:56.9560224Z 
+2026-10-07T23:36:56.9884091Z   stable-x86_64-pc-windows-msvc updated - rustc 1.99.0 (b940084d7 2026-09-28) (from rustc 1.98.1 (48a229cea 2026-09-01))
+2026-10-07T23:36:56.9884901Z 
+2026-10-07T23:36:57.0212266Z info: using existing install for stable-x86_64-pc-windows-msvc
+2026-10-07T23:36:57.5338726Z info: default toolchain set to stable-x86_64-pc-windows-msvc
+2026-10-07T23:36:57.5339351Z 
+2026-10-07T23:36:57.5564777Z   stable-x86_64-pc-windows-msvc unchanged - rustc 1.99.0 (b940084d7 2026-09-28)
+2026-10-07T23:36:57.5565172Z 
+2026-10-07T23:36:57.5569410Z info: note that the toolchain '1.98.1-x86_64-pc-windows-msvc' is currently in use (overridden by 'D:\a\unified-ble-manager\unified-ble-manager\rust-toolchain.toml')
+2026-10-07T23:36:57.6926326Z ##[group]Run cargo test --manifest-path native/tauri/Cargo.toml
+2026-10-07T23:36:57.6927100Z [36;1mcargo test --manifest-path native/tauri/Cargo.toml[0m
+2026-10-07T23:36:57.7030163Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+2026-10-07T23:36:57.7030692Z ##[endgroup]
+2026-10-07T23:37:09.3814810Z info: syncing channel updates for 1.98.1-x86_64-pc-windows-msvc
+2026-10-07T23:37:10.1945076Z info: latest update on 2026-09-03 for version 1.98.1 (48a229cea 2026-09-01)
+2026-10-07T23:37:10.2029375Z info: downloading 5 components
+2026-10-07T23:37:19.6444091Z warn: the missing active toolchain `1.98.1-x86_64-pc-windows-msvc` has been auto-installed
+2026-10-07T23:37:19.6444889Z warn: this might cause rustup commands to take longer time to finish than expected
+2026-10-07T23:37:19.6445587Z info: you may opt out with `RUSTUP_AUTO_INSTALL=0` or `rustup set auto-install disable`
+2026-10-07T23:37:19.7346353Z     Updating crates.io index
+2026-10-07T23:37:21.2711808Z      Locking 467 packages to latest compatible versions
+2026-10-07T23:37:21.2816564Z       Adding generic-array v0.14.7 (available: v0.14.9)
+2026-10-07T23:37:21.3140378Z       Adding schemars v0.8.22 (available: v1.2.2)
+2026-10-07T23:37:21.3406422Z       Adding toml v0.8.2 (available: v0.8.23)
+2026-10-07T23:37:21.3411402Z       Adding toml_datetime v0.6.3 (available: v0.6.11)
+2026-10-07T23:37:21.3424662Z       Adding toml_edit v0.20.2 (available: v0.20.7)
+2026-10-07T23:37:21.3880353Z  Downloading crates ...
+2026-10-07T23:37:21.5253676Z   Downloaded itoa v1.0.18
+2026-10-07T23:37:21.5453795Z   Downloaded indexmap v1.9.3
+2026-10-07T23:37:21.5836663Z   Downloaded adler2 v2.0.1
+2026-10-07T23:37:21.6036318Z   Downloaded mac v0.1.1
+2026-10-07T23:37:21.6217257Z   Downloaded num-conv v0.2.2
+2026-10-07T23:37:21.6315431Z   Downloaded jiff-tzdb-platform v0.1.3
+2026-10-07T23:37:21.6414777Z   Downloaded mime v0.3.17
+2026-10-07T23:37:21.6562080Z   Downloaded indexmap v2.14.2
+2026-10-07T23:37:21.7041321Z   Downloaded infer v0.22.0
+2026-10-07T23:37:22.0969086Z   Downloaded json-patch v4.2.0
+2026-10-07T23:37:22.1071589Z   Downloaded litemap v0.8.3
+2026-10-07T23:37:22.1329438Z   Downloaded markup5ever v0.14.1
+2026-10-07T23:37:22.1564367Z   Downloaded percent-encoding v2.3.2
+2026-10-07T23:37:22.1655928Z   Downloaded lock_api v0.4.14
+2026-10-07T23:37:22.2344427Z   Downloaded phf v0.13.1
+2026-10-07T23:37:22.2482311Z   Downloaded jsonptr v0.7.1
+2026-10-07T23:37:22.2804643Z   Downloaded log v0.4.34
+2026-10-07T23:37:22.3075736Z   Downloaded new_debug_unreachable v1.0.6
+2026-10-07T23:37:22.3195613Z   Downloaded mio v1.2.4
+2026-10-07T23:37:22.3899722Z   Downloaded nodrop v0.1.14
+2026-10-07T23:37:22.3975577Z   Downloaded phf v0.10.1
+2026-10-07T23:37:22.4106676Z   Downloaded futf v0.1.5
+2026-10-07T23:37:22.4203584Z   Downloaded jiff-core v0.1.1
+2026-10-07T23:37:22.4475147Z   Downloaded match_token v0.1.0
+2026-10-07T23:37:22.4542856Z   Downloaded matches v0.1.10
+2026-10-07T23:37:22.4671227Z   Downloaded defmt-parser v1.0.0
+2026-10-07T23:37:22.4767909Z   Downloaded dirs-sys v0.5.0
+2026-10-07T23:37:22.4892077Z   Downloaded keyboard-types v0.8.3
+2026-10-07T23:37:22.5316452Z   Downloaded kuchikiki v0.8.8-speedreader
+2026-10-07T23:37:22.5605240Z   Downloaded once_cell v1.21.4
+2026-10-07T23:37:22.5930137Z   Downloaded option-ext v0.2.0
+2026-10-07T23:37:22.6013443Z   Downloaded parking_lot v0.12.5
+2026-10-07T23:37:22.6306717Z   Downloaded phf v0.11.3
+2026-10-07T23:37:22.6476814Z   Downloaded fallible-streaming-iterator v0.1.9
+2026-10-07T23:37:22.6563139Z   Downloaded jiff-tzdb v0.1.9
+2026-10-07T23:37:22.6662001Z   Downloaded memchr v2.8.3
+2026-10-07T23:37:22.7277046Z   Downloaded parking_lot_core v0.9.12
+2026-10-07T23:37:22.7550449Z   Downloaded phf_generator v0.8.0
+2026-10-07T23:37:22.7645997Z   Downloaded serde_spanned v1.1.1
+2026-10-07T23:37:22.7789130Z   Downloaded phf v0.8.0
+2026-10-07T23:37:22.7863806Z   Downloaded futures-core v0.3.34
+2026-10-07T23:37:22.8045088Z   Downloaded phf_generator v0.11.3
+2026-10-07T23:37:22.8157552Z   Downloaded ref-cast v1.0.27
+2026-10-07T23:37:22.8982109Z   Downloaded ref-cast-impl v1.0.27
+2026-10-07T23:37:22.9103880Z   Downloaded bs58 v0.5.1
+2026-10-07T23:37:22.9346792Z   Downloaded generic-array v0.14.7
+2026-10-07T23:37:22.9525205Z   Downloaded ident_case v1.0.1
+2026-10-07T23:37:22.9608156Z   Downloaded phf_macros v0.13.1
+2026-10-07T23:37:22.9701769Z   Downloaded rand_core v0.6.4
+2026-10-07T23:37:22.9822430Z   Downloaded foldhash v0.2.0
+2026-10-07T23:37:22.9961228Z   Downloaded dashmap v6.2.1
+2026-10-07T23:37:23.0239490Z   Downloaded phf_codegen v0.8.0
+2026-10-07T23:37:23.0341207Z   Downloaded bitflags v1.3.2
+2026-10-07T23:37:23.3568032Z   Downloaded crossbeam-utils v0.8.23
+2026-10-07T23:37:23.3893453Z   Downloaded phf_codegen v0.13.1
+2026-10-07T23:37:23.3974492Z   Downloaded phf_generator v0.10.0
+2026-10-07T23:37:23.4064160Z   Downloaded rand_pcg v0.2.1
+2026-10-07T23:37:23.4219400Z   Downloaded same-file v1.0.6
+2026-10-07T23:37:23.4374466Z   Downloaded semver v1.0.28
+2026-10-07T23:37:23.4642798Z   Downloaded byteorder v1.5.0
+2026-10-07T23:37:23.4820681Z   Downloaded cssparser v0.29.6
+2026-10-07T23:37:23.5079876Z   Downloaded rustc-hash v2.1.3
+2026-10-07T23:37:23.5219138Z   Downloaded bitflags v2.13.2
+2026-10-07T23:37:23.5900928Z   Downloaded bytes v1.12.1
+2026-10-07T23:37:23.6282578Z   Downloaded cargo-platform v0.1.9
+2026-10-07T23:37:23.6393186Z   Downloaded cargo_metadata v0.19.2
+2026-10-07T23:37:23.6592052Z   Downloaded cargo_toml v1.0.1
+2026-10-07T23:37:23.6699590Z   Downloaded cfb v0.14.0
+2026-10-07T23:37:23.7122552Z   Downloaded derive_more v2.1.1
+2026-10-07T23:37:23.8931788Z   Downloaded dirs v7.0.0
+2026-10-07T23:37:23.9176775Z   Downloaded icu_properties v2.3.0
+2026-10-07T23:37:23.9646307Z   Downloaded phf_codegen v0.11.3
+2026-10-07T23:37:23.9797275Z   Downloaded phf_shared v0.11.3
+2026-10-07T23:37:23.9925042Z   Downloaded proc-macro-hack v0.5.20+deprecated
+2026-10-07T23:37:24.1357208Z   Downloaded rand_chacha v0.3.1
+2026-10-07T23:37:24.1572354Z   Downloaded bit-set v0.8.0
+2026-10-07T23:37:24.2421669Z   Downloaded cc v1.6.0
+2026-10-07T23:37:24.3957718Z   Downloaded darling_core v0.24.1
+2026-10-07T23:37:24.9986134Z   Downloaded dtoa-short v0.3.5
+2026-10-07T23:37:25.0443761Z   Downloaded equivalent v1.0.2
+2026-10-07T23:37:25.0936035Z   Downloaded find-msvc-tools v0.1.14
+2026-10-07T23:37:25.1366263Z   Downloaded futures v0.3.34
+2026-10-07T23:37:25.3585005Z   Downloaded futures-channel v0.3.34
+2026-10-07T23:37:25.4220438Z   Downloaded futures-macro v0.3.34
+2026-10-07T23:37:25.4396868Z   Downloaded futures-util v0.3.34
+2026-10-07T23:37:26.2672093Z   Downloaded hashlink v0.12.2
+2026-10-07T23:37:26.3508153Z   Downloaded icu_provider v2.3.1
+2026-10-07T23:37:26.3894034Z   Downloaded phf_macros v0.10.0
+2026-10-07T23:37:26.3952171Z   Downloaded phf_shared v0.8.0
+2026-10-07T23:37:26.4007642Z   Downloaded phf_shared v0.13.1
+2026-10-07T23:37:26.4088837Z   Downloaded potential_utf v0.1.6
+2026-10-07T23:37:26.4219009Z   Downloaded powerfmt v0.2.1
+2026-10-07T23:37:26.4350180Z   Downloaded rand_chacha v0.2.2
+2026-10-07T23:37:26.4448819Z   Downloaded rustc_version v0.4.1
+2026-10-07T23:37:26.4591690Z   Downloaded schemars_derive v0.8.22
+2026-10-07T23:37:26.4787274Z   Downloaded scopeguard v1.2.0
+2026-10-07T23:37:26.4973458Z   Downloaded serde_derive_internals v0.29.1
+2026-10-07T23:37:26.5115527Z   Downloaded serde_repr v0.1.21
+2026-10-07T23:37:26.5387680Z   Downloaded servo_arc v0.4.3
+2026-10-07T23:37:26.5460862Z   Downloaded siphasher v0.3.11
+2026-10-07T23:37:26.5608215Z   Downloaded stable_deref_trait v1.2.1
+2026-10-07T23:37:26.5703045Z   Downloaded string_cache v0.8.9
+2026-10-07T23:37:26.6274491Z   Downloaded bit-vec v0.8.0
+2026-10-07T23:37:26.6538873Z   Downloaded block-buffer v0.10.4
+2026-10-07T23:37:26.6643218Z   Downloaded camino v1.2.6
+2026-10-07T23:37:26.6859465Z   Downloaded fnv v1.0.7
+2026-10-07T23:37:26.6949894Z   Downloaded form_urlencoded v1.2.2
+2026-10-07T23:37:26.7032748Z   Downloaded markup5ever v0.39.0
+2026-10-07T23:37:26.7137573Z   Downloaded miniz_oxide v0.8.9
+2026-10-07T23:37:26.7369543Z   Downloaded miniz_oxide v0.9.1
+2026-10-07T23:37:26.7551535Z   Downloaded muda v0.20.0
+2026-10-07T23:37:26.8021097Z   Downloaded num-traits v0.2.19
+2026-10-07T23:37:26.8300311Z   Downloaded phf_generator v0.13.1
+2026-10-07T23:37:26.8406760Z   Downloaded phf_shared v0.10.0
+2026-10-07T23:37:26.8463004Z   Downloaded pin-project-lite v0.2.17
+2026-10-07T23:37:26.9268931Z   Downloaded pkg-config v0.3.34
+2026-10-07T23:37:26.9417295Z   Downloaded plist v1.10.1
+2026-10-07T23:37:26.9861783Z   Downloaded proc-macro2 v1.0.107
+2026-10-07T23:37:27.0181299Z   Downloaded quote v1.0.47
+2026-10-07T23:37:27.0498147Z   Downloaded rand v0.8.8
+2026-10-07T23:37:27.0945185Z   Downloaded rand_core v0.5.1
+2026-10-07T23:37:27.1074297Z   Downloaded raw-window-handle v0.6.2
+2026-10-07T23:37:27.1389125Z   Downloaded schemars v0.8.22
+2026-10-07T23:37:27.9969804Z   Downloaded schemars v0.9.0
+2026-10-07T23:37:28.1675951Z   Downloaded schemars v1.2.2
+2026-10-07T23:37:28.3686744Z   Downloaded selectors v0.24.0
+2026-10-07T23:37:28.3836977Z   Downloaded selectors v0.38.0
+2026-10-07T23:37:28.4048837Z   Downloaded serde v1.0.229
+2026-10-07T23:37:28.4323225Z   Downloaded serde_core v1.0.229
+2026-10-07T23:37:28.4663290Z   Downloaded serde_derive v1.0.229
+2026-10-07T23:37:28.5044517Z   Downloaded serde_with_macros v3.24.0
+2026-10-07T23:37:28.5234591Z   Downloaded synstructure v0.14.0
+2026-10-07T23:37:28.5332549Z   Downloaded tauri-macros v2.7.1
+2026-10-07T23:37:28.5449125Z   Downloaded tauri-runtime v2.12.1
+2026-10-07T23:37:28.5575744Z   Downloaded tauri-winres v0.3.6
+2026-10-07T23:37:28.5726032Z   Downloaded tendril v0.4.3
+2026-10-07T23:37:28.5878620Z   Downloaded tinystr v0.8.4
+2026-10-07T23:37:28.6043463Z   Downloaded url v2.5.8
+2026-10-07T23:37:29.0581908Z   Downloaded urlpattern v0.6.0
+2026-10-07T23:37:29.0799491Z   Downloaded vswhom v0.1.0
+2026-10-07T23:37:29.0905035Z   Downloaded yoke-derive v0.8.4
+2026-10-07T23:37:29.0998971Z   Downloaded crypto-common v0.1.7
+2026-10-07T23:37:29.1077990Z   Downloaded flate2 v1.1.10
+2026-10-07T23:37:29.1538275Z   Downloaded precomputed-hash v0.1.1
+2026-10-07T23:37:29.1591732Z   Downloaded regex v1.13.1
+2026-10-07T23:37:29.1979193Z   Downloaded rusqlite v0.40.2
+2026-10-07T23:37:29.2476321Z   Downloaded serde_json v1.0.151
+2026-10-07T23:37:29.3265636Z   Downloaded serialize-to-javascript v0.1.2
+2026-10-07T23:37:29.3354928Z   Downloaded serialize-to-javascript-impl v0.1.2
+2026-10-07T23:37:29.3430976Z   Downloaded tauri-utils v2.10.1
+2026-10-07T23:37:29.3758878Z   Downloaded windows-collections v0.3.2
+2026-10-07T23:37:29.3850157Z   Downloaded jiff v0.2.38
+2026-10-07T23:37:29.4705809Z   Downloaded png v0.18.1
+2026-10-07T23:37:29.5023364Z   Downloaded ppv-lite86 v0.2.21
+2026-10-07T23:37:29.5128960Z   Downloaded quick-xml v0.42.0
+2026-10-07T23:37:29.5493350Z   Downloaded rand v0.7.3
+2026-10-07T23:37:29.5872304Z   Downloaded servo_arc v0.2.0
+2026-10-07T23:37:29.5930300Z   Downloaded siphasher v1.0.4
+2026-10-07T23:37:29.6069366Z   Downloaded time-macros v0.2.32
+2026-10-07T23:37:29.6360585Z   Downloaded tinyvec v1.13.3
+2026-10-07T23:37:29.6636311Z   Downloaded windows-core v0.62.2
+2026-10-07T23:37:29.6919303Z   Downloaded windows-result v0.4.1
+2026-10-07T23:37:29.7046812Z   Downloaded windows-threading v0.2.1
+2026-10-07T23:37:29.7133030Z   Downloaded regex-syntax v0.8.11
+2026-10-07T23:37:29.7476031Z   Downloaded syn v1.0.109
+2026-10-07T23:37:29.8167747Z   Downloaded tauri-codegen v2.7.1
+2026-10-07T23:37:29.8294070Z   Downloaded tendril v0.5.1
+2026-10-07T23:37:29.8451761Z   Downloaded typenum v1.20.1
+2026-10-07T23:37:29.8671532Z   Downloaded version_check v0.9.5
+2026-10-07T23:37:29.8782324Z   Downloaded hex v0.4.3
+2026-10-07T23:37:29.8915473Z   Downloaded idna_adapter v1.2.2
+2026-10-07T23:37:29.8991679Z   Downloaded regex-automata v0.4.18
+2026-10-07T23:37:29.9814817Z   Downloaded typeid v1.0.3
+2026-10-07T23:37:29.9919652Z   Downloaded libc v0.2.190
+2026-10-07T23:37:30.8016151Z   Downloaded tokio v1.53.2
+2026-10-07T23:37:31.1977979Z   Downloaded toml_parser v1.1.3+spec-1.1.0
+2026-10-07T23:37:31.2160982Z   Downloaded vswhom-sys v0.1.3
+2026-10-07T23:37:31.2272490Z   Downloaded windows-strings v0.5.1
+2026-10-07T23:37:31.2418960Z   Downloaded writeable v0.6.4
+2026-10-07T23:37:31.2588216Z   Downloaded tauri-build v2.7.1
+2026-10-07T23:37:31.2730547Z   Downloaded windows-numerics v0.3.1
+2026-10-07T23:37:31.2867269Z   Downloaded dtoa v1.0.11
+2026-10-07T23:37:31.3010852Z   Downloaded dyn-clone v1.0.20
+2026-10-07T23:37:31.3151706Z   Downloaded fastrand v2.5.0
+2026-10-07T23:37:31.3255348Z   Downloaded convert_case v0.4.0
+2026-10-07T23:37:31.3325928Z   Downloaded cssparser-macros v0.6.1
+2026-10-07T23:37:31.3378344Z   Downloaded dpi v0.1.2
+2026-10-07T23:37:31.3471016Z   Downloaded dunce v1.0.5
+2026-10-07T23:37:31.3547030Z   Downloaded futures-task v0.3.34
+2026-10-07T23:37:31.3665068Z   Downloaded sha2 v0.10.9
+2026-10-07T23:37:31.3923116Z   Downloaded syn v2.0.119
+2026-10-07T23:37:31.9730651Z   Downloaded cfg-if v1.0.5
+2026-10-07T23:37:31.9836623Z   Downloaded darling_macro v0.24.1
+2026-10-07T23:37:31.9898667Z   Downloaded futures-io v0.3.34
+2026-10-07T23:37:31.9969346Z   Downloaded futures-sink v0.3.34
+2026-10-07T23:37:32.0037848Z   Downloaded heck v0.5.0
+2026-10-07T23:37:32.0157718Z   Downloaded time v0.3.55
+2026-10-07T23:37:32.1505470Z   Downloaded window-vibrancy v0.8.1
+2026-10-07T23:37:32.1863230Z   Downloaded fxhash v0.2.1
+2026-10-07T23:37:32.1918733Z   Downloaded simd-adler32 v0.3.10
+2026-10-07T23:37:32.2089643Z   Downloaded toml_writer v1.1.2+spec-1.1.0
+2026-10-07T23:37:32.2191667Z   Downloaded windows-implement v0.60.2
+2026-10-07T23:37:32.2275466Z   Downloaded thiserror-impl v2.0.21
+2026-10-07T23:37:32.2403825Z   Downloaded cpufeatures v0.2.17
+2026-10-07T23:37:32.2518053Z   Downloaded cssparser-macros v0.7.1
+2026-10-07T23:37:32.2574519Z   Downloaded tokio-macros v2.7.2
+2026-10-07T23:37:32.2654110Z   Downloaded winreg v0.56.0
+2026-10-07T23:37:32.2972890Z   Downloaded defmt-macros v1.1.1
+2026-10-07T23:37:32.3282380Z   Downloaded getrandom v0.1.16
+2026-10-07T23:37:32.3506390Z   Downloaded serde-untagged v0.1.9
+2026-10-07T23:37:32.3641913Z   Downloaded tauri-plugin v2.7.1
+2026-10-07T23:37:32.3734757Z   Downloaded cookie v0.18.2
+2026-10-07T23:37:32.3962638Z   Downloaded windows-sys v0.61.2
+2026-10-07T23:37:32.6893759Z   Downloaded png v0.17.16
+2026-10-07T23:37:32.7173479Z   Downloaded string_cache_codegen v0.6.1
+2026-10-07T23:37:33.2519038Z   Downloaded winapi-util v0.1.11
+2026-10-07T23:37:33.2641669Z   Downloaded digest v0.10.7
+2026-10-07T23:37:33.2795986Z   Downloaded displaydoc v0.2.7
+2026-10-07T23:37:33.2998936Z   Downloaded fallible-iterator v0.3.0
+2026-10-07T23:37:33.3097087Z   Downloaded fdeflate v0.3.7
+2026-10-07T23:37:33.3248976Z   Downloaded futures-executor v0.3.34
+2026-10-07T23:37:33.3371067Z   Downloaded erased-serde v0.4.10
+2026-10-07T23:37:33.3561282Z   Downloaded glob v0.3.4
+2026-10-07T23:37:33.3676054Z   Downloaded syn v3.0.6
+2026-10-07T23:37:33.4475582Z   Downloaded cssparser v0.37.0
+2026-10-07T23:37:33.4667899Z   Downloaded ctor v1.0.13
+2026-10-07T23:37:33.4915250Z   Downloaded web-time v1.1.0
+2026-10-07T23:37:33.5031185Z   Downloaded zmij v1.0.23
+2026-10-07T23:37:33.5167178Z   Downloaded autocfg v1.5.1
+2026-10-07T23:37:33.5321918Z   Downloaded defmt v1.1.1
+2026-10-07T23:37:33.5900339Z   Downloaded embed-resource v3.0.12
+2026-10-07T23:37:33.6049612Z   Downloaded static_assertions v1.1.0
+2026-10-07T23:37:33.6183224Z   Downloaded string_cache_codegen v0.5.4
+2026-10-07T23:37:33.6249159Z   Downloaded web_atoms v0.2.6
+2026-10-07T23:37:33.6333937Z   Downloaded webview2-com-macros v0.8.1
+2026-10-07T23:37:33.6401757Z   Downloaded derive_more v0.99.20
+2026-10-07T23:37:33.6850361Z   Downloaded getrandom v0.2.17
+2026-10-07T23:37:33.7116275Z   Downloaded smallvec v1.16.2
+2026-10-07T23:37:33.7212914Z   Downloaded tauri v2.12.1
+2026-10-07T23:37:33.8430321Z   Downloaded thiserror v2.0.21
+2026-10-07T23:37:33.9134628Z   Downloaded utf8_iter v1.0.4
+2026-10-07T23:37:33.9225328Z   Downloaded crc32fast v1.5.2
+2026-10-07T23:37:33.9371021Z   Downloaded strsim v0.11.1
+2026-10-07T23:37:33.9484562Z   Downloaded windows-link v0.2.1
+2026-10-07T23:37:33.9555977Z   Downloaded zerofrom v0.1.8
+2026-10-07T23:37:33.9631680Z   Downloaded windows-future v0.3.2
+2026-10-07T23:37:33.9767961Z   Downloaded shlex v2.0.1
+2026-10-07T23:37:33.9870982Z   Downloaded slab v0.4.12
+2026-10-07T23:37:33.9972048Z   Downloaded unicode-ident v1.0.26
+2026-10-07T23:37:34.0205323Z   Downloaded libsqlite3-sys v0.38.2
+2026-10-07T23:37:34.1142290Z   Downloaded toml v1.1.6+spec-1.1.0
+2026-10-07T23:37:34.1484035Z   Downloaded yoke v0.8.3
+2026-10-07T23:37:34.1622346Z   Downloaded windows-interface v0.59.3
+2026-10-07T23:37:34.1696512Z   Downloaded windows-version v0.1.7
+2026-10-07T23:37:34.1773212Z   Downloaded time-core v0.1.9
+2026-10-07T23:37:34.1856635Z   Downloaded tokio-util v0.7.19
+2026-10-07T23:37:34.6440896Z   Downloaded zerofrom-derive v0.1.8
+2026-10-07T23:37:34.6541946Z   Downloaded zerovec-derive v0.11.6
+2026-10-07T23:37:34.6696652Z   Downloaded deranged v0.5.8
+2026-10-07T23:37:34.6810169Z   Downloaded getrandom v0.4.3
+2026-10-07T23:37:34.7140049Z   Downloaded ico v0.5.0
+2026-10-07T23:37:34.7424892Z   Downloaded string_cache v0.9.0
+2026-10-07T23:37:34.7560315Z   Downloaded dom_query v0.28.0
+2026-10-07T23:37:34.7987917Z   Downloaded getrandom v0.3.4
+2026-10-07T23:37:34.8323011Z   Downloaded icu_normalizer_data v2.3.0
+2026-10-07T23:37:34.8466103Z   Downloaded toml_datetime v1.1.1+spec-1.1.0
+2026-10-07T23:37:34.8552240Z   Downloaded utf-8 v0.7.6
+2026-10-07T23:37:34.8653330Z   Downloaded html5ever v0.29.1
+2026-10-07T23:37:34.8955969Z   Downloaded icu_collections v2.3.0
+2026-10-07T23:37:34.9790147Z   Downloaded tokio-stream v0.1.19
+2026-10-07T23:37:35.0359127Z   Downloaded darling v0.24.1
+2026-10-07T23:37:35.1095408Z   Downloaded html5ever v0.39.0
+2026-10-07T23:37:35.1457144Z   Downloaded socket2 v0.6.5
+2026-10-07T23:37:35.1587376Z   Downloaded webview2-com v0.39.1
+2026-10-07T23:37:35.1679635Z   Downloaded async-trait v0.1.92
+2026-10-07T23:37:35.2052747Z   Downloaded uuid v1.27.0
+2026-10-07T23:37:35.2273461Z   Downloaded walkdir v2.5.0
+2026-10-07T23:37:35.2420820Z   Downloaded anyhow v1.0.104
+2026-10-07T23:37:35.2773164Z   Downloaded crossbeam-channel v0.5.17
+2026-10-07T23:37:35.3094450Z   Downloaded hashbrown v0.12.3
+2026-10-07T23:37:35.3358938Z   Downloaded chrono v0.4.45
+2026-10-07T23:37:35.3773877Z   Downloaded derive_more-impl v2.1.1
+2026-10-07T23:37:35.4230421Z   Downloaded icu_locale_core v2.3.0
+2026-10-07T23:37:35.4890348Z   Downloaded base64 v0.22.1
+2026-10-07T23:37:35.5182547Z   Downloaded base64 v0.23.1
+2026-10-07T23:37:35.6056865Z   Downloaded http v1.5.0
+2026-10-07T23:37:36.0603307Z   Downloaded zerotrie v0.2.5
+2026-10-07T23:37:36.0936350Z   Downloaded hashbrown v0.14.5
+2026-10-07T23:37:36.1254879Z   Downloaded hashbrown v0.17.1
+2026-10-07T23:37:36.1607396Z   Downloaded idna v1.1.0
+2026-10-07T23:37:36.1794418Z   Downloaded winnow v1.0.4
+2026-10-07T23:37:36.2637754Z   Downloaded icu_properties_data v2.3.0
+2026-10-07T23:37:36.3699317Z   Downloaded zerovec v0.11.8
+2026-10-07T23:37:36.4214929Z   Downloaded serde_with v3.24.0
+2026-10-07T23:37:36.5445287Z   Downloaded aho-corasick v1.1.5
+2026-10-07T23:37:36.5804601Z   Downloaded zlib-rs v0.6.8
+2026-10-07T23:37:36.6237673Z   Downloaded vcpkg v0.2.15
+2026-10-07T23:37:37.5341169Z   Downloaded zerocopy v0.8.61
+2026-10-07T23:37:37.7336553Z   Downloaded icu_normalizer v2.3.0
+2026-10-07T23:37:37.7704684Z   Downloaded webview2-com-sys v0.39.1
+2026-10-07T23:37:37.8631231Z   Downloaded windows v0.62.2
+2026-10-07T23:37:39.7856611Z    Compiling unicode-ident v1.0.26
+2026-10-07T23:37:39.7857223Z    Compiling quote v1.0.47
+2026-10-07T23:37:39.7858639Z    Compiling proc-macro2 v1.0.107
+2026-10-07T23:37:39.7859446Z    Compiling cfg-if v1.0.5
+2026-10-07T23:37:39.8584580Z    Compiling windows-link v0.2.1
+2026-10-07T23:37:39.9307484Z    Compiling siphasher v1.0.4
+2026-10-07T23:37:39.9343058Z    Compiling smallvec v1.16.2
+2026-10-07T23:37:40.1441249Z    Compiling serde_core v1.0.229
+2026-10-07T23:37:41.9307252Z    Compiling stable_deref_trait v1.2.1
+2026-10-07T23:37:42.0312797Z    Compiling memchr v2.8.3
+2026-10-07T23:37:43.5871477Z    Compiling itoa v1.0.18
+2026-10-07T23:37:43.8461553Z    Compiling syn v3.0.6
+2026-10-07T23:37:44.0749091Z    Compiling syn v2.0.119
+2026-10-07T23:37:45.6686914Z    Compiling phf_shared v0.13.1
+2026-10-07T23:37:45.7876729Z    Compiling fastrand v2.5.0
+2026-10-07T23:37:45.9633049Z    Compiling phf_generator v0.13.1
+2026-10-07T23:37:46.0159877Z    Compiling zerocopy v0.8.61
+2026-10-07T23:37:46.2372927Z    Compiling parking_lot_core v0.9.12
+2026-10-07T23:37:46.5385715Z    Compiling scopeguard v1.2.0
+2026-10-07T23:37:46.5781932Z    Compiling zmij v1.0.23
+2026-10-07T23:37:46.6366290Z    Compiling lock_api v0.4.14
+2026-10-07T23:37:47.4294811Z    Compiling thiserror v2.0.21
+2026-10-07T23:37:47.8881357Z    Compiling new_debug_unreachable v1.0.6
+2026-10-07T23:37:48.4957901Z    Compiling writeable v0.6.4
+2026-10-07T23:37:48.8499468Z    Compiling litemap v0.8.3
+2026-10-07T23:37:49.2664454Z    Compiling synstructure v0.14.0
+2026-10-07T23:37:50.3555649Z    Compiling icu_properties_data v2.3.0
+2026-10-07T23:37:50.6206447Z    Compiling icu_normalizer_data v2.3.0
+2026-10-07T23:37:50.8590327Z    Compiling utf8_iter v1.0.4
+2026-10-07T23:37:51.0677320Z    Compiling precomputed-hash v0.1.1
+2026-10-07T23:37:51.1782734Z    Compiling serde v1.0.229
+2026-10-07T23:37:51.5815316Z    Compiling log v0.4.34
+2026-10-07T23:37:52.1645391Z    Compiling parking_lot v0.12.5
+2026-10-07T23:37:52.9598182Z    Compiling ppv-lite86 v0.2.21
+2026-10-07T23:37:53.0209999Z    Compiling phf_macros v0.13.1
+2026-10-07T23:37:53.0293585Z    Compiling serde_derive v1.0.229
+2026-10-07T23:37:53.1336084Z    Compiling zerofrom-derive v0.1.8
+2026-10-07T23:37:53.4783317Z    Compiling yoke-derive v0.8.4
+2026-10-07T23:37:54.2419232Z    Compiling zerovec-derive v0.11.6
+2026-10-07T23:37:55.3812165Z    Compiling displaydoc v0.2.7
+2026-10-07T23:37:55.4392279Z    Compiling zerofrom v0.1.8
+2026-10-07T23:37:55.5820215Z    Compiling yoke v0.8.3
+2026-10-07T23:37:55.8376198Z    Compiling thiserror-impl v2.0.21
+2026-10-07T23:37:56.1227702Z    Compiling zerovec v0.11.8
+2026-10-07T23:37:56.5028733Z    Compiling zerotrie v0.2.5
+2026-10-07T23:37:56.9912903Z    Compiling tinystr v0.8.4
+2026-10-07T23:37:57.0912410Z    Compiling potential_utf v0.1.6
+2026-10-07T23:37:57.2752448Z    Compiling icu_locale_core v2.3.0
+2026-10-07T23:37:57.2854354Z    Compiling icu_collections v2.3.0
+2026-10-07T23:37:58.0964246Z    Compiling phf_codegen v0.13.1
+2026-10-07T23:37:58.2496376Z    Compiling getrandom v0.2.17
+2026-10-07T23:37:58.3416500Z    Compiling dtoa v1.0.11
+2026-10-07T23:37:58.4412520Z    Compiling rand_core v0.6.4
+2026-10-07T23:37:58.7060228Z    Compiling icu_provider v2.3.1
+2026-10-07T23:37:59.2457018Z    Compiling icu_properties v2.3.0
+2026-10-07T23:37:59.3939826Z    Compiling icu_normalizer v2.3.0
+2026-10-07T23:37:59.4948885Z    Compiling dtoa-short v0.3.5
+2026-10-07T23:37:59.6227561Z    Compiling windows-sys v0.61.2
+2026-10-07T23:37:59.6720424Z    Compiling bytes v1.12.1
+2026-10-07T23:38:00.5519462Z    Compiling time-core v0.1.9
+2026-10-07T23:38:00.8065229Z    Compiling ident_case v1.0.1
+2026-10-07T23:38:00.8489661Z    Compiling winnow v1.0.4
+2026-10-07T23:38:00.9060995Z    Compiling typeid v1.0.3
+2026-10-07T23:38:01.2618279Z    Compiling idna_adapter v1.2.2
+2026-10-07T23:38:01.3980127Z    Compiling idna v1.1.0
+2026-10-07T23:38:01.4244630Z    Compiling strsim v0.11.1
+2026-10-07T23:38:01.9015056Z    Compiling num-conv v0.2.2
+2026-10-07T23:38:01.9129981Z    Compiling darling_core v0.24.1
+2026-10-07T23:38:02.0966424Z    Compiling toml_parser v1.1.3+spec-1.1.0
+2026-10-07T23:38:03.2137807Z    Compiling rand_chacha v0.3.1
+2026-10-07T23:38:03.5758732Z    Compiling shlex v2.0.1
+2026-10-07T23:38:03.8022488Z    Compiling powerfmt v0.2.1
+2026-10-07T23:38:03.9269965Z    Compiling find-msvc-tools v0.1.14
+2026-10-07T23:38:04.0111324Z    Compiling camino v1.2.6
+2026-10-07T23:38:04.4013081Z    Compiling deranged v0.5.8
+2026-10-07T23:38:05.3064595Z    Compiling siphasher v0.3.11
+2026-10-07T23:38:05.6099177Z    Compiling toml_writer v1.1.2+spec-1.1.0
+2026-10-07T23:38:05.9188479Z    Compiling erased-serde v0.4.10
+2026-10-07T23:38:06.1457498Z    Compiling equivalent v1.0.2
+2026-10-07T23:38:06.2197697Z    Compiling cc v1.6.0
+2026-10-07T23:38:06.3091276Z    Compiling rand v0.8.8
+2026-10-07T23:38:07.4500185Z    Compiling phf v0.13.1
+2026-10-07T23:38:07.4772512Z    Compiling string_cache_codegen v0.6.1
+2026-10-07T23:38:07.5964193Z    Compiling darling_macro v0.24.1
+2026-10-07T23:38:07.6327062Z    Compiling aho-corasick v1.1.5
+2026-10-07T23:38:08.1054655Z    Compiling serde_json v1.0.151
+2026-10-07T23:38:08.1908213Z    Compiling getrandom v0.4.3
+2026-10-07T23:38:08.3580266Z    Compiling regex-syntax v0.8.11
+2026-10-07T23:38:08.4765611Z    Compiling web-time v1.1.0
+2026-10-07T23:38:08.5402778Z    Compiling fnv v1.0.7
+2026-10-07T23:38:08.6844756Z    Compiling web_atoms v0.2.6
+2026-10-07T23:38:09.0543914Z    Compiling darling v0.24.1
+2026-10-07T23:38:09.1306243Z    Compiling serde_derive_internals v0.29.1
+2026-10-07T23:38:09.4808859Z    Compiling semver v1.0.28
+2026-10-07T23:38:10.0622912Z    Compiling getrandom v0.1.16
+2026-10-07T23:38:10.7099154Z    Compiling schemars_derive v0.8.22
+2026-10-07T23:38:10.9072833Z    Compiling serde_with_macros v3.24.0
+2026-10-07T23:38:12.5179149Z    Compiling regex-automata v0.4.18
+2026-10-07T23:38:12.8562893Z    Compiling string_cache v0.9.0
+2026-10-07T23:38:13.1302155Z    Compiling toml_datetime v1.1.1+spec-1.1.0
+2026-10-07T23:38:13.6685371Z    Compiling serde_spanned v1.1.1
+2026-10-07T23:38:13.8670033Z    Compiling quick-xml v0.42.0
+2026-10-07T23:38:14.3675741Z    Compiling anyhow v1.0.104
+2026-10-07T23:38:14.4724710Z    Compiling dyn-clone v1.0.20
+2026-10-07T23:38:14.6242919Z    Compiling version_check v0.9.5
+2026-10-07T23:38:14.7796770Z    Compiling percent-encoding v2.3.2
+2026-10-07T23:38:15.0048934Z    Compiling base64 v0.23.1
+2026-10-07T23:38:15.0553116Z    Compiling autocfg v1.5.1
+2026-10-07T23:38:15.6519528Z    Compiling regex v1.13.1
+2026-10-07T23:38:15.8039267Z    Compiling indexmap v1.9.3
+2026-10-07T23:38:16.0282460Z    Compiling form_urlencoded v1.2.2
+2026-10-07T23:38:16.2464055Z    Compiling toml v1.1.6+spec-1.1.0
+2026-10-07T23:38:16.4903231Z    Compiling uuid v1.27.0
+2026-10-07T23:38:17.3364977Z    Compiling selectors v0.38.0
+2026-10-07T23:38:17.4855923Z    Compiling cssparser-macros v0.7.1
+2026-10-07T23:38:17.8410694Z    Compiling derive_more-impl v2.1.1
+2026-10-07T23:38:18.0294926Z    Compiling tendril v0.5.1
+2026-10-07T23:38:18.4465636Z    Compiling phf_shared v0.11.3
+2026-10-07T23:38:18.6925281Z    Compiling bitflags v2.13.2
+2026-10-07T23:38:18.9509612Z    Compiling dunce v1.0.5
+2026-10-07T23:38:19.2236234Z    Compiling markup5ever v0.39.0
+2026-10-07T23:38:19.4032765Z    Compiling derive_more v2.1.1
+2026-10-07T23:38:19.5197380Z    Compiling cssparser v0.37.0
+2026-10-07T23:38:19.5630807Z    Compiling rand_core v0.5.1
+2026-10-07T23:38:19.8191575Z    Compiling url v2.5.8
+2026-10-07T23:38:20.6119324Z    Compiling winapi-util v0.1.11
+2026-10-07T23:38:20.7847876Z    Compiling http v1.5.0
+2026-10-07T23:38:20.9596655Z    Compiling servo_arc v0.4.3
+2026-10-07T23:38:20.9838834Z    Compiling syn v1.0.109
+2026-10-07T23:38:21.1427038Z    Compiling ctor v1.0.13
+2026-10-07T23:38:21.3308481Z    Compiling hashbrown v0.17.1
+2026-10-07T23:38:21.3601971Z    Compiling rustc-hash v2.1.3
+2026-10-07T23:38:21.4786075Z    Compiling bit-vec v0.8.0
+2026-10-07T23:38:21.5677098Z    Compiling glob v0.3.4
+2026-10-07T23:38:21.8104385Z    Compiling schemars v0.8.22
+2026-10-07T23:38:22.0899560Z    Compiling hashbrown v0.12.3
+2026-10-07T23:38:22.2523588Z    Compiling indexmap v2.14.2
+2026-10-07T23:38:22.4750313Z    Compiling bit-set v0.8.0
+2026-10-07T23:38:22.8811813Z    Compiling same-file v1.0.6
+2026-10-07T23:38:23.1114953Z    Compiling html5ever v0.39.0
+2026-10-07T23:38:23.3032510Z    Compiling cfb v0.14.0
+2026-10-07T23:38:23.4414829Z    Compiling jsonptr v0.7.1
+2026-10-07T23:38:24.6652196Z    Compiling time v0.3.55
+2026-10-07T23:38:24.6848528Z    Compiling cargo-platform v0.1.9
+2026-10-07T23:38:25.1101113Z    Compiling windows-implement v0.60.2
+2026-10-07T23:38:25.1988778Z    Compiling windows-interface v0.59.3
+2026-10-07T23:38:25.2537930Z    Compiling windows-result v0.4.1
+2026-10-07T23:38:26.1794741Z    Compiling windows-strings v0.5.1
+2026-10-07T23:38:26.3630856Z    Compiling foldhash v0.2.0
+2026-10-07T23:38:26.7841671Z    Compiling libc v0.2.190
+2026-10-07T23:38:26.8322236Z    Compiling dom_query v0.28.0
+2026-10-07T23:38:27.4659786Z    Compiling windows-core v0.62.2
+2026-10-07T23:38:28.3142843Z    Compiling plist v1.10.1
+2026-10-07T23:38:28.4062549Z    Compiling serde-untagged v0.1.9
+2026-10-07T23:38:28.7752055Z    Compiling cargo_metadata v0.19.2
+2026-10-07T23:38:29.6409287Z    Compiling infer v0.22.0
+2026-10-07T23:38:30.2088658Z    Compiling json-patch v4.2.0
+2026-10-07T23:38:31.1478774Z    Compiling walkdir v2.5.0
+2026-10-07T23:38:32.3050314Z    Compiling urlpattern v0.6.0
+2026-10-07T23:38:33.3177767Z    Compiling rand_pcg v0.2.1
+2026-10-07T23:38:33.3666485Z    Compiling rand_chacha v0.2.2
+2026-10-07T23:38:33.4802590Z    Compiling phf_generator v0.11.3
+2026-10-07T23:38:33.7314423Z    Compiling serde_with v3.24.0
+2026-10-07T23:38:33.9786196Z    Compiling vswhom-sys v0.1.3
+2026-10-07T23:38:34.0184015Z    Compiling phf_shared v0.8.0
+2026-10-07T23:38:34.2296987Z    Compiling simd-adler32 v0.3.10
+2026-10-07T23:38:34.2981245Z    Compiling proc-macro-hack v0.5.20+deprecated
+2026-10-07T23:38:35.5180822Z    Compiling rand v0.7.3
+2026-10-07T23:38:36.5397464Z    Compiling tauri-utils v2.10.1
+2026-10-07T23:38:39.0783785Z    Compiling generic-array v0.14.7
+2026-10-07T23:38:39.0882098Z    Compiling phf_shared v0.10.0
+2026-10-07T23:38:39.3040318Z    Compiling adler2 v2.0.1
+2026-10-07T23:38:39.3042066Z    Compiling byteorder v1.5.0
+2026-10-07T23:38:39.4552967Z    Compiling bitflags v1.3.2
+2026-10-07T23:38:39.5200976Z    Compiling option-ext v0.2.0
+2026-10-07T23:38:39.6005499Z    Compiling pin-project-lite v0.2.17
+2026-10-07T23:38:39.6321020Z    Compiling crc32fast v1.5.2
+2026-10-07T23:38:39.7255035Z    Compiling phf_generator v0.10.0
+2026-10-07T23:38:39.8427660Z    Compiling phf_generator v0.8.0
+2026-10-07T23:38:39.9795559Z    Compiling phf_codegen v0.11.3
+2026-10-07T23:38:39.9826833Z    Compiling string_cache_codegen v0.5.4
+2026-10-07T23:38:40.6395290Z    Compiling windows-threading v0.2.1
+2026-10-07T23:38:40.7801301Z    Compiling typenum v1.20.1
+2026-10-07T23:38:40.9450526Z    Compiling futures-sink v0.3.34
+2026-10-07T23:38:40.9699940Z    Compiling mac v0.1.1
+2026-10-07T23:38:41.0356361Z    Compiling crossbeam-utils v0.8.23
+2026-10-07T23:38:41.0422304Z    Compiling futures-core v0.3.34
+2026-10-07T23:38:41.2279031Z    Compiling futf v0.1.5
+2026-10-07T23:38:41.3681292Z    Compiling phf_macros v0.10.0
+2026-10-07T23:38:41.4366922Z    Compiling windows-future v0.3.2
+2026-10-07T23:38:42.6193746Z    Compiling markup5ever v0.14.1
+2026-10-07T23:38:42.9435514Z    Compiling phf_codegen v0.8.0
+2026-10-07T23:38:42.9786365Z    Compiling vswhom v0.1.0
+2026-10-07T23:38:43.0588910Z    Compiling cssparser v0.29.6
+2026-10-07T23:38:43.1086535Z    Compiling miniz_oxide v0.9.1
+2026-10-07T23:38:43.2980569Z    Compiling windows-collections v0.3.2
+2026-10-07T23:38:44.0138011Z    Compiling windows-numerics v0.3.1
+2026-10-07T23:38:44.1704508Z    Compiling rustc_version v0.4.1
+2026-10-07T23:38:44.2829818Z    Compiling winreg v0.56.0
+2026-10-07T23:38:44.8282843Z    Compiling utf-8 v0.7.6
+2026-10-07T23:38:45.0387158Z    Compiling tendril v0.4.3
+2026-10-07T23:38:45.2842779Z    Compiling phf v0.10.1
+2026-10-07T23:38:45.3620848Z    Compiling embed-resource v3.0.12
+2026-10-07T23:38:45.5020607Z    Compiling windows v0.62.2
+2026-10-07T23:38:45.7632837Z    Compiling flate2 v1.1.10
+2026-10-07T23:38:46.3623392Z    Compiling selectors v0.24.0
+2026-10-07T23:38:46.9910130Z    Compiling dirs-sys v0.5.0
+2026-10-07T23:38:47.1566687Z    Compiling miniz_oxide v0.8.9
+2026-10-07T23:38:47.4596426Z    Compiling fdeflate v0.3.7
+2026-10-07T23:38:48.0933851Z    Compiling string_cache v0.8.9
+2026-10-07T23:38:48.1367992Z    Compiling phf v0.11.3
+2026-10-07T23:38:48.3430669Z    Compiling time-macros v0.2.32
+2026-10-07T23:38:48.4087176Z    Compiling tokio-macros v2.7.2
+2026-10-07T23:38:49.4186295Z    Compiling cssparser-macros v0.6.1
+2026-10-07T23:38:50.6553693Z    Compiling heck v0.5.0
+2026-10-07T23:38:50.6674025Z    Compiling nodrop v0.1.14
+2026-10-07T23:38:50.7486054Z    Compiling convert_case v0.4.0
+2026-10-07T23:38:51.1111099Z    Compiling matches v0.1.10
+2026-10-07T23:38:51.2866881Z    Compiling derive_more v0.99.20
+2026-10-07T23:38:52.6277351Z    Compiling servo_arc v0.2.0
+2026-10-07T23:38:55.9680010Z    Compiling tokio v1.53.2
+2026-10-07T23:38:59.0354612Z    Compiling dirs v7.0.0
+2026-10-07T23:38:59.1845286Z    Compiling tauri-winres v0.3.6
+2026-10-07T23:39:01.4438323Z    Compiling block-buffer v0.10.4
+2026-10-07T23:39:01.5895969Z    Compiling crypto-common v0.1.7
+2026-10-07T23:39:01.7066051Z    Compiling futures-channel v0.3.34
+2026-10-07T23:39:02.0101620Z    Compiling fxhash v0.2.1
+2026-10-07T23:39:03.1774947Z    Compiling phf v0.8.0
+2026-10-07T23:39:03.7209521Z    Compiling cargo_toml v1.0.1
+2026-10-07T23:39:05.5274903Z    Compiling webview2-com-sys v0.39.1
+2026-10-07T23:39:05.8546802Z    Compiling futures-macro v0.3.34
+2026-10-07T23:39:05.8926007Z    Compiling match_token v0.1.0
+2026-10-07T23:39:06.5473056Z    Compiling once_cell v1.21.4
+2026-10-07T23:39:06.8652387Z    Compiling pkg-config v0.3.34
+2026-10-07T23:39:07.1097857Z    Compiling futures-task v0.3.34
+2026-10-07T23:39:07.3238664Z    Compiling vcpkg v0.2.15
+2026-10-07T23:39:07.7245335Z    Compiling futures-io v0.3.34
+2026-10-07T23:39:07.9860465Z    Compiling btleplug v0.12.0 (D:\a\unified-ble-manager\unified-ble-manager\vendor\btleplug)
+2026-10-07T23:39:08.2463697Z    Compiling slab v0.4.12
+2026-10-07T23:39:08.4938523Z    Compiling libsqlite3-sys v0.38.2
+2026-10-07T23:39:08.7736121Z    Compiling futures-util v0.3.34
+2026-10-07T23:39:09.0204983Z    Compiling html5ever v0.29.1
+2026-10-07T23:39:09.8694096Z    Compiling tauri-build v2.7.1
+2026-10-07T23:39:12.0082872Z    Compiling digest v0.10.7
+2026-10-07T23:39:12.2488888Z    Compiling png v0.17.16
+2026-10-07T23:39:13.8616911Z    Compiling cookie v0.18.2
+2026-10-07T23:39:16.0084271Z    Compiling cpufeatures v0.2.17
+2026-10-07T23:39:16.0646656Z    Compiling sha2 v0.10.9
+2026-10-07T23:39:19.1712377Z    Compiling ico v0.5.0
+2026-10-07T23:39:20.0276775Z    Compiling futures-executor v0.3.34
+2026-10-07T23:39:20.0916508Z    Compiling tauri v2.12.1
+2026-10-07T23:39:20.1143361Z    Compiling kuchikiki v0.8.8-speedreader
+2026-10-07T23:39:23.6359679Z    Compiling tokio-util v0.7.19
+2026-10-07T23:39:25.1887142Z    Compiling png v0.18.1
+2026-10-07T23:39:26.3001731Z    Compiling dpi v0.1.2
+2026-10-07T23:39:26.8224119Z    Compiling webview2-com-macros v0.8.1
+2026-10-07T23:39:27.2769734Z    Compiling getrandom v0.3.4
+2026-10-07T23:39:27.5195573Z    Compiling tauri-runtime v2.12.1
+2026-10-07T23:39:27.6890375Z    Compiling hashbrown v0.14.5
+2026-10-07T23:39:27.8185601Z    Compiling muda v0.20.0
+2026-10-07T23:39:28.0862791Z    Compiling base64 v0.22.1
+2026-10-07T23:39:28.5857120Z    Compiling raw-window-handle v0.6.2
+2026-10-07T23:39:28.6440659Z    Compiling dashmap v6.2.1
+2026-10-07T23:39:28.9495060Z    Compiling tauri-codegen v2.7.1
+2026-10-07T23:39:29.4191450Z    Compiling webview2-com v0.39.1
+2026-10-07T23:39:29.8393527Z    Compiling tokio-stream v0.1.19
+2026-10-07T23:39:30.6596410Z    Compiling futures v0.3.34
+2026-10-07T23:39:30.7661937Z    Compiling keyboard-types v0.8.3
+2026-10-07T23:39:32.4664849Z    Compiling tauri-plugin v2.7.1
+2026-10-07T23:39:32.6806594Z    Compiling crossbeam-channel v0.5.17
+2026-10-07T23:39:33.2390400Z    Compiling hashlink v0.12.2
+2026-10-07T23:39:33.5292465Z    Compiling async-trait v0.1.92
+2026-10-07T23:39:33.6725880Z    Compiling serialize-to-javascript-impl v0.1.2
+2026-10-07T23:39:34.2439389Z    Compiling windows-version v0.1.7
+2026-10-07T23:39:34.3867935Z    Compiling fallible-iterator v0.3.0
+2026-10-07T23:39:34.8885298Z    Compiling ubm-desktop v0.1.0 (D:\a\unified-ble-manager\unified-ble-manager\crates\ubm-desktop)
+2026-10-07T23:39:35.2470400Z    Compiling static_assertions v1.1.0
+2026-10-07T23:39:35.3054270Z    Compiling fallible-streaming-iterator v0.1.9
+2026-10-07T23:39:35.4762325Z    Compiling rusqlite v0.40.2
+2026-10-07T23:39:37.8431379Z    Compiling window-vibrancy v0.8.1
+2026-10-07T23:39:38.1291839Z    Compiling serialize-to-javascript v0.1.2
+2026-10-07T23:39:38.4338562Z    Compiling tauri-plugin-unified-ble-manager v5.0.0-rc.21 (D:\a\unified-ble-manager\unified-ble-manager\native\tauri)
+2026-10-07T23:39:40.2344169Z    Compiling tauri-macros v2.7.1
+2026-10-07T23:39:43.8890206Z    Compiling serde_repr v0.1.21
+2026-10-07T23:39:44.1197957Z    Compiling ubm-core v0.1.0 (D:\a\unified-ble-manager\unified-ble-manager\crates\ubm-core)
+2026-10-07T23:39:44.8306615Z    Compiling mime v0.3.17
+2026-10-07T23:41:02.2140236Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 42s
+2026-10-07T23:41:02.3353169Z      Running unittests src\lib.rs (native\tauri\target\debug\deps\tauri_plugin_unified_ble_manager-8950095bdc9471d1.exe)
+2026-10-07T23:41:02.3493239Z 
+2026-10-07T23:41:02.3493560Z running 171 tests
+2026-10-07T23:41:02.3526727Z test btleplug_dispatcher::connection_parameters::tests::opening_gap_discards_pre_probe_records_but_keeps_newer_events ... ok
+2026-10-07T23:41:02.3530304Z test btleplug_dispatcher::connection_parameters::tests::opening_parameter_read_keeps_the_caller_budget_and_cancel ... ok
+2026-10-07T23:41:02.3532532Z test btleplug_dispatcher::dispatcher_packet_b_tests::a_route_attachment_matches_its_record_by_identity_alone ... ok
+2026-10-07T23:41:02.3735552Z test btleplug_dispatcher::dispatcher_packet_b_tests::a_read_carries_the_radio_provenance ... ok
+2026-10-07T23:41:02.3748164Z test btleplug_dispatcher::dispatcher_packet_b_tests::a_notification_terminal_sent_before_disconnect_is_not_sent_twice ... ok
+2026-10-07T23:41:02.3750096Z test btleplug_dispatcher::dispatcher_packet_b_tests::a_failed_owner_terminal_send_keeps_the_disconnect_retryable ... ok
+2026-10-07T23:41:02.3810343Z test btleplug_dispatcher::dispatcher_packet_b_tests::authority_shutdown_retains_half_open_compensation_cause_until_confirmed_retry ... ok
+2026-10-07T23:41:02.3829624Z test btleplug_dispatcher::dispatcher_packet_b_tests::acquired_routes_use_the_native_lease_and_retire_both_children_on_disconnect ... ok
+2026-10-07T23:41:02.3831736Z test btleplug_dispatcher::dispatcher_packet_b_tests::authority_shutdown_closes_admission_during_transport_cleanup ... ok
+2026-10-07T23:41:02.3880454Z test btleplug_dispatcher::dispatcher_packet_b_tests::authority_shutdown_retains_transport_cleanup_until_a_clean_retry ... ok
+2026-10-07T23:41:02.4003329Z test btleplug_dispatcher::dispatcher_packet_b_tests::caller_gatt_operation_cannot_borrow_another_native_lease ... ok
+2026-10-07T23:41:02.4010295Z test btleplug_dispatcher::dispatcher_packet_b_tests::caller_connection_release_retires_only_its_subscription ... ok
+2026-10-07T23:41:02.4017487Z test btleplug_dispatcher::dispatcher_packet_b_tests::caller_connection_release_preserves_another_native_lease ... ok
+2026-10-07T23:41:02.4091290Z test btleplug_dispatcher::dispatcher_packet_b_tests::cancelled_authority_shutdown_preserves_the_closed_retry_owner ... ok
+2026-10-07T23:41:02.4141131Z test btleplug_dispatcher::dispatcher_packet_b_tests::address_resolution_uses_original_deadline_and_parent_cancellation ... ok
+2026-10-07T23:41:02.4142665Z test btleplug_dispatcher::dispatcher_packet_b_tests::cancelling_orphan_drain_keeps_its_exact_identity_owned ... ok
+2026-10-07T23:41:02.4159825Z test btleplug_dispatcher::dispatcher_packet_b_tests::cancelling_orphan_snapshot_keeps_both_resources_and_other_callers ... ok
+2026-10-07T23:41:02.4198196Z test btleplug_dispatcher::dispatcher_packet_b_tests::caller_owner_stream_send_failure_retains_exact_retry ... ok
+2026-10-07T23:41:02.4218728Z test btleplug_dispatcher::dispatcher_packet_b_tests::connected_effective_mtu_reads_the_live_link_through_the_core ... ok
+2026-10-07T23:41:02.4252413Z test btleplug_dispatcher::dispatcher_packet_b_tests::deferred_connect_dispatch_uses_shared_native_lease_authority ... ok
+2026-10-07T23:41:02.4293977Z test btleplug_dispatcher::dispatcher_packet_b_tests::connected_rssi_reads_the_live_link_through_the_core ... ok
+2026-10-07T23:41:02.4307748Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_114_a_failed_compensation_retries_until_the_release_lands ... ok
+2026-10-07T23:41:02.4337111Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_114_a_release_that_lands_first_ends_the_retries ... ok
+2026-10-07T23:41:02.4354839Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_114_a_window_released_during_retries_still_ends_the_orphan ... ok
+2026-10-07T23:41:02.4395138Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_114_eight_refused_attempts_exhaust_and_are_reported ... ok
+2026-10-07T23:41:02.4465018Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_116_the_platform_identity_crosses_per_os ... ok
+2026-10-07T23:41:02.4610408Z test btleplug_dispatcher::dispatcher_packet_b_tests::delayed_initial_parameter_probe_cannot_overtake_a_newer_native_event ... ok
+2026-10-07T23:41:02.4630329Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_182_a_characteristic_with_descriptors_registers_once ... ok
+2026-10-07T23:41:02.4641316Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_182_a_second_discover_replaces_the_snapshot ... ok
+2026-10-07T23:41:02.4686354Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_43_the_attachment_is_the_shared_central_s_own ... ok
+2026-10-07T23:41:02.4780897Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_57_a_route_validated_before_rebind_stays_on_its_original_attachment ... ok
+2026-10-07T23:41:02.4965267Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_57_the_previous_attachment_fails_backend_reset_before_native_io ... ok
+2026-10-07T23:41:02.5084023Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_57_an_adapter_loss_ends_every_stream_in_the_legacy_vocabulary ... ok
+2026-10-07T23:41:02.5130429Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_60_adapter_state_follows_the_reset_generation ... ok
+2026-10-07T23:41:02.5246513Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_60_adapter_state_reports_the_central_s_facts ... ok
+2026-10-07T23:41:02.5248221Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_190a_a_requested_disconnect_ends_notifications_owner_released ... ok
+2026-10-07T23:41:02.5293223Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_60_an_unreadable_authorization_is_unknown_with_a_reason ... ok
+2026-10-07T23:41:02.5344853Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_94_an_adapter_state_read_racing_a_reset_answers_the_new_state ... ok
+2026-10-07T23:41:02.5420378Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_90_the_maximum_write_length_is_what_a_write_accepts_per_mode ... ok
+2026-10-07T23:41:02.5560211Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_58_admission_refusals_cross_verbatim ... ok
+2026-10-07T23:41:02.5580980Z test btleplug_dispatcher::dispatcher_packet_b_tests::findings_f1_f2_write_receipt_commit_state_matches_the_contract_on_both_modes ... ok
+2026-10-07T23:41:02.5627188Z test btleplug_dispatcher::dispatcher_packet_b_tests::held_orphan_drain_cannot_prevent_authoritative_shutdown ... ok
+2026-10-07T23:41:02.5642752Z test btleplug_dispatcher::dispatcher_packet_b_tests::held_orphan_release_still_reaches_bounded_parent_transport_close ... ok
+2026-10-07T23:41:02.5676425Z test btleplug_dispatcher::dispatcher_packet_b_tests::hung_authority_transport_cleanup_is_bounded_and_retryable ... ok
+2026-10-07T23:41:02.5692692Z test btleplug_dispatcher::dispatcher_packet_b_tests::idle_process_handoff_never_opens_bluetooth_even_after_shutdown ... ok
+2026-10-07T23:41:02.6195962Z test btleplug_dispatcher::dispatcher_packet_b_tests::lifecycle_platform_fact_survives_active_and_early_stream_delivery ... ok
+2026-10-07T23:41:02.6241623Z test btleplug_dispatcher::dispatcher_packet_b_tests::orphan_retry_survives_transient_authority_lock_contention ... ok
+2026-10-07T23:41:02.6830734Z test btleplug_dispatcher::dispatcher_packet_b_tests::parameter_gap_reconciles_the_live_native_answer_and_getter_failure_ends_the_watch ... ok
+2026-10-07T23:41:02.6839680Z test btleplug_dispatcher::dispatcher_packet_b_tests::native_capability_bootstrap_agrees_with_routed_rssi_and_service_change ... ok
+2026-10-07T23:41:02.6882581Z test btleplug_dispatcher::dispatcher_packet_b_tests::peer_directory_batch_keeps_original_budget_after_first_read ... ok
+2026-10-07T23:41:02.6939631Z test btleplug_dispatcher::dispatcher_packet_b_tests::peer_directory_bonded_preserves_native_fact_without_link_ownership ... ok
+2026-10-07T23:41:02.6982529Z test btleplug_dispatcher::dispatcher_packet_b_tests::peer_directory_connected_returns_identity_without_connection_ownership ... ok
+2026-10-07T23:41:02.7040867Z test btleplug_dispatcher::dispatcher_packet_b_tests::peer_directory_deadline_bounds_held_read ... ok
+2026-10-07T23:41:02.7080839Z test btleplug_dispatcher::dispatcher_packet_b_tests::peer_directory_excluded_source_preserves_native_refusal ... ok
+2026-10-07T23:41:02.7120680Z test btleplug_dispatcher::dispatcher_packet_b_tests::peer_directory_foreign_reference_and_malformed_reply_fail_closed ... ok
+2026-10-07T23:41:02.7146506Z test btleplug_dispatcher::dispatcher_packet_b_tests::parameter_source_failure_survives_for_a_later_watch_until_native_recovery ... ok
+2026-10-07T23:41:02.7177298Z test btleplug_dispatcher::dispatcher_packet_b_tests::peer_directory_known_resolve_null_and_existing_connect_path ... ok
+2026-10-07T23:41:02.7194625Z test btleplug_dispatcher::dispatcher_packet_b_tests::peer_directory_known_second_lookup_keeps_caller_cancellation ... ok
+2026-10-07T23:41:02.7252142Z test btleplug_dispatcher::dispatcher_packet_b_tests::peer_directory_reset_during_batch_never_publishes_partial_records ... ok
+2026-10-07T23:41:02.7297621Z test btleplug_dispatcher::dispatcher_packet_b_tests::peer_directory_native_inventory_keeps_backend_scope_and_foreign_link_unowned ... ok
+2026-10-07T23:41:02.7299601Z test btleplug_dispatcher::dispatcher_packet_b_tests::peer_directory_retired_caller_cannot_receive_held_lookup ... ok
+2026-10-07T23:41:02.7365612Z test btleplug_dispatcher::dispatcher_packet_b_tests::peer_directory_validates_entire_query_before_native_dispatch ... ok
+2026-10-07T23:41:02.7399144Z test btleplug_dispatcher::dispatcher_packet_b_tests::peer_directory_unavailable_hosts_never_short_circuit_to_success_or_mac_requirements ... ok
+2026-10-07T23:41:02.7782220Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_05_a_cancel_before_admission_never_reaches_the_radio ... ok
+2026-10-07T23:41:02.7875642Z test btleplug_dispatcher::dispatcher_packet_b_tests::finding_95_a_refused_discovery_crosses_the_ipc_whole_and_typed ... ok
+2026-10-07T23:41:02.8107145Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_05_a_cancel_targets_exactly_one_of_two_dispatched_writes ... ok
+2026-10-07T23:41:02.8152842Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_06_a_budget_longer_than_the_old_backstop_is_honoured ... ok
+2026-10-07T23:41:02.8266020Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_05_a_success_that_beat_the_cancel_is_returned_and_owned ... ok
+2026-10-07T23:41:02.8277775Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_04_a_hung_discovery_never_stalls_another_peer_cancel_or_shutdown ... ok
+2026-10-07T23:41:02.8428189Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_06_budget_ms_is_validated_before_any_effect ... ok
+2026-10-07T23:41:03.0161549Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_06_queueing_behind_the_dispatcher_spends_the_budget ... ok
+2026-10-07T23:41:03.0318880Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_07_a_lease_replaced_during_admission_stops_the_scan_it_admitted ... ok
+2026-10-07T23:41:03.1148969Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_07_scan_and_notification_forwarders_deliver_from_the_first_item ... ok
+2026-10-07T23:41:03.1194073Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_08_a_caller_released_during_scan_admission_gets_a_real_stop ... ok
+2026-10-07T23:41:03.1235922Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_08_a_hung_compensation_is_bounded_and_becomes_debt ... ok
+2026-10-07T23:41:03.1281675Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_08_connect_and_subscribe_compensation_is_recorded_not_discarded ... ok
+2026-10-07T23:41:03.1431212Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_09_a_failed_destroy_keeps_the_caller_for_a_real_retry ... ok
+2026-10-07T23:41:03.1588064Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_09_a_failed_disconnect_keeps_the_link_for_a_real_retry ... ok
+2026-10-07T23:41:03.1634172Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_09_a_failed_scan_stop_keeps_the_scan_for_a_real_retry ... ok
+2026-10-07T23:41:03.1753239Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_09_a_failed_unsubscribe_keeps_the_consumer_for_a_real_retry ... ok
+2026-10-07T23:41:03.1796284Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_09_a_hung_disconnect_is_bounded_and_keeps_the_link ... ok
+2026-10-07T23:41:03.1914209Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_10_a_wrong_generation_disconnect_changes_nothing ... ok
+2026-10-07T23:41:03.2217927Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_11_a_lagged_pump_ends_every_stream_with_overflow ... ok
+2026-10-07T23:41:03.2533611Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_11_a_loss_before_ready_is_delivered_at_ready ... ok
+2026-10-07T23:41:03.2871956Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_11_a_service_change_invalidates_and_ends_notifications ... ok
+2026-10-07T23:41:03.3328617Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_06_a_short_budget_bounds_the_radio_call ... ok
+2026-10-07T23:41:03.3490947Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_06_a_write_that_times_out_after_dispatch_is_never_retryable ... ok
+2026-10-07T23:41:03.3651223Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_11_a_stale_generation_matches_nothing ... ok
+2026-10-07T23:41:03.3653045Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_11_idle_link_loss_reaches_the_stream_and_invalidates ... ok
+2026-10-07T23:41:03.3815138Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_13t_a_preference_reports_unknown_delivery_when_the_radio_says_nothing ... ok
+2026-10-07T23:41:03.3816788Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_13t_a_dual_property_indication_requirement_is_not_dropped ... ok
+2026-10-07T23:41:03.3820944Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_22_a_dispatcher_error_is_never_retryable_by_its_code ... ok
+2026-10-07T23:41:03.4278117Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_13t_a_requirement_is_refused_only_where_the_property_is_missing ... ok
+2026-10-07T23:41:03.4442533Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_11_requested_disconnect_reports_requested_disconnect ... ok
+2026-10-07T23:41:03.4483622Z test btleplug_dispatcher::dispatcher_packet_b_tests::pr210_32_racing_first_calls_open_exactly_one_authority ... ok
+2026-10-07T23:41:03.4500692Z test btleplug_dispatcher::dispatcher_packet_b_tests::process_shutdown_retains_native_claim_and_retry_owner ... FAILED
+2026-10-07T23:41:03.4536154Z test btleplug_dispatcher::dispatcher_packet_b_tests::refused_parent_retains_timed_out_orphan_debt_until_clean_retry ... ok
+2026-10-07T23:41:03.4573673Z test btleplug_dispatcher::dispatcher_packet_b_tests::scan_projection_prefers_captured_identity_over_a_mutated_native_cache ... ok
+2026-10-07T23:41:03.4610540Z test btleplug_dispatcher::dispatcher_packet_b_tests::readiness_write_uses_the_owned_native_route_and_reports_unconfirmed_acceptance ... ok
+2026-10-07T23:41:03.4613336Z test btleplug_dispatcher::dispatcher_packet_b_tests::scan_projection_preserves_exact_native_origin_and_service_union ... ok
+2026-10-07T23:41:03.4759474Z test btleplug_dispatcher::dispatcher_packet_b_tests::requested_disconnect_pauses_an_in_flight_notification_terminal ... ok
+2026-10-07T23:41:03.4919166Z test btleplug_dispatcher::dispatcher_packet_b_tests::security_cancel_reports_the_native_ceremony_and_invalid_options_do_not_pair ... ok
+2026-10-07T23:41:03.5073788Z test btleplug_dispatcher::dispatcher_packet_b_tests::scan_projection_preserves_authoritative_address_types_and_unknown ... ok
+2026-10-07T23:41:03.5090025Z test btleplug_dispatcher::dispatcher_packet_b_tests::security_routes_reach_core_and_watch_is_lease_owned ... ok
+2026-10-07T23:41:03.5251476Z test btleplug_dispatcher::dispatcher_packet_b_tests::transport_only_restrictions_match_absent_routes_and_rebind_ownership ... ok
+2026-10-07T23:41:03.5346856Z 
+2026-10-07T23:41:03.5347245Z running 1 test
+2026-10-07T23:41:03.5390389Z test btleplug_dispatcher::dispatcher_packet_b_tests::scan_stream_serializes_native_public_random_and_unknown_address_types ... ok
+2026-10-07T23:41:03.5401963Z test btleplug_dispatcher::dispatcher_packet_b_tests::security_watch_retains_racing_event_order_without_regressing_to_an_unsequenced_snapshot ... ok
+2026-10-07T23:41:03.5406148Z test btleplug_dispatcher::peer_directory::reference_tests::directory_reference_scope_matches_the_requested_native_route ... ok
+2026-10-07T23:41:03.5409902Z test btleplug_dispatcher::service_restriction_tests::an_open_service_omits_restriction ... ok
+2026-10-07T23:41:03.5414039Z test btleplug_dispatcher::service_restriction_tests::characteristic_rows_do_not_hide_a_service_restriction ... ok
+2026-10-07T23:41:03.5416574Z test btleplug_dispatcher::service_restriction_tests::os_reserved_restriction_has_no_gatt_status ... ok
+2026-10-07T23:41:03.5419821Z test btleplug_dispatcher::service_restriction_tests::service_graph_keeps_observed_secondary_and_inclusion_occurrence ... ok
+2026-10-07T23:41:03.5448569Z test btleplug_dispatcher::dispatcher_packet_b_tests::typed_address_connect_resolves_before_acquiring_the_core_lease ... ok
+2026-10-07T23:41:03.5558162Z test btleplug_dispatcher::tauri_identity_tests::every_identity_is_numbered_as_the_4x_dispatcher_numbered_it ... ok
+2026-10-07T23:41:03.5561354Z test btleplug_dispatcher::tests::adapter_limitations_are_stated_rather_than_left_empty ... ok
+2026-10-07T23:41:03.5564627Z test btleplug_dispatcher::tests::adapter_state_route_payload_nests_state_object ... ok
+2026-10-07T23:41:03.5569485Z test btleplug_dispatcher::tests::bootstrap_core_identity_reports_the_linked_contract ... ok
+2026-10-07T23:41:03.5573553Z test btleplug_dispatcher::tests::capability_projection_is_data_only ... ok
+2026-10-07T23:41:03.5580851Z test btleplug_dispatcher::tests::cleanup_still_admits_after_more_than_256_unique_completed_routes ... ok
+2026-10-07T23:41:03.5586794Z test btleplug_dispatcher::tests::cleanup_still_admits_when_live_operations_are_exhausted ... ok
+2026-10-07T23:41:03.5589502Z test btleplug_dispatcher::tests::completed_correlation_replay_is_protocol_violation ... ok
+2026-10-07T23:41:03.5592344Z test btleplug_dispatcher::tests::completed_scan_and_subscribe_correlations_are_also_rejected ... ok
+2026-10-07T23:41:03.5677328Z test btleplug_dispatcher::tests::core_authority_cutover::core_arbitration_verdicts_cross_verbatim ... ok
+2026-10-07T23:41:03.5726503Z test btleplug_dispatcher::tauri_identity_tests::an_adapter_loss_rebinds_the_renderer_and_the_next_connect_succeeds ... ok
+2026-10-07T23:41:03.5728039Z test btleplug_dispatcher::tests::core_authority_cutover::core_authority_connects_without_radio_hardware ... ok
+2026-10-07T23:41:03.5779926Z test btleplug_dispatcher::tests::core_authority_cutover::core_authority_starts_scans_without_radio_hardware ... ok
+2026-10-07T23:41:03.5781867Z test btleplug_dispatcher::tests::core_authority_cutover::missing_core_fails_loudly_never_silent_legacy ... ok
+2026-10-07T23:41:03.5785529Z test btleplug_dispatcher::tests::every_core_authorization_is_a_wire_token ... ok
+2026-10-07T23:41:03.5788130Z test btleplug_dispatcher::tests::expired_completed_correlation_leaves_the_replay_window_after_30_seconds ... ok
+2026-10-07T23:41:03.5790594Z test btleplug_dispatcher::tests::in_flight_duplicate_correlation_is_still_rejected ... ok
+2026-10-07T23:41:03.5794136Z test btleplug_dispatcher::tests::live_adapter_state_reports_only_what_it_observed ... ok
+2026-10-07T23:41:03.5801548Z test btleplug_dispatcher::tests::live_operation_exhaustion_is_backpressure_not_protocol_violation ... ok
+2026-10-07T23:41:03.5804640Z test btleplug_dispatcher::tests::native_dispatch_error_keeps_structured_platform_diagnostics_for_terminals ... ok
+2026-10-07T23:41:03.5807053Z test btleplug_dispatcher::tests::new_correlation_on_same_lease_succeeds ... ok
+2026-10-07T23:41:03.5811753Z test btleplug_dispatcher::tests::release_receipt_and_version_offer_are_explicit ... ok
+2026-10-07T23:41:03.5817946Z test btleplug_dispatcher::tests::replay_of_an_old_correlation_still_rejects_after_more_than_256_completed_routes ... ok
+2026-10-07T23:41:03.5820544Z test btleplug_dispatcher::tests::replay_set_cleared_on_lease_drop ... ok
+2026-10-07T23:41:03.5823482Z test btleplug_dispatcher::tests::safe_reason_is_null_when_nothing_needs_disclosing ... ok
+2026-10-07T23:41:03.5825710Z test btleplug_dispatcher::tests::sampled_timestamps_are_real_and_non_decreasing ... ok
+2026-10-07T23:41:03.5828336Z test btleplug_dispatcher::tests::scan_filtering_fails_closed_when_properties_are_unavailable ... ok
+2026-10-07T23:41:03.5830971Z test btleplug_dispatcher::tests::trusted_bluez_policy_is_not_a_renderer_option ... ok
+2026-10-07T23:41:03.5834868Z test btleplug_dispatcher::tests::trusted_bluez_policy_reaches_the_same_lazy_authority_opener ... ok
+2026-10-07T23:41:03.5837439Z test btleplug_dispatcher::tests::unsampled_adapter_state_admits_that_it_sampled_nothing ... ok
+2026-10-07T23:41:03.5841890Z test btleplug_dispatcher::tests::version_offer_rejects_disjoint_and_malformed_ranges ... ok
+2026-10-07T23:41:03.5848444Z test btleplug_dispatcher::tests::version_offer_requires_ipc_protocol_6_and_refuses_an_old_webview ... ok
+2026-10-07T23:41:03.5849968Z test btleplug_dispatcher::tests::wall_clock_readings_report_the_raw_value_when_it_advances ... ok
+2026-10-07T23:41:03.5852638Z test btleplug_dispatcher::tests::wall_clock_regressions_hold_the_last_stamp_and_disclose_it ... ok
+2026-10-07T23:41:03.5886147Z test capabilities::tests::instance_refusal_keeps_zero_availability_and_all_reasons ... ok
+2026-10-07T23:41:03.5911870Z test capabilities::tests::missing_native_rows_never_invent_an_available_mechanism ... ok
+2026-10-07T23:41:03.5937947Z test capabilities::tests::native_fields_and_multiple_limits_survive_projection ... ok
+2026-10-07T23:41:03.6013936Z test capabilities::tests::native_mechanism_states_are_projected_on_every_desktop_os ... ok
+2026-10-07T23:41:03.6041810Z test capabilities::tests::supported_native_evidence_is_not_replaced_with_blocked_evidence ... ok
+2026-10-07T23:41:03.6067244Z test capabilities::tests::unavailable_is_not_rewritten_to_unsupported_or_limited ... ok
+2026-10-07T23:41:03.6070436Z test commands::tests::custom_pairing_requires_pair_and_custom_ceremony_permissions ... ok
+2026-10-07T23:41:03.6073234Z test commands::tests::security_commands_map_to_independent_permission_atoms ... ok
+2026-10-07T23:41:03.6075977Z test commands::tests::unknown_commands_and_renderer_scope_fields_do_not_grant_security_permission ... ok
+2026-10-07T23:41:03.6078531Z test desktop_core::tests::error_identities_cross_verbatim ... ok
+2026-10-07T23:41:03.6121006Z test desktop_core::tests::full_op_slice_executes_ubm_desktop ... ok
+2026-10-07T23:41:03.6155219Z test desktop_core::tests::malformed_selectors_fail_before_the_radio ... ok
+2026-10-07T23:41:03.6197708Z test desktop_core::tests::scan_schedules_through_the_shared_core ... ok
+2026-10-07T23:41:03.6204106Z test scan_plan::tests::address_residual_availability_follows_instantiated_authority ... ok
+2026-10-07T23:41:03.6206815Z test scan_plan::tests::trusted_decoder_rejects_a_tampered_query_digest ... ok
+2026-10-07T23:41:03.6211475Z test scan_plan::tests::trusted_plan_projects_only_common_positive_services_and_retains_residual ... ok
+2026-10-07T23:41:03.6249292Z test scan_plan::tests::ts_corpus_queries_decode_with_identical_canonical_json_and_digest ... ok
+2026-10-07T23:41:03.6525270Z test security_scope::tests::shipped_tauri_permissions_and_reference_capability_deserialize_the_real_scope ... ok
+2026-10-07T23:41:03.6527864Z test wire::tests::bytes_round_trip_through_the_explicit_wire_tag ... ok
+2026-10-07T23:41:03.6532670Z test wire::tests::malformed_byte_tags_are_rejected ... ok
+2026-10-07T23:41:03.6534879Z test wire::tests::ordinary_numeric_arrays_remain_arrays ... ok
+2026-10-07T23:41:03.9447356Z test btleplug_dispatcher::tests::core_authority_cutover::trusted_recording_controls_reopen_and_acknowledge_one_native_cursor ... ok
+2026-10-07T23:41:04.0711976Z test btleplug_dispatcher::dispatcher_packet_b_tests::trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open ... ok
+2026-10-07T23:41:04.0712873Z 
+2026-10-07T23:41:04.0713243Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 170 filtered out; finished in 0.54s
+2026-10-07T23:41:04.0713766Z 
+2026-10-07T23:41:04.0756297Z test btleplug_dispatcher::dispatcher_packet_b_tests::trusted_continuation_replays_setup_and_retains_recording_without_offline_radio_open ... ok
+2026-10-07T23:41:23.8569377Z test btleplug_dispatcher::dispatcher_packet_b_tests::completed_control_watches_do_not_consume_live_watch_capacity ... ok
+2026-10-07T23:41:23.8570257Z 
+2026-10-07T23:41:23.8570373Z failures:
+2026-10-07T23:41:23.8570538Z 
+2026-10-07T23:41:23.8571118Z ---- btleplug_dispatcher::dispatcher_packet_b_tests::process_shutdown_retains_native_claim_and_retry_owner stdout ----
+2026-10-07T23:41:23.8571898Z 
+2026-10-07T23:41:23.8572803Z thread 'btleplug_dispatcher::dispatcher_packet_b_tests::process_shutdown_retains_native_claim_and_retry_owner' (10076) panicked at src\dispatcher_packet_b_tests.rs:1125:5:
+2026-10-07T23:41:23.8576382Z {"afterCutoffLoss":{"bytes":0,"items":0},"batches":["{\"controlLost\":0,\"more\":false,\"records\":[{\"consumer\":\"ubm-continuation-0\",\"droppedBytes\":0,\"droppedItems\":0,\"ordinal\":1,\"reason\":\"closed\",\"t\":\"stream-end\"}]}"],"claimToken":"continuation-1","consumerCount":1,"disposeFailure":null,"disposed":false,"selectors":[{"characteristicOccurrence":1,"characteristicUuid":"00002a37-0000-1000-8000-00805f9b34fb","serviceOccurrence":1,"serviceUuid":"0000180d-0000-1000-8000-00805f9b34fb"}]}
+2026-10-07T23:41:23.8580001Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-10-07T23:41:23.8580490Z 
+2026-10-07T23:41:23.8580495Z 
+2026-10-07T23:41:23.8580597Z failures:
+2026-10-07T23:41:23.8581248Z     btleplug_dispatcher::dispatcher_packet_b_tests::process_shutdown_retains_native_claim_and_retry_owner
+2026-10-07T23:41:23.8581880Z 
+2026-10-07T23:41:23.8582318Z test result: FAILED. 170 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.51s
+2026-10-07T23:41:23.8582910Z 
+2026-10-07T23:41:23.8796849Z error: test failed, to rerun pass `--lib`
+2026-10-07T23:41:24.0158609Z ##[error]Process completed with exit code 1.
+2026-10-07T23:41:24.0464512Z Post job cleanup.
+2026-10-07T23:41:24.2507550Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-10-07T23:41:24.2899605Z git version 2.55.0.windows.5
+2026-10-07T23:41:24.2974485Z Temporarily overriding HOME='D:\a\_temp\b0385186-0e4b-41cc-859e-4e02139fc8ef' before making global git config changes
+2026-10-07T23:41:24.2975718Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-07T23:41:24.2990802Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\unified-ble-manager\unified-ble-manager
+2026-10-07T23:41:24.3312821Z Removing SSH command configuration
+2026-10-07T23:41:24.3324541Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-07T23:41:24.3660824Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-07T23:41:24.9282806Z Removing HTTP extra header
+2026-10-07T23:41:24.9293847Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-07T23:41:24.9619339Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-07T23:41:25.5367484Z Removing includeIf entries pointing to credentials config files
+2026-10-07T23:41:25.5378936Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-07T23:41:25.5675898Z includeif.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git.path
+2026-10-07T23:41:25.5676853Z includeif.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git/worktrees/*.path
+2026-10-07T23:41:25.5677614Z includeif.gitdir:/github/workspace/.git.path
+2026-10-07T23:41:25.5678153Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-10-07T23:41:25.5726911Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git.path
+2026-10-07T23:41:25.6007270Z D:\a\_temp\git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config
+2026-10-07T23:41:25.6050840Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git.path D:\a\_temp\git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config
+2026-10-07T23:41:25.6355402Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git/worktrees/*.path
+2026-10-07T23:41:25.6619533Z D:\a\_temp\git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config
+2026-10-07T23:41:25.6659605Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git/worktrees/*.path D:\a\_temp\git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config
+2026-10-07T23:41:25.6980131Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:/github/workspace/.git.path
+2026-10-07T23:41:25.7251744Z /github/runner_temp/git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config
+2026-10-07T23:41:25.7292314Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config
+2026-10-07T23:41:25.7604520Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-10-07T23:41:25.7877250Z /github/runner_temp/git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config
+2026-10-07T23:41:25.7960751Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config
+2026-10-07T23:41:25.8277461Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-07T23:41:26.4116741Z Removing credentials config 'D:\a\_temp\git-credentials-d042d1c0-21c4-42af-8923-782f7514a4d9.config'
+2026-10-07T23:41:26.4332618Z Cleaning up orphan processes
+2026-10-07T23:41:26.4598253Z Terminate orphan process: pid (7128) (vctip)

@@ -1079,7 +1079,6 @@ async fn process_shutdown_retains_native_claim_and_retry_owner() {
         .continuation_execute(peer, &declaration)
         .await
         .unwrap();
-    let mut wakes = harness.central.native_wakes();
     harness.radio().push_event(RadioEvent::Notification {
         peer_id: peer.into(),
         service_uuid: HRM_SERVICE.into(),
@@ -1089,10 +1088,25 @@ async fn process_shutdown_retains_native_claim_and_retry_owner() {
         value: vec![0, 75],
         epoch: harness.central.routing_epoch(peer).await,
     });
-    tokio::time::timeout(WAIT, wakes.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    // A central wake only proves native ingress, not collection into the
+    // continuation outbox. Prove the retained value before racing shutdown;
+    // the post-shutdown claim below must still contain that exact value.
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let backlog = harness
+                .dispatcher
+                .continuation_describe_backlog()
+                .await
+                .unwrap();
+            assert!(backlog["lastError"].is_null(), "{backlog}");
+            if backlog["queuedData"] == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("notification must enter the continuation outbox before shutdown");
     harness
         .radio()
         .fail_next(FaultOp::Disconnect, "retained cleanup");

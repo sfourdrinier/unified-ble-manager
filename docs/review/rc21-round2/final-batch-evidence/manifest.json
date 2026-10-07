@@ -147,6 +147,30 @@
     "post-candidate-scan-docs.log": {
       "original_sha256": "c378624226f4f0c44dede7a2c9c329816c00151b6f44b043b25b78d934e45f57",
       "lf_normalized_sha256": "c378624226f4f0c44dede7a2c9c329816c00151b6f44b043b25b78d934e45f57"
+    },
+    "tauri-windows-0d557153-failure.log": {
+      "original_sha256": "225bf1eb81f35b31afc152ce59759a091e1f49474bfeddfb0b84dea05dcd224b",
+      "lf_normalized_sha256": "ade816221dea47117d443ffdac207f0b462df706cca7d75f07cca8596f57326e"
+    },
+    "tauri-shutdown-final-tests.log": {
+      "original_sha256": "f32f4dffa889b3593abc1dbd4a085fed0c866cc7650b2870a0bbfea7be0b2665",
+      "lf_normalized_sha256": "f32f4dffa889b3593abc1dbd4a085fed0c866cc7650b2870a0bbfea7be0b2665"
+    },
+    "tauri-shutdown-final-clippy.log": {
+      "original_sha256": "22d8b069df2f364b2695843b7145f94095525cb4c0a29667a32bffa44192e432",
+      "lf_normalized_sha256": "22d8b069df2f364b2695843b7145f94095525cb4c0a29667a32bffa44192e432"
+    },
+    "tauri-shutdown-owning-clippy.log": {
+      "original_sha256": "0c3d50171f741926e41b9a1867a7566fe66b569f93c02578fb947e4917b1fd23",
+      "lf_normalized_sha256": "0c3d50171f741926e41b9a1867a7566fe66b569f93c02578fb947e4917b1fd23"
+    },
+    "tauri-retirement-format.log": {
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "lf_normalized_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "tauri-shutdown-docs.log": {
+      "original_sha256": "a0ce12e007a8e4c2857652623d8c78e333ff5d81be5c9fd10bc27cebf1fd0ea7",
+      "lf_normalized_sha256": "a0ce12e007a8e4c2857652623d8c78e333ff5d81be5c9fd10bc27cebf1fd0ea7"
     }
   },
   "final_frozen_runtime_head": "10589aeeb84d502e873cc3873617330e69d9a685",

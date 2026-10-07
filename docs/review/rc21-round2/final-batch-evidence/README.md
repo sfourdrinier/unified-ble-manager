@@ -59,3 +59,13 @@ public terminal causes. `post-candidate-scan-terminal.log` passes 108 tests in t
 scan suites, including real evidence-cache quota exhaustion through the public
 manager and exact owned stop. Typecheck and docs receipts also pass. No native
 runtime inputs changed; final PR CI remains required.
+
+Current-head Windows Tauri failure retained in
+`tauri-windows-0d557153-failure.log`: 170 pass / one shutdown-retention fixture
+failure. Corrected fixture waits for authoritative outbox admission under the
+unchanged deadline before shutdown. `tauri-shutdown-final-tests.log` passes all
+171 library tests; owning CI Clippy, rustfmt and docs also pass. The extra
+`--all-targets` Clippy experiment is retained as a failure: five existing
+test-only layout/type/style diagnostics in unchanged code are outside the
+Tauri owning CI Clippy command; no lint suppression or gate change was made.
+Native identity inputs and production runtime code remain unchanged.

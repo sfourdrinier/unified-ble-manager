@@ -178,3 +178,11 @@ backend errors unchanged and explicitly normalizes unexpected JavaScript
 failures. A public manager regression exhausts all 4,096 live evidence peers
 without overflowing the input or delivery queues, checks the original
 `stream.quota` operation on the terminal and verifies one owned stop.
+
+The current-head Windows Tauri failure in
+`process_shutdown_retains_native_claim_and_retry_owner` exposed test admission
+synchronization: a central ingress wake was treated as continuation-outbox
+admission. The fixture now waits under its unchanged five-second bound for
+`queuedData == 1` and no collection error before shutdown. Its original native
+release refusal, retry success, exact retained bytes, claim replay and disposed
+receipt assertions remain unchanged. Production runtime code is unchanged.

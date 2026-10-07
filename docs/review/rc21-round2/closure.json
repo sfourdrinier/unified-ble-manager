@@ -2014,6 +2014,14 @@
       "regression": "__tests__/public-scan-query.test.js: scan evidence exhaustion preserves its normalized cause on the public terminal",
       "verification": "108 scan tests, typecheck and docs pass; no native runtime input changes",
       "receipt": "final-batch-evidence/post-candidate-scan-terminal.log"
+    },
+    "tauri_shutdown_test_admission": {
+      "failed_run": 37703069508,
+      "failed_job": 113071341992,
+      "implementation": "native/tauri/src/dispatcher_packet_b_tests.rs",
+      "correction": "Wait for authoritative continuation queuedData == 1 before shutdown instead of a native ingress wake. Keep unchanged five-second bound and all existing cleanup retry/exact bytes/replay/disposal assertions. No production runtime changes.",
+      "tests": "All 171 Tauri library tests pass locally; Windows current-head CI remains required.",
+      "receipt": "final-batch-evidence/tauri-shutdown-final-tests.log"
     }
   },
   "previous_review_dispositions": [
