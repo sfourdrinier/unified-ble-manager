@@ -34,7 +34,36 @@ it, and a rule that stops being true is removed rather than left standing.
 Documentation that lags behind the code is a defect of the same kind as a
 swallowed failure: it reports something that is not so.
 
-Extreme DRY: write tests first; finish all fixes and docs, freeze the batch, then verify once—never per fix.
+**Extreme DRY and continuous verification.** Prefer shared implementation and
+one authoritative contract. Write regressions before fixes and run focused
+checks throughout implementation; never defer all testing until the end.
+Complete implementation, tests and documentation before qualifying a frozen
+commit for release; see `RELEASE.md`.
+
+**Fix root causes, not individual findings.** Trace each defect to the ownership,
+cancellation, ordering, cleanup or recovery invariant it violates. Correct the
+design and investigate every other path susceptible to that cause.
+
+**Enforce cross-platform consistency.** Review the shared core, native
+implementation and applicable NAPI, React Native, Electron, Tauri and Web
+routes. Supported semantics must agree; differences require genuine,
+documented OS limitations reported truthfully at runtime.
+
+**Test invariants across hosts.** Exercise equivalent success, failure,
+cancellation, concurrency, stale callback, reconnect and cleanup scenarios
+through applicable real public entrypoints and production boundaries. A
+single mock cannot establish cross-platform correctness; retain each result's
+actual evidence level as described in `RELEASE.md`.
+
+**Prove completeness.** Document and verify the root cause, all affected paths,
+regressions and remaining limitations before claiming closure. Implemented
+code is not proven behavior. Supported capabilities must contain no unresolved
+TODOs, placeholders or deferred implementations.
+
+**Freeze before release qualification.** After implementation, tests and docs
+are complete, qualify one exact commit with clean cross-platform CI and
+independent review. A code change invalidates that freeze and requires
+appropriate requalification; see `RELEASE.md`.
 
 Keep required release gates, but make verification change-scoped: metadata,
 documentation and version-only edits do not require physical-device reruns.
@@ -195,6 +224,11 @@ backend's evidence label.
 Compilation, deterministic tests, ABI loading and mocks prove only those
 levels. **Never describe deterministic, mock or compile evidence as
 physical-radio proof.**
+
+Distinguish source inspection, compilation, mocks, native synthetic runtime
+integration, actual-radio qualification and production deployment evidence.
+A result at one level does not establish another; retain the exact source,
+artifact, host, scenario and limitations in its receipts. See `RELEASE.md`.
 
 ## Generated artifacts
 
