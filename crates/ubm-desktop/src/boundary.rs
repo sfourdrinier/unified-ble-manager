@@ -38,6 +38,8 @@ pub enum FaultOp {
     EffectiveMtu,
     WriteReadiness,
     ConnectionParameters,
+    ConnectionPhy,
+    TerminalCleanup,
     RequestPriority,
     /// Adapter power-state read (`adapter_state()` fails or holds).
     AdapterState,
@@ -423,6 +425,29 @@ pub struct ObservedConnectionParameters {
     pub supervision_timeout_us: u32,
 }
 
+/// A measured direction of the current LE link, never a requested preference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BlePhy {
+    Le1M,
+    Le2M,
+    LeCoded,
+}
+impl BlePhy {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Le1M => "le-1m",
+            Self::Le2M => "le-2m",
+            Self::LeCoded => "le-coded",
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ObservedConnectionPhy {
+    pub tx_phy: BlePhy,
+    pub rx_phy: BlePhy,
+}
+
 /// The largest single write the OS accepts on one link, per write mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WriteLimits {
@@ -605,6 +630,10 @@ pub struct PeerSnapshot {
 /// does not report it; `Some(vec![])` is a carried field with no entries.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AdvertisementExtras {
+    /// Platform capture time in its monotonic epoch, distinct from owner receipt time.
+    pub capture_timestamp_ms: Option<u64>,
+    /// OS-cached friendly name: device state, never this packet's advertised name.
+    pub cached_name: Option<String>,
     /// Address type belonging to this observation's native identity.
     pub address_type: Option<AddressType>,
     /// Solicited service UUIDs (canonical strings).
@@ -959,6 +988,15 @@ pub enum RadioEvent {
     /// (vendored btleplug patch 10): `lost` notifications of the peer were
     /// missed, any of which may have been this instance's. Accounted on the
     /// subscription by its overflow policy.
+    NotificationSourceFailed {
+        peer_id: String,
+        service_uuid: String,
+        service_occurrence: u64,
+        characteristic_uuid: String,
+        characteristic_occurrence: u64,
+        epoch: u64,
+        error: DesktopError,
+    },
     NotificationsLost {
         peer_id: String,
         service_uuid: String,
@@ -1411,6 +1449,26 @@ pub trait RadioBoundary: Send + Sync + 'static {
         }
     }
 
+    fn connection_phy<'a>(
+        &'a self,
+        _peer_id: &'a str,
+    ) -> impl Future<Output = Result<ObservedConnectionPhy, DesktopError>> + Send + 'a {
+        async {
+            Err(unsupported(
+                "connection.phy",
+                "this radio reports no connection PHY",
+            ))
+        }
+    }
+    fn connection_phy_capability_limitation(&self) -> Result<Option<&'static str>, DesktopError> {
+        Ok(None)
+    }
+    fn release_terminal_resources<'a>(
+        &'a self,
+        _peer_id: &'a str,
+    ) -> impl Future<Output = Result<(), DesktopError>> + Send + 'a {
+        async { Ok(()) }
+    }
     fn priority_capability_limitation(&self) -> Result<Option<&'static str>, DesktopError> {
         Ok(None)
     }
@@ -1769,8 +1827,10 @@ struct FakeInner {
     write_readiness: HashMap<String, bool>,
     /// Scripted per-peer connection parameters (unset: unsupported).
     connection_parameters: HashMap<String, ObservedConnectionParameters>,
+    connection_phy: HashMap<String, ObservedConnectionPhy>,
     priority_requests: Vec<(String, ConnectionPriority)>,
     connection_parameters_capability: Result<Option<&'static str>, DesktopError>,
+    connection_phy_capability: Result<Option<&'static str>, DesktopError>,
     priority_capability: Result<Option<&'static str>, DesktopError>,
 }
 
@@ -1938,9 +1998,11 @@ impl FakeRadio {
                 access: HashMap::new(),
                 write_readiness: HashMap::new(),
                 connection_parameters: HashMap::new(),
+                connection_phy: HashMap::new(),
                 priority_requests: Vec::new(),
                 priority_capability: Ok(None),
                 connection_parameters_capability: Ok(None),
+                connection_phy_capability: Ok(None),
             }),
             notify: Arc::new(Notify::new()),
             calls_changed: tokio::sync::watch::channel(()).0,
@@ -2252,6 +2314,22 @@ impl FakeRadio {
             .insert(peer_id.to_owned(), address_type);
     }
 
+    pub fn set_connection_phy_capability_limitation(
+        &self,
+        result: Result<Option<&'static str>, DesktopError>,
+    ) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .connection_phy_capability = result;
+    }
+    pub fn set_connection_phy(&self, peer_id: &str, phy: ObservedConnectionPhy) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .connection_phy
+            .insert(peer_id.to_owned(), phy);
+    }
     /// Script the parameters `connection_parameters` reports.
     pub fn set_connection_parameters(
         &self,
@@ -3414,6 +3492,52 @@ impl RadioBoundary for FakeRadio {
             .copied())
     }
 
+    fn connection_phy_capability_limitation(&self) -> Result<Option<&'static str>, DesktopError> {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .connection_phy_capability
+            .clone()
+    }
+    async fn release_terminal_resources(&self, _peer: &str) -> Result<(), DesktopError> {
+        self.record("release_terminal_resources");
+        self.gate(FaultOp::TerminalCleanup).await;
+        if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::TerminalCleanup)
+        {
+            return Err(scripted(
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Cleanup,
+                    "connection.retired-native-cleanup",
+                )
+                .with_detail(detail),
+                platform,
+            ));
+        }
+        Ok(())
+    }
+    async fn connection_phy(&self, peer_id: &str) -> Result<ObservedConnectionPhy, DesktopError> {
+        self.record("connection_phy");
+        self.gate(FaultOp::ConnectionPhy).await;
+        if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::ConnectionPhy) {
+            return Err(scripted(
+                DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Platform,
+                    "connection.phy",
+                )
+                .with_detail(detail),
+                platform,
+            ));
+        }
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .connection_phy
+            .get(peer_id)
+            .copied()
+            .ok_or_else(|| unsupported("connection.phy", "no scripted PHY observation"))
+    }
     async fn connection_parameters(
         &self,
         peer_id: &str,

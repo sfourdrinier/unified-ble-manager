@@ -1,5 +1,25 @@
 # UBM patches to btleplug 0.12.0
 
+## Scoped native notification failures and observed WinRT PHY
+
+`ValueNotification.source_failure` retains the native structured callback error
+with the exact service/characteristic instance. CoreBluetooth reports failed
+value callbacks without a pending read owner; WinRT reports getter and buffer
+copy failures. The desktop relay preserves accepted FIFO values and preceding
+loss before delivering that original failure once, followed by closed. Other
+attributes remain live, and failed native unsubscribe retains its cleanup owner.
+
+WinRT `GetConnectionPhy` reports transmit and receive flags separately. The
+runtime checks API presence (Windows 11 build 22000 floor); all-false flags are
+lost-link evidence, contradictory flags are explicit failures, and neither a
+preference nor a default substitutes for observation. Read support does not
+advertise PHY selection. Exact device owners also survive physical loss until
+their pending discovery/native close confirms release; failed retirement cannot
+be overwritten by a new connection.
+
+These changes require combined boundary/public-route verification; this source
+record does not establish physical-radio qualification.
+
 ## Observed service graph metadata
 
 Services carry nullable primary status and inclusion identities keyed by UUID
@@ -1329,7 +1349,6 @@ fields under the WinRT platform detail; the shared public classifier reports
 `connection.lost`. Zero latency alone is not a loss. The exact portable getter
 mapper and callback mapper have joined classifier regressions; verification of
 this source batch is pending, and no Windows physical receipt is claimed.
-
 
 ### rc.21 live Windows discovery retirement (unverified follow-up)
 

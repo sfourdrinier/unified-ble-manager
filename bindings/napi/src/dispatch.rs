@@ -19,7 +19,7 @@
 //! beacons), not test probes: on the production radio they reject loudly
 //! with `capability.unsupported`, never silently.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex as StdMutex;
 
@@ -390,6 +390,15 @@ impl RadioBoundary for DispatchRadio {
         match self {
             Self::Radio(radio) => radio.tears_down_on_adapter_loss(),
             Self::Synthetic(radio) => radio.tears_down_on_adapter_loss(),
+        }
+    }
+
+    fn connection_phy_capability_limitation(
+        &self,
+    ) -> std::result::Result<Option<&'static str>, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.connection_phy_capability_limitation(),
+            Self::Synthetic(radio) => radio.connection_phy_capability_limitation(),
         }
     }
 
@@ -804,6 +813,26 @@ impl RadioBoundary for DispatchRadio {
         match self {
             Self::Radio(radio) => radio.read_rssi(peer_id).await,
             Self::Synthetic(radio) => radio.read_rssi(peer_id).await,
+        }
+    }
+
+    async fn release_terminal_resources(
+        &self,
+        peer_id: &str,
+    ) -> std::result::Result<(), DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.release_terminal_resources(peer_id).await,
+            Self::Synthetic(radio) => radio.release_terminal_resources(peer_id).await,
+        }
+    }
+
+    async fn connection_phy(
+        &self,
+        peer_id: &str,
+    ) -> std::result::Result<ubm_desktop::ObservedConnectionPhy, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.connection_phy(peer_id).await,
+            Self::Synthetic(radio) => radio.connection_phy(peer_id).await,
         }
     }
 
@@ -2355,6 +2384,14 @@ fn pair_outcome_info(outcome: PairOutcome) -> PairOutcomeInfo {
     }
 }
 
+#[napi(object)]
+pub struct ConnectionPhyInfo {
+    #[napi(js_name = "txPhy")]
+    pub tx_phy: String,
+    #[napi(js_name = "rxPhy")]
+    pub rx_phy: String,
+}
+
 /// Observed connection parameters. Interval and supervision timeout are
 /// microseconds.
 #[napi(object)]
@@ -2673,6 +2710,8 @@ fn staged_snapshot(
         service_data,
         tx_power_level: tx_power,
         extras: AdvertisementExtras {
+            capture_timestamp_ms: None,
+            cached_name: None,
             address_type: input
                 .address_type
                 .as_ref()
@@ -2816,6 +2855,8 @@ pub struct StageNotificationInput {
     pub characteristic_occurrence: Option<u32>,
     pub epoch: Option<u32>,
     pub value: Buffer,
+    #[napi(js_name = "sourceFailure")]
+    pub source_failure: Option<StagePlatformDetail>,
 }
 
 /// One characteristic instance of a synthetic peer. An omitted `epoch` stages
@@ -2987,6 +3028,27 @@ struct TicketRegistration {
     admission: Option<ubm_desktop::GattAdmission>,
 }
 
+/// Drain obsolete value history to a bounded live boundary, retaining exact
+/// peer/generation faults. Keep the receiver itself so source closure survives.
+fn retain_parameter_failures_at_fence(
+    receiver: &mut broadcast::Receiver<ConnectionParametersEvent>,
+) -> std::result::Result<VecDeque<ConnectionParametersEvent>, DesktopError> {
+    let mut failures = VecDeque::new();
+    for _ in 0..=4096 {
+        match receiver.try_recv() {
+            Ok(event) if event.error.is_some() => failures.push_back(event),
+            Ok(_) | Err(TryRecvError::Lagged(_)) => {}
+            Err(TryRecvError::Empty | TryRecvError::Closed) => return Ok(failures),
+        }
+    }
+    Err(DesktopError::new(
+        BleErrorCode::StreamQuota,
+        BleErrorDomain::Stream,
+        "dispatch.parameter-reconciliation-fence",
+    )
+    .with_detail("parameter history could not establish a bounded source fence"))
+}
+
 #[napi]
 pub struct UbmCentral {
     central: DesktopCentral<DispatchRadio>,
@@ -2996,6 +3058,7 @@ pub struct UbmCentral {
     security: AsyncMutex<broadcast::Receiver<SecurityEvent>>,
     write_readiness: AsyncMutex<broadcast::Receiver<WriteReadinessEvent>>,
     connection_parameters: AsyncMutex<broadcast::Receiver<ConnectionParametersEvent>>,
+    retained_parameter_failures: AsyncMutex<VecDeque<ConnectionParametersEvent>>,
     scan_terminals: AsyncMutex<broadcast::Receiver<ScanTerminalEvent>>,
     adapter_resets: AsyncMutex<broadcast::Receiver<AdapterResetEvent>>,
     tickets: StdMutex<HashMap<String, TicketRegistration>>,
@@ -3083,6 +3146,7 @@ impl UbmCentral {
             security,
             write_readiness,
             connection_parameters,
+            retained_parameter_failures: AsyncMutex::new(VecDeque::new()),
             scan_terminals,
             adapter_resets,
             tickets: StdMutex::new(HashMap::new()),
@@ -3921,7 +3985,7 @@ impl UbmCentral {
                 return Err(fail(
                     DesktopError::new(BleErrorCode::ArgumentInvalid, BleErrorDomain::Core, OP)
                         .with_detail("unknown connection priority"),
-                ))
+                ));
             }
         };
         let ctl = self
@@ -3931,6 +3995,27 @@ impl UbmCentral {
             .request_priority(&options.peer_id, &options.lease, priority, ctl)
             .await
             .map_err(fail)
+    }
+
+    /// Current TX and RX PHY; a read does not request PHY selection.
+    #[napi(catch_unwind)]
+    pub async fn read_phy(&self, options: LeaseOptions) -> Result<ConnectionPhyInfo> {
+        let ctl = self
+            .control(
+                options.timeout_ms,
+                options.ticket.as_deref(),
+                "dispatch.read-phy",
+            )
+            .map_err(to_napi)?;
+        let measured = self
+            .central
+            .read_phy(&options.peer_id, &options.lease, ctl)
+            .await
+            .map_err(fail)?;
+        Ok(ConnectionPhyInfo {
+            tx_phy: measured.tx_phy.as_str().to_owned(),
+            rx_phy: measured.rx_phy.as_str().to_owned(),
+        })
     }
 
     /// Observed connection parameters for the lease's link. Interval and
@@ -3982,10 +4067,13 @@ impl UbmCentral {
             missed,
             error: None,
         };
-        match receiver.try_recv() {
+        let mut retained = self.retained_parameter_failures.lock().await;
+        let next = retained.pop_front().map_or_else(|| receiver.try_recv(), Ok);
+        match next {
             Ok(event) => {
                 if event.missed != 0 {
-                    *receiver = receiver.resubscribe();
+                    retained
+                        .extend(retain_parameter_failures_at_fence(&mut receiver).map_err(fail)?);
                 }
                 Ok(Some(ConnectionParametersEventInfo {
                     kind: if event.error.is_some() {
@@ -4018,7 +4106,7 @@ impl UbmCentral {
             Err(TryRecvError::Lagged(missed)) => {
                 // Reconciliation reads current state before polling again.
                 // Retained pre-gap records cannot follow that fresh snapshot.
-                *receiver = receiver.resubscribe();
+                retained.extend(retain_parameter_failures_at_fence(&mut receiver).map_err(fail)?);
                 Ok(Some(gap(
                     "lagged",
                     Some(number_wire(missed, OP).map_err(to_napi)?),
@@ -4238,7 +4326,7 @@ impl UbmCentral {
                             BleErrorCode::ArgumentInvalid,
                             BleErrorDomain::Scan,
                             "dispatch.scan-mode",
-                        )))
+                        )));
                     }
                 },
                 allow_extended_advertisements: options
@@ -4653,7 +4741,7 @@ impl UbmCentral {
                     BleErrorCode::ArgumentInvalid,
                     BleErrorDomain::Gatt,
                     "dispatch.acquire-gatt.kind",
-                )))
+                )));
             }
         };
         let selector = selector_of(&options.selector).map_err(to_napi)?;
@@ -5113,17 +5201,45 @@ impl UbmCentral {
             .map_err(to_napi)?;
         let epoch = match input.epoch {
             Some(staged) => u64::from(staged),
-            None => self.central.routing_epoch(&input.peer_id).await,
+            None => {
+                self.central
+                    .routing_epoch_for_instance(
+                        &input.peer_id,
+                        &input.service_uuid,
+                        u64::from(input.service_occurrence.unwrap_or(0)),
+                        &input.characteristic_uuid,
+                        u64::from(input.characteristic_occurrence.unwrap_or(0)),
+                    )
+                    .await
+            }
         };
-        radio.push_event(RadioEvent::Notification {
-            peer_id: input.peer_id,
-            service_uuid: input.service_uuid,
-            service_occurrence: u64::from(input.service_occurrence.unwrap_or(0)),
-            characteristic_uuid: input.characteristic_uuid,
-            characteristic_occurrence: u64::from(input.characteristic_occurrence.unwrap_or(0)),
-            epoch,
-            value: input.value.as_ref().to_vec(),
-        });
+        let event = if let Some(failure) = input.source_failure {
+            RadioEvent::NotificationSourceFailed {
+                peer_id: input.peer_id,
+                service_uuid: input.service_uuid,
+                service_occurrence: u64::from(input.service_occurrence.unwrap_or(0)),
+                characteristic_uuid: input.characteristic_uuid,
+                characteristic_occurrence: u64::from(input.characteristic_occurrence.unwrap_or(0)),
+                epoch,
+                error: DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    BleErrorDomain::Gatt,
+                    "gatt.notification",
+                )
+                .with_platform(staged_platform(failure)),
+            }
+        } else {
+            RadioEvent::Notification {
+                peer_id: input.peer_id,
+                service_uuid: input.service_uuid,
+                service_occurrence: u64::from(input.service_occurrence.unwrap_or(0)),
+                characteristic_uuid: input.characteristic_uuid,
+                characteristic_occurrence: u64::from(input.characteristic_occurrence.unwrap_or(0)),
+                epoch,
+                value: input.value.as_ref().to_vec(),
+            }
+        };
+        radio.push_event(event);
         Ok(())
     }
 
@@ -5143,7 +5259,17 @@ impl UbmCentral {
             .map_err(to_napi)?;
         let epoch = match input.epoch {
             Some(staged) => u64::from(staged),
-            None => self.central.routing_epoch(&input.peer_id).await,
+            None => {
+                self.central
+                    .routing_epoch_for_instance(
+                        &input.peer_id,
+                        &input.service_uuid,
+                        u64::from(input.service_occurrence.unwrap_or(0)),
+                        &input.characteristic_uuid,
+                        u64::from(input.characteristic_occurrence.unwrap_or(0)),
+                    )
+                    .await
+            }
         };
         radio.push_event(RadioEvent::NotificationsLost {
             peer_id: input.peer_id,
@@ -5749,6 +5875,39 @@ impl UbmCentral {
         Ok(())
     }
 
+    /// Stage a measured PHY on the explicit synthetic radio only.
+    #[napi(catch_unwind)]
+    pub async fn stage_connection_phy(
+        &self,
+        peer_id: String,
+        tx_phy: String,
+        rx_phy: String,
+    ) -> Result<()> {
+        let radio = self
+            .central
+            .boundary()
+            .synthetic("dispatch.stage-connection-phy")
+            .map_err(to_napi)?;
+        let parse = |value: &str| match value {
+            "le-1m" => Ok(ubm_desktop::BlePhy::Le1M),
+            "le-2m" => Ok(ubm_desktop::BlePhy::Le2M),
+            "le-coded" => Ok(ubm_desktop::BlePhy::LeCoded),
+            _ => Err(fail(DesktopError::new(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "dispatch.stage-connection-phy",
+            ))),
+        };
+        radio.set_connection_phy(
+            &peer_id,
+            ubm_desktop::ObservedConnectionPhy {
+                tx_phy: parse(&tx_phy)?,
+                rx_phy: parse(&rx_phy)?,
+            },
+        );
+        Ok(())
+    }
+
     /// Stage an observed parameter snapshot and optional later report on
     /// the explicit synthetic radio. Production centrals reject staging.
     #[napi(catch_unwind)]
@@ -5858,6 +6017,166 @@ impl UbmCentral {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn parameter_gap_preserves_exact_queued_source_failures_and_discards_values() {
+        let central = UbmCentral::open_synthetic("failure-fence".into(), None)
+            .await
+            .unwrap();
+        let (source, receiver) = broadcast::channel(4096);
+        *central.connection_parameters.lock().await = receiver;
+        for missed in [2, 0] {
+            source
+                .send(ConnectionParametersEvent {
+                    sequence: 1,
+                    peer_id: "peer".into(),
+                    connection_generation: Some("generation".into()),
+                    interval_us: 60_000,
+                    latency: 0,
+                    supervision_timeout_us: 2_000_000,
+                    error: None,
+                    missed,
+                })
+                .unwrap();
+        }
+        let original = DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Platform,
+            "original.callback",
+        )
+        .with_detail("exact cause");
+        source
+            .send(ConnectionParametersEvent {
+                sequence: 3,
+                peer_id: "other-peer".into(),
+                connection_generation: Some("other-generation".into()),
+                interval_us: 0,
+                latency: 0,
+                supervision_timeout_us: 0,
+                error: Some(original.clone()),
+                missed: 0,
+            })
+            .unwrap();
+        assert_eq!(
+            central
+                .take_connection_parameter_event()
+                .await
+                .unwrap()
+                .unwrap()
+                .kind,
+            "lagged"
+        );
+        let failure = central
+            .take_connection_parameter_event()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failure.kind, "source-failed");
+        assert_eq!(failure.peer_id.as_deref(), Some("other-peer"));
+        assert_eq!(
+            failure.connection_generation.as_deref(),
+            Some("other-generation")
+        );
+        assert_eq!(
+            failure.error,
+            Some(DispatchError::from(original).wire_message())
+        );
+        assert!(central
+            .take_connection_parameter_event()
+            .await
+            .unwrap()
+            .is_none());
+        drop(source);
+        assert_eq!(
+            central
+                .take_connection_parameter_event()
+                .await
+                .unwrap()
+                .unwrap()
+                .kind,
+            "closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn receiver_overrun_preserves_the_retained_source_failure() {
+        let central = UbmCentral::open_synthetic("failure-fence".into(), None)
+            .await
+            .unwrap();
+        let (source, receiver) = broadcast::channel(2);
+        *central.connection_parameters.lock().await = receiver;
+        for missed in [0, 0, 0, 0] {
+            source
+                .send(ConnectionParametersEvent {
+                    sequence: 1,
+                    peer_id: "peer".into(),
+                    connection_generation: Some("generation".into()),
+                    interval_us: 60_000,
+                    latency: 0,
+                    supervision_timeout_us: 2_000_000,
+                    error: None,
+                    missed,
+                })
+                .unwrap();
+        }
+        let original = DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Platform,
+            "original.callback",
+        )
+        .with_detail("exact cause");
+        source
+            .send(ConnectionParametersEvent {
+                sequence: 3,
+                peer_id: "other-peer".into(),
+                connection_generation: Some("other-generation".into()),
+                interval_us: 0,
+                latency: 0,
+                supervision_timeout_us: 0,
+                error: Some(original.clone()),
+                missed: 0,
+            })
+            .unwrap();
+        assert_eq!(
+            central
+                .take_connection_parameter_event()
+                .await
+                .unwrap()
+                .unwrap()
+                .kind,
+            "lagged"
+        );
+        let failure = central
+            .take_connection_parameter_event()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failure.kind, "source-failed");
+        assert_eq!(failure.peer_id.as_deref(), Some("other-peer"));
+        assert_eq!(
+            failure.connection_generation.as_deref(),
+            Some("other-generation")
+        );
+        assert_eq!(
+            failure.error,
+            Some(DispatchError::from(original).wire_message())
+        );
+        assert!(central
+            .take_connection_parameter_event()
+            .await
+            .unwrap()
+            .is_none());
+        drop(source);
+        assert_eq!(
+            central
+                .take_connection_parameter_event()
+                .await
+                .unwrap()
+                .unwrap()
+                .kind,
+            "closed"
+        );
+    }
+
     #[tokio::test]
     async fn control_receiver_gap_discards_retained_parameter_and_readiness_events() {
         let central = UbmCentral::open_synthetic("control-gap".into(), None)
@@ -5996,6 +6315,23 @@ mod tests {
             .unwrap()
             .is_none());
         central.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn phy_dispatch_uses_both_observed_directions_from_the_inner_radio() {
+        let radio = FakeRadio::new();
+        let measured = ubm_desktop::ObservedConnectionPhy {
+            tx_phy: ubm_desktop::BlePhy::Le2M,
+            rx_phy: ubm_desktop::BlePhy::LeCoded,
+        };
+        radio.set_connection_phy("peer", measured);
+        let dispatch = DispatchRadio::Synthetic(Box::new(radio));
+        assert_eq!(dispatch.connection_phy("peer").await.unwrap(), measured);
+        assert!(dispatch.connection_phy("missing").await.is_err());
+        assert_eq!(
+            dispatch.connection_phy_capability_limitation().unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
@@ -6635,6 +6971,8 @@ mod tests {
             service_data: Vec::new(),
             tx_power_level: Some(-4),
             extras: AdvertisementExtras {
+                capture_timestamp_ms: None,
+                cached_name: None,
                 address_type: None,
                 solicited_service_uuids: Some(vec![HRM_SERVICE.to_owned()]),
                 overflow_service_uuids: None,
@@ -7052,6 +7390,7 @@ mod tests {
                 characteristic_occurrence: Some(0),
                 epoch: None,
                 value: Buffer::from(vec![0x06, 0x40]),
+                source_failure: None,
             })
             .await
             .expect("stage notification");
@@ -7480,6 +7819,7 @@ mod tests {
                 characteristic_occurrence: Some(0),
                 epoch: None,
                 value: Buffer::from(vec![0, 72]),
+                source_failure: None,
             })
             .await
             .unwrap();

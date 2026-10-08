@@ -95,6 +95,7 @@ mod bluez;
 #[cfg(not(target_os = "linux"))]
 mod common;
 pub mod connection_parameters_source;
+pub mod connection_phy_source;
 #[cfg(any(target_os = "macos", target_os = "ios", test))]
 mod discovery_reservations;
 #[cfg(any(target_os = "windows", test))]
@@ -120,6 +121,8 @@ pub mod ubm {
 
     #[cfg(target_os = "windows")]
     pub use crate::winrtble::ble::device::connection_parameters_api_present;
+    #[cfg(target_os = "windows")]
+    pub use crate::winrtble::ble::device::connection_phy_api_present;
     #[cfg(target_os = "windows")]
     pub use crate::winrtble::ble::device::preferred_parameters_api_present;
     /// UBM patch (UBM_PATCHES.md #15): the legacy WinRT addon's HRESULT

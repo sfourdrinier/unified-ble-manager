@@ -28,7 +28,8 @@ function capabilities(
   readinessState = 'unsupported',
   deferredState,
   parametersState = 'unsupported',
-  priorityState = 'unsupported'
+  priorityState = 'unsupported',
+  phyState = 'unsupported'
 ) {
   const descriptors = new Map([
     ['connection:direct', descriptor('connection:direct', 'supported')],
@@ -46,7 +47,7 @@ function capabilities(
     ['connection:effective-mtu', descriptor('connection:effective-mtu', 'unsupported')],
     ['connection:request-mtu', descriptor('connection:request-mtu', 'unsupported')],
     ['connection:priority', descriptor('connection:priority', priorityState)],
-    ['connection:phy', descriptor('connection:phy', 'unsupported')],
+    ['connection:phy', descriptor('connection:phy', phyState)],
     ['connection:parameters', descriptor('connection:parameters', parametersState)],
     ['connection:subrate', descriptor('connection:subrate', 'unsupported')],
     ['gatt:write-without-response-readiness', descriptor('gatt:write-without-response-readiness', readinessState)]
@@ -115,8 +116,8 @@ function database(generation) {
   }
 }
 
-function setup(readinessState, deferredState, parametersState, priorityState) {
-  const capabilitySnapshot = capabilities(readinessState, deferredState, parametersState, priorityState)
+function setup(readinessState, deferredState, parametersState, priorityState, phyState) {
+  const capabilitySnapshot = capabilities(readinessState, deferredState, parametersState, priorityState, phyState)
   let discoveryCount = 0
   const calls = []
   const base = {
@@ -127,6 +128,17 @@ function setup(readinessState, deferredState, parametersState, priorityState) {
     ownerLeaseId: 'lease-1',
     connectionGeneration: 'connection-generation-1',
     events: emptyEvents(),
+    readPhy: async options => {
+      calls.push({ kind: 'readPhy', options })
+      return {
+        tx: 'le-2m',
+        rx: 'le-coded',
+        observedAtMonotonicMs: 42,
+        source: 'platform',
+        authority: 'desktop-native',
+        limitations: []
+      }
+    },
     requestPriority: async (priority, options) => {
       calls.push({ kind: 'requestPriority', priority, options })
       return true
@@ -197,7 +209,7 @@ function setup(readinessState, deferredState, parametersState, priorityState) {
     capabilities: capabilitySnapshot,
     adapter: { id: 'adapter-1', state: async () => ({}), waitUntilReady: async () => ({}) }
   })
-  return { manager, calls, ipc }
+  return { manager, calls, ipc, base }
 }
 
 test('IPC public priority uses the supported host route and preserves request truth', async () => {
@@ -648,4 +660,36 @@ describe('IPC public connection controls', () => {
       expect.objectContaining({ kind: 'rediscover', reason: 'service-changed' })
     ])
   })
+})
+
+test('IPC public read-only PHY observation preserves differing native TX/RX without enabling selection', async () => {
+  const { manager, calls } = setup(undefined, undefined, undefined, undefined, 'limited')
+  const connection = await manager.connect({ id: 'peer-1' })
+  await expect(connection.controls.readPhy()).resolves.toMatchObject({
+    state: 'measured',
+    tx: 'le-2m',
+    rx: 'le-coded',
+    connectionGeneration: 'connection-generation-1'
+  })
+  expect(calls.filter(call => call.kind === 'readPhy')).toHaveLength(1)
+  await expect(connection.controls.requestPhy({ tx: 'le-2m' })).rejects.toMatchObject({
+    code: 'capability.unsupported'
+  })
+})
+
+test.each(['unsupported', 'unavailable'])('IPC PHY runtime refusal stays %s before native dispatch', async state => {
+  const { manager, calls } = setup(undefined, undefined, undefined, undefined, state)
+  const connection = await manager.connect({ id: 'peer-1' })
+  await expect(connection.controls.readPhy()).rejects.toMatchObject({ code: `capability.${state}` })
+  expect(calls).toHaveLength(0)
+})
+
+test.each([
+  { tx: 'unknown', rx: 'le-1m' },
+  { tx: null, rx: 'le-1m' }
+])('IPC rejects malformed PHY measurements %p', async value => {
+  const { manager, base } = setup(undefined, undefined, undefined, undefined, 'limited')
+  base.readPhy = async () => value
+  const connection = await manager.connect({ id: 'peer-1' })
+  await expect(connection.controls.readPhy()).rejects.toMatchObject({ code: 'protocol.violation' })
 })

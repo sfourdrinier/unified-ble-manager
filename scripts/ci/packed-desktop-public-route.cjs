@@ -166,6 +166,15 @@ async function qualifyPublicRoute({ moduleKind = 'cjs' } = {}) {
     )
 
     if (host.platform === 'winrt') {
+      await stage.stageConnectionPhy(PEER, 'le-2m', 'le-coded')
+      const phy = await bounded(connection.controls.readPhy(), 'native PHY observation')
+      assert.equal(phy.state, 'measured')
+      assert.equal(phy.tx, 'le-2m')
+      assert.equal(phy.rx, 'le-coded')
+      assert.ok(calls.includes('readPhy'), 'PHY observation must reach real NAPI forwarding')
+      await assert.rejects(connection.controls.requestPhy({ tx: 'le-1m' }), {
+        code: 'capability.unsupported'
+      })
       await stage.stageConnectionParameters(PEER, 30000, 2, 4000000, false)
       assert.equal((await connection.controls.parameters()).intervalMs, 30)
       parameters = connection.controls.parameterEvents()[Symbol.asyncIterator]()

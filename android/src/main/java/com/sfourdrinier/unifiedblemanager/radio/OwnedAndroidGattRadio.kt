@@ -502,7 +502,9 @@ internal data class OwnedAndroidProtocolAdvertisement(
   val solicitedServiceUuids: List<String>?,
   val serviceData: List<OwnedAndroidProtocolServiceData>?,
   val manufacturerData: List<OwnedAndroidProtocolManufacturerData>?,
-  val rawRecord: ByteArray?
+  val rawRecord: ByteArray?,
+  val cachedName: String?,
+  val captureTimestampMs: Long?
 )
 
 /**
@@ -945,7 +947,7 @@ class OwnedAndroidGattRadio private constructor(
         val device = result.device ?: return
         val id = device.address
         if (!allowDuplicates && !scanSeenDeviceIds.add(id.uppercase())) return
-        val name = result.scanRecord?.deviceName ?: device.name
+        val name = result.scanRecord?.deviceName
         val advertisement = protocolAdvertisement(result, id, name)
         onScanResult?.invoke(
           advertisement.deviceId,
@@ -1019,7 +1021,11 @@ class OwnedAndroidGattRadio private constructor(
         ?.sortedBy { entry -> entry.serviceUuid }
         ?.takeIf { it.isNotEmpty() },
       manufacturerData = manufacturerDataFrom(scanRecord),
-      rawRecord = scanRecord?.bytes?.copyOf()
+      rawRecord = scanRecord?.bytes?.copyOf(),
+      cachedName = if (scanSdkInt < Build.VERSION_CODES.S ||
+        context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+      ) result.device?.name else null,
+      captureTimestampMs = result.timestampNanos.takeIf { it >= 0 }?.div(1_000_000L)
     )
   }
 

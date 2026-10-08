@@ -2447,6 +2447,14 @@ impl MobileSession {
         ctl: &OpControl,
     ) -> Result<crate::radio::SecurityState, DesktopError> {
         let peer = peer_id.to_owned();
+        let peer_key = Some(peer.clone());
+        let opening_failures = {
+            let failures = lock(&self.host.security_failures);
+            (
+                failures.get(&peer_key).map(|(revision, _)| *revision),
+                failures.get(&None).map(|(revision, _)| *revision),
+            )
+        };
         match bounded(
             ctl,
             "security.state",
@@ -2457,6 +2465,18 @@ impl MobileSession {
         .await?
         {
             RadioCompletion::Security(state) => {
+                let mut failures = lock(&self.host.security_failures);
+                for (key, opening_revision) in
+                    [(&peer_key, opening_failures.0), (&None, opening_failures.1)]
+                {
+                    if let Some((revision, error)) = failures.get(key)
+                        && Some(*revision) != opening_revision
+                    {
+                        return Err(error.clone());
+                    }
+                }
+                failures.remove(&peer_key);
+                failures.remove(&None);
                 lock(&self.host.security).insert(peer_id.to_owned(), state.clone());
                 Ok(state)
             }
@@ -2973,7 +2993,7 @@ impl MobileSession {
         };
         let security_failures: Vec<Value> = lock(&host.security_failures)
             .iter()
-            .map(|(peer, error)| {
+            .map(|(peer, (_, error))| {
                 object(vec![
                     ("peerId", opt_text(peer.as_deref())),
                     ("error", Value::Object(wire::error_object(error))),

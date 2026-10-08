@@ -1588,7 +1588,20 @@ async function observePhyTruth<
     }
   }
   const readMeasured =
-    read.errorCode === null && read.value !== null && isBlePhy(read.value.txPhy) && isBlePhy(read.value.rxPhy)
+    read.errorCode === null &&
+    read.value !== null &&
+    isBlePhy(read.value.txPhy) &&
+    isBlePhy(read.value.rxPhy) &&
+    Number.isFinite(read.value.observedAtMonotonicMs) &&
+    read.value.observedAtMonotonicMs >= 0 &&
+    read.value.terminal.outcome === 'succeeded'
+  const registration = fixture.backend.features.registrations.find(
+    candidate => candidate.id === BUILT_IN_FEATURE_IDS.connectionPhy
+  )
+  const observationOnly =
+    state === 'limited' &&
+    registration?.limitations.some(limitation => limitation.code === 'winrt-phy-observation-only') === true
+  const requestExplicitlyUnsupported = observationOnly && request.errorCode === 'capability.unsupported'
   const requestState = request.value === null ? null : request.value.accepted ? 'accepted' : 'rejected'
   const requestObservationPresent = request.value !== null && request.value.observation !== null
   const requestOutcomeIsCoherent =
@@ -1602,13 +1615,16 @@ async function observePhyTruth<
   return {
     holds:
       readMeasured &&
-      requestOutcomeIsCoherent &&
+      (requestOutcomeIsCoherent || requestExplicitlyUnsupported) &&
       readGenerationBound &&
       (!requestObservationPresent || requestObservationGenerationBound),
     generationBound: connection.connectionGeneration.length > 0,
     detail: {
       invoked: read.invoked && request.invoked,
       readMeasured,
+      txPhy: read.value?.txPhy ?? null,
+      rxPhy: read.value?.rxPhy ?? null,
+      requestExplicitlyUnsupported,
       readGenerationBound,
       requestOutcomeIsCoherent,
       requestObservationPresent,

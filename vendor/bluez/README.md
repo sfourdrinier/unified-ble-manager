@@ -303,3 +303,11 @@ derivative daemon and its exact private API are an explicit deployment
 requirement for this discovery route. Stock 5.85/5.87 must not be described as
 exposing this extension. Compilation and private-bus tests cannot promote
 CoreBluetooth, WinRT, BlueZ or mobile physical evidence labels.
+
+Classic (`BDADDR_BREDR`) Pair requests do not admit, commit or roll back LE
+interests. Pair selects its actual bearer before LE admission; only an accepted
+LE Pair protects the LE attachment while pending and through its committed
+lifetime. The source-derived bearer controls exercise accepted, completed,
+refused and sender-death Classic requests alongside LE release and LE positive
+controls. These controlled daemon-function tests are separate from deployment
+and physical dual-bearer qualification of the exact regenerated patch.

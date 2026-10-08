@@ -451,6 +451,10 @@ export interface DesktopRustCoreCentral {
       readonly priority: 'balanced' | 'high-throughput' | 'low-power'
     } & DesktopRustCoreControl
   ): Promise<boolean>
+  readPhy(options: { readonly peerId: string; readonly lease: string } & DesktopRustCoreControl): Promise<{
+    readonly txPhy: 'le-1m' | 'le-2m' | 'le-coded'
+    readonly rxPhy: 'le-1m' | 'le-2m' | 'le-coded'
+  }>
   connectionParameters(
     options: {
       readonly peerId: string

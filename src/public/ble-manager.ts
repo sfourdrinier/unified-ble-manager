@@ -1,6 +1,6 @@
 // src/public/ble-manager.ts — non-generic application façade (PR1 skeleton)
 
-import type { AdvertisementObservation } from '../backend-contract/advertisement'
+import type { AdvertisementField, AdvertisementObservation } from '../backend-contract/advertisement'
 import { decodeWinRtScanPlatformOptions } from '../backend-contract/advertisement'
 import { assertConnectionParameterValues } from '../backend-contract/connection-parameter-validation'
 import type { ScanOptions as InternalScanOptions } from '../backend-contract/advertisement'
@@ -370,9 +370,21 @@ export interface BleConnection {
 // Public scan session — bounded stream, no generic.
 // Union embraces both native AdvertisementObservation and Tauri IpcAdvertisement
 // until PR4 scan semantics unify; covariance lets each backend stream satisfy the union without casts.
+/** Source clock provenance with structural public values, independent of backend identity brands. */
+export interface PublicSourceTimestamp {
+  readonly monotonicMs: number
+  readonly origin: 'platform' | 'backend'
+  /** Comparable only within this clock epoch. */
+  readonly clockScope?: string
+}
+
 export interface PublicScanObservation extends NormalizedScanObservation {
   readonly peer: BlePeer
   readonly observedAtMonotonicMs: number | null
+  /** Source clock remains platform/backend-scoped; never compare directly with JS receipt time. */
+  readonly sourceTimestamp?: AdvertisementField<PublicSourceTimestamp>
+  /** Opt-in owned combined platform scan record, not separately captured advertising/scan-response PDUs. */
+  readonly rawAdvertisement?: AdvertisementField<Readonly<Uint8Array>>
 }
 
 export type DiscoveryEvent =
@@ -743,7 +755,17 @@ class PublicScanObservationBroadcast {
   emit(observation: PublicScanObservation, byteLength: number): boolean {
     let terminated = false
     for (const subscriber of [...this.subscribers]) {
-      if (subscriber.emit(observation, byteLength).terminated) {
+      const owned =
+        observation.rawAdvertisement?.state === 'present'
+          ? Object.freeze({
+              ...observation,
+              rawAdvertisement: Object.freeze({
+                ...observation.rawAdvertisement,
+                value: new Uint8Array(observation.rawAdvertisement.value)
+              })
+            })
+          : observation
+      if (subscriber.emit(owned, byteLength).terminated) {
         terminated = true
         this.subscribers.delete(subscriber)
       }
@@ -799,6 +821,7 @@ class PublicScanSessionController<Attachment extends string> {
     private readonly now: () => number,
     private readonly scheduleDeadline: InternalScanScheduler,
     private readonly reportLostAfterMs: number | undefined,
+    private readonly includeRawAdvertisement: boolean,
     private readonly requestStop: (reason: PublicScanEventTerminalReason) => void,
     private readonly onDeliveryEnded: (reason: StreamTerminalNotice['reason']) => void
   ) {
@@ -883,7 +906,7 @@ class PublicScanSessionController<Attachment extends string> {
   private accept(raw: AdvertisementObservation<Attachment> | IpcAdvertisement): void {
     const matched = this.matchSplitAdvertisement(raw)
     if (matched === null) return
-    const observation = projectPublicScanObservation(matched)
+    const observation = projectPublicScanObservation(matched, this.includeRawAdvertisement)
 
     this.observePresence(observation)
     if (this.duplicates === 'coalesced') {
@@ -1950,9 +1973,6 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         )
       }
       const reportLostAfterMs = options.observation?.reportLostAfterMs
-      if (options.observation?.includeRawAdvertisement === true) {
-        throw contractError('capability.unsupported', 'scan', 'public-ble-manager.scan.raw-advertisement')
-      }
       if (options.platform !== undefined && !this.internal.supports('scan:platform-options')) {
         throw contractError('capability.unsupported', 'scan', 'public-ble-manager.scan.platform-options')
       }
@@ -2019,6 +2039,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         this.now,
         (deadlineAt, action) => scheduleInternalScanDeadline(this.internal, deadlineAt, action),
         reportLostAfterMs,
+        options.observation?.includeRawAdvertisement === true,
         reason => {
           stopScan(reason).catch(error => {
             // This automatic attempt has already reported its failure. A
@@ -2898,7 +2919,11 @@ function publicObservationFingerprint(observation: PublicScanObservation): strin
     serviceUuids: observation.serviceUuids,
     manufacturerData:
       observation.manufacturerData?.map(entry => ({ companyId: entry.companyId, data: bytes(entry.data) })) ?? null,
-    serviceData: observation.serviceData?.map(entry => ({ service: entry.service, data: bytes(entry.data) })) ?? null
+    serviceData: observation.serviceData?.map(entry => ({ service: entry.service, data: bytes(entry.data) })) ?? null,
+    rawAdvertisement:
+      observation.rawAdvertisement?.state === 'present'
+        ? bytes(observation.rawAdvertisement.value)
+        : (observation.rawAdvertisement ?? null)
   })
 }
 
@@ -2906,6 +2931,7 @@ function estimatePublicScanObservationBytes(observation: PublicScanObservation):
   let bytes = 128
   for (const entry of observation.manufacturerData ?? []) bytes += entry.data.byteLength
   for (const entry of observation.serviceData ?? []) bytes += entry.data.byteLength
+  if (observation.rawAdvertisement?.state === 'present') bytes += observation.rawAdvertisement.value.byteLength
   return bytes
 }
 
@@ -3120,7 +3146,8 @@ export function peerFromPublicObservation(
 }
 
 function projectPublicScanObservation<Attachment extends string>(
-  observation: AdvertisementObservation<Attachment> | IpcAdvertisement
+  observation: AdvertisementObservation<Attachment> | IpcAdvertisement,
+  includeRawAdvertisement = false
 ): PublicScanObservation {
   const normalized = normalizeScanObservation(observation)
   const isCompact = 'peerId' in observation
@@ -3140,7 +3167,40 @@ function projectPublicScanObservation<Attachment extends string>(
     lastAdvertisement: normalized
   })
   const observedAtMonotonicMs = isCompact ? null : Number(observation.receivedAtMonotonicMs)
-  return Object.freeze({ ...normalized, peer, observedAtMonotonicMs })
+  const rawAdvertisement =
+    'rawRecord' in observation
+      ? observation.rawRecord.state === 'present'
+        ? Object.freeze({
+            state: 'present' as const,
+            provenance: observation.rawRecord.provenance,
+            value: new Uint8Array(observation.rawRecord.value)
+          })
+        : Object.freeze({ ...observation.rawRecord })
+      : Object.freeze({
+          state: 'absent' as const,
+          provenance: 'not-provided' as const,
+          reason: 'Combined raw scan records are not reported by this source'
+        })
+  return Object.freeze({
+    ...normalized,
+    peer,
+    observedAtMonotonicMs,
+    ...('sourceTimestamp' in observation
+      ? {
+          sourceTimestamp:
+            observation.sourceTimestamp.state === 'present'
+              ? Object.freeze({
+                  ...observation.sourceTimestamp,
+                  value: Object.freeze({
+                    ...observation.sourceTimestamp.value,
+                    monotonicMs: Number(observation.sourceTimestamp.value.monotonicMs)
+                  })
+                })
+              : Object.freeze({ ...observation.sourceTimestamp })
+        }
+      : {}),
+    ...(includeRawAdvertisement ? { rawAdvertisement } : {})
+  })
 }
 
 function assertAddressTargetingCapability(

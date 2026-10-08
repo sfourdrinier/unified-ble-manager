@@ -906,6 +906,8 @@ async fn advertisement_extras_reach_the_host_verbatim() {
         .await
         .expect("scan");
     let extras = ubm_desktop::AdvertisementExtras {
+        capture_timestamp_ms: None,
+        cached_name: None,
         address_type: None,
         solicited_service_uuids: Some(vec![HRM_SERVICE.to_owned()]),
         overflow_service_uuids: Some(Vec::new()),
@@ -1391,5 +1393,126 @@ async fn watch_probe_refuses_a_preexisting_failed_source_without_refusing_an_ord
             )
             .await
             .is_ok()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transient_parameter_callback_failure_recovers_through_a_fresh_watch_probe() {
+    let central = open().await;
+    connected_peer(&central, "peer-transient").await;
+    central.boundary().set_connection_parameters(
+        "peer-transient",
+        ubm_desktop::ObservedConnectionParameters {
+            interval_us: 90_000,
+            latency: 2,
+            supervision_timeout_us: 4_000_000,
+        },
+    );
+    let mut reports = central.connection_parameter_events();
+    central
+        .boundary()
+        .push_event(RadioEvent::ConnectionParameterSourceFailed {
+            peer_id: "peer-transient".into(),
+            error: ubm_desktop::DesktopError::new(
+                ubm_core::contracts::BleErrorCode::PlatformFailure,
+                ubm_core::contracts::BleErrorDomain::Platform,
+                "transient.callback",
+            ),
+        });
+    tokio::time::timeout(Duration::from_secs(2), reports.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        central
+            .connection_parameter_source_failure("peer-transient")
+            .await
+            .is_some()
+    );
+    let measured = central
+        .connection_parameters_watch_initial(
+            "peer-transient",
+            "lease-a",
+            OpControl::budget_ms(1000),
+        )
+        .await
+        .unwrap();
+    assert_eq!(measured.interval_us, 90_000);
+    assert!(
+        central
+            .connection_parameter_source_failure("peer-transient")
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn newer_identical_parameter_fault_wins_over_pending_watch_recovery() {
+    let central = open().await;
+    connected_peer(&central, "peer-revision").await;
+    central.boundary().set_connection_parameters(
+        "peer-revision",
+        ubm_desktop::ObservedConnectionParameters {
+            interval_us: 90_000,
+            latency: 2,
+            supervision_timeout_us: 4_000_000,
+        },
+    );
+    let mut reports = central.connection_parameter_events();
+    let failure = ubm_desktop::DesktopError::new(
+        ubm_core::contracts::BleErrorCode::PlatformFailure,
+        ubm_core::contracts::BleErrorDomain::Platform,
+        "identical.callback",
+    );
+    central
+        .boundary()
+        .push_event(RadioEvent::ConnectionParameterSourceFailed {
+            peer_id: "peer-revision".into(),
+            error: failure.clone(),
+        });
+    tokio::time::timeout(Duration::from_secs(2), reports.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    central.boundary().block_op(FaultOp::ConnectionParameters);
+    let probing = central.clone();
+    let watch = tokio::spawn(async move {
+        probing
+            .connection_parameters_watch_initial(
+                "peer-revision",
+                "lease-a",
+                OpControl::budget_ms(5000),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !central
+            .boundary()
+            .calls()
+            .iter()
+            .any(|call| call == "connection_parameters")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    central
+        .boundary()
+        .push_event(RadioEvent::ConnectionParameterSourceFailed {
+            peer_id: "peer-revision".into(),
+            error: failure.clone(),
+        });
+    tokio::time::timeout(Duration::from_secs(2), reports.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    central.boundary().unblock_op(FaultOp::ConnectionParameters);
+    assert_eq!(watch.await.unwrap().unwrap_err(), failure);
+    assert_eq!(
+        central
+            .connection_parameter_source_failure("peer-revision")
+            .await,
+        Some(failure)
     );
 }

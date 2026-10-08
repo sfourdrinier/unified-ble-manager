@@ -37,7 +37,9 @@ class OwnedRadioPort(
           connectable = advertisement.connectable,
           solicitedServiceUuids = advertisement.solicitedServiceUuids,
           appearance = advertisement.appearance,
-          rawRecord = advertisement.rawRecord?.copyOf()
+          rawRecord = advertisement.rawRecord?.copyOf(),
+          cachedName = advertisement.cachedName,
+          captureTimestampMs = advertisement.captureTimestampMs
         )
       )
     }

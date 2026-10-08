@@ -77,7 +77,7 @@ async fn connection_parameters_within_request(
     parent: &OpControl,
 ) -> Result<ubm_desktop::ObservedConnectionParameters, DispatchError> {
     let child = OpControl::new(parent.budget, OpTicket::new());
-    let read = authority.connection_parameters(peer_id, lease, child.clone());
+    let read = authority.connection_parameters_watch_initial(peer_id, lease, child.clone());
     finish_within_caller_control(parent, &child, read).await
 }
 
@@ -99,15 +99,69 @@ async fn finish_within_caller_control<T>(
     outcome.map_err(|error| DispatchError::from_core(&error))
 }
 
-// Re-subscribe at the current broadcast tail before the fresh read. Retained
-// pre-gap values cannot supersede that read; reports arriving during it remain
-// available to the opening drain under the original request budget.
-fn discard_opening_parameters_before_probe(
+/// Establish a bounded value-history fence without losing the exact owner's
+/// source failures. After the getter, collect newer reports instead: those
+/// supersede the getter and retain their event order.
+fn parameter_fence(
     receiver: &mut broadcast::Receiver<ubm_desktop::ConnectionParametersEvent>,
-    values: &mut VecDeque<ubm_desktop::ObservedConnectionParameters>,
-) {
-    *receiver = receiver.resubscribe();
-    values.clear();
+    peer: &str,
+    generation: &str,
+    keep_values: bool,
+) -> Result<VecDeque<ubm_desktop::ObservedConnectionParameters>, DispatchError> {
+    let mut values = VecDeque::new();
+    for _ in 0..=4096 {
+        match receiver.try_recv() {
+            Ok(event)
+                if event.peer_id == peer
+                    && event.connection_generation.as_deref() == Some(generation) =>
+            {
+                if let Some(error) = event.error {
+                    return Err(DispatchError::from_core(&error));
+                }
+                if keep_values && event.missed == 0 {
+                    values.push_back(ubm_desktop::ObservedConnectionParameters {
+                        interval_us: event.interval_us,
+                        latency: event.latency,
+                        supervision_timeout_us: event.supervision_timeout_us,
+                    });
+                }
+                if event.missed != 0 {
+                    if keep_values {
+                        return Err(DispatchError::new(
+                            BleErrorCode::StreamOverflow,
+                            "stream",
+                            "tauri.parameters.concurrent-gap",
+                        ));
+                    }
+                    values.clear();
+                }
+            }
+            Ok(_) => {}
+            Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                if keep_values {
+                    return Err(DispatchError::new(
+                        BleErrorCode::StreamOverflow,
+                        "stream",
+                        "tauri.parameters.concurrent-gap",
+                    ));
+                }
+                values.clear();
+            }
+            Err(broadcast::error::TryRecvError::Empty) => return Ok(values),
+            Err(broadcast::error::TryRecvError::Closed) => {
+                return Err(DispatchError::new(
+                    BleErrorCode::StreamClosed,
+                    "stream",
+                    "tauri.parameters.source",
+                ));
+            }
+        }
+    }
+    Err(DispatchError::new(
+        BleErrorCode::StreamQuota,
+        "stream",
+        "tauri.parameters.reconciliation-fence",
+    ))
 }
 
 impl BtleplugDispatcher {
@@ -162,12 +216,6 @@ impl BtleplugDispatcher {
         let authority = self.ensure_authority().await?;
         let mut receiver = authority.connection_parameter_events();
         let mut lifecycle = authority.lifecycle_events();
-        if let Some(error) = authority
-            .connection_parameter_source_failure(&connection.peer_id)
-            .await
-        {
-            return Err(DispatchError::from_core(&error));
-        }
         let mut measured = connection_parameters_within_request(
             authority.as_ref(),
             &connection.peer_id,
@@ -202,7 +250,13 @@ impl BtleplugDispatcher {
                         return Err(DispatchError::from_core(&error));
                     }
                     if event.missed != 0 {
-                        discard_opening_parameters_before_probe(&mut receiver, &mut opening_values);
+                        opening_values.clear();
+                        parameter_fence(
+                            &mut receiver,
+                            &connection.peer_id,
+                            &connection.core_generation,
+                            false,
+                        )?;
                         measured = connection_parameters_within_request(
                             authority.as_ref(),
                             &connection.peer_id,
@@ -220,7 +274,13 @@ impl BtleplugDispatcher {
                 }
                 Ok(_) => {}
                 Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                    discard_opening_parameters_before_probe(&mut receiver, &mut opening_values);
+                    opening_values.clear();
+                    parameter_fence(
+                        &mut receiver,
+                        &connection.peer_id,
+                        &connection.core_generation,
+                        false,
+                    )?;
                     measured = connection_parameters_within_request(
                         authority.as_ref(),
                         &connection.peer_id,
@@ -234,7 +294,7 @@ impl BtleplugDispatcher {
                         BleErrorCode::StreamClosed,
                         "stream",
                         "tauri.parameters.opening-source",
-                    ))
+                    ));
                 }
                 Err(broadcast::error::TryRecvError::Empty) => break,
             }
@@ -339,13 +399,36 @@ impl BtleplugDispatcher {
                                     break;
                                 }
                                 let measured = if event.missed != 0 {
-                                    match authority.connection_parameters(&peer_id, &native_lease, OpControl::unbounded()).await {
-                                        Ok(measured) => measured,
+                                    if let Err(error) = parameter_fence(&mut receiver, &peer_id, &connection_generation, false) {
+                                        let _ = dispatcher.terminal(&task_key, (&lease.0, &lease.1), &stream, "source-failed", Some(&error)).await;
+                                        break;
+                                    }
+                                    match authority.connection_parameters_watch_initial(&peer_id, &native_lease, OpControl::unbounded()).await {
+                                        Ok(measured) => {
+                                            match parameter_fence(&mut receiver, &peer_id, &connection_generation, true) {
+                                                Ok(values) => opening_values.extend(values),
+                                                Err(error) => {
+                                                    let _ = dispatcher.terminal(&task_key, (&lease.0, &lease.1), &stream, "source-failed", Some(&error)).await;
+                                                    break;
+                                                }
+                                            }
+                                            opening_values.pop_front().unwrap_or(measured)
+                                        },
                                         Err(error) => {
-                                            let failure = DispatchError::from_core(&error);
-                                            let _ = dispatcher.terminal(&task_key, (&lease.0, &lease.1), &stream,
-                                                "source-failed", Some(&failure)).await;
-                                            break;
+                                            let mut failure = DispatchError::from_core(&error);
+                                            if error.code() == BleErrorCode::PlatformFailure {
+                                                match parameter_fence(&mut receiver, &peer_id, &connection_generation, true) {
+                                                    Ok(values) => opening_values.extend(values),
+                                                    Err(newer) => failure = newer,
+                                                }
+                                            }
+                                            if let Some(newer) = opening_values.pop_front() {
+                                                newer
+                                            } else {
+                                                let _ = dispatcher.terminal(&task_key, (&lease.0, &lease.1), &stream,
+                                                    "source-failed", Some(&failure)).await;
+                                                break;
+                                            }
                                         }
                                     }
                                 } else {
@@ -574,6 +657,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn established_fence_preserves_retained_failure_and_post_probe_value_order() {
+        let (sender, mut receiver) = broadcast::channel(4);
+        let event = |sequence, interval_us, error| ubm_desktop::ConnectionParametersEvent {
+            sequence,
+            peer_id: "peer".into(),
+            connection_generation: Some("generation".into()),
+            interval_us,
+            latency: 0,
+            supervision_timeout_us: 4_000_000,
+            error,
+            missed: 0,
+        };
+        sender.send(event(1, 30_000, None)).unwrap();
+        sender.send(event(2, 60_000, None)).unwrap();
+        assert!(parameter_fence(&mut receiver, "peer", "generation", false)
+            .unwrap()
+            .is_empty());
+        sender.send(event(3, 90_000, None)).unwrap();
+        sender.send(event(4, 120_000, None)).unwrap();
+        let newer = parameter_fence(&mut receiver, "peer", "generation", true).unwrap();
+        assert_eq!(
+            newer
+                .iter()
+                .map(|value| value.interval_us)
+                .collect::<Vec<_>>(),
+            vec![90_000, 120_000]
+        );
+        sender
+            .send(event(
+                5,
+                0,
+                Some(ubm_desktop::DesktopError::new(
+                    BleErrorCode::PlatformFailure,
+                    ubm_core::contracts::BleErrorDomain::Platform,
+                    "original.callback",
+                )),
+            ))
+            .unwrap();
+        assert!(parameter_fence(&mut receiver, "peer", "generation", false).is_err());
+    }
+
+    #[test]
     fn opening_gap_discards_pre_probe_records_but_keeps_newer_events() {
         let (sender, mut receiver) = broadcast::channel(2);
         let event = |sequence| ubm_desktop::ConnectionParametersEvent {
@@ -598,7 +723,8 @@ mod tests {
             latency: 0,
             supervision_timeout_us: 4_000_000,
         }]);
-        discard_opening_parameters_before_probe(&mut receiver, &mut values);
+        values.clear();
+        parameter_fence(&mut receiver, "peer", "generation", false).unwrap();
         assert!(values.is_empty());
         assert!(matches!(
             receiver.try_recv(),

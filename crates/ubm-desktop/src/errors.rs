@@ -191,8 +191,10 @@ pub fn is_link_loss_answer(platform: &PlatformDetail) -> bool {
                 && matches!(platform.code.as_str(), "3" | "7")
         }
         "winrt" => {
-            platform.code == "connection-parameters-disconnected"
-                || (platform.code == "gatt-status" && text("gattStatus") == Some("unreachable"))
+            matches!(
+                platform.code.as_str(),
+                "connection-parameters-disconnected" | "connection-phy-disconnected"
+            ) || (platform.code == "gatt-status" && text("gattStatus") == Some("unreachable"))
         }
         "bluez-dbus" => {
             platform.code == "org.bluez.Error.NotConnected"
@@ -277,6 +279,7 @@ fn is_link_operation(operation: &str) -> bool {
         || operation.starts_with("discovery.")
         || operation == "connection.effective-mtu"
         || operation == "connection.rssi"
+        || operation == "connection.phy"
         || operation == "connection.parameters"
         || operation == "connection.request-priority"
         || operation == "peer.rssi"

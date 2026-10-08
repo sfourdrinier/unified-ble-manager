@@ -42,13 +42,13 @@ mod parameter_source;
 pub use boundary::bluez_bus_supported;
 pub use boundary::{
     ATT_DEFAULT_LE_MTU, ATT_MAX_ATTRIBUTE_VALUE, AdapterAuthorization, AdapterAvailability,
-    AdapterLossCause, AdapterPowerState, AddressType, AdmissionPolicy, AdvertisementExtras,
+    AdapterLossCause, AdapterPowerState, AddressType, AdmissionPolicy, AdvertisementExtras, BlePhy,
     BluezBus, BondState, CharacteristicAccess, CharacteristicRead, CharacteristicSnapshot,
     DeliveryMode, DescriptorKey, DescriptorSnapshot, DirectoryPeer, FakeRadio, FaultOp,
     HostDeployment, InstanceKey, ManufacturerData, ObservationSource, ObservedConnectionParameters,
-    ObservedDelivery, PairOutcome, PeerSnapshot, PropertyFlags, RadioBoundary, RadioCloseFailure,
-    RadioEvent, ReadProvenance, ScanFilterSpec, SecurityState, ServiceAccess, ServiceData,
-    ServiceSnapshot, UnpairOutcome, WriteLimits,
+    ObservedConnectionPhy, ObservedDelivery, PairOutcome, PeerSnapshot, PropertyFlags,
+    RadioBoundary, RadioCloseFailure, RadioEvent, ReadProvenance, ScanFilterSpec, SecurityState,
+    ServiceAccess, ServiceData, ServiceSnapshot, UnpairOutcome, WriteLimits,
 };
 #[cfg(feature = "btleplug")]
 pub use btleplug_backend::BtleplugRadio;

@@ -4,6 +4,26 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.0-rc.21] - 2026-10-05
 
+- Scope Electron admission rollback to the resources acquired by that operation,
+  retain refused cleanup for retry, and preserve accepted Windows priority
+  outcomes after the caller deadline. Electron and Tauri expose the instantiated
+  backend's priority capability.
+- Retain exact WinRT discovery owners after physical loss until native retirement
+  succeeds. Owned notification polling continues through shutdown; native
+  CoreBluetooth and WinRT callback failures drain accepted values and then report
+  their original structured failure on the affected subscription.
+- Fence readiness and parameter reconciliation against newer observations,
+  discard stale pre-gap values while retaining source failures, and allow fresh
+  security/parameter watches to recover from transient source faults.
+- Keep Classic pairing outside BlueZ LE ownership, parse native GATT handles after
+  their exact object prefix, and expose observed Windows TX/RX PHY independently
+  through Node, Bun, Electron and Tauri. PHY selection remains unsupported.
+- Preserve Android advertising names separately from cached friendly names and
+  carry native capture timestamps with their clock provenance. Raw advertisement
+  opt-in exposes owned captured bytes with stream byte accounting. Public
+  capture timestamps use structural values compatible across installed package
+  copies.
+
 - Treat Web Bluetooth included-service NotFoundError as an observed empty inclusion list while preserving other discovery failures.
 
 - Recover Android security receiver registration after confirmed absent failed admission, while retaining uncertain cleanup ownership.

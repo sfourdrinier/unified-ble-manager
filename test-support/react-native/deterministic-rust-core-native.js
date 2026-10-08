@@ -670,6 +670,7 @@ class DeterministicRustCoreNative {
           appearance: null,
           rawRecordB64: null,
           observedAtMs: 0,
+          sourceTimestampMs: null,
           ...overrides
         })
       }
@@ -1294,9 +1295,14 @@ class DeterministicRustCoreNative {
       case 'connection.request-phy':
         this.lease(session, args)
         return { accepted: true, observation: { tx: args.tx ?? 'le-1m', rx: args.rx ?? 'le-1m' } }
-      case 'security.state':
+      case 'security.state': {
         if (apple) throw new WireFault('capability.unsupported', 'capability', op)
-        return this.security(this.peripheral(args.peerId))
+        const state = this.security(this.peripheral(args.peerId))
+        this.securityFailures.delete(args.peerId)
+        this.securityFailures.delete(null)
+        this.securityReports.set(args.peerId, state)
+        return state
+      }
       case 'security.pair': {
         if (apple) throw new WireFault('capability.unsupported', 'capability', op)
         const peripheral = this.peripheral(args.peerId)

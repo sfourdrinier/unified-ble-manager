@@ -1620,8 +1620,6 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 
 const REMOTE_RENDERER_UNSUPPORTED_CAPABILITY_IDS = new Set<string>([
   BUILT_IN_FEATURE_IDS.connectionRequestMtu,
-  BUILT_IN_FEATURE_IDS.connectionPriority,
-  BUILT_IN_FEATURE_IDS.connectionPhy,
   BUILT_IN_FEATURE_IDS.connectionSubrate
 ])
 
@@ -1952,6 +1950,38 @@ export class IpcConnection {
     )
     if (payload.mtu === null) return null
     return requiredNumber(payload, 'mtu', 'ipc-manager.connection-effective-mtu')
+  }
+
+  async readPhy(options: IpcManagerOperationOptions = {}) {
+    this.assertAdmissionOpen()
+    const payload = await this.manager.route(
+      'connection.phy',
+      Object.freeze({ ...this.identityPayload(), deadline: operationDeadline(options) }),
+      null,
+      options.signal
+    )
+    const operation = 'ipc-manager.connection-phy'
+    if (
+      requiredString(payload, 'connectionId', operation) !== this.connectionId ||
+      requiredString(payload, 'connectionGeneration', operation) !== this.connectionGeneration
+    ) {
+      throw contractError('protocol.violation', 'connection', operation)
+    }
+    const tx = requiredPhy(payload.txPhy, operation)
+    const rx = requiredPhy(payload.rxPhy, operation)
+    const observedAtMonotonicMs = requiredNumber(payload, 'observedAtMonotonicMs', operation)
+    if (!Number.isFinite(observedAtMonotonicMs) || observedAtMonotonicMs < 0) {
+      throw contractError('protocol.violation', 'connection', operation)
+    }
+    this.assertAdmissionOpen()
+    return Object.freeze({
+      tx,
+      rx,
+      observedAtMonotonicMs,
+      source: 'platform' as const,
+      authority: 'desktop-native',
+      limitations: Object.freeze([])
+    })
   }
 
   async parameters(options: IpcManagerOperationOptions = {}): Promise<{
@@ -3642,6 +3672,11 @@ function requiredString(record: SerializableRecord, key: string, operation: stri
   const value = record[key]
   if (typeof value !== 'string' || value.length === 0) throw contractError('protocol.malformed', 'ipc', operation)
   return value
+}
+
+function requiredPhy(value: unknown, operation: string) {
+  if (value === 'le-1m' || value === 'le-2m' || value === 'le-coded') return value
+  throw contractError('protocol.violation', 'connection', operation)
 }
 
 function requiredNumber(record: SerializableRecord, key: string, operation: string): number {

@@ -88,6 +88,20 @@ pub type CoreFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, DesktopError>
 /// method is a direct delegation to the shared [`DesktopCentral`]; none of
 /// them takes a lock across the radio call.
 pub trait CoreAuthority: Send + Sync {
+    fn read_phy<'a>(
+        &'a self,
+        _peer_id: &'a str,
+        _lease: &'a str,
+        _ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::ObservedConnectionPhy> {
+        Box::pin(async {
+            Err(DesktopError::new(
+                ubm_core::contracts::BleErrorCode::CapabilityUnsupported,
+                ubm_core::contracts::BleErrorDomain::Capability,
+                "connection.phy",
+            ))
+        })
+    }
     fn directory_os(&self) -> ubm_desktop::DesktopOs;
     fn known_peers(&self, ctl: OpControl) -> CoreFuture<'_, Vec<ubm_desktop::DirectoryPeer>>;
     /// Reserve before an IPC worker starts. Scripted authorities may have
@@ -98,6 +112,14 @@ pub trait CoreAuthority: Send + Sync {
         ctl: OpControl,
     ) -> Result<OpControl, DesktopError> {
         Ok(ctl)
+    }
+    fn connection_parameters_watch_initial<'a>(
+        &'a self,
+        peer: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::ObservedConnectionParameters> {
+        self.connection_parameters(peer, lease, ctl)
     }
     fn connection_parameter_source_failure<'a>(
         &'a self,
@@ -636,6 +658,16 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
     ) -> Result<OpControl, DesktopError> {
         DesktopCentral::bind_gatt_admission(self, peer_id, ctl)
     }
+    fn connection_parameters_watch_initial<'a>(
+        &'a self,
+        peer: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::ObservedConnectionParameters> {
+        Box::pin(DesktopCentral::connection_parameters_watch_initial(
+            self, peer, lease, ctl,
+        ))
+    }
     fn connection_parameter_source_failure<'a>(
         &'a self,
         peer: &'a str,
@@ -810,6 +842,15 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
 
     fn connection_parameter_events(&self) -> broadcast::Receiver<ConnectionParametersEvent> {
         DesktopCentral::connection_parameter_events(self)
+    }
+
+    fn read_phy<'a>(
+        &'a self,
+        peer_id: &'a str,
+        lease: &'a str,
+        ctl: OpControl,
+    ) -> CoreFuture<'a, ubm_desktop::ObservedConnectionPhy> {
+        Box::pin(DesktopCentral::read_phy(self, peer_id, lease, ctl))
     }
 
     fn cancel<'a>(&'a self, ticket: &'a OpTicket) -> CoreFuture<'a, CancelAck> {

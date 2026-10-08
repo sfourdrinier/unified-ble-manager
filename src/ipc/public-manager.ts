@@ -26,6 +26,7 @@ import type {
   BleConnection,
   BleManager,
   BlePeer,
+  BlePhy,
   BleControlObservationMetadata,
   ConnectionParametersObservation,
   ConnectionPriority,
@@ -1007,6 +1008,10 @@ class UnsupportedIpcControlIterator<Value> implements AsyncIterator<Value> {
 
 function createIpcConnectionControls(
   connection: Pick<IpcConnection, 'connectionId' | 'readRssi' | 'effectiveMtu' | 'maximumWriteLength'> & {
+    readPhy?(options?: {
+      signal?: AbortSignal
+      deadline?: number | null
+    }): Promise<Pick<PhyObservation, 'tx' | 'rx' | 'observedAtMonotonicMs' | 'source' | 'authority' | 'limitations'>>
     requestPriority?(
       priority: ConnectionPriority,
       options?: { signal?: AbortSignal; deadline?: number | null }
@@ -1147,8 +1152,40 @@ function createIpcConnectionControls(
           requested: priority
         })
       }),
-    readPhy: (_options: OperationOptions = {}): Promise<PhyObservation> =>
-      unsupportedPromise('ipc-public-manager.controls.read-phy'),
+    readPhy: (options: OperationOptions = {}): Promise<PhyObservation> =>
+      runIpcControl(async () => {
+        const operation = 'ipc-public-manager.controls.read-phy'
+        const descriptor = requireIpcControlCapability(capabilities, BUILT_IN_FEATURE_IDS.connectionPhy, operation)
+        if (connection.readPhy === undefined) throw contractError('capability.unsupported', 'connection', operation)
+        const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
+        const measured = await connection.readPhy({
+          signal: normalized.signal ?? undefined,
+          deadline: normalized.deadline
+        })
+        const valid = (phy: unknown): phy is BlePhy => phy === 'le-1m' || phy === 'le-2m' || phy === 'le-coded'
+        if (
+          typeof measured !== 'object' ||
+          measured === null ||
+          !valid(measured.tx) ||
+          !valid(measured.rx) ||
+          !Number.isFinite(measured.observedAtMonotonicMs) ||
+          measured.observedAtMonotonicMs < 0 ||
+          typeof measured.authority !== 'string' ||
+          measured.authority.length === 0 ||
+          !Array.isArray(measured.limitations)
+        )
+          throw contractError('protocol.violation', 'connection', operation)
+        return Object.freeze({
+          connectionGeneration: generation,
+          observedAtMonotonicMs: measured.observedAtMonotonicMs,
+          source: measured.source,
+          authority: measured.authority,
+          limitations: Object.freeze([...descriptor.limitations, ...measured.limitations]),
+          state: 'measured' as const,
+          tx: measured.tx,
+          rx: measured.rx
+        })
+      }),
     requestPhy: (_preference: PhyPreference, _options: OperationOptions = {}): Promise<PhyUpdateResult> =>
       unsupportedPromise('ipc-public-manager.controls.request-phy'),
     parameters: (): Promise<ConnectionParametersObservation> =>

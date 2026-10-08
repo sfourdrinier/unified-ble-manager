@@ -79,6 +79,7 @@ fn note(service: &str, characteristic: &str, value: Vec<u8>) -> ValueNotificatio
         service_uuid: uuid(service),
         service_instance: 0,
         value,
+        source_failure: None,
         lost_before: 0,
     }
 }
@@ -595,6 +596,7 @@ async fn f61_same_uuid_instances_of_one_scope_route_to_their_own_forwarders() {
         service_uuid: uuid(HRM_SERVICE),
         service_instance: 0x10,
         value: vec![value],
+        source_failure: None,
         lost_before: 0,
     };
     let air = vec![

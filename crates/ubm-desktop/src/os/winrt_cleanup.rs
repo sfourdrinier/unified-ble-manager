@@ -5,6 +5,59 @@ use crate::errors::DesktopError;
 use crate::errors::{PlatformDetail, PlatformValue};
 use std::sync::{Mutex, PoisonError, TryLockError};
 
+/// Exact device owners survive logical physical loss until native retirement confirms release.
+pub(crate) struct DeviceOwners<T> {
+    owners: tokio::sync::Mutex<std::collections::HashMap<String, (T, bool)>>,
+}
+impl<T> Default for DeviceOwners<T> {
+    fn default() -> Self {
+        Self {
+            owners: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+}
+impl<T: Clone> DeviceOwners<T> {
+    pub async fn retain(&self, peer: &str, owner: T) -> Result<(), DesktopError> {
+        let mut owners = self.owners.lock().await;
+        if owners.contains_key(peer) {
+            return Err(DesktopError::connection_failed(
+                "previous native device cleanup remains owned",
+            ));
+        }
+        owners.insert(peer.to_owned(), (owner, false));
+        Ok(())
+    }
+    pub async fn retire(&self, peer: &str) {
+        if let Some((_, retired)) = self.owners.lock().await.get_mut(peer) {
+            *retired = true;
+        }
+    }
+    pub async fn peers(&self) -> Vec<String> {
+        self.owners.lock().await.keys().cloned().collect()
+    }
+    pub async fn release<F, Fut>(
+        &self,
+        peer: &str,
+        terminal_only: bool,
+        release: F,
+    ) -> Result<(), DesktopError>
+    where
+        F: FnOnce(T) -> Fut,
+        Fut: std::future::Future<Output = Result<(), DesktopError>>,
+    {
+        let mut owners = self.owners.lock().await;
+        let Some((owner, retired)) = owners.get(peer) else {
+            return Ok(());
+        };
+        if terminal_only && !*retired {
+            return Ok(());
+        }
+        release(owner.clone()).await?;
+        owners.remove(peer);
+        Ok(())
+    }
+}
+
 /// A transient native read never adopts connection ownership. Close is
 /// synchronous before another await, including when inspection failed; both
 /// failures are retained rather than allowing one to hide the other.
@@ -26,6 +79,46 @@ pub(crate) fn inspect_transient<T>(
 #[cfg(test)]
 mod transient_tests {
     use super::*;
+    #[tokio::test]
+    async fn physical_loss_keeps_exact_native_discovery_owner_until_natural_completion() {
+        let owners = DeviceOwners::default();
+        owners.retain("peer", 17).await.unwrap();
+        owners.retire("peer").await;
+        assert!(
+            owners
+                .release("peer", true, |owner| async move {
+                    assert_eq!(owner, 17);
+                    Err(DesktopError::connection_failed("discovery still pending"))
+                })
+                .await
+                .is_err()
+        );
+        assert!(owners.retain("peer", 18).await.is_err());
+        assert_eq!(owners.peers().await, ["peer"]);
+        owners
+            .release("peer", true, |owner| async move {
+                assert_eq!(owner, 17);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(owners.peers().await.is_empty());
+        owners.retain("peer", 18).await.unwrap();
+        owners
+            .release("peer", true, |_| async {
+                panic!("terminal cleanup must not release a fresh active generation")
+            })
+            .await
+            .unwrap();
+        assert_eq!(owners.peers().await, ["peer"]);
+        owners
+            .release("peer", false, |owner| async move {
+                assert_eq!(owner, 18);
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
     #[tokio::test]
     async fn failed_handler_cleanup_does_not_skip_independent_peripheral_release() {
         let calls = std::sync::atomic::AtomicUsize::new(0);

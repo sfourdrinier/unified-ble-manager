@@ -14,6 +14,8 @@ use ubm_mobile::{
 
 fn polar_advertisement() -> RadioIngress {
     RadioIngress::Advertisement(Advertisement {
+        capture_timestamp_ms: None,
+        cached_name: None,
         peer_id: POLAR.to_owned(),
         address: Some(POLAR.to_owned()),
         local_name: Some("Polar H10 1234".to_owned()),
@@ -221,6 +223,28 @@ async fn encryption_source_failure_is_typed_and_survives_reconciliation() {
     let snapshot = ok(&call(&session, "session.reconcile", "{}").await);
     assert_eq!(snapshot["securityFailures"][0]["error"], report["error"]);
     assert!(snapshot["security"].as_array().unwrap().is_empty());
+    radio.set_responder(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::SecurityState { .. } => {
+            Reply::Now(RadioCompletion::Security(ubm_mobile::SecurityState {
+                bond: ubm_mobile::BondState::Bonded,
+                encryption: ubm_mobile::EncryptionState::Encrypted,
+                authentication: ubm_mobile::AuthenticationState::Unsupported,
+                secure_connections: ubm_mobile::SecureConnectionsState::Unsupported,
+                pairing_possible: Some(true),
+            }))
+        }
+        other => polar_responder(other),
+    }));
+    // Explicit retry recovers without requiring another bond/encryption event.
+    ok(&call(
+        &session,
+        "security.state",
+        &json!({"peerId": POLAR, "operationId": "healthy-retry"}).to_string(),
+    )
+    .await);
+    let recovered = ok(&call(&session, "session.reconcile", "{}").await);
+    assert!(recovered["securityFailures"].as_array().unwrap().is_empty());
+    assert_eq!(recovered["security"].as_array().unwrap().len(), 1);
     assert_eq!(parse(&host.shutdown().await)["state"], "released");
 }
 
@@ -1975,6 +1999,8 @@ async fn advertisement_appearance_and_raw_record_travel_with_their_advertisement
     )
     .await);
     host.ingest(RadioIngress::Advertisement(Advertisement {
+        capture_timestamp_ms: None,
+        cached_name: None,
         appearance: Some(0x0341),
         raw_record: Some(vec![0x02, 0x01, 0x06]),
         ..match polar_advertisement() {
@@ -3651,4 +3677,49 @@ async fn stale_epoch_notification_never_reaches_the_new_subscription() {
             .all(|v| v["valueB64"] != "CQk="),
         "stale-epoch value surfaced late: {trailing:#?}"
     );
+}
+
+#[tokio::test]
+async fn a_newer_security_failure_survives_an_older_successful_probe() {
+    let radio = Scripted::new(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::SecurityState { .. } => Reply::Hold,
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("security-recovery-race").unwrap();
+    let args = json!({"peerId": POLAR, "operationId": "held-recovery"}).to_string();
+    let probe = call(&session, "security.state", &args);
+    let fault = async {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while radio.held_of(RequestKind::SecurityState).is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fresh security probe dispatches");
+        host.ingest(RadioIngress::SecurityFailed {
+            peer_id: None,
+            failure: PlatformFailure::new(
+                FailureKind::PermissionDenied,
+                "newer permission failure",
+            ),
+        });
+        let id = radio.held_of(RequestKind::SecurityState)[0];
+        radio.answer(
+            id,
+            RadioCompletion::Security(ubm_mobile::SecurityState {
+                bond: ubm_mobile::BondState::Bonded,
+                encryption: ubm_mobile::EncryptionState::Encrypted,
+                authentication: ubm_mobile::AuthenticationState::Unsupported,
+                secure_connections: ubm_mobile::SecureConnectionsState::Unsupported,
+                pairing_possible: Some(true),
+            }),
+        );
+    };
+    let (answer, ()) = tokio::join!(probe, fault);
+    assert_eq!(failure(&answer).0["code"], "permission.denied");
+    let snapshot = ok(&call(&session, "session.reconcile", "{}").await);
+    assert_eq!(snapshot["securityFailures"].as_array().unwrap().len(), 1);
+    assert!(snapshot["security"].as_array().unwrap().is_empty());
+    assert_eq!(parse(&host.shutdown().await)["state"], "released");
 }

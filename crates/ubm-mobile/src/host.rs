@@ -557,7 +557,8 @@ pub(crate) struct HostInner {
     /// adopts the same peer again. Lock after `restored`.
     pub restoration_claims: Mutex<BTreeMap<String, u64>>,
     pub security: Mutex<HashMap<String, SecurityState>>,
-    pub security_failures: Mutex<BTreeMap<Option<String>, DesktopError>>,
+    pub security_failures: Mutex<BTreeMap<Option<String>, (u64, DesktopError)>>,
+    pub security_failure_revision: AtomicU64,
     pub adapter: Mutex<Option<(AdapterSnapshot, u64)>>,
     /// Live background leases per scope. A lease leaves only when the
     /// platform confirmed its release; a failed release stays for a retry.
@@ -617,6 +618,8 @@ fn canonical_advertisement(advertisement: Advertisement) -> Option<PeerSnapshot>
         }
     };
     let extras = ubm_desktop::AdvertisementExtras {
+        capture_timestamp_ms: advertisement.capture_timestamp_ms,
+        cached_name: advertisement.cached_name,
         address_type: None,
         solicited_service_uuids: canonical_list(advertisement.solicited_service_uuids)?,
         overflow_service_uuids: canonical_list(advertisement.overflow_service_uuids)?,
@@ -746,6 +749,13 @@ pub(crate) fn advertisement_record(
                 .map_or(Value::Null, |bytes| Value::from(wire::encode_base64(bytes))),
         ),
         ("observedAtMs", Value::from(observed_at_ms)),
+        (
+            "sourceTimestampMs",
+            snapshot
+                .extras
+                .capture_timestamp_ms
+                .map_or(Value::Null, Value::from),
+        ),
     ])
 }
 
@@ -1064,6 +1074,8 @@ impl HostInner {
             });
             if snapshot.local_name.is_some() {
                 entry.name.clone_from(&snapshot.local_name);
+            } else if snapshot.extras.cached_name.is_some() {
+                entry.name.clone_from(&snapshot.extras.cached_name);
             }
             entry.rssi = snapshot.rssi.or(entry.rssi);
             entry.last_seen_ms = Some(now);
@@ -2154,6 +2166,7 @@ impl MobileHost {
             restoration_claims: Mutex::new(BTreeMap::new()),
             security: Mutex::new(HashMap::new()),
             security_failures: Mutex::new(BTreeMap::new()),
+            security_failure_revision: AtomicU64::new(0),
             adapter: Mutex::new(None),
             background: Mutex::new(BTreeMap::new()),
             link_ends: Mutex::new(BTreeMap::new()),
@@ -2343,7 +2356,10 @@ impl MobileHost {
                 } else {
                     lock(&inner.security).clear();
                 }
-                lock(&inner.security_failures).insert(peer_id.clone(), error.clone());
+                let revision = inner
+                    .security_failure_revision
+                    .fetch_add(1, Ordering::SeqCst);
+                lock(&inner.security_failures).insert(peer_id.clone(), (revision, error.clone()));
                 inner
                     .signals
                     .push(HostSignal::SecurityFailed(peer_id, error));

@@ -70,6 +70,10 @@ use ubm_core::central::ScanDuplicatePolicy;
 
 #[path = "central_parity.rs"]
 mod parity;
+#[path = "central_phy.rs"]
+mod phy;
+#[path = "central_retirement.rs"]
+mod retirement;
 use crate::errors::{DesktopError, Retryability};
 use crate::identity::{AttachmentEpoch, DesktopIdentity, HostIdentity};
 use crate::op_control::{
@@ -1587,6 +1591,15 @@ type PendingLeaseChildren = StdMutex<HashMap<(String, String), Vec<LeaseChild>>>
 type DiscoveredLeaseGenerations = (String, Option<String>, Option<String>);
 type DiscoveredLeases = StdMutex<HashMap<(String, String), DiscoveredLeaseGenerations>>;
 
+struct NotificationSourceFailure {
+    peer_id: String,
+    epoch: u64,
+    error: DesktopError,
+    terminal_seen: HashSet<String>,
+}
+
+type RetainedParameterSourceFailure = (Option<String>, DesktopError, u64);
+
 struct Inner<B> {
     acquired: Arc<crate::acquired_gatt::ownership::Registry>,
     /// Completed discovery admission per live lease, with exact generations.
@@ -1656,6 +1669,8 @@ struct Inner<B> {
     /// share routing, and a queued value whose epoch no longer matches the
     /// live routing never delivers (F10).
     subscriptions: Mutex<HashMap<InstanceKey, (usize, u64)>>,
+    notification_failures: StdMutex<HashMap<usize, NotificationSourceFailure>>,
+    notification_activation_epochs: StdMutex<HashMap<InstanceKey, u64>>,
     /// Current subscription epoch per radio peer. Bumped every time the
     /// peer's routing invalidates (disconnect, loss, service change), so
     /// forwarders installed before the bump stamp a dead generation.
@@ -1707,7 +1722,7 @@ struct Inner<B> {
     /// Observed connection-parameter reports.
     connection_parameters: broadcast::Sender<parity::ConnectionParametersEvent>,
     connection_parameters_sequence: AtomicU64,
-    parameter_source_failures: StdMutex<HashMap<String, (Option<String>, DesktopError)>>,
+    parameter_source_failures: StdMutex<HashMap<String, RetainedParameterSourceFailure>>,
     /// Scans the OS ended without a stop request.
     scan_terminal: broadcast::Sender<ScanTerminalEvent>,
     scan_terminal_sequence: AtomicU64,
@@ -1952,6 +1967,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             boundary.connection_parameters_capability_limitation()?,
         )
         .map_err(DesktopError::from)?;
+        crate::capabilities::apply_control_capability_limitation(
+            &mut core,
+            "connection:phy",
+            boundary.connection_phy_capability_limitation()?,
+        )
+        .map_err(DesktopError::from)?;
         let (lifecycle, _) = broadcast::channel(LIFECYCLE_EVENT_CAPACITY);
         crate::capabilities::apply_control_capability_limitation(
             &mut core,
@@ -2009,6 +2030,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             pending_lease_children: StdMutex::new(HashMap::new()),
             half_open_cleanup: StdMutex::new(HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
+            notification_failures: StdMutex::new(HashMap::new()),
+            notification_activation_epochs: StdMutex::new(HashMap::new()),
             epochs: Mutex::new(HashMap::new()),
             link_ends: StdMutex::new(HashMap::new()),
             confirmed_releases: StdMutex::new(HashMap::new()),
@@ -2863,6 +2886,35 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .await
             .entry(peer_id.to_owned())
             .or_insert(0)
+    }
+
+    /// Exact active attribute token for synthetic observation controls.
+    pub async fn routing_epoch_for_instance(
+        &self,
+        peer_id: &str,
+        service_uuid: &str,
+        service_occurrence: u64,
+        characteristic_uuid: &str,
+        characteristic_occurrence: u64,
+    ) -> u64 {
+        let scope = (
+            peer_id.to_owned(),
+            service_uuid.to_owned(),
+            service_occurrence,
+            characteristic_uuid.to_owned(),
+            characteristic_occurrence,
+        );
+        let epoch = self
+            .inner
+            .subscriptions
+            .lock()
+            .await
+            .get(&scope)
+            .map(|(_, epoch)| *epoch);
+        match epoch {
+            Some(epoch) => epoch,
+            None => self.routing_epoch(peer_id).await,
+        }
     }
 
     /// Build a validated path selector with canonical UUIDs. Occurrence
@@ -3947,6 +3999,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
         self.precheck(&ctl, "connection.release")?;
         let window = ctl.budget.window(LIVENESS_CLEANUP);
+        let terminal_peer_key = self.known_peer_key(peer_id).await?;
+        self.release_terminal_cleanup(peer_id, &terminal_peer_key, lease, &ctl, window)
+            .await?;
         let release_budget = window
             .at
             .map_or_else(Budget::unbounded, |at| Budget::from_ms_at(at, 0));
@@ -4185,6 +4240,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         self.precheck(&ctl, "connection.disconnect")?;
         let window = ctl.budget.window(LIVENESS_CLEANUP);
         let peer_key = self.known_peer_key(peer_id).await?;
+        self.release_terminal_cleanup(peer_id, &peer_key, lease, &ctl, window)
+            .await?;
         let release_generation = {
             let mut core = self.inner.core.lock().await;
             if core.connection_state(&peer_key).is_none()
@@ -5844,6 +5901,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 false,
             )?;
             debug_assert_eq!(key, resolved);
+            if let Some(failure) = lock_std(&self.inner.notification_failures).get(&index) {
+                return Err(failure.error.clone());
+            }
             // The physical enable is driven exactly once, by the caller
             // whose subscribe staged the core's explicit enable effect
             // (F11). A ready CCCD shares without an effect, a pending
@@ -5919,7 +5979,29 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // quarantine in the hub instead of dropping on the floor. The
         // routing carries the epoch the forwarder is about to capture, so
         // a value queued under a dead generation never matches (F10).
-        let epoch = self.routing_epoch(peer_id).await;
+        let epoch = if drive_enable {
+            let peer_epoch = self.routing_epoch(peer_id).await;
+            let mut activations = lock_std(&self.inner.notification_activation_epochs);
+            let next = activations.get(&key).map_or(peer_epoch, |previous| {
+                previous.saturating_add(1).max(peer_epoch)
+            });
+            activations.insert(key.clone(), next);
+            next
+        } else {
+            self.inner
+                .subscriptions
+                .lock()
+                .await
+                .get(&key)
+                .map(|(_, epoch)| *epoch)
+                .ok_or_else(|| {
+                    contract_error(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Gatt,
+                        "gatt.subscribe.routing",
+                    )
+                })?
+        };
         // A new enable owns this instance's CCCD from here on (its failure
         // paths disable it), superseding any enablement a service change
         // orphaned (finding 40).
@@ -6356,6 +6438,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 self.inner.subscriptions.lock().await.remove(key);
                 self.inner.failed_disables.lock().await.remove(key);
                 lock_std(&self.inner.deliveries).remove(key);
+                lock_std(&self.inner.notification_failures).remove(&path_index);
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
                 drain_consumer_before_retirement(&mut core, path_index, consumer, drain);
@@ -6420,9 +6503,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     ) -> Result<NotificationPoll, DesktopError> {
         // Reading an already admitted consumer's FIFO acquires no radio work.
         // It must remain drainable even while physical shutdown is pending.
-        if !self.inner.shut_down.load(Ordering::SeqCst) {
-            self.admit("gatt.take-notification")?;
-        }
+        // No new-radio admission check: shutdown may change while this owned
+        // drain awaits a lock. The consumer ownership check below remains authoritative.
         let peer_key = self.known_peer_key(peer_id).await?;
         let mut core = self.inner.core.lock().await;
         if self.inner.shut_down.load(Ordering::SeqCst)
@@ -6468,6 +6550,14 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
         if let Some(terminal) = core.take_terminal(index, consumer) {
             return Ok(NotificationPoll::Terminal(terminal));
+        }
+        if core.consumer_path(&peer_key, selector, consumer).is_some()
+            && let Some(failure) = lock_std(&self.inner.notification_failures).get_mut(&index)
+        {
+            if failure.terminal_seen.insert(consumer.to_owned()) {
+                return Err(failure.error.clone());
+            }
+            return Ok(NotificationPoll::Closed);
         }
         match core.consumer_state(index, consumer) {
             Some(
@@ -6805,6 +6895,20 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 )
             };
             if !live {
+                match tokio::time::timeout(
+                    DISCONNECT_COMPLETION_TIMEOUT,
+                    self.inner.boundary.release_terminal_resources(&peer_id),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => cleanup_failures.push(error),
+                    Err(_) => cleanup_failures.push(DesktopError::new(
+                        BleErrorCode::OperationTimedOut,
+                        BleErrorDomain::Cleanup,
+                        "connection.retired-native-cleanup",
+                    )),
+                }
                 continue;
             }
             let outcome = tokio::time::timeout(
@@ -7098,6 +7202,7 @@ async fn clear_peer_routing_scoped<B>(
     };
     lock_std(&inner.retained_enablements).retain(|key| key.0 != peer_id);
     lock_std(&inner.service_access).retain(|(peer, _, _), _| peer != peer_id);
+    lock_std(&inner.notification_failures).retain(|_, failure| failure.peer_id != peer_id);
     subscriptions.retain(|key, _| key.0 != peer_id);
     failed.retain(|key| key.0 != peer_id);
     lock_std(&inner.deliveries).retain(|key, _| key.0 != peer_id);
@@ -7295,6 +7400,14 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                     Some(RadioEvent::AdapterRestored) => {
                         lock_std(&inner.adapter_facts).removed = false;
                         wake_state_waiters(&inner);
+                    }
+                    Some(RadioEvent::NotificationSourceFailed {
+                        peer_id, service_uuid, service_occurrence,
+                        characteristic_uuid, characteristic_occurrence, epoch, error,
+                    }) => {
+                        notification_source_failed(&inner,
+                            (peer_id, service_uuid, service_occurrence, characteristic_uuid, characteristic_occurrence),
+                            epoch, error).await;
                     }
                     Some(RadioEvent::NotificationsLost {
                         peer_id,
@@ -7948,6 +8061,12 @@ async fn deliver<B: RadioBoundary>(
     if epoch != routing_epoch {
         return;
     }
+    if lock_std(&inner.notification_failures)
+        .get(&path_index)
+        .is_some_and(|failure| failure.epoch == epoch)
+    {
+        return;
+    }
     let delivered = {
         let mut core = inner.core.lock().await;
         core.deliver_notification_value(path_index, &value).is_ok()
@@ -7958,6 +8077,30 @@ async fn deliver<B: RadioBoundary>(
             inner.signal(CentralSignal::Value { scope, value });
         }
     }
+}
+
+async fn notification_source_failed<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    scope: InstanceKey,
+    epoch: u64,
+    error: DesktopError,
+) {
+    let routed = inner.subscriptions.lock().await.get(&scope).copied();
+    let Some((path_index, routing_epoch)) = routed else {
+        return;
+    };
+    if epoch != routing_epoch {
+        return;
+    }
+    lock_std(&inner.notification_failures)
+        .entry(path_index)
+        .or_insert_with(|| NotificationSourceFailure {
+            peer_id: scope.0,
+            epoch,
+            error,
+            terminal_seen: HashSet::new(),
+        });
+    let _ = inner.native_wake.send(());
 }
 
 /// Account notifications the OS broadcast lost for one subscription
@@ -10505,6 +10648,106 @@ mod adapter_tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn native_notification_failure_drains_fifo_then_reports_exact_cause_once() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .subscribe_buffered(
+                "peer",
+                &hrm_selector(0),
+                "consumer-a",
+                None,
+                ubm_core::streams::OverflowPolicy::Error,
+                (64, 8192),
+                OpControl::unbounded().with_connection_lease("a".to_owned()),
+            )
+            .await
+            .unwrap();
+        let key = central.peer_key_for("peer").await.unwrap();
+        let scope = super::instance_key(
+            "peer",
+            &central
+                .with_core(|core| {
+                    let index = core.resolve_path(&key, &hrm_selector(0)).unwrap();
+                    core.stored_path(index).unwrap().clone()
+                })
+                .await,
+            "00002a37-0000-1000-8000-00805f9b34fb",
+        );
+        let epoch = central.routing_epoch("peer").await;
+        super::deliver(&central.inner, scope.clone(), epoch, vec![42]).await;
+        let failure = super::contract_error(
+            ubm_core::contracts::BleErrorCode::PlatformFailure,
+            ubm_core::contracts::BleErrorDomain::Gatt,
+            "gatt.notification",
+        )
+        .with_platform(
+            crate::errors::PlatformDetail::new("winrt", "hresult").with_metadata(
+                "hresult",
+                crate::errors::PlatformValue::Text("0x80070005".to_owned()),
+            ),
+        );
+        super::notification_source_failed(&central.inner, scope.clone(), epoch, failure.clone())
+            .await;
+        super::deliver(&central.inner, scope.clone(), epoch, vec![99]).await;
+        assert!(
+            matches!(central.poll_notification("peer", &hrm_selector(0), "consumer-a").await.unwrap(),
+            super::NotificationPoll::Value(value) if value == [42])
+        );
+        let observed = central
+            .poll_notification("peer", &hrm_selector(0), "consumer-a")
+            .await
+            .unwrap_err();
+        assert_eq!(observed.platform(), failure.platform());
+        assert!(matches!(
+            central
+                .poll_notification("peer", &hrm_selector(0), "consumer-a")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Closed
+        ));
+        central
+            .unsubscribe(
+                "peer",
+                &hrm_selector(0),
+                "consumer-a",
+                OpControl::unbounded().with_connection_lease("a".to_owned()),
+            )
+            .await
+            .unwrap();
+        central
+            .subscribe_buffered(
+                "peer",
+                &hrm_selector(0),
+                "consumer-new",
+                None,
+                ubm_core::streams::OverflowPolicy::Error,
+                (64, 8192),
+                OpControl::unbounded().with_connection_lease("a".to_owned()),
+            )
+            .await
+            .unwrap();
+        super::notification_source_failed(&central.inner, scope, epoch.saturating_sub(1), failure)
+            .await;
+        assert!(matches!(
+            central
+                .poll_notification("peer", &hrm_selector(0), "consumer-new")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Empty
+        ));
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn shared_lease_release_keeps_overflowed_child_cleanup_after_consumer_record_retirement()
     {
         let central = open().await;
@@ -12212,6 +12455,125 @@ mod adapter_tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_lease_retains_native_cleanup_refusal_and_retries_same_owner() {
+        let central = open().await;
+        ready_peer(&central, "native-debt", vec![hrm_service()]).await;
+        central.remote_peer_loss("native-debt").await.unwrap();
+        central
+            .boundary()
+            .fail_next(FaultOp::TerminalCleanup, "discovery still pending");
+        let error = central
+            .release_connection_lease("native-debt", "lease-a", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert!(error.detail().unwrap().contains("discovery still pending"));
+        assert!(
+            central
+                .release_connection_lease("native-debt", "lease-a", OpControl::unbounded())
+                .await
+                .is_ok()
+        );
+        assert!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "release_terminal_resources")
+                .count()
+                >= 2
+        );
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn phy_read_preserves_distinct_directions_and_exact_lease() {
+        use crate::boundary::{BlePhy, ObservedConnectionPhy};
+        let central = open().await;
+        ready_peer(&central, "phy-peer", vec![hrm_service()]).await;
+        let measured = ObservedConnectionPhy {
+            tx_phy: BlePhy::Le2M,
+            rx_phy: BlePhy::LeCoded,
+        };
+        central.boundary().set_connection_phy("phy-peer", measured);
+        assert_eq!(
+            central
+                .read_phy("phy-peer", "lease-a", OpControl::unbounded())
+                .await
+                .unwrap(),
+            measured
+        );
+        assert_eq!(
+            central
+                .read_phy("phy-peer", "foreign", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .code_str(),
+            "ownership.denied"
+        );
+        central.remote_peer_loss("phy-peer").await.unwrap();
+        assert!(
+            central
+                .read_phy("phy-peer", "lease-a", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn owned_notification_poll_crosses_shutdown_admission_barrier() {
+        use std::future::Future;
+        use std::task::Poll;
+        let central = open().await;
+        ready_peer(&central, "poll-barrier", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        central
+            .subscribe(
+                "poll-barrier",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let key = central.peer_key_for("poll-barrier").await.unwrap();
+        central
+            .with_core_mut(|core| {
+                let index = core.consumer_path(&key, &selector, "consumer").unwrap();
+                core.deliver_notification_value(index, &[41]).unwrap();
+            })
+            .await;
+        // Hold the first async lookup: polling has started while admission is open,
+        // and resumes only after shutdown has closed new radio-work admission.
+        let peers = central.inner.peers.lock().await;
+        let polling = central.poll_notification("poll-barrier", &selector, "consumer");
+        tokio::pin!(polling);
+        std::future::poll_fn(|cx| {
+            assert!(polling.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        central
+            .inner
+            .shut_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(peers);
+        assert!(
+            matches!(polling.await.unwrap(), super::NotificationPoll::Value(value) if value == [41])
+        );
+        assert_eq!(
+            central
+                .poll_notification("poll-barrier", &selector, "foreign")
+                .await
+                .unwrap_err()
+                .code_str(),
+            "ownership.denied"
+        );
+        assert!(central.shutdown().await.is_released());
     }
 
     #[tokio::test]
@@ -15073,9 +15435,13 @@ mod adapter_tests {
             )
             .await
             .expect("resubscribe after terminal");
+        let epoch = central
+            .routing_epoch_for_instance("peer-f17", HRM_SERVICE, 0, HRM_MEASUREMENT, 0)
+            .await;
+        assert_ne!(epoch, 0, "resubscription must retire the previous epoch");
         central
             .boundary()
-            .push_event(notification("peer-f17", 0, vec![0x09]));
+            .push_event(notification_epoch("peer-f17", 0, vec![0x09], epoch));
         let mut redelivered = None;
         for _ in 0..200 {
             match central

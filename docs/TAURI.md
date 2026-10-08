@@ -350,15 +350,10 @@ qualification remains separate from deterministic and compile evidence.
 
 [Current 5.0 authority](README.md#current-50-authority), [`PLATFORMS.md`](PLATFORMS.md).
 
-A connection-parameter observation-source failure terminates its current
-watches with the original error. A later watch on that connection remains
-refused until fresh valid native observation evidence recovers the source;
-a successful snapshot getter alone does not recover an event source. Reconnect
-creates a new source generation. Events accepted during the initial watch
-probe keep their native order and replace the delayed probe answer. Native
-queue loss triggers reconciliation, and samples retained from before that
-reconciliation are counted as discarded rather than published afterward as
-newer observations.
+Parameter source recovery, retained failure delivery and bounded queue-gap
+ordering follow the shared [connection observation ownership rules](NODE.md#connection-observation-ownership).
+Windows PHY reads use the same [runtime-probed observation route](NODE.md#windows-phy-observation);
+PHY requests and selection remain unsupported.
 
 IPC version 6 requires nullable service graph facts and the native
 readiness/acquired-GATT route contract. An older webview or plugin is refused

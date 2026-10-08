@@ -41,6 +41,7 @@ mod broadcast {
             service_uuid: uuid(HRM_SERVICE),
             service_instance: 0x10,
             value: vec![byte],
+            source_failure: None,
             lost_before: 0,
         }
     }

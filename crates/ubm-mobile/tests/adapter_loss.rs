@@ -24,6 +24,8 @@ use ubm_mobile::{
 
 fn advertisement() -> RadioIngress {
     RadioIngress::Advertisement(Advertisement {
+        capture_timestamp_ms: None,
+        cached_name: None,
         peer_id: POLAR.to_owned(),
         address: Some(POLAR.to_owned()),
         service_uuids: vec!["180D".to_owned()],

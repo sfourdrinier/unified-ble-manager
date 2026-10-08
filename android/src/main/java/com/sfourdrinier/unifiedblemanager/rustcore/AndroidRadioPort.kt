@@ -189,5 +189,7 @@ data class AdvertisementFacts(
   /** GAP Appearance (AD type 0x19); null when the advertisement did not carry it. */
   val appearance: Int? = null,
   /** The raw advertising record bytes (`ScanRecord.getBytes()`); null when not reported. */
-  val rawRecord: ByteArray? = null
+  val rawRecord: ByteArray? = null,
+  val cachedName: String? = null,
+  val captureTimestampMs: Long? = null
 )

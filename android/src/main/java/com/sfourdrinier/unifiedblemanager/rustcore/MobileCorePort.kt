@@ -236,7 +236,9 @@ object JniMobileCorePort : MobileCorePort {
       advertisement.solicitedServiceUuids?.toTypedArray(),
       null,
       optional(advertisement.appearance),
-      advertisement.rawRecord
+      advertisement.rawRecord,
+      advertisement.cachedName,
+      advertisement.captureTimestampMs ?: -1L
     )
 
   override fun ingestConnection(peerId: String, connected: Boolean, status: Int?): Int =

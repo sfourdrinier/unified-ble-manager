@@ -27,7 +27,7 @@ use crate::{
         ConnectionParameters, ConnectionParametersReport, Descriptor, Peripheral as ApiPeripheral,
         PeripheralProperties, Service, ValueNotification, WriteType,
     },
-    common::{adapter_manager::AdapterManager, util::notifications_stream_from_broadcast_receiver},
+    common::{adapter_manager::AdapterManager, util::{retained_notifications, NotificationEnvelope, NotificationFaults}},
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -133,7 +133,8 @@ struct Shared {
     /// UBM patch (`winrt-attribute-instances`): keyed by (UUID,
     /// `AttributeHandle`), so repeated service UUIDs stay distinct.
     ble_services: DashMap<AttributeKey, BLEService>,
-    notifications_channel: broadcast::Sender<ValueNotification>,
+    notifications_channel: broadcast::Sender<NotificationEnvelope>,
+    notification_faults: Arc<NotificationFaults>,
     /// Observed WinRT connection parameters. The sender outlives the
     /// device so a subscriber can see the channel close on disconnect.
     connection_parameters: broadcast::Sender<ConnectionParametersReport>,
@@ -152,6 +153,11 @@ struct Shared {
 }
 
 impl Peripheral {
+    pub async fn connection_phy(&self) -> Result<crate::connection_phy_source::ConnectionPhy> {
+        let device = self.shared.device.lock().await;
+        let owner = device.as_ref().ok_or(Error::NotConnected)?;
+        owner.get_connection_phy()
+    }
     /// Observed connection-parameter changes for this peer. Lagged
     /// receivers report the gap; the channel closes when the peripheral
     /// is dropped.
@@ -193,6 +199,7 @@ impl Peripheral {
                 connected: AtomicBool::new(false),
                 ble_services: DashMap::new(),
                 notifications_channel: broadcast_sender,
+                notification_faults: Arc::new(NotificationFaults::new(crate::ubm::EVENT_CAPACITY)),
                 connection_parameters,
                 address_type: RwLock::new(address_type),
                 explicit_address_type: RwLock::new(None),
@@ -470,30 +477,44 @@ impl Peripheral {
         characteristic: &Characteristic,
         configured: Option<GattClientCharacteristicConfigurationDescriptorValue>,
     ) -> Result<()> {
+        let notification_epoch = self.shared.notification_faults.begin(characteristic)?;
         let notifications_sender = self.shared.notifications_channel.clone();
+        let notification_faults = self.shared.notification_faults.clone();
         let uuid = characteristic.uuid;
         let instance = characteristic.instance;
         let service_uuid = characteristic.service_uuid;
         let service_instance = characteristic.service_instance;
         let handler: NotifyEventHandler = std::sync::Arc::new(move |value| {
+            let (value, source_failure) = match value {
+                Ok(bytes) => (bytes, None),
+                Err(error) => (Vec::new(), Some(error)),
+            };
             let notification = ValueNotification {
                 uuid,
                 instance,
                 service_uuid,
                 service_instance,
                 value,
+                source_failure,
                 lost_before: 0,
             };
-            let _ = notifications_sender.send(notification);
+            notification_faults.publish_for_epoch(&notifications_sender, notification, notification_epoch);
         });
-        let (gatt, config, token) =
+        let registration =
             self.with_characteristic_mut(characteristic, "subscribe", |ble_characteristic| {
                 let (config, token) = match configured {
                     Some(value) => ble_characteristic.register_with(handler, value)?,
                     None => ble_characteristic.register(handler)?,
                 };
                 Ok((ble_characteristic.gatt().clone(), config, token))
-            })?;
+            });
+        let (gatt, config, token) = match registration {
+            Ok(registration) => registration,
+            Err(error) => {
+                self.shared.notification_faults.clear(characteristic);
+                return Err(error);
+            }
+        };
         let written =
             BLECharacteristic::write_client_configuration(&gatt, config, "subscribe").await;
         if let Err(error) = written {
@@ -507,6 +528,7 @@ impl Peripheral {
                     cleanup: Box::new(rollback),
                 });
             }
+            self.shared.notification_faults.clear(characteristic);
             return Err(error);
         }
         Ok(())
@@ -876,6 +898,7 @@ impl ApiPeripheral for Peripheral {
         // We need to clear the services because if this device is re-connected,
         // the cached service objects will no longer be valid (they must be refreshed).
         self.shared.ble_services.clear();
+        self.shared.notification_faults.clear_all();
         *device = None;
         self.shared.connected.store(false, Ordering::Relaxed);
         self.emit_event(CentralEvent::DeviceDisconnected(self.id()));
@@ -996,7 +1019,9 @@ impl ApiPeripheral for Peripheral {
             GattClientCharacteristicConfigurationDescriptorValue::None,
             "unsubscribe",
         )
-        .await
+        .await?;
+        self.shared.notification_faults.clear(characteristic);
+        Ok(())
     }
 
     async fn read(&self, characteristic: &Characteristic) -> Result<Vec<u8>> {
@@ -1006,7 +1031,7 @@ impl ApiPeripheral for Peripheral {
 
     async fn notifications(&self) -> Result<Pin<Box<dyn Stream<Item = ValueNotification> + Send>>> {
         let receiver = self.shared.notifications_channel.subscribe();
-        Ok(notifications_stream_from_broadcast_receiver(receiver))
+        Ok(retained_notifications(receiver, self.shared.notification_faults.clone()))
     }
 
     async fn write_descriptor(&self, descriptor: &Descriptor, data: &[u8]) -> Result<()> {

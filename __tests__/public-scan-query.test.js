@@ -199,6 +199,29 @@ describe('canonical public ScanQuery v1', () => {
     }
   })
 
+  test.each(['platform', 'backend'])('accepts optional native source clock scope for %s time', origin => {
+    for (const value of [{ monotonicMs: 100, origin }, { monotonicMs: 100, origin, clockScope: 'native-clock:adapter-1' }]) {
+      expect(() => normalizeScanObservation({
+        ...deterministicScenarioAdvertisement(),
+        sourceTimestamp: { state: 'present', provenance: 'observed', value }
+      })).not.toThrow()
+    }
+  })
+
+  test.each(['', '   ', null, 42])('rejects malformed native source clock scope: %s', clockScope => {
+    expect(() => normalizeScanObservation({
+      ...deterministicScenarioAdvertisement(),
+      sourceTimestamp: { state: 'present', provenance: 'observed', value: { monotonicMs: 100, origin: 'platform', clockScope } }
+    })).toThrow()
+  })
+
+  test('source clock provenance still rejects unknown fields', () => {
+    expect(() => normalizeScanObservation({
+      ...deterministicScenarioAdvertisement(),
+      sourceTimestamp: { state: 'present', provenance: 'observed', value: { monotonicMs: 100, origin: 'platform', clockScope: 'native', extra: true } }
+    })).toThrow()
+  })
+
   test('rejects malformed normalized advertisement entries before canonical matching', () => {
     expect(() =>
       normalizeScanObservation({

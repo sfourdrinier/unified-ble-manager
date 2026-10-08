@@ -1322,7 +1322,7 @@ describe('Electron v4 IPC boundary', () => {
     }
   })
 
-  test('releases the exact renderer lease when oversized-response rollback fails', async () => {
+  test('retains exact operation cleanup debt without revoking the renderer when rollback fails', async () => {
     const disconnect = jest.fn(async () => released())
     const characteristics = Array.from({ length: 128 }, () => ({ path: characteristicPath() }))
     const database = {
@@ -1344,14 +1344,14 @@ describe('Electron v4 IPC boundary', () => {
         commandRequest(current, renderer, 2, 'gatt.discover', { connectionHandle: connected.payload.handle })
       ),
       {
-        code: 'ownership.denied',
-        operation: 'electron-main-arbiter.renderer-registration'
+        code: 'lifecycle.invalid-state',
+        operation: 'electron-main-router.rollback-release-required'
       }
     )
 
-    expect(disconnect).toHaveBeenCalledTimes(1)
-    expect(current.router.resources).toHaveProperty('size', 0)
-    expect(current.binding.renderers).toHaveProperty('size', 0)
+    expect(disconnect).not.toHaveBeenCalled()
+    expect(current.router.resources).toHaveProperty('size', 1)
+    expect(current.binding.renderers).toHaveProperty('size', 1)
     await current.binding.destroy()
   })
 
@@ -3883,4 +3883,292 @@ describe('Electron v4 IPC boundary', () => {
     await expect(client.initialize()).rejects.toMatchObject({ normalized: { code: 'protocol.incompatible' } })
     expect(transport.invoke.mock.calls.map(([request]) => request.kind)).toEqual(['bootstrap', 'release'])
   })
+})
+
+describe('Electron operation-owned rollback and completed priority requests', () => {
+  test.each(['deadline', 'abort', 'within-budget'])(
+    '%s read cannot roll back a successful concurrent connection or database',
+    async outcome => {
+      let now = 0
+      const read = deferred(),
+        entered = deferred()
+      const a = {
+        ...createConnection('rollback-a', createDatabase()),
+        readRssi: async () => {
+          entered.resolve()
+          return read.promise
+        }
+      }
+      const writer = { mtuBytes: 64, close: jest.fn(async () => released()) }
+      const bDatabase = { ...createDatabase(), acquireWrite: jest.fn(async () => writer) }
+      const b = createConnection('rollback-b', bDatabase)
+      const current = createMainFixture({ monotonicNow: () => now, connect: async peer => (peer === a.peerId ? a : b) })
+      const sender = createSender('owned-rollback', 'owned-window', 'owned-session')
+      const renderer = await bootstrap(current, sender)
+      const route = (ordinal, command, payload) =>
+        current.port.handler({ sender }, commandRequest(current, renderer, ordinal, command, payload))
+      try {
+        const openedA = await route(1, 'connection.connect', { peerId: a.peerId })
+        const pending = route(2, 'connection.rssi', { connectionHandle: openedA.payload.handle, budgetMs: 10 })
+        await entered.promise
+        const openedB = await route(3, 'connection.connect', { peerId: b.peerId })
+        const databaseB = await route(4, 'gatt.discover', { connectionHandle: openedB.payload.handle })
+        expect(databaseB.kind).toBe('route')
+        const acquiredB = await route(7, 'gatt.acquire-write', {
+          databaseHandle: databaseB.payload.handle,
+          characteristicHandle: databaseB.payload.characteristics[0].handle
+        })
+        expect(acquiredB.kind).toBe('route')
+        if (outcome === 'abort') await route(5, 'operation.cancel', { targetCorrelation: 'operation-2' })
+        now = outcome === 'deadline' ? 11 : 9
+        read.resolve({ rssi: -42, ...(outcome === 'oversized' ? { nativeDetail: 'x'.repeat(8192) } : {}) })
+        const result = await pending
+        expect(result.kind).toBe(outcome === 'within-budget' ? 'route' : 'failure')
+        expect(b.disconnect).not.toHaveBeenCalled()
+        expect(writer.close).not.toHaveBeenCalled()
+        expect(await route(6, 'gatt.discover', { connectionHandle: openedB.payload.handle })).toMatchObject({
+          kind: 'route'
+        })
+      } finally {
+        await current.binding.destroy()
+        await current.router.destroy()
+      }
+    }
+  )
+
+  test.each([
+    [true, 'deadline'],
+    [false, 'deadline'],
+    [true, 'abort'],
+    [false, 'abort']
+  ])('priority reports settled accepted=%s after %s', async (accepted, outcome) => {
+    let now = 0
+    const completion = deferred(),
+      entered = deferred()
+    const connection = {
+      ...createConnection('priority-owner', createDatabase()),
+      requestPriority: jest.fn(async () => {
+        entered.resolve()
+        await completion.promise
+        return { accepted }
+      })
+    }
+    const current = createMainFixture({ monotonicNow: () => now, connect: async () => connection })
+    const sender = createSender('priority-owner', 'priority-window', 'priority-session')
+    const renderer = await bootstrap(current, sender)
+    const route = (ordinal, command, payload) =>
+      current.port.handler({ sender }, commandRequest(current, renderer, ordinal, command, payload))
+    try {
+      const opened = await route(1, 'connection.connect', { peerId: connection.peerId })
+      const pending = route(2, 'connection.request-priority', {
+        connectionHandle: opened.payload.handle,
+        priority: 'high-throughput',
+        budgetMs: 10
+      })
+      await entered.promise
+      if (outcome === 'abort') await route(3, 'operation.cancel', { targetCorrelation: 'operation-2' })
+      now = outcome === 'deadline' ? 11 : 9
+      completion.resolve()
+      expect(await pending).toMatchObject({ kind: 'route', payload: { accepted } })
+      expect(connection.requestPriority).toHaveBeenCalledTimes(1)
+    } finally {
+      await current.binding.destroy()
+      await current.router.destroy()
+    }
+  })
+})
+
+test('oversized discovery rolls back only its own database, preserving concurrent connection and child database', async () => {
+  const snapshot = deferred(),
+    entered = deferred()
+  const aDatabase = {
+    snapshot: async () => {
+      entered.resolve()
+      return snapshot.promise
+    }
+  }
+  const a = createConnection('oversized-a', aDatabase)
+  const b = createConnection('oversized-b', createDatabase())
+  const current = createMainFixture({ connect: async peer => (peer === a.peerId ? a : b) })
+  const sender = createSender('oversized-owner', 'oversized-window', 'oversized-session')
+  const renderer = await bootstrap(current, sender)
+  const route = (ordinal, command, payload) =>
+    current.port.handler({ sender }, commandRequest(current, renderer, ordinal, command, payload))
+  try {
+    const openedA = await route(1, 'connection.connect', { peerId: a.peerId })
+    const pending = route(2, 'gatt.discover', { connectionHandle: openedA.payload.handle })
+    await entered.promise
+    const openedB = await route(3, 'connection.connect', { peerId: b.peerId })
+    const databaseB = await route(4, 'gatt.discover', { connectionHandle: openedB.payload.handle })
+    snapshot.resolve({ characteristics: Array.from({ length: 128 }, () => ({ path: characteristicPath() })) })
+    expect(await pending).toMatchObject({ kind: 'failure', error: { code: 'bytes.too-large' } })
+    expect(b.disconnect).not.toHaveBeenCalled()
+    const resources = current.router.resources.get(String(renderer.rendererLease.leaseId))
+    expect(resources.databases.has(databaseB.payload.handle)).toBe(true)
+    expect(resources.databases.size).toBe(1)
+    expect(await route(5, 'gatt.discover', { connectionHandle: openedB.payload.handle })).toMatchObject({
+      kind: 'route'
+    })
+  } finally {
+    await current.binding.destroy()
+    await current.router.destroy()
+  }
+})
+
+test('failed provisional connection cleanup retains only its own debt and retries without releasing a successful concurrent owner', async () => {
+  let now = 0
+  const admission = deferred(),
+    entered = deferred(),
+    cleanupRetry = deferred()
+  const disconnectA = jest
+    .fn()
+    .mockResolvedValueOnce(failed('connection'))
+    .mockImplementationOnce(() => cleanupRetry.promise)
+    .mockResolvedValue(released())
+  const a = createConnection('debt-a', createDatabase(), disconnectA)
+  const b = createConnection('debt-b', createDatabase())
+  const current = createMainFixture({
+    monotonicNow: () => now,
+    connect: async peer => {
+      if (peer === a.peerId) {
+        entered.resolve()
+        return admission.promise
+      }
+      return b
+    }
+  })
+  const sender = createSender('debt-owner', 'debt-window', 'debt-session')
+  const renderer = await bootstrap(current, sender)
+  const route = (ordinal, command, payload) =>
+    current.port.handler({ sender }, commandRequest(current, renderer, ordinal, command, payload))
+  try {
+    const pending = route(1, 'connection.connect', { peerId: a.peerId, budgetMs: 10 })
+    await entered.promise
+    const openedB = await route(2, 'connection.connect', { peerId: b.peerId })
+    now = 11
+    admission.resolve(a)
+    expect(await pending).toMatchObject({
+      kind: 'failure',
+      error: { operation: 'electron-main-router.rollback-release-required' }
+    })
+    expectConsoleErrorMatching(
+      '[ElectronMainBleRouter] Connection rollback failed after oversized response:',
+      expect.objectContaining({ cleanup: expect.objectContaining({ state: 'release-failed' }) })
+    )
+    expect(b.disconnect).not.toHaveBeenCalled()
+    const resources = current.router.resources.get(String(renderer.rendererLease.leaseId))
+    expect(resources.pendingRollbacks.size).toBe(1)
+    expect(await route(3, 'gatt.discover', { connectionHandle: openedB.payload.handle })).toMatchObject({
+      kind: 'route'
+    })
+    expect(resources.pendingRollbacks.size).toBe(1)
+    cleanupRetry.resolve(released())
+    await resources.rollbackRetry
+    expect(resources.pendingRollbacks.size).toBe(0)
+    expect(disconnectA).toHaveBeenCalledTimes(2)
+    expect(b.disconnect).not.toHaveBeenCalled()
+  } finally {
+    await current.binding.destroy()
+    await current.router.destroy()
+  }
+})
+
+test('pre-admission cancellation prevents a priority dispatch', async () => {
+  const connection = {
+    ...createConnection('pre-cancel-priority', createDatabase()),
+    requestPriority: jest.fn(async () => ({ accepted: true }))
+  }
+  const current = createMainFixture({ monotonicNow: () => 0, connect: async () => connection })
+  const sender = createSender('pre-cancel-priority', 'pre-window', 'pre-session')
+  const renderer = await bootstrap(current, sender)
+  const route = (ordinal, command, payload) =>
+    current.port.handler({ sender }, commandRequest(current, renderer, ordinal, command, payload))
+  try {
+    const opened = await route(1, 'connection.connect', { peerId: connection.peerId })
+    await route(2, 'operation.cancel', { targetCorrelation: 'operation-3' })
+    expect(
+      await route(3, 'connection.request-priority', { connectionHandle: opened.payload.handle, priority: 'balanced' })
+    ).toMatchObject({ kind: 'failure', error: { code: 'operation.aborted' } })
+    expect(connection.requestPriority).not.toHaveBeenCalled()
+  } finally {
+    await current.binding.destroy()
+    await current.router.destroy()
+  }
+})
+
+test.each([
+  ['connection.write-readiness.subscribe', 'writeReadinessHandle', 'writeWithoutResponseReadiness'],
+  ['connection.parameters.subscribe', 'parameterEventsHandle', 'parameterEvents']
+])('concurrent %s handle admission cannot overwrite another native owner', async (command, handleKey, method) => {
+  const opening = deferred(),
+    entered = deferred(),
+    events = createConnectionLifecycleStream()
+  const opened = {
+    events,
+    close: jest.fn(async () => {
+      events.close()
+      return released()
+    })
+  }
+  const connection = {
+    ...createConnection('reserved-watch', createDatabase()),
+    [method]: jest.fn(async () => {
+      entered.resolve()
+      return opening.promise
+    })
+  }
+  const current = createMainFixture({ monotonicNow: () => 0, connect: async () => connection })
+  const sender = createSender('reserved-watch', 'reserved-window', 'reserved-session')
+  const renderer = await bootstrap(current, sender)
+  const route = (ordinal, routedCommand, payload) =>
+    current.port.handler({ sender }, commandRequest(current, renderer, ordinal, routedCommand, payload))
+  try {
+    const linked = await route(1, 'connection.connect', { peerId: connection.peerId })
+    const payload = { connectionHandle: linked.payload.handle, [handleKey]: 'reserved-watch-1' }
+    const first = route(2, command, payload)
+    await entered.promise
+    expect(await route(3, command, payload)).toMatchObject({ kind: 'failure', error: { code: 'protocol.violation' } })
+    expect(connection[method]).toHaveBeenCalledTimes(1)
+    opening.resolve(opened)
+    expect(await first).toMatchObject({ kind: 'route' })
+    expect(opened.close).not.toHaveBeenCalled()
+  } finally {
+    await current.binding.destroy()
+    await current.router.destroy()
+  }
+})
+
+test('snapshot rejection compensates the database admitted before serialization', async () => {
+  const database = {
+    snapshot: jest.fn(async () => {
+      throw new BackendContractError({
+        code: 'platform.failure',
+        domain: 'gatt',
+        operation: 'test.snapshot',
+        platform: null,
+        retryability: 'never'
+      })
+    })
+  }
+  const connection = createConnection('snapshot-owner', database)
+  const current = createMainFixture({ connect: async () => connection })
+  const sender = createSender('snapshot-owner', 'snapshot-window', 'snapshot-session')
+  const renderer = await bootstrap(current, sender)
+  const route = (ordinal, command, payload) =>
+    current.port.handler({ sender }, commandRequest(current, renderer, ordinal, command, payload))
+  const compensation = jest.spyOn(current.router, 'rollbackOperationResources')
+  try {
+    const linked = await route(1, 'connection.connect', { peerId: connection.peerId })
+    expect(await route(2, 'gatt.discover', { connectionHandle: linked.payload.handle })).toMatchObject({
+      kind: 'failure',
+      error: { operation: 'test.snapshot' }
+    })
+    const journal = compensation.mock.calls.at(-1)[1]
+    expect(journal.databases.size).toBe(1)
+    expect(current.router.resources.get(String(renderer.rendererLease.leaseId)).databases.size).toBe(0)
+    expect(connection.disconnect).not.toHaveBeenCalled()
+  } finally {
+    await current.binding.destroy()
+    await current.router.destroy()
+  }
 })

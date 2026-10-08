@@ -463,9 +463,15 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         id: "connection:phy",
         verdict: CapabilityVerdict::NarrowOsAdapterNeeded,
         scenario: "connection.phy",
-        note: "PHY selection needs a per-OS adapter.",
+        note: "PHY observation needs a per-OS adapter; selection is separate.",
         limitation: None,
-        per_os: &[],
+        per_os: &[OsOverride {
+            os: DesktopOs::Windows,
+            verdict: CapabilityVerdict::OsAdapterProvides,
+            limitation: Some("winrt-phy-read-only-22000"),
+            note: "WinRT GetConnectionPhy reports measured TX/RX on Windows 11 build 22000+. PHY selection is unsupported.",
+            needs_pairing_generation_controller: false,
+        }],
     },
     DesktopCapability {
         id: "connection:subrate",

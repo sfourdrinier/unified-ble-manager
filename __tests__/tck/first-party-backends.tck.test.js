@@ -66,8 +66,7 @@ describe('first-party deterministic backend TCK registry', () => {
         nativePeerId: RUST_CORE_PEER_ID,
         boundary: {
           ...deterministicRustCoreTckBoundary(androidNative),
-          seedRestorationJournal: () =>
-            androidNative.seedRestored([{ peerId: 'C0:FF:EE:00:00:03', connected: true }])
+          seedRestorationJournal: () => androidNative.seedRestored([{ peerId: 'C0:FF:EE:00:00:03', connected: true }])
         },
         security: {
           customCeremonySupported: false,
@@ -131,6 +130,25 @@ describe('first-party deterministic backend TCK registry', () => {
       registration.prepare()
       const report = await registry.run(registration.backendId)
       expect(report.backendId).toBe(registration.backendId)
+      if (registration.backendId === 'unified-ble:winrt') {
+        const controls = report.standard.receipts.find(
+          receipt => receipt.scenarioId === 'connection.rssi-and-att-mtu-capability-contract'
+        )
+        expect(controls.facts).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: 'connection-phy-truth-is-explicit',
+              holds: true,
+              detail: expect.objectContaining({
+                readMeasured: true,
+                txPhy: 'le-2m',
+                rxPhy: 'le-coded',
+                requestExplicitlyUnsupported: true
+              })
+            })
+          ])
+        )
+      }
       expect(report.standard.receipts.length).toBeGreaterThan(0)
       const baseReceipts = report.standard.receipts.filter(receipt =>
         report.standard.baseScenarioIds.includes(receipt.scenarioId)

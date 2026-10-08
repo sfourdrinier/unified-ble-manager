@@ -256,7 +256,7 @@ Physical LE loss carries its authenticated generation and actual MGMT reason,
 so a buffered old event cannot invalidate a newer connection. An ATT/database
 invalidation is not proof of physical ACL termination.
 
-The core publishes lifecycle, scan-end, security, write-readiness and adapter-reset events on bounded queues (256 each). A backend that falls behind is told how many it missed, and re-reads the core's own state rather than guessing: every live link's connection state and generation, and its database state (`connection-lost`, `database-changed`, or the adapter-loss sequence above while the adapter is lost); which scan the core still owns (a scan it no longer owns ends `source-failed`); and each watched peer's security state and write readiness. A link the core still reports live and current gets no event.
+The core publishes lifecycle, scan-end, security, write-readiness and adapter-reset events on bounded queues (4,096 each). A backend that falls behind is told how many it missed, and re-reads the core's own state rather than guessing: every live link's connection state and generation, and its database state (`connection-lost`, `database-changed`, or the adapter-loss sequence above while the adapter is lost); which scan the core still owns (a scan it no longer owns ends `source-failed`); and each watched peer's security state and write readiness. A link the core still reports live and current gets no event.
 
 A subscription's `delivery.overflowPolicy` governs the core's buffer for that consumer too, and values the radio lost before the core could hold them count against it. With `error`, such a loss ends the stream with an `overflow` terminal carrying the counts, as a local overflow does. With `drop-oldest`, `drop-newest` or `latest`, the stream reports an overflow notice with the cumulative counts and keeps delivering.
 
@@ -592,15 +592,40 @@ Do not load a Node radio factory from a renderer. See [`ELECTRON.md`](ELECTRON.m
 
 [Current 5.0 authority](README.md#current-50-authority), [`PLATFORMS.md`](PLATFORMS.md).
 
-A connection-parameter observation-source failure terminates its current
-watches with the original error. A later watch on that connection remains
-refused until fresh valid native observation evidence recovers the source;
-a successful snapshot getter alone does not recover an event source. Reconnect
-creates a new source generation. Events accepted during the initial watch
-probe keep their native order and replace the delayed probe answer. Native
-queue loss triggers reconciliation, and samples retained from before that
-reconciliation are counted as discarded rather than published afterward as
-newer observations.
+## Connection observation ownership
+
+A connection-parameter source failure ends its current watches with the
+original error. A failed callback getter can be transient while its native
+listener remains registered: a new watch performs a fresh native probe and
+can recover that older fault. A newer fault arriving during the probe wins,
+even when it has the same error fields. An ordinary snapshot read does not
+clear source health. A closed source, or a source retired because its bounded
+queue could not establish continuity, remains refused until a new valid source
+observation or connection generation exists.
+
+Events accepted during watch acquisition replace its delayed initial answer
+and retain their native order. Native queue loss establishes a bounded source
+boundary before reconciliation: older values cannot follow the current
+snapshot as newer observations, but retained source failures keep their exact
+cause, peer and connection generation. A second overrun during Tauri
+reconciliation ends that stream explicitly rather than inventing continuity.
+
+CoreBluetooth readiness polling follows the same ordering rule. A readiness
+event accepted while a periodic probe or gap reread is pending supersedes both
+its delayed value and its delayed error. Watch close and link loss retire the
+probe's publication right and its retry timer.
+
+### Windows PHY observation
+
+On Windows 11 build 22000 or later, `connection.controls.readPhy()` reads the
+current transmit and receive PHY separately through `GetConnectionPhy` when
+the API is present at runtime. The capability is limited to observation:
+`requestPhy()` and connection-time preferred PHY selection remain unsupported.
+An absent API reports `capability.unavailable` with
+`winrt-connection-phy-requires-windows-11-22000`; a disconnected all-false
+native answer reports link loss, never an invented default PHY. Node, Bun,
+Electron and Tauri use this same measured route. Compilation and synthetic
+routing tests remain distinct from physical PHY qualification.
 
 ### Interrupted Windows discovery
 

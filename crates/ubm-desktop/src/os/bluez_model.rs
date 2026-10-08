@@ -260,8 +260,11 @@ pub struct BluezCharacteristic {
 #[must_use]
 pub fn gatt_handle(path: &str) -> Option<u64> {
     let segment = path.rsplit('/').next()?;
-    let digits = segment.trim_start_matches(|c: char| c.is_ascii_lowercase());
-    if digits.is_empty() || digits.len() == segment.len() {
+    let digits = segment
+        .strip_prefix("service")
+        .or_else(|| segment.strip_prefix("char"))
+        .or_else(|| segment.strip_prefix("desc"))?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
     u64::from_str_radix(digits, 16).ok()
@@ -377,6 +380,40 @@ pub fn link_mtu(characteristics: &[BluezCharacteristic]) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gatt_hex_suffix_is_preserved_after_exact_prefix() {
+        for prefix in ["service", "char", "desc"] {
+            for (suffix, expected) in [
+                ("0001", 1),
+                ("a001", 0xa001),
+                ("abcd", 0xabcd),
+                ("ffff", 0xffff),
+            ] {
+                assert_eq!(
+                    super::gatt_handle(&format!("/org/bluez/hci0/dev_AA/{prefix}{suffix}")),
+                    Some(expected)
+                );
+            }
+        }
+        for segment in [
+            "a001",
+            "unknowna001",
+            "service",
+            "charxyz",
+            "desc-1",
+            "service+a001",
+        ] {
+            assert_eq!(
+                super::gatt_handle(&format!("/org/bluez/hci0/dev_AA/{segment}")),
+                None
+            );
+        }
+        assert_ne!(
+            super::gatt_handle("/char0001"),
+            super::gatt_handle("/chara001")
+        );
+    }
+
     #[test]
     fn known_inventory_is_adapter_scoped_and_le_state_does_not_borrow_classic_connectivity() {
         let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
@@ -675,6 +712,40 @@ mod tests {
         );
         assert_eq!(link_mtu(&characteristics), Some(247));
         assert_eq!(link_mtu(&characteristics[1..]), None);
+    }
+
+    #[test]
+    fn high_handles_keep_discovery_and_acquired_route_identity_distinct() {
+        let service = "/org/bluez/hci0/dev_AA/servicea000";
+        let services = HashMap::from([(service.to_owned(), "svc".to_owned())]);
+        let characteristics: Vec<_> = ["char0001", "chara001", "charffff"]
+            .into_iter()
+            .map(|suffix| BluezCharacteristic {
+                path: format!("{service}/{suffix}"),
+                service_path: service.to_owned(),
+                uuid: "same".to_owned(),
+                flags: vec!["write-without-response".to_owned(), "notify".to_owned()],
+                mtu: Some(247),
+            })
+            .collect();
+        let access = access_for_instances("peer", &services, &characteristics);
+        assert_eq!(access.len(), 3);
+        for (occurrence, suffix) in ["char0001", "chara001", "charffff"].into_iter().enumerate() {
+            let scope = (
+                "peer".to_owned(),
+                "svc".to_owned(),
+                0,
+                "same".to_owned(),
+                u64::try_from(occurrence).unwrap(),
+            );
+            assert!(access.contains_key(&scope));
+            assert_eq!(
+                characteristic_for_instance(&scope, &services, &characteristics)
+                    .unwrap()
+                    .path,
+                format!("{service}/{suffix}")
+            );
+        }
     }
 
     #[test]

@@ -104,6 +104,12 @@ pub fn connection_parameters_api_present() -> Result<bool> {
     Ok(getter && events)
 }
 
+pub fn connection_phy_api_present() -> Result<bool> {
+    use windows::core::HSTRING;
+    use windows::Foundation::Metadata::ApiInformation;
+    ApiInformation::IsMethodPresent(&HSTRING::from("Windows.Devices.Bluetooth.BluetoothLEDevice"), &HSTRING::from("GetConnectionPhy")).map_err(Error::from)
+}
+
 pub fn preferred_parameters_api_present() -> Result<bool> {
     use windows::core::HSTRING;
     use windows::Foundation::Metadata::ApiInformation;
@@ -465,6 +471,17 @@ impl BLEDevice {
             status,
             att_error,
         ))
+    }
+
+    pub fn get_connection_phy(&self) -> Result<crate::connection_phy_source::ConnectionPhy> {
+        if !connection_phy_api_present()? {
+            return Err(Error::Platform(crate::PlatformError::new("winrt", "winrt-connection-phy-requires-windows-11-22000", "GetConnectionPhy is absent; Windows 11 build 22000 or newer is required")));
+        }
+        let phy = self.device.GetConnectionPhy().map_err(Error::from)?;
+        let read = |info: windows::Devices::Bluetooth::BluetoothLEConnectionPhyInfo| {
+            crate::connection_phy_source::direction(info.IsUncoded1MPhy().map_err(Error::from)?, info.IsUncoded2MPhy().map_err(Error::from)?, info.IsCodedPhy().map_err(Error::from)?)
+        };
+        Ok(crate::connection_phy_source::ConnectionPhy { tx: read(phy.TransmitInfo().map_err(Error::from)?)?, rx: read(phy.ReceiveInfo().map_err(Error::from)?)? })
     }
 
     pub fn get_connection_parameters(&self) -> Result<crate::api::ConnectionParameters> {

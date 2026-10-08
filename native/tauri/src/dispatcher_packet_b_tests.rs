@@ -6588,3 +6588,65 @@ async fn readiness_write_uses_the_owned_native_route_and_reports_unconfirmed_acc
         .expect_err("wrong mode");
     assert_eq!(error.code, BleErrorCode::ArgumentInvalid);
 }
+
+#[tokio::test]
+async fn phy_snapshot_dispatch_preserves_distinct_native_directions() {
+    let harness = Harness::new().await;
+    let link = harness.connect("observed-phy-peer").await;
+    harness.radio().set_connection_phy(
+        "observed-phy-peer",
+        ubm_desktop::boundary::ObservedConnectionPhy {
+            tx_phy: ubm_desktop::boundary::BlePhy::Le2M,
+            rx_phy: ubm_desktop::boundary::BlePhy::LeCoded,
+        },
+    );
+    let value = harness
+        .execute(
+            "connection.phy",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text(&value, "txPhy"), "le-2m");
+    assert_eq!(text(&value, "rxPhy"), "le-coded");
+    assert_eq!(text(&value, "connectionId"), link.connection_id);
+    assert_eq!(count(&harness.radio().calls(), "connection_phy"), 1);
+}
+
+#[tokio::test]
+async fn phy_snapshot_preserves_native_refusal_and_stale_owner_admission() {
+    let harness = Harness::new().await;
+    let link = harness.connect("phy-unavailable-peer").await;
+    let error = harness
+        .execute(
+            "connection.phy",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, BleErrorCode::CapabilityUnsupported);
+    assert_eq!(count(&harness.radio().calls(), "connection_phy"), 1);
+    harness
+        .execute(
+            "connection.disconnect",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert!(harness
+        .execute(
+            "connection.phy",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded()
+        )
+        .await
+        .is_err());
+    assert_eq!(count(&harness.radio().calls(), "connection_phy"), 1);
+}

@@ -123,15 +123,17 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 
 ## Policy, security, and process
 
-| Document                                                                                                     | What it is                                                   | Status     |
-| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ | ---------- |
-| [`review/RC21_REMEDIATION.md`](review/RC21_REMEDIATION.md)                                                   | PR #251 second-review remediation and verification ledger    | Current    |
-| [`review/RC21_END_TO_END_AUDIT.md`](review/RC21_END_TO_END_AUDIT.md)                                         | Source reread and scope of the final combined verification   | Current    |
-| [`review/RC21_BLUEZ_LIVE_QUALIFICATION_PLAN.md`](review/RC21_BLUEZ_LIVE_QUALIFICATION_PLAN.md)               | Prepared lab daemon activation, rollback and live-test scope | Current    |
-| [`review/rc21-round2/REVIEW.md`](review/rc21-round2/REVIEW.md)                                               | Immutable second-review findings at b80542f3                 | Historical |
-| [`review/rc21-round2/AGENT_HANDOFF.md`](review/rc21-round2/AGENT_HANDOFF.md)                                 | Immutable second-review implementation handoff               | Historical |
-| [`review/rc21-round2/final-batch-evidence/README.md`](review/rc21-round2/final-batch-evidence/README.md)     | Final runtime qualification and retained failures            | Current    |
-| [`review/rc21-round2/twelfth-batch-evidence/README.md`](review/rc21-round2/twelfth-batch-evidence/README.md) | Frozen candidate receipts and remaining Windows failure      | Historical |
+| Document                                                                                                     | What it is                                                            | Status     |
+| ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- | ---------- |
+| [`review/RC21_REMEDIATION.md`](review/RC21_REMEDIATION.md)                                                   | PR #251 second-review remediation and verification ledger             | Current    |
+| [`review/RC21_END_TO_END_AUDIT.md`](review/RC21_END_TO_END_AUDIT.md)                                         | Source reread and scope of the final combined verification            | Current    |
+| [`review/RC21_BLUEZ_LIVE_QUALIFICATION_PLAN.md`](review/RC21_BLUEZ_LIVE_QUALIFICATION_PLAN.md)               | Prepared lab daemon activation, rollback and live-test scope          | Current    |
+| [`review/rc21-round3/VERIFICATION.md`](review/rc21-round3/VERIFICATION.md)                                   | Immutable round-three independent finding verification                | Historical |
+| [`review/rc21-round3/REMEDIATION.md`](review/rc21-round3/REMEDIATION.md)                                     | Current round-three acceptance mapping and frozen verification status | Current    |
+| [`review/rc21-round2/REVIEW.md`](review/rc21-round2/REVIEW.md)                                               | Immutable second-review findings at b80542f3                          | Historical |
+| [`review/rc21-round2/AGENT_HANDOFF.md`](review/rc21-round2/AGENT_HANDOFF.md)                                 | Immutable second-review implementation handoff                        | Historical |
+| [`review/rc21-round2/final-batch-evidence/README.md`](review/rc21-round2/final-batch-evidence/README.md)     | Final runtime qualification and retained failures                     | Current    |
+| [`review/rc21-round2/twelfth-batch-evidence/README.md`](review/rc21-round2/twelfth-batch-evidence/README.md) | Frozen candidate receipts and remaining Windows failure               | Historical |
 
 | Document                                                                               | What it is                                                                                                                        | Status     |
 | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------- |

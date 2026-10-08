@@ -100,6 +100,9 @@ pub struct ValueNotification {
     pub service_instance: u64,
     /// The new value of the characteristic.
     pub value: Vec<u8>,
+    /// A native value callback failed. The bytes are not a successful empty
+    /// notification; the exact attribute owner must terminalize its source.
+    pub source_failure: Option<crate::PlatformError>,
     /// UBM patch (UBM_PATCHES.md #10): notifications of this peripheral
     /// that this stream's receiver missed immediately before this one,
     /// because it fell behind the platform's bounded notification broadcast

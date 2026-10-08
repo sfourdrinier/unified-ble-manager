@@ -164,3 +164,118 @@ test('initial buffering overflow reports the source fault rather than a stale co
   await expect(opening).rejects.toMatchObject({ normalized: { code: 'stream.overflow' } })
   expect(fixture.backend.parameterWatches.size).toBe(0)
 })
+
+test('a fresh watch retries transient source failure without waiting for a changed event', async () => {
+  const fixture = pendingProbe()
+  fixture.backend.applyConnectionParameters({
+    kind: 'source-failed',
+    peerId: 'peer',
+    connectionGeneration: 'native-generation',
+    error: 'platform.failure|platform|native.parameter-getter|never|||transient'
+  })
+  const opening = fixture.backend.watchConnectionParameters(fixture.record.path)
+  fixture.resolve({ intervalUs: 90_000, latency: 2, supervisionTimeoutUs: 4_000_000 })
+  const watch = await opening
+  expect(fixture.record.parameterSourceFailure).toBeNull()
+  expect((await watch.events[Symbol.asyncIterator]().next()).value.value.intervalUs).toBe(90_000)
+  await watch.close()
+})
+
+test('a newer identical transient failure beats a pending recovery probe', async () => {
+  const fixture = pendingProbe()
+  const failure = {
+    kind: 'source-failed',
+    peerId: 'peer',
+    connectionGeneration: 'native-generation',
+    error: 'platform.failure|platform|native.parameter-getter|never|||transient'
+  }
+  fixture.backend.applyConnectionParameters(failure)
+  const opening = fixture.backend.watchConnectionParameters(fixture.record.path)
+  fixture.backend.applyConnectionParameters(failure)
+  fixture.resolve({ intervalUs: 90_000, latency: 2, supervisionTimeoutUs: 4_000_000 })
+  await expect(opening).rejects.toMatchObject({ normalized: { code: 'platform.failure' } })
+  expect(fixture.record.parameterSourceFailure.code).toBe('platform.failure')
+})
+
+test.each([false, true])('readiness reprobe discards stale %s outcome after a newer event', async failed => {
+  const fixture = pendingProbe()
+  fixture.backend.readinessWatches = new Set()
+  fixture.backend.destroyed = false
+  fixture.backend.central.writeReadiness = async () => false
+  const publicWatch = await fixture.backend.writeWithoutResponseReadiness(fixture.record.path)
+  const owned = [...fixture.backend.readinessWatches][0]
+  let settle, refuse
+  fixture.backend.central.writeReadiness = () =>
+    new Promise((yes, no) => {
+      settle = yes
+      refuse = no
+    })
+  const probing = fixture.backend.reprobeReadiness(owned)
+  fixture.backend.applyWriteReadiness({
+    kind: 'state',
+    peerId: 'peer',
+    connectionGeneration: 'native-generation',
+    ready: true
+  })
+  if (failed) refuse(new Error('stale failure'))
+  else settle(false)
+  await probing
+  expect(owned.ready).toBe(true)
+  expect(owned.ordinal).toBe(2)
+  expect(fixture.backend.readinessWatches.has(owned)).toBe(true)
+  await publicWatch.close()
+})
+
+test('queued native readiness during a pending gap probe supersedes the getter before publication', async () => {
+  const fixture = pendingProbe()
+  fixture.backend.readinessWatches = new Set()
+  fixture.backend.destroyed = false
+  fixture.backend.noteDiagnostic = () => {}
+  fixture.backend.central.writeReadiness = async () => false
+  const watch = await fixture.backend.writeWithoutResponseReadiness(fixture.record.path)
+  const owned = [...fixture.backend.readinessWatches][0]
+  let settle
+  fixture.backend.central.writeReadiness = () =>
+    new Promise(resolve => {
+      settle = resolve
+    })
+  const events = []
+  fixture.backend.central.takeWriteReadinessEvent = async () => events.shift() ?? null
+  const probing = fixture.backend.reconcileWriteReadiness(1)
+  events.push({ kind: 'state', peerId: 'peer', connectionGeneration: 'native-generation', ready: true })
+  settle(false)
+  await probing
+  expect(owned.ready).toBe(true)
+  expect(owned.ordinal).toBe(2)
+  await watch.close()
+})
+
+test('parameter reconciliation preserves a queued source failure before publishing the healthy scalar', async () => {
+  const fixture = pendingProbe()
+  fixture.backend.noteDiagnostic = () => {}
+  fixture.resolve({ intervalUs: 30_000, latency: 2, supervisionTimeoutUs: 4_000_000 })
+  const publicWatch = await fixture.backend.watchConnectionParameters(fixture.record.path)
+  const watch = [...fixture.backend.parameterWatches][0]
+  fixture.backend.central.connectionParameters = async () => ({
+    intervalUs: 90_000,
+    latency: 2,
+    supervisionTimeoutUs: 4_000_000
+  })
+  const events = [
+    {
+      kind: 'source-failed',
+      peerId: 'peer',
+      connectionGeneration: 'native-generation',
+      error: 'platform.failure|platform|original.callback|never|||retained cause'
+    }
+  ]
+  fixture.backend.central.takeConnectionParameterEvent = async () => events.shift() ?? null
+  await fixture.backend.reconcileConnectionParameters(1)
+  expect(watch.ordinal).toBe(1)
+  expect(watch.failure).toMatchObject({
+    code: 'platform.failure',
+    platform: { metadata: { coreOperation: 'original.callback' } }
+  })
+  expect(fixture.backend.parameterWatches.size).toBe(0)
+  await publicWatch.close()
+})

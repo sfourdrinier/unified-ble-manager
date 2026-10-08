@@ -54,6 +54,8 @@ async fn opened() -> (
     let (host, _) = open(&radio, MobilePlatform::Apple).await;
     let session = host.open_session("readiness-owner").unwrap();
     host.ingest(RadioIngress::Advertisement(Advertisement {
+        capture_timestamp_ms: None,
+        cached_name: None,
         peer_id: POLAR.into(),
         ..Advertisement::default()
     }));

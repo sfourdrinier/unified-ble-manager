@@ -164,19 +164,20 @@ pub(super) async fn publish_connection_parameter_source<B>(
         Some(peer_key) => inner.core.lock().await.connection_generation(&peer_key),
         None => None,
     };
+    let sequence = inner
+        .connection_parameters_sequence
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
     if let Some(error) = &error
         && connection_generation.is_some()
     {
         lock_std(&inner.parameter_source_failures).insert(
             peer_id.to_owned(),
-            (connection_generation.clone(), error.clone()),
+            (connection_generation.clone(), error.clone(), sequence),
         );
     }
     let event = ConnectionParametersEvent {
-        sequence: inner
-            .connection_parameters_sequence
-            .fetch_add(1, Ordering::SeqCst)
-            + 1,
+        sequence,
         peer_id: peer_id.to_owned(),
         connection_generation,
         interval_us: 0,
@@ -467,20 +468,18 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         self.inner.connection_parameters.subscribe()
     }
 
-    /// A failed observation source is not recovered by a snapshot getter.
-    /// Fresh native events or a new connection generation can recover it.
+    /// The current generation's retained observation-source failure.
     pub async fn connection_parameter_source_failure(&self, peer: &str) -> Option<DesktopError> {
         let key = self.inner.peers.lock().await.get(peer).cloned()?;
         let current = self.inner.core.lock().await.connection_generation(&key);
         lock_std(&self.inner.parameter_source_failures)
             .get(peer)
-            .filter(|(generation, _)| generation.is_some() && *generation == current)
-            .map(|(_, error)| error.clone())
+            .filter(|(generation, _, _)| generation.is_some() && *generation == current)
+            .map(|(_, error, _)| error.clone())
     }
 
-    /// The watch's snapshot cannot recover an already failed native event
-    /// source. Keep this admission in Rust so early failures do not depend on
-    /// whether the host has published its connection wrapper yet.
+    /// Fresh watch admission retries transient callback getter faults; a closed
+    /// source remains terminal. Fault revisions prevent clearing a newer error.
     pub async fn connection_parameters_watch_initial(
         &self,
         peer_id: &str,
@@ -493,12 +492,39 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let key = self.known_peer_key(peer_id).await?;
         self.require_connected_lease(&key, lease, "connection.parameters")
             .await?;
-        if let Some(error) = self.connection_parameter_source_failure(peer_id).await {
-            return Err(error);
+        let generation = self.inner.core.lock().await.connection_generation(&key);
+        let previous = lock_std(&self.inner.parameter_source_failures)
+            .get(peer_id)
+            .cloned()
+            .filter(|(owner, _, _)| owner.is_some() && *owner == generation);
+        if let Some((_, error, _)) = &previous
+            && matches!(
+                error.code(),
+                BleErrorCode::StreamClosed | BleErrorCode::StreamQuota
+            )
+        {
+            return Err(error.clone());
         }
         let measured = self.connection_parameters(peer_id, lease, ctl).await?;
-        if let Some(error) = self.connection_parameter_source_failure(peer_id).await {
-            return Err(error);
+        self.require_connected_lease(&key, lease, "connection.parameters")
+            .await?;
+        if self.inner.core.lock().await.connection_generation(&key) != generation {
+            return Err(contract_error(
+                BleErrorCode::ConnectionStale,
+                BleErrorDomain::Connection,
+                "connection.parameters",
+            ));
+        }
+        let mut failures = lock_std(&self.inner.parameter_source_failures);
+        if let Some(current) = failures.get(peer_id)
+            && current.0 == generation
+        {
+            if previous.as_ref().map(|old| old.2) != Some(current.2) {
+                return Err(current.1.clone());
+            }
+            // A fresh successful getter validates a still-registered source
+            // after a transient callback failure. A newer fault always wins.
+            failures.remove(peer_id);
         }
         Ok(measured)
     }
@@ -1196,7 +1222,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// Lease admission shared with [`DesktopCentral::read_rssi`]: no record
     /// is `connection.not-found`, a foreign lease `ownership.denied`, a link
     /// that is not connected `connection.stale`.
-    async fn require_connected_lease(
+    pub(super) async fn require_connected_lease(
         &self,
         peer_key: &str,
         lease: &str,

@@ -240,3 +240,10 @@ atomically. Event-only peer broadcasts are not cached as current-link snapshots.
 preserve their controller status and terminate watches even when native
 cleanup fails. See [mobile encryption observations](MOBILE_RUST_WIRE.md#android-encryption-observations)
 for runtime floors, correlation, permissions and qualification limits.
+
+A transient Android security source failure ends the affected existing watches,
+but does not bar a later explicit `state()` or fresh `watch()` probe. A successful
+fresh answer retires the older fault in both provider and native reconciliation;
+a newer failure arriving during the probe remains authoritative. Recovery never
+reopens an already-terminal watch, and a still-refused native probe reports its
+own current error.

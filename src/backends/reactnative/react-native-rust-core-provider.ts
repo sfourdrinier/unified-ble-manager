@@ -2388,7 +2388,14 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         address
       }),
       provenance: 'platform-derived' as const,
-      sourceTimestamp: present<SourceTimestamp>(null, 'the owner clock is not the host monotonic clock'),
+      sourceTimestamp: present<SourceTimestamp>(
+        Object.freeze({
+          monotonicMs: monotonicTimestamp(record.sourceTimestampMs ?? record.observedAtMs),
+          origin: record.sourceTimestampMs === null ? 'backend' : 'platform',
+          clockScope: `react-native-${record.sourceTimestampMs === null ? 'owner' : 'platform'}-clock:${String(this.backendInstanceId)}`
+        }),
+        'not reported by the platform'
+      ),
       receivedAtMonotonicMs: monotonicTimestamp(receivedAt),
       ingressOrdinal,
       scanSessionId,

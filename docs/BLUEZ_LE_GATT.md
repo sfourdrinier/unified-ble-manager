@@ -280,3 +280,11 @@ reverified, even when the daemon's ready token is unchanged.
 The existing Linux private-bus CI lane tests the consumer and daemon extension.
 Source tests do not promote a backend evidence label. See the generated
 [platform support evidence](generated/PLATFORM_SUPPORT.md) for retained claims.
+
+Classic (`BDADDR_BREDR`) Pair requests do not admit, commit or roll back LE
+interests. Pair selects its actual bearer before LE admission; only an accepted
+LE Pair protects the LE attachment while pending and through its committed
+lifetime. The source-derived bearer controls exercise accepted, completed,
+refused and sender-death Classic requests alongside LE release and LE positive
+controls. These controlled daemon-function tests are separate from deployment
+and physical dual-bearer qualification of the exact regenerated patch.

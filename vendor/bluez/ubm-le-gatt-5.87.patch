@@ -671,10 +671,12 @@
  	adapter_auto_connect_add(device->adapter, device);
  
  	if (device->attrib) {
-@@ -2307,6 +2522,17 @@
- 	adapter_connect_list_add(device->adapter, device);
- }
+@@ -2305,6 +2520,17 @@
+ 	}
  
+ 	adapter_connect_list_add(device->adapter, device);
++}
++
 +void btd_device_quiesce_untrusted_auto_connect(struct btd_device *device)
 +{
 +	/* Device1.Disconnect uses this gate. A trusted device keeps its stored
@@ -684,11 +686,9 @@
 +		return;
 +	device->disable_auto_connect = TRUE;
 +	device_set_auto_connect(device, FALSE);
-+}
-+
+ }
+ 
  static DBusMessage *dev_disconnect(DBusConnection *conn, DBusMessage *msg,
- 							void *user_data)
- {
 @@ -2850,12 +3076,18 @@
  
  	if (bdaddr_type != BDADDR_BREDR) {
@@ -720,58 +720,42 @@
  		if (err < 0)
  			return btd_error_failed(msg, strerror(-err));
  
-@@ -3352,14 +3584,20 @@
- 	struct bonding_req *bonding;
- 	enum mgmt_io_capability io_cap;
- 	int err;
-+	if (!btd_ubm_le_admit(device, msg))
+@@ -3380,11 +3612,18 @@
+ 	} else {
+ 		bdaddr_type = device->bdaddr_type;
+ 	}
++
++	/* Select the actual bearer before touching LE admission or provenance. */
++	if (bdaddr_type != BDADDR_BREDR && !btd_ubm_le_admit(device, msg))
 +		return btd_error_in_progress(msg);
- 
- 	btd_device_set_temporary(device, false);
- 
--	if (!dbus_message_get_args(msg, NULL, DBUS_TYPE_INVALID))
-+	if (!dbus_message_get_args(msg, NULL, DBUS_TYPE_INVALID)) {
-+		btd_ubm_le_rollback(device, msg);
- 		return btd_error_invalid_args(msg);
-+	}
- 
--	if (device->bonding || device->connect)
-+	if (device->bonding || device->connect) {
-+		btd_ubm_le_rollback(device, msg);
- 		return btd_error_in_progress(msg);
-+	}
- 
- 	/* Only use this selection algorithms when device is combo
- 	 * chip. Otherwise, it will use the wrong bearer to establish
-@@ -3383,8 +3621,10 @@
  
  	state = get_state(device, bdaddr_type);
  
 -	if (state->bonded)
 +	if (state->bonded) {
-+		btd_ubm_le_rollback(device, msg);
++		if (bdaddr_type != BDADDR_BREDR)
++			btd_ubm_le_rollback(device, msg);
  		return btd_error_already_exists(msg);
 +	}
  
  	sender = dbus_message_get_sender(msg);
  
-@@ -3432,10 +3672,15 @@
+@@ -3432,10 +3671,14 @@
  	}
  
  	if (err < 0) {
-+		btd_ubm_le_rollback(device, msg);
++		if (bdaddr_type != BDADDR_BREDR)
++			btd_ubm_le_rollback(device, msg);
  		bonding_request_free(device->bonding);
  		return btd_error_failed(msg, strerror(-err));
  	}
  
-+	/* BR/EDR pairing has no later LE commit point. LE stays pending until
-+	 * device_bonding_complete reports status 0. */
-+	if (bdaddr_type == BDADDR_BREDR)
-+		btd_ubm_le_commit(device, msg);
++	/* Only LE admission remains pending until its bonding completion.
++	 * Classic pairing never owns or classifies the independent LE bearer. */
  	return NULL;
  }
  
-@@ -3831,6 +4076,9 @@
+@@ -3831,6 +4074,9 @@
  		btd_bearer_connected(dev->bredr, 0);
  	} else {
  		device_set_le_support(dev, bdaddr_type);
@@ -781,7 +765,7 @@
  		btd_bearer_connected(dev->le, 0);
  	}
  
-@@ -3943,6 +4191,11 @@
+@@ -3943,6 +4189,11 @@
  {
  	struct bearer_state *state = get_state(device, bdaddr_type);
  	DBusMessage *reply;
@@ -793,7 +777,7 @@
  	bool remove_device = false;
  	bool paired_status_updated = false;
  
-@@ -3950,6 +4203,10 @@
+@@ -3950,6 +4201,10 @@
  		return;
  
  	state->connected = false;
@@ -804,7 +788,7 @@
  	state->initiator = false;
  	device->general_connect = FALSE;
  
-@@ -3966,6 +4223,7 @@
+@@ -3966,6 +4221,7 @@
  	 */
  	if (device->connect) {
  		DBG("connection removed while Connect() is waiting reply");
@@ -812,7 +796,7 @@
  		reply = btd_error_failed(device->connect,
  						ERR_BREDR_CONN_CANCELED);
  		g_dbus_send_message(dbus_conn, reply);
-@@ -5009,6 +5267,11 @@
+@@ -5009,6 +5265,11 @@
  	}
  
  	device->adapter = adapter;
@@ -824,7 +808,7 @@
  	device->sirks = queue_new();
  	device->temporary = true;
  
-@@ -6202,6 +6465,8 @@
+@@ -6202,6 +6463,8 @@
  static void att_disconnected_cb(int err, void *user_data)
  {
  	struct btd_device *device = user_data;
@@ -833,7 +817,7 @@
  
  	DBG("");
  
-@@ -6263,11 +6528,17 @@
+@@ -6263,11 +6526,17 @@
  static void gatt_client_ready_cb(bool success, uint8_t att_ecode,
  								void *user_data)
  {
@@ -852,7 +836,7 @@
  		device_svc_resolved(device, BROWSE_GATT, device->bdaddr_type,
  									-EIO);
  		return;
-@@ -6276,6 +6547,10 @@
+@@ -6276,6 +6545,10 @@
  	register_gatt_services(device);
  
  	btd_gatt_client_ready(device->client_dbus);
@@ -863,7 +847,7 @@
  
  	device_svc_resolved(device, BROWSE_GATT, device->bdaddr_type, 0);
  
-@@ -6296,24 +6571,49 @@
+@@ -6296,24 +6569,49 @@
  static void gatt_debug(const char *str, void *user_data)
  {
  	DBG_IDX(0xffff, "%s", str);
@@ -920,7 +904,7 @@
  	features =  BT_GATT_CHRC_CLI_FEAT_ROBUST_CACHING
  				| BT_GATT_CHRC_CLI_FEAT_NFY_MULTI;
  	if (btd_opts.gatt_channels > 1)
-@@ -6324,15 +6624,29 @@
+@@ -6324,15 +6622,29 @@
  		bt_att_set_security(device->att, BT_ATT_SECURITY_MEDIUM);
  	}
  
@@ -951,7 +935,7 @@
  
  	/*
  	 * If we have cache, notify existing service about the new connection
-@@ -6343,10 +6657,13 @@
+@@ -6343,10 +6655,13 @@
  
  	device->gatt_ready_id = bt_gatt_client_ready_register(device->client,
  							gatt_client_ready_cb,
@@ -966,7 +950,7 @@
  		return;
  	}
  
-@@ -6355,6 +6672,7 @@
+@@ -6355,6 +6670,7 @@
  						device, NULL)) {
  		DBG("Failed to set service changed handler");
  		gatt_client_cleanup(device);
@@ -974,7 +958,7 @@
  		return;
  	}
  
-@@ -6433,6 +6751,7 @@
+@@ -6433,6 +6749,7 @@
  	BtIOSecLevel sec_level;
  	uint16_t mtu;
  	uint16_t cid;
@@ -982,7 +966,7 @@
  	struct btd_gatt_database *database;
  	const bdaddr_t *dst;
  	char dstaddr[18];
-@@ -6440,6 +6759,7 @@
+@@ -6440,6 +6757,7 @@
  	bt_io_get(io, &gerr, BT_IO_OPT_SEC_LEVEL, &sec_level,
  						BT_IO_OPT_IMTU, &mtu,
  						BT_IO_OPT_CID, &cid,
@@ -990,7 +974,7 @@
  						BT_IO_OPT_INVALID);
  
  	if (gerr) {
-@@ -6455,6 +6775,8 @@
+@@ -6455,6 +6773,8 @@
  		}
  
  		if (!bt_att_attach_fd(dev->att, g_io_channel_unix_get_fd(io))) {
@@ -999,7 +983,7 @@
  			DBG("EATT channel connected");
  			g_io_channel_set_close_on_unref(io, FALSE);
  			return true;
-@@ -6488,6 +6810,14 @@
+@@ -6488,6 +6808,14 @@
  
  	dev->attrib = attrib;
  	dev->att = g_attrib_get_att(attrib);
@@ -1014,7 +998,7 @@
  
  	bt_att_ref(dev->att);
  
-@@ -6594,9 +6924,10 @@
+@@ -6594,9 +6922,10 @@
  		btd_bearer_connected(device->le, err);
  
  	if (device->connect) {
@@ -1027,7 +1011,7 @@
  			reply = dbus_message_new_method_return(device->connect);
  
  		g_dbus_send_message(dbus_conn, reply);
-@@ -6612,6 +6943,8 @@
+@@ -6612,6 +6941,8 @@
  	GIOChannel *io;
  	GError *gerr = NULL;
  	char addr[18];
@@ -1036,7 +1020,7 @@
  
  	/* There is one connection attempt going on */
  	if (dev->att_io || dev->att)
-@@ -7308,6 +7641,8 @@
+@@ -7308,6 +7639,8 @@
  		agent_cancel(auth->agent);
  
  	if (status) {
@@ -1045,7 +1029,7 @@
  		device_cancel_authentication(device, TRUE);
  
  		/* Put the device back to the temporary state so that it will be
-@@ -7329,10 +7664,19 @@
+@@ -7329,10 +7662,19 @@
  		device_set_wake_allowed(device, true, -1U);
  
  	/* If we're already paired nothing more is needed */

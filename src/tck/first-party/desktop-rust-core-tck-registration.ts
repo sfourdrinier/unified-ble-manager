@@ -94,6 +94,11 @@ export interface DesktopRustCoreSyntheticRadio {
     reason?: string
   ): Promise<void>
   stageWriteReadiness(peerId: string, ready: boolean, announce?: boolean): Promise<void>
+  stageConnectionPhy(
+    peerId: string,
+    txPhy: 'le-1m' | 'le-2m' | 'le-coded',
+    rxPhy: 'le-1m' | 'le-2m' | 'le-coded'
+  ): Promise<void>
   stageConnectionParameters(
     peerId: string,
     intervalUs: number,
@@ -404,6 +409,7 @@ const SYNTHETIC_METHODS: readonly (keyof DesktopRustCoreSyntheticRadio)[] = Obje
   'stageSecurity',
   'stagePairOutcome',
   'stageWriteReadiness',
+  'stageConnectionPhy',
   'stageConnectionParameters',
   'blockRadioOp',
   'stagedRadioCalls'
@@ -592,6 +598,7 @@ async function seedSyntheticWorld(central: SyntheticCentral, nativePeerId: strin
   await central.stageRssi(nativePeerId, TCK_RSSI)
   await central.stageSecurity(nativePeerId, 'not-bonded', true)
   await central.stageWriteReadiness(nativePeerId, true)
+  await central.stageConnectionPhy(nativePeerId, 'le-2m', 'le-coded')
   await central.stageConnectionParameters(nativePeerId, 30_000, 2, 4_000_000, false)
 }
 

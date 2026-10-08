@@ -431,6 +431,7 @@ impl api::Peripheral for Peripheral {
                         uuid,
                         service_uuid,
                         value,
+                        source_failure: None,
                         lost_before: 0,
                     })
                 }

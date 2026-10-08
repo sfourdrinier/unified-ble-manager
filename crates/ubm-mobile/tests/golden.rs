@@ -244,6 +244,8 @@ async fn generate() -> String {
     r.invoke(&session, "scan start", "scan.start",
         json!({"serviceUuids": ["180D"], "duplicatePolicy": "all", "operationId": "scan-1", "budgetMs": 30000})).await;
     host.ingest(RadioIngress::Advertisement(Advertisement {
+        capture_timestamp_ms: None,
+        cached_name: None,
         peer_id: peer.to_owned(),
         address: Some(peer.to_owned()),
         local_name: Some("Polar H10 1234".to_owned()),
@@ -265,6 +267,8 @@ async fn generate() -> String {
         raw_record: Some(vec![0x02, 0x01, 0x06]),
     }));
     host.ingest(RadioIngress::Advertisement(Advertisement {
+        capture_timestamp_ms: None,
+        cached_name: None,
         peer_id: peer.to_owned(),
         address: None,
         local_name: None,

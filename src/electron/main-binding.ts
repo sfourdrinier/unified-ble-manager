@@ -377,19 +377,9 @@ export class ElectronMainBleBinding<Sender extends ElectronMainIpcSender> {
       this.acknowledge(rendererLeaseId, request.eventId)
       return { kind: 'event.ack' }
     }
-    let response: ElectronBleIpcSuccessResponse<string, string>
-    try {
-      response = await this.options.router.dispatch(trusted, request)
-    } catch (error) {
-      if (isRollbackReleaseRequiredError(error) && bound !== undefined) {
-        bound.releaseRequired = true
-        const cleanup = await this.releaseRendererAuthoritatively(rendererLeaseId, bound)
-        if (cleanup?.state === 'released') {
-          throw contractError('ownership.denied', 'ipc', 'electron-main-arbiter.renderer-registration')
-        }
-      }
-      throw error
-    }
+    // Failed operation compensation stays owned in the router. It must not
+    // revoke unrelated successful resources on this renderer lease.
+    const response = await this.options.router.dispatch(trusted, request)
     if (response.kind === 'release' && response.cleanup.state === 'released') {
       if (request.kind !== 'release') {
         throw contractError('lifecycle.invariant-violation', 'ipc', 'electron-main-binding.release-response')
@@ -1148,12 +1138,4 @@ function releaseFailureFromUnknown(error: unknown): CleanupRecord {
     state: 'release-failed',
     failures: [{ resourceKind: 'electron-renderer', error: normalized }]
   }
-}
-
-function isRollbackReleaseRequiredError(error: unknown): boolean {
-  return (
-    error instanceof BackendContractError &&
-    error.normalized.code === 'lifecycle.invalid-state' &&
-    error.normalized.operation === 'electron-main-router.rollback-release-required'
-  )
 }

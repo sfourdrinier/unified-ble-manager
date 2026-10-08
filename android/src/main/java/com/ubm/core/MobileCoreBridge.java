@@ -369,7 +369,7 @@ public final class MobileCoreBridge {
      * ABSENT_INT when not carried; rawRecord: the raw advertising bytes, or null
      * when not reported.
      */
-    public static native int nativeIngestAdvertisement(String peerId, String address, String localName, int rssi, int txPower, String[] serviceUuids, int[] companyIds, byte[][] manufacturerPayloads, String[] serviceDataUuids, byte[][] serviceDataPayloads, int connectable, String[] solicitedServiceUuids, String[] overflowServiceUuids, int appearance, byte[] rawRecord);
+    public static native int nativeIngestAdvertisement(String peerId, String address, String localName, int rssi, int txPower, String[] serviceUuids, int[] companyIds, byte[][] manufacturerPayloads, String[] serviceDataUuids, byte[][] serviceDataPayloads, int connectable, String[] solicitedServiceUuids, String[] overflowServiceUuids, int appearance, byte[] rawRecord, String cachedName, long captureTimestampMs);
 
     /** status: platform GATT status or ABSENT_INT. */
     public static native int nativeIngestConnection(String peerId, boolean connected, int status);

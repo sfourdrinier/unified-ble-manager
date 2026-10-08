@@ -40,7 +40,7 @@ use windows::{
 
 /// UBM patch (`winrt-attribute-instances`): shared so a live subscription
 /// can move to the characteristic object of a later discovery.
-pub type NotifyEventHandler = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
+pub type NotifyEventHandler = Arc<dyn Fn(std::result::Result<Vec<u8>, crate::PlatformError>) + Send + Sync>;
 
 impl From<WriteType> for GattWriteOption {
     fn from(val: WriteType) -> Self {
@@ -80,15 +80,18 @@ fn value_changed(
 ) -> TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs> {
     TypedEventHandler::new(
         move |_: Ref<GattCharacteristic>, args: Ref<GattValueChangedEventArgs>| {
-            if let Ok(args) = args.ok() {
+            let result = (|| -> windows::core::Result<Vec<u8>> {
+                let args = args.ok()?;
                 let value = args.CharacteristicValue()?;
                 let reader = DataReader::FromBuffer(&value)?;
                 let len = reader.UnconsumedBufferLength()? as usize;
                 let mut input: Vec<u8> = vec![0u8; len];
                 reader.ReadBytes(&mut input[0..len])?;
                 trace!("changed {:?}", input);
-                handler(input);
-            }
+                Ok(input)
+            })();
+            handler(result.map_err(|error| crate::PlatformError::new("winrt", "hresult", error.message().to_string())
+                .with("hresult", crate::winrtble::gatt_model::hresult_code(error.code().0))));
             Ok(())
         },
     )

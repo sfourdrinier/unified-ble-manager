@@ -90,8 +90,10 @@ fn publish_gatt(publication: &Mutex<PublishedGatt>, candidate: PublishedGatt) ->
 /// BlueZ's naming.
 pub(crate) fn handle_from_object_path(path: &str) -> Option<u64> {
     let segment = path.rsplit('/').next()?;
-    let digits = segment.trim_start_matches(|c: char| c.is_ascii_lowercase());
-    if digits.is_empty() || digits.len() == segment.len() {
+    let digits = segment.strip_prefix("service")
+        .or_else(|| segment.strip_prefix("char"))
+        .or_else(|| segment.strip_prefix("desc"))?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
     u64::from_str_radix(digits, 16).ok()
@@ -575,6 +577,7 @@ fn value_notification(
                 service_uuid: service.info.uuid,
                 service_instance: service.handle,
                 value,
+                source_failure: None,
                 lost_before: 0,
             })
         }
@@ -708,6 +711,19 @@ impl From<CharacteristicFlags> for CharPropFlags {
 
 #[cfg(test)]
 mod ubm_instance_tests {
+    #[test]
+    fn gatt_hex_suffix_is_preserved_after_exact_prefix() {
+        for prefix in ["service", "char", "desc"] {
+            for (suffix, expected) in [("0001", 1), ("a001", 0xa001), ("abcd", 0xabcd), ("ffff", 0xffff)] {
+                assert_eq!(super::handle_from_object_path(&format!("/org/bluez/hci0/dev_AA/{prefix}{suffix}")), Some(expected));
+            }
+        }
+        for segment in ["a001", "unknowna001", "service", "charxyz", "desc-1", "service+a001"] {
+            assert_eq!(super::handle_from_object_path(&format!("/org/bluez/hci0/dev_AA/{segment}")), None);
+        }
+        assert_ne!(super::handle_from_object_path("/char0001"), super::handle_from_object_path("/chara001"));
+    }
+
     use super::handle_from_object_path;
 
     #[test]

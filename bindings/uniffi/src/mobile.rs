@@ -985,6 +985,8 @@ pub fn ingress(value: MobileRadioIngress) -> Result<RadioIngress, String> {
     Ok(match value {
         MobileRadioIngress::Advertisement { advertisement } => {
             RadioIngress::Advertisement(Advertisement {
+                capture_timestamp_ms: None,
+                cached_name: None,
                 peer_id: advertisement.peer_id,
                 address: advertisement.address,
                 local_name: advertisement.local_name,

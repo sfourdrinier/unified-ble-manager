@@ -77,6 +77,8 @@ export function deviceIdentity<Attachment extends string>(
 export interface SourceTimestamp {
   readonly monotonicMs: MonotonicTimestamp
   readonly origin: 'platform' | 'backend'
+  /** Comparable only within this clock epoch; backend replacement creates a new scope. */
+  readonly clockScope?: string
 }
 export interface ServiceDataEntry {
   readonly serviceUuid: Uuid

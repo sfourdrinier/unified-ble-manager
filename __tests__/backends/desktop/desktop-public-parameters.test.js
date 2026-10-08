@@ -43,6 +43,16 @@ test('public parameter read and watch reach the inner NAPI radio', async () => {
     await observations.return?.()
     await scan.stop()
     connection = await manager.connect(peer)
+    await stage.stageConnectionPhy('parameter-peer', 'le-2m', 'le-coded')
+    await expect(connection.controls.readPhy()).resolves.toMatchObject({
+      state: 'measured',
+      tx: 'le-2m',
+      rx: 'le-coded'
+    })
+    expect(harness.calls.some(([method]) => method === 'readPhy')).toBe(true)
+    await expect(connection.controls.requestPhy({ tx: 'le-1m' })).rejects.toMatchObject({
+      code: 'capability.unsupported'
+    })
     for (const priority of ['balanced', 'low-power', 'high-throughput']) {
       await expect(connection.controls.requestPriority(priority)).resolves.toMatchObject({
         state: 'accepted',

@@ -141,6 +141,8 @@ import type {
   ConnectionParametersStreamObservation,
   ConnectionParametersWatch,
   ConnectionPriorityRequest,
+  ConnectionPhyObservation,
+  ReadPhyRequest,
   RequestPriorityRequest,
   ConnectionWriteReadinessObservation,
   ConnectionWriteReadinessWatch,
@@ -970,6 +972,7 @@ interface ConnectionRecord {
   readonly path: ConnectionPath<string, string>
   state: 'connected' | 'disconnecting' | 'disconnected' | 'lost'
   parameterSourceFailure?: NormalizedBleError | null
+  parameterSourceRevision?: number
   releasePlatform?: PlatformErrorDetail
   requestedTerminalAnnounced?: boolean
   requestedDisconnect?: boolean
@@ -1267,6 +1270,14 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
               connection: BackendConnection<string, string>,
               request: EffectiveMtuRequest<string, Operation>
             ) => this.effectiveMtu(connection, request)
+          }
+        : {}),
+      ...(this.wiring.phy
+        ? {
+            readPhy: <Operation extends string>(
+              connection: BackendConnection<string, string>,
+              request: ReadPhyRequest<string, Operation>
+            ) => this.readPhy(connection, request)
           }
         : {}),
       ...(this.wiring.priority
@@ -2947,7 +2958,12 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const operation = this.op('connection.parameters')
     this.assertOperational(operation)
     const record = this.liveConnection(connection, operation)
-    if (record.parameterSourceFailure != null) throw new BackendContractError(record.parameterSourceFailure)
+    if (
+      record.parameterSourceFailure?.code === 'stream.closed' ||
+      record.parameterSourceFailure?.code === 'stream.quota'
+    )
+      throw new BackendContractError(record.parameterSourceFailure)
+    const sourceRevision = record.parameterSourceRevision ?? 0
     const correlation = String(this.mintedCorrelation())
     const stream = new CoreBoundedStream<ConnectionParametersStreamObservation<string>>(
       { itemCapacity: capacity(64), byteCapacity: capacity(16 * 1024), reservedControlCapacity: capacity(1) },
@@ -2993,6 +3009,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       if (watch.failure !== null) throw new BackendContractError(watch.failure)
       throw contractError('connection.stale', 'connection', `${operation}.closed`)
     }
+    if ((record.parameterSourceRevision ?? 0) === sourceRevision) record.parameterSourceFailure = null
     watch.probed = true
     // Native events accepted while the getter was pending have an established
     // source order. The delayed getter has no comparable capture ordinal.
@@ -3085,8 +3102,10 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         record.state === 'connected' &&
         record.nativePeerId === event.peerId &&
         record.coreGeneration === event.connectionGeneration
-      )
+      ) {
+        record.parameterSourceRevision = (record.parameterSourceRevision ?? 0) + 1
         record.parameterSourceFailure = sourceFailure
+      }
     }
     for (const watch of [...this.parameterWatches]) {
       if (watch.record.nativePeerId !== event.peerId) continue
@@ -3119,6 +3138,36 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
   }
 
+  private async acceptParameterReportsDuringProbe(watch: ParameterWatch): Promise<void> {
+    if (typeof this.central.takeConnectionParameterEvent !== 'function') return
+    try {
+      for (let count = 0; count <= 4096; count += 1) {
+        const event = await this.central.takeConnectionParameterEvent()
+        if (event == null) return
+        if (event.kind === 'lagged') {
+          this.closeParameterWatch(
+            watch,
+            'source-failed',
+            contractError('stream.overflow', 'stream', this.op('connection.parameters.concurrent-gap')).normalized
+          )
+          return
+        }
+        this.applyConnectionParameters(event)
+      }
+      this.closeParameterWatch(
+        watch,
+        'source-failed',
+        contractError('stream.quota', 'stream', this.op('connection.parameters.probe-fence')).normalized
+      )
+    } catch (error) {
+      this.closeParameterWatch(
+        watch,
+        'source-failed',
+        desktopRustCoreError(error, this.op('connection.parameters.probe-fence')).normalized
+      )
+    }
+  }
+
   private async reconcileConnectionParameters(missed: number | null): Promise<void> {
     this.noteDiagnostic(
       'connection-parameter-events-lagged',
@@ -3130,18 +3179,30 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         this.closeParameterWatch(watch, 'connection-lost')
         continue
       }
+      const revision = watch.ordinal
+      const generation = watch.record.coreGeneration
       try {
         const measured = await this.central.connectionParameters({
           peerId: watch.record.nativePeerId,
-          lease: watch.record.lease
+          lease: watch.record.lease,
+          observationWatch: true
         })
-        if (this.parameterWatches.has(watch)) this.emitConnectionParameters(watch, measured)
-      } catch (error) {
-        this.closeParameterWatch(
-          watch,
-          'source-failed',
-          desktopRustCoreError(error, this.op('connection.parameters.reconcile')).normalized
+        await this.acceptParameterReportsDuringProbe(watch)
+        if (
+          this.parameterWatches.has(watch) &&
+          watch.ordinal === revision &&
+          watch.record.coreGeneration === generation &&
+          watch.record.state === 'connected'
         )
+          this.emitConnectionParameters(watch, measured)
+      } catch (error) {
+        await this.acceptParameterReportsDuringProbe(watch)
+        if (watch.ordinal === revision && watch.record.coreGeneration === generation)
+          this.closeParameterWatch(
+            watch,
+            'source-failed',
+            desktopRustCoreError(error, this.op('connection.parameters.reconcile')).normalized
+          )
       }
     }
   }
@@ -3280,6 +3341,36 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }, 100)
   }
 
+  private async acceptReadinessReportsDuringProbe(watch: ReadinessWatch): Promise<void> {
+    if (typeof this.central.takeWriteReadinessEvent !== 'function') return
+    try {
+      for (let count = 0; count <= 4096; count += 1) {
+        const event = await this.central.takeWriteReadinessEvent()
+        if (event == null) return
+        if (event.kind === 'lagged') {
+          this.closeReadinessWatch(
+            watch,
+            'source-failed',
+            contractError('stream.overflow', 'stream', this.op('connection.write-readiness.concurrent-gap')).normalized
+          )
+          return
+        }
+        this.applyWriteReadiness(event)
+      }
+      this.closeReadinessWatch(
+        watch,
+        'source-failed',
+        contractError('stream.quota', 'stream', this.op('connection.write-readiness.probe-fence')).normalized
+      )
+    } catch (error) {
+      this.closeReadinessWatch(
+        watch,
+        'source-failed',
+        desktopRustCoreError(error, this.op('connection.write-readiness.probe-fence')).normalized
+      )
+    }
+  }
+
   private async reprobeReadiness(watch: ReadinessWatch): Promise<void> {
     if (!this.readinessWatches.has(watch) || this.destroyed || watch.ready || !watch.probed) return
     if (watch.signal?.aborted === true) return
@@ -3288,11 +3379,19 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       this.closeReadinessWatch(watch, 'connection-lost')
       return
     }
+    const revision = watch.ordinal
+    const generation = watch.record.coreGeneration
     let ready: boolean
     try {
       ready = await this.central.writeReadiness({ peerId: watch.record.nativePeerId, lease: watch.record.lease })
+      await this.acceptReadinessReportsDuringProbe(watch)
     } catch (error) {
-      if (this.readinessWatches.has(watch)) {
+      await this.acceptReadinessReportsDuringProbe(watch)
+      if (
+        this.readinessWatches.has(watch) &&
+        watch.ordinal === revision &&
+        watch.record.coreGeneration === generation
+      ) {
         this.closeReadinessWatch(
           watch,
           'source-failed',
@@ -3301,7 +3400,13 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       }
       return
     }
-    if (this.readinessWatches.has(watch)) this.emitReadiness(watch, ready)
+    if (
+      this.readinessWatches.has(watch) &&
+      watch.ordinal === revision &&
+      watch.record.coreGeneration === generation &&
+      watch.record.state === 'connected'
+    )
+      this.emitReadiness(watch, ready)
   }
 
   /**
@@ -3319,18 +3424,29 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         this.closeReadinessWatch(watch, 'connection-lost')
         continue
       }
+      const revision = watch.ordinal
+      const generation = watch.record.coreGeneration
       let ready: boolean
       try {
         ready = await this.central.writeReadiness({ peerId: watch.record.nativePeerId, lease: watch.record.lease })
+        await this.acceptReadinessReportsDuringProbe(watch)
       } catch (error) {
-        this.closeReadinessWatch(
-          watch,
-          'source-failed',
-          desktopRustCoreError(error, this.op('connection.write-readiness.reconcile')).normalized
-        )
+        await this.acceptReadinessReportsDuringProbe(watch)
+        if (watch.ordinal === revision && watch.record.coreGeneration === generation)
+          this.closeReadinessWatch(
+            watch,
+            'source-failed',
+            desktopRustCoreError(error, this.op('connection.write-readiness.reconcile')).normalized
+          )
         continue
       }
-      if (this.readinessWatches.has(watch)) this.emitReadiness(watch, ready)
+      if (
+        this.readinessWatches.has(watch) &&
+        watch.ordinal === revision &&
+        watch.record.coreGeneration === generation &&
+        watch.record.state === 'connected'
+      )
+        this.emitReadiness(watch, ready)
     }
   }
 
@@ -4005,6 +4121,34 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       return Object.freeze({ state: 'release-failed', failures: Object.freeze(childFailures) })
     }
     if (!['connected', 'disconnecting'].includes(record.state)) {
+      // Multiple public owners can share one native lease. A logical owner
+      // whose child cleanup is retried must not retire its survivor's lease.
+      // A distinct newer lease does not own this record's cleanup debt.
+      if (
+        this.liveLinkHolders(record.nativePeerId, record).some(
+          holder => holder.lease === record.lease && holder.coreGeneration === record.coreGeneration
+        )
+      ) {
+        return Object.freeze({ state: 'released', failures: Object.freeze([]) })
+      }
+      // Logical loss does not retire native discovery/session cleanup debt.
+      // The core visits only the exact terminal owner without disconnecting
+      // a newer live generation; refusal keeps this public retry route alive.
+      try {
+        const answer = await this.central.disconnect({ peerId: record.nativePeerId, lease: record.lease })
+        record.releasePlatform = parseDesktopRustCoreReleaseReport(answer, {
+          peerId: record.nativePeerId,
+          lease: record.lease,
+          connectionGeneration: record.coreGeneration
+        })
+      } catch (error) {
+        return Object.freeze({
+          state: 'release-failed',
+          failures: Object.freeze([
+            { resourceKind: 'connection', error: desktopRustCoreError(error, operation).normalized }
+          ])
+        })
+      }
       return Object.freeze({
         state: 'released',
         failures: Object.freeze([]),
@@ -4070,6 +4214,37 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       )
       return Object.freeze({
         rssi,
+        observedAtMonotonicMs: this.now(),
+        terminal: this.succeededTerminal(request.operation.correlation)
+      })
+    })()
+    return this.dispatchFor(correlation, completion)
+  }
+
+  private readPhy<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: ReadPhyRequest<string, Operation>
+  ): BackendOperationDispatch<string, ConnectionPhyObservation<string, Operation>> {
+    const operation = this.op('connection.read-phy')
+    this.assertOperational(operation)
+    const record = this.liveConnection(connection, operation)
+    const correlation = String(request.operation.correlation)
+    const completion = (async (): Promise<ConnectionPhyObservation<string, Operation>> => {
+      const result = await this.withTicket(correlation, request.operation.signal, operation, ticket =>
+        this.central.readPhy({
+          peerId: record.nativePeerId,
+          lease: record.lease,
+          ticket,
+          ...this.budget(request.operation)
+        })
+      )
+      const valid = (value: unknown): value is 'le-1m' | 'le-2m' | 'le-coded' =>
+        value === 'le-1m' || value === 'le-2m' || value === 'le-coded'
+      if (!valid(result.txPhy) || !valid(result.rxPhy))
+        throw contractError('protocol.violation', 'connection', operation)
+      return Object.freeze({
+        txPhy: result.txPhy,
+        rxPhy: result.rxPhy,
         observedAtMonotonicMs: this.now(),
         terminal: this.succeededTerminal(request.operation.correlation)
       })
@@ -5667,6 +5842,7 @@ export interface DesktopRustCoreWiring {
   readonly rssi: boolean
   readonly effectiveMtu: boolean
   readonly priority: boolean
+  readonly phy: boolean
   readonly scanPlatformOptions: boolean
   readonly maximumWriteLength: boolean
   readonly addressTargeting: boolean
@@ -5695,7 +5871,8 @@ export function desktopRustCoreWiring(states: readonly DesktopRustCoreCapability
           (row.id === BUILT_IN_FEATURE_IDS.connectionDirect ||
             row.id === BUILT_IN_FEATURE_IDS.backgroundDesktopMaintainConnection ||
             row.id === BUILT_IN_FEATURE_IDS.connectionParameters ||
-            row.id === BUILT_IN_FEATURE_IDS.connectionPriority)
+            row.id === BUILT_IN_FEATURE_IDS.connectionPriority ||
+            row.id === BUILT_IN_FEATURE_IDS.connectionPhy)
       )
     ),
     peerDirectory:
@@ -5707,6 +5884,7 @@ export function desktopRustCoreWiring(states: readonly DesktopRustCoreCapability
     rssi: usable.has(CORE_BACKED_FEATURES.rssi),
     effectiveMtu: usable.has(CORE_BACKED_FEATURES.effectiveMtu),
     priority: usable.has(BUILT_IN_FEATURE_IDS.connectionPriority),
+    phy: usable.has(BUILT_IN_FEATURE_IDS.connectionPhy),
     scanPlatformOptions: usable.has(BUILT_IN_FEATURE_IDS.scanPlatformOptions),
     maximumWriteLength: usable.has(CORE_BACKED_FEATURES.maximumWriteLength),
     addressTargeting: usable.has(CORE_BACKED_FEATURES.addressTargeting),
@@ -5760,10 +5938,13 @@ export function createDesktopRustCoreFeatureRegistry(
       | typeof BUILT_IN_FEATURE_IDS.backgroundDesktopMaintainConnection
       | typeof BUILT_IN_FEATURE_IDS.connectionParameters
       | typeof BUILT_IN_FEATURE_IDS.connectionPriority
+      | typeof BUILT_IN_FEATURE_IDS.connectionPhy
   ) => {
     const base = registration(
       id,
-      id === BUILT_IN_FEATURE_IDS.connectionParameters || id === BUILT_IN_FEATURE_IDS.connectionPriority
+      id === BUILT_IN_FEATURE_IDS.connectionParameters ||
+        id === BUILT_IN_FEATURE_IDS.connectionPriority ||
+        id === BUILT_IN_FEATURE_IDS.connectionPhy
         ? 'connection-controls'
         : 'capability.catalog-v2'
     )
@@ -5927,6 +6108,29 @@ export function createDesktopRustCoreFeatureRegistry(
     wiring.connectionRefusals.some(row => row.id === BUILT_IN_FEATURE_IDS.connectionParameters)
   ) {
     registrations.push(refused(BUILT_IN_FEATURE_IDS.connectionParameters))
+  }
+  if (wiring.phy) {
+    const base = registration(BUILT_IN_FEATURE_IDS.connectionPhy, 'connection-controls')
+    const limitations = Object.freeze([
+      Object.freeze({
+        code: 'winrt-phy-observation-only',
+        explanation: 'Windows observes current TX/RX PHY; PHY requests and selection are unsupported.',
+        affectedGuarantee: 'PHY request and selection'
+      })
+    ])
+    registrations.push(
+      Object.freeze({
+        ...base,
+        state: 'limited' as const,
+        limitations,
+        evidence: Object.freeze({ ...base.evidence, limitations })
+      })
+    )
+  } else if (
+    profile.platform === 'winrt' &&
+    wiring.connectionRefusals.some(row => row.id === BUILT_IN_FEATURE_IDS.connectionPhy)
+  ) {
+    registrations.push(refused(BUILT_IN_FEATURE_IDS.connectionPhy))
   }
   if (wiring.priority) {
     registrations.push(registration(BUILT_IN_FEATURE_IDS.connectionPriority, 'connection-controls'))

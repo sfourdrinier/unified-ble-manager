@@ -1798,7 +1798,7 @@ fn ingress_class_of(operation: &str) -> IngressClass {
 ingress_native!(
     Java_com_ubm_core_MobileCoreBridge_nativeIngestAdvertisement,
     "mobile.ingest.advertisement",
-    (peer_id: JString<'caller>, address: JString<'caller>, local_name: JString<'caller>, rssi: jint, tx_power: jint, service_uuids: JObjectArray<'caller, JString<'caller>>, company_ids: JIntArray<'caller>, manufacturer_payloads: JObjectArray<'caller, JByteArray<'caller>>, service_data_uuids: JObjectArray<'caller, JString<'caller>>, service_data_payloads: JObjectArray<'caller, JByteArray<'caller>>, connectable: jint, solicited_service_uuids: JObjectArray<'caller, JString<'caller>>, overflow_service_uuids: JObjectArray<'caller, JString<'caller>>, appearance: jint, raw_record: JByteArray<'caller>),
+    (peer_id: JString<'caller>, address: JString<'caller>, local_name: JString<'caller>, rssi: jint, tx_power: jint, service_uuids: JObjectArray<'caller, JString<'caller>>, company_ids: JIntArray<'caller>, manufacturer_payloads: JObjectArray<'caller, JByteArray<'caller>>, service_data_uuids: JObjectArray<'caller, JString<'caller>>, service_data_payloads: JObjectArray<'caller, JByteArray<'caller>>, connectable: jint, solicited_service_uuids: JObjectArray<'caller, JString<'caller>>, overflow_service_uuids: JObjectArray<'caller, JString<'caller>>, appearance: jint, raw_record: JByteArray<'caller>, cached_name: JString<'caller>, capture_timestamp_ms: jlong),
     |env| {
         const OP: &str = "mobile.ingest.advertisement";
         let company_ids = read_ints(env, &company_ids)?;
@@ -1808,6 +1808,8 @@ ingress_native!(
         let service_data_payloads = read_byte_arrays(env, &service_data_payloads, OP)?;
         same_length(OP, &[service_data_uuids.len(), service_data_payloads.len()])?;
         Ok(RadioIngress::Advertisement(Advertisement {
+            cached_name: read_opt_text(env, &cached_name, OP)?,
+            capture_timestamp_ms: if capture_timestamp_ms == -1 { None } else { Some(u64::try_from(capture_timestamp_ms).map_err(|_| invalid(OP, "capture timestamp must be non-negative or absent"))?) },
             peer_id: read_text(env, &peer_id, OP)?,
             address: read_opt_text(env, &address, OP)?,
             local_name: read_opt_text(env, &local_name, OP)?,

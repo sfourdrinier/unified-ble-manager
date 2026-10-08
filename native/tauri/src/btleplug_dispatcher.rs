@@ -74,6 +74,8 @@ impl Extend<String> for WatchReleaseHistory {
 mod acquired_gatt;
 #[path = "connection_parameters.rs"]
 mod connection_parameters;
+#[path = "connection_phy.rs"]
+mod connection_phy;
 #[path = "peer_directory.rs"]
 mod peer_directory;
 #[path = "security.rs"]
@@ -1884,6 +1886,7 @@ impl BtleplugDispatcher {
                 self.unsubscribe_write_readiness(caller, payload).await
             }
             "connection.parameters" => self.read_connection_parameters(caller, payload, ctl).await,
+            "connection.phy" => self.read_connection_phy(caller, payload, ctl).await,
             "connection.parameters.subscribe" => {
                 self.subscribe_connection_parameters(caller, payload, ctl)
                     .await

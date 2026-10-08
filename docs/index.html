@@ -1727,6 +1727,13 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
               contract. Version-5 peers are refused during bootstrap, before a renderer lease or radio effect is
               created.
             </p>
+            <p>
+              Connection parameter/readiness streams preserve the shared
+              <a href="NODE.md#connection-observation-ownership">observation ownership and source recovery rules</a>
+              through main-process IPC. Windows renderers can
+              <a href="NODE.md#windows-phy-observation">read the observed TX/RX PHY</a> when their instantiated backend
+              reports that runtime capability; this grants no PHY request or selection support.
+            </p>
           </section>
         </div>
 

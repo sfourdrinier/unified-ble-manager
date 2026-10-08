@@ -319,6 +319,8 @@ pub enum CoreBluetoothReply {
 pub enum PeripheralEventInternal {
     Disconnected,
     Notification(AttrKey, AttrKey, Vec<u8>),
+    NotificationFailed(AttrKey, AttrKey, crate::PlatformError),
+    NotificationSourceRetired(AttrKey, AttrKey, tokio::sync::oneshot::Sender<()>),
     ManufacturerData(u16, Vec<u8>, i16),
     ServiceData(HashMap<Uuid, Vec<u8>>, i16),
     Services(Vec<Uuid>, i16),
@@ -1145,9 +1147,9 @@ impl CoreBluetoothInternal {
 
     /// UBM patch (UBM_PATCHES.md #14/#15): an attribute callback carried an
     /// `NSError`: the oldest waiter of that stage gets it as the platform's
-    /// answer. A value-update error with no pending read is a failed
-    /// notification, which the legacy addon ignored too.
-    fn on_attribute_failed(
+    /// answer. A value-update error with no pending read reaches the exact
+    /// notification attribute owner instead of disappearing.
+    async fn on_attribute_failed(
         &mut self,
         peripheral_uuid: Uuid,
         service_uuid: AttrKey,
@@ -1183,6 +1185,14 @@ impl CoreBluetoothInternal {
         };
         if let Some(waiter) = waiter {
             fail(waiter, error);
+        } else if descriptor_uuid.is_none() && matches!(stage, AttributeStage::Value) {
+            if let Some(peripheral) = self.peripherals.get_mut(&peripheral_uuid) {
+                if let Err(failure) = peripheral.event_sender.send(PeripheralEventInternal::NotificationFailed(
+                    characteristic_uuid, service_uuid, error,
+                )).await {
+                    error!("Error sending notification source failure: {}", failure);
+                }
+            }
         }
     }
 
@@ -1228,12 +1238,26 @@ impl CoreBluetoothInternal {
         }
     }
 
-    fn on_characteristic_unsubscribed(
+    async fn on_characteristic_unsubscribed(
         &mut self,
         peripheral_uuid: Uuid,
         service_uuid: AttrKey,
         characteristic_uuid: AttrKey,
     ) {
+        // Retire retained terminals in the same ordered event lane before
+        // acknowledging disable; a fresh enable cannot race queued callbacks.
+        if let Some(peripheral) = self.peripherals.get(&peripheral_uuid) {
+            let (ack, completed) = tokio::sync::oneshot::channel();
+            let sent = peripheral.event_sender.clone().send(PeripheralEventInternal::NotificationSourceRetired(
+                characteristic_uuid, service_uuid, ack)).await;
+            if sent.is_err() || completed.await.is_err() {
+                if let Some(characteristic) = self.get_characteristic(peripheral_uuid, service_uuid, characteristic_uuid) {
+                    characteristic.fail_notification_state(crate::PlatformError::new("corebluetooth",
+                        "notification-retirement-failed", "Native notification terminal retirement was not acknowledged"));
+                }
+                return;
+            }
+        }
         if let Some(characteristic) =
             self.get_characteristic(peripheral_uuid, service_uuid, characteristic_uuid)
         {
@@ -1947,7 +1971,7 @@ impl CoreBluetoothInternal {
                         peripheral_uuid,
                         service_uuid,
                         characteristic_uuid,
-                     } => self.on_characteristic_unsubscribed(peripheral_uuid, service_uuid,characteristic_uuid),
+                     } => self.on_characteristic_unsubscribed(peripheral_uuid, service_uuid,characteristic_uuid).await,
                     CentralDelegateEvent::CharacteristicNotified{
                         peripheral_uuid,
                         service_uuid,
@@ -2032,7 +2056,7 @@ impl CoreBluetoothInternal {
                         descriptor_uuid,
                         stage,
                         error,
-                    } => self.on_attribute_failed(peripheral_uuid, service_uuid, characteristic_uuid, descriptor_uuid, stage, error),
+                    } => self.on_attribute_failed(peripheral_uuid, service_uuid, characteristic_uuid, descriptor_uuid, stage, error).await,
                 };
             }
             adapter_msg = self.message_receiver.select_next_some() => {

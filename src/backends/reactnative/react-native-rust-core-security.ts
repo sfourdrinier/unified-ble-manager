@@ -67,7 +67,11 @@ export class RustCoreSecurityBackend implements SecurityBackend {
   private readonly streams = new Map<string, Set<OwnedCoreBoundedStream<PeerSecurityEvent>>>()
   private readonly activeResults = new Map<string, Promise<SecurityPairResult>>()
   private readonly sequences = new Map<string, number>()
-  private readonly sourceFailures = new Map<string | null, BackendContractError>()
+  private readonly sourceFailures = new Map<
+    string | null,
+    { readonly revision: number; readonly error: BackendContractError }
+  >()
+  private sourceRevision = 0
   private closed = false
 
   constructor(private readonly host: RustCoreSecurityHost) {}
@@ -75,8 +79,8 @@ export class RustCoreSecurityBackend implements SecurityBackend {
   async state(peerId: string, options: PublicOperationOptions): Promise<PeerSecurityState> {
     const operation = 'react-native-rust-core.security.state'
     this.assertOpen(operation)
-    const failure = this.sourceFailures.get(peerId) ?? this.sourceFailures.get(null)
-    if (failure !== undefined) throw failure
+    const peerRevision = this.sourceFailures.get(peerId)?.revision
+    const globalRevision = this.sourceFailures.get(null)?.revision
     this.assertAdmission(options, operation)
     const nativePeerId = this.host.nativePeerId(peerId, operation)
     const operationId = this.host.mintOperationId('security-state')
@@ -87,8 +91,12 @@ export class RustCoreSecurityBackend implements SecurityBackend {
         operationId,
         ...this.host.budget(options, operation)
       })
-      const failed = this.sourceFailures.get(peerId) ?? this.sourceFailures.get(null)
-      if (failed !== undefined) throw failed
+      const peerFailure = this.sourceFailures.get(peerId)
+      const globalFailure = this.sourceFailures.get(null)
+      if (peerFailure !== undefined && peerFailure.revision !== peerRevision) throw peerFailure.error
+      if (globalFailure !== undefined && globalFailure.revision !== globalRevision) throw globalFailure.error
+      if (peerFailure?.revision === peerRevision) this.sourceFailures.delete(peerId)
+      if (globalFailure?.revision === globalRevision) this.sourceFailures.delete(null)
       return this.snapshot(state)
     } finally {
       removeAbort()
@@ -194,7 +202,7 @@ export class RustCoreSecurityBackend implements SecurityBackend {
 
   sourceFailed(peerId: string | null, error: BackendContractError): void {
     if (this.closed) return
-    this.sourceFailures.set(peerId, error)
+    this.sourceFailures.set(peerId, { revision: ++this.sourceRevision, error })
     const streams =
       peerId === null ? [...this.streams.values()].flatMap(group => [...group]) : [...(this.streams.get(peerId) ?? [])]
     for (const stream of streams) stream.closeWithReason('source-failed', error.normalized)

@@ -1385,6 +1385,8 @@ pub use ubm_desktop::{ManufacturerData, ServiceData, WriteLimits};
 /// One advertisement as the platform observed it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Advertisement {
+    pub capture_timestamp_ms: Option<u64>,
+    pub cached_name: Option<String>,
     pub peer_id: String,
     /// BLE address when the OS exposes one (Android); `None` on Apple.
     pub address: Option<String>,

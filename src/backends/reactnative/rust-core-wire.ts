@@ -472,6 +472,7 @@ export interface WireAdvertisementRecord {
   /** The raw advertising record bytes (Android `ScanRecord`); null when not reported. */
   readonly rawRecord: Uint8Array | null
   readonly observedAtMs: number
+  readonly sourceTimestampMs: number | null
 }
 
 export type WireDrainRecord =
@@ -1782,7 +1783,10 @@ function advertisementOrThrow(fields: ReadonlyMap<string, unknown>, ordinal: num
       integerOrThrow(entry, COMPANY_ID, entryPath)
     ),
     rawRecord: nullable(fields.get('rawRecordB64'), `${path}.rawRecordB64`, decodeBase64OrThrow),
-    observedAtMs: integerOrThrow(fields.get('observedAtMs'), NON_NEGATIVE, `${path}.observedAtMs`)
+    observedAtMs: integerOrThrow(fields.get('observedAtMs'), NON_NEGATIVE, `${path}.observedAtMs`),
+    sourceTimestampMs: nullable(fields.get('sourceTimestampMs'), `${path}.sourceTimestampMs`, (entry, entryPath) =>
+      integerOrThrow(entry, NON_NEGATIVE, entryPath)
+    )
   }
   return Object.freeze(record)
 }
@@ -1812,7 +1816,8 @@ function drainRecordOrThrow(value: unknown, path: string): WireDrainRecord {
         'overflowServiceUuids',
         'appearance',
         'rawRecordB64',
-        'observedAtMs'
+        'observedAtMs',
+        'sourceTimestampMs'
       ])
       return advertisementOrThrow(fields, ordinal, recordPath)
     }

@@ -35,7 +35,12 @@ class OwnedAndroidScanBatchTest {
     exerciseBatch(false, 26, ScanSettings.PHY_LE_ALL_SUPPORTED, false)
   }
 
-  private fun exerciseBatch(duringStart: Boolean, scanSdkInt: Int = 0, phy: Int? = null, legacy: Boolean = true) {
+  @Test
+  fun scanOnlyPermissionPreservesAdvertisementWithoutReadingProtectedCachedName() {
+    exerciseBatch(false, scanSdkInt = 31, scanOnlyPermission = true)
+  }
+
+  private fun exerciseBatch(duringStart: Boolean, scanSdkInt: Int = 0, phy: Int? = null, legacy: Boolean = true, scanOnlyPermission: Boolean = false) {
     val context = Mockito.mock(Context::class.java)
     val manager = Mockito.mock(BluetoothManager::class.java)
     val adapter = Mockito.mock(BluetoothAdapter::class.java)
@@ -49,7 +54,14 @@ class OwnedAndroidScanBatchTest {
     Mockito.`when`(adapter.bluetoothLeScanner).thenReturn(scanner)
     Mockito.`when`(adapter.isLeCodedPhySupported).thenReturn(true)
     Mockito.`when`(device.address).thenReturn("A0:9E:1A:00:00:01")
-    Mockito.`when`(device.name).thenReturn("batch peer")
+    if (scanOnlyPermission) {
+      Mockito.`when`(context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT))
+        .thenReturn(android.content.pm.PackageManager.PERMISSION_DENIED)
+      Mockito.`when`(device.name).thenThrow(SecurityException("CONNECT permission denied"))
+      Mockito.`when`(record.deviceName).thenReturn("advertised peer")
+    } else {
+      Mockito.`when`(device.name).thenReturn("batch peer")
+    }
     val bytes = byteArrayOf(2, 1, 6)
     Mockito.`when`(record.bytes).thenReturn(bytes)
     listOf(first, second).forEach { result ->
@@ -58,6 +70,8 @@ class OwnedAndroidScanBatchTest {
     }
     Mockito.`when`(first.rssi).thenReturn(-40)
     Mockito.`when`(second.rssi).thenReturn(-50)
+    Mockito.`when`(first.timestampNanos).thenReturn(100_000_000L)
+    Mockito.`when`(second.timestampNanos).thenReturn(19_000_000_000L)
     val received = mutableListOf<OwnedAndroidProtocolAdvertisement>()
     val radio = OwnedAndroidGattRadio(context, post = { it(); true }, scheduleDelayed = { _, _ -> true }, scanSdkInt = scanSdkInt)
     radio.onProtocolScanResult = { received.add(it) }
@@ -83,6 +97,11 @@ class OwnedAndroidScanBatchTest {
       val admitted = requireNotNull(callback)
       if (!duringStart) admitted.onBatchScanResults(mutableListOf(first, second))
       assertEquals(listOf(-40, -50), received.map { it.rssi })
+      // Cached BluetoothDevice.name is display state, never a fresh AD name.
+      assertEquals(if (scanOnlyPermission) listOf("advertised peer", "advertised peer") else listOf(null, null), received.map { it.name })
+      assertEquals(if (scanOnlyPermission) listOf(null, null) else listOf("batch peer", "batch peer"), received.map { it.cachedName })
+      if (scanOnlyPermission) Mockito.verify(device, Mockito.never()).name
+      assertEquals(listOf(100L, 19000L), received.map { it.captureTimestampMs })
       bytes[2] = 99
       received.forEach { assertArrayEquals(byteArrayOf(2, 1, 6), it.rawRecord) }
       assertEquals(null, radio.stopScan())

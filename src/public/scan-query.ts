@@ -734,8 +734,11 @@ function isFieldProvenance(value: unknown): boolean {
 
 function isSourceTimestamp(value: unknown): boolean {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const clockScope = Reflect.get(value, 'clockScope')
   return (
-    Object.keys(value).sort().join(',') === 'monotonicMs,origin' &&
+    (Object.keys(value).sort().join(',') === 'monotonicMs,origin' ||
+      Object.keys(value).sort().join(',') === 'clockScope,monotonicMs,origin') &&
+    (!('clockScope' in value) || (typeof clockScope === 'string' && clockScope.trim().length > 0)) &&
     typeof Reflect.get(value, 'monotonicMs') === 'number' &&
     Number.isFinite(Reflect.get(value, 'monotonicMs')) &&
     (Reflect.get(value, 'origin') === 'platform' || Reflect.get(value, 'origin') === 'backend')

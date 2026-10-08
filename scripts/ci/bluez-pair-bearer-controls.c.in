@@ -1,0 +1,376 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Exact production-function review control; all platform boundaries doubled.
+
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+#include <errno.h>
+#include <sys/socket.h>
+#include <unistd.h>
+typedef bool gboolean;
+typedef unsigned int guint;
+typedef bool dbus_bool_t;
+typedef struct GSList { void *data; struct GSList *next; } GSList;
+typedef struct DBusMessage { const char *sender, *member; int error, refs; } DBusMessage;
+typedef int DBusConnection;
+typedef int DBusMessageIter;
+struct btd_adapter { int unused; };
+struct bearer_state { bool connected, paired, bonded, svc_resolved; };
+struct bt_att { bool no_security_retry; unsigned int security_upgrade_attempts; };
+struct bt_att_chan { struct bt_att *att; int sec_level, observed_security; };
+struct agent { int unused; };
+struct authentication_req { struct agent *agent; };
+struct bonding_req { DBusMessage *msg; unsigned int listener_id; struct btd_device *device; };
+struct btd_device {
+ uint64_t generation; bool initiator; unsigned int refs;
+ struct btd_adapter *adapter;
+ struct bearer_state le_state, bredr_state;
+ void *le, *bredr;
+ uint8_t bdaddr_type;
+ uint64_t bdaddr;
+ DBusMessage *connect;
+ struct bonding_req *bonding;
+ bool disable_auto_connect;
+ struct bt_att *att;
+ struct authentication_req *authr;
+ uint8_t bonding_status;
+ int wake_override;
+ bool pending_paired;
+ const char *path;
+ void *browse;
+ unsigned int discov_timer;
+};
+#define MAX_INTERESTS 128
+#define MAX_TOKENS 1024
+#define G_SOURCE_REMOVE false
+#define TRUE true
+#define FALSE false
+#define g_new0(T,n) ((T *)calloc((n), sizeof(T)))
+#define new0(T,n) g_new0(T,n)
+#define g_free free
+#define g_strdup strdup
+#define G_GUINT64_FORMAT "lu"
+#define DBUS_TYPE_INVALID 0
+#define DBUS_TYPE_UINT64 1
+#define DBUS_TYPE_OBJECT_PATH 2
+#define DBUS_TYPE_BYTE 3
+#define DBUS_TYPE_UNIX_FD 4
+#define DBUS_TYPE_UINT16 5
+#define DBUS_MESSAGE_TYPE_ERROR 3
+#define LEASE "org.bluez.UbmLeLease1"
+#define BDADDR_BREDR 0
+#define BDADDR_LE_PUBLIC 1
+#define BT_ATT_SECURITY_MEDIUM 2
+#define BT_ATT_SECURITY_AUTO 0
+#define BT_ATT_SECURITY_LOW 1
+#define BT_ATT_SECURITY_HIGH 3
+#define BT_ATT_SECURITY_FIPS 4
+#define BT_ATT_ERROR_AUTHENTICATION 0x05
+#define BT_ATT_ERROR_INSUFFICIENT_ENCRYPTION 0x0f
+static struct btd_adapter adapter;
+static DBusConnection *dbus_conn;
+static GSList *g_slist_prepend(GSList *list, void *data) {
+ GSList *node=calloc(1,sizeof(*node)); assert(node); node->data=data; node->next=list; return node;
+}
+static GSList *g_slist_find(GSList *list, void *data) {
+ for (;list;list=list->next) if(list->data==data) return list; return NULL;
+}
+static GSList *g_slist_remove(GSList *list, void *data) {
+ GSList **slot=&list; while(*slot) { if((*slot)->data==data) { GSList *old=*slot; *slot=old->next; free(old); break; } slot=&(*slot)->next; } return list;
+}
+static GSList *g_slist_delete_link(GSList *list, GSList *node) { return g_slist_remove(list,node->data); }
+static unsigned int g_slist_length(GSList *list) { unsigned int count=0; for(;list;list=list->next)count++; return count; }
+static DBusConnection *btd_get_dbus_connection(void) { return NULL; }
+static const char *dbus_message_get_sender(DBusMessage *message) { return message->sender; }
+static const char *dbus_message_get_member(DBusMessage *message) { return message->member; }
+static DBusMessage *dbus_message_ref(DBusMessage *msg) { msg->refs++; return msg; }
+static void dbus_message_unref(DBusMessage *msg) { assert(msg && msg->refs); msg->refs--; }
+static unsigned int watch_id;
+static guint g_dbus_add_disconnect_watch(DBusConnection *conn,const char *sender,void (*cb)(DBusConnection*,void*),void *data,void *destroy) { return ++watch_id; }
+static void g_dbus_remove_watch(DBusConnection *conn,guint watch) {}
+struct idle { gboolean (*cb)(void*); void *data; struct idle *next; };
+static struct idle *idle_queue;
+static unsigned int g_idle_add(gboolean (*callback)(void*),void *data) {
+ struct idle *job=calloc(1,sizeof(*job)); job->cb=callback; job->data=data;
+ struct idle **slot=&idle_queue; while(*slot)slot=&(*slot)->next; *slot=job; return 1;
+}
+static void run_idle(void) { unsigned int watchdog=0; while(idle_queue) { assert(watchdog++<10000); struct idle *job=idle_queue; idle_queue=job->next; job->cb(job->data); free(job); } }
+static struct btd_adapter *device_get_adapter(struct btd_device *device) { return &adapter; }
+static struct btd_device *btd_device_ref(struct btd_device *device) { device->refs++; return device; }
+static void btd_device_unref(struct btd_device *device) { assert(device->refs); device->refs--; }
+static uint64_t btd_device_ubm_le_generation(struct btd_device *device) { return device->generation; }
+static bool btd_device_is_initiator(struct btd_device *device) { return device->initiator; }
+static void *device_get_address(struct btd_device *device) { return device; }
+static uint8_t device_get_le_address_type(struct btd_device *device) { return 1; }
+static const char *device_get_path(struct btd_device *device) { return "/dev/test"; }
+static const char *adapter_get_path(struct btd_adapter *value) { return "/adapter/test"; }
+static unsigned int disconnect_calls;
+static void btd_device_quiesce_untrusted_auto_connect(struct btd_device *device) {}
+static int btd_adapter_disconnect_device(struct btd_adapter *value,void *address,uint8_t type) { disconnect_calls++; return 0; }
+static int connect_result;
+static int device_connect_le(struct btd_device *device) { return connect_result; }
+static DBusMessage error_reply={.refs=1}, ok_reply={.refs=1};
+static DBusMessage *btd_error_failed(DBusMessage *msg,const char *reason) { error_reply.error=2; return &error_reply; }
+static DBusMessage *btd_error_in_progress(DBusMessage *msg) { error_reply.error=1; return &error_reply; }
+static DBusMessage *btd_error_not_permitted(DBusMessage *msg,const char *reason) { error_reply.error=3; return &error_reply; }
+static DBusMessage *btd_error_not_supported(DBusMessage *msg) { error_reply.error=4; return &error_reply; }
+static DBusMessage *btd_error_not_authorized(DBusMessage *msg) { error_reply.error=5; return &error_reply; }
+static DBusMessage *btd_error_invalid_args(DBusMessage *msg) { error_reply.error=6; return &error_reply; }
+static DBusMessage *btd_error_already_exists(DBusMessage *msg) { error_reply.error=7; return &error_reply; }
+static DBusMessage *g_dbus_create_reply(DBusMessage *msg,...) { return &ok_reply; }
+static unsigned int errors_sent;
+static bool g_dbus_send_message(DBusConnection *conn,DBusMessage *msg) { if(msg->error) errors_sent++; return true; }
+static bool g_dbus_emit_signal(DBusConnection *conn,const char *path,const char *iface,const char *signal,...) { return true; }
+static void g_warning(const char *fmt,...) { abort(); }
+static bool dbus_message_get_args(DBusMessage *msg,void *error,int type,...) { return true; }
+static int dbus_message_get_type(DBusMessage *msg) { return msg->error ? DBUS_MESSAGE_TYPE_ERROR : 2; }
+static bool dbus_message_has_member(DBusMessage *msg,const char *member) { return !strcmp(msg->member,member); }
+static void dbus_message_iter_init(DBusMessage *msg,DBusMessageIter *iter) { *iter=0; }
+static void g_dbus_emit_property_changed(DBusConnection *conn,const char *path,const char *iface,const char *property) {}
+#define DBG(...) ((void)0)
+
+#define G_PRIORITY_DEFAULT 0
+#define G_PRIORITY_DEFAULT_IDLE 0
+static unsigned int g_idle_add_full(int priority,gboolean (*cb)(void*),void*data,void(*destroy)(void*)) { return g_idle_add(cb,data); }
+static unsigned int g_timeout_add_seconds_full(int priority,unsigned int seconds,gboolean(*cb)(void*),void*data,void(*destroy)(void*)) { return g_idle_add(cb,data); }
+static bool g_source_remove(unsigned int id) { return true; }
+
+{{LEASE_STRUCTURES}}
+
+
+static struct btd_device *own_connect;
+static void send_receipts(struct lease *lease) {}
+static void fail_releases(struct lease *lease,const char *reason) { abort(); }
+static void release_peer(struct lease *lease);
+
+{{PROTOTYPES}}
+{{FUNCTION:free_lease}}
+
+{{FUNCTION:collect_dead}}
+
+{{FUNCTION:find_peer}}
+
+{{FUNCTION:find_arrival}}
+
+{{FUNCTION:remember_arrival}}
+
+{{FUNCTION:forget_arrival}}
+
+{{FUNCTION:origin_of}}
+
+{{FUNCTION:get_peer}}
+
+{{FUNCTION:live_sender}}
+
+{{FUNCTION:live_count}}
+
+{{FUNCTION:peer_of_interest}}
+
+{{FUNCTION:interest_has_admission}}
+
+{{FUNCTION:protecting_interest}}
+
+{{FUNCTION:dead_owner_waiting}}
+
+{{FUNCTION:request_disconnect}}
+
+{{FUNCTION:reconcile_job_free}}
+
+{{FUNCTION:enqueue_reconcile}}
+
+{{FUNCTION:reconcile_idle}}
+
+{{FUNCTION:schedule_reconcile}}
+
+{{FUNCTION:drop_admissions}}
+
+{{FUNCTION:drop_operations}}
+
+{{FUNCTION:interest_dead}}
+
+{{FUNCTION:interest_lookup}}
+
+{{FUNCTION:interest_track}}
+
+{{FUNCTION:retire_interest}}
+
+{{FUNCTION:release_interest_if_idle}}
+
+{{FUNCTION:find_admission_message}}
+
+{{FUNCTION:early_lookup}}
+
+{{FUNCTION:ensure_interest}}
+
+{{FUNCTION:lease_sender_owns}}
+
+{{FUNCTION:provenance_member}}
+
+{{FUNCTION:note_external}}
+
+{{FUNCTION:btd_ubm_le_admit}}
+
+{{FUNCTION:btd_ubm_le_commit}}
+
+{{FUNCTION:btd_ubm_le_rollback}}
+
+{{FUNCTION:btd_ubm_le_abandon}}
+
+{{FUNCTION:operation_pending}}
+
+{{FUNCTION:btd_ubm_le_operation_pending}}
+
+{{FUNCTION:btd_ubm_le_operation_begin}}
+
+{{FUNCTION:btd_ubm_le_operation_end_message}}
+
+{{FUNCTION:btd_ubm_le_connect}}
+
+{{FUNCTION:release_peer}}
+
+{{FUNCTION:owner_dead}}
+
+{{FUNCTION:btd_ubm_le_connected}}
+
+{{FUNCTION:btd_ubm_le_lost}}
+
+
+enum mgmt_io_capability { MGMT_IO_CAPABILITY_NOINPUTNOOUTPUT=3 };
+static struct bearer_state *get_state(struct btd_device *dev,uint8_t type) { return type==BDADDR_BREDR ? &dev->bredr_state : &dev->le_state; }
+static void btd_device_set_temporary(struct btd_device *device,bool temporary) {}
+static uint8_t selected_bearer = BDADDR_BREDR;
+static unsigned int bearer_selections;
+static uint8_t select_conn_bearer(struct btd_device *device) { bearer_selections++; return selected_bearer; }
+static struct agent *agent_get(const char *sender) { return NULL; }
+static enum mgmt_io_capability agent_get_io_capability(struct agent *agent) { return MGMT_IO_CAPABILITY_NOINPUTNOOUTPUT; }
+static void agent_unref(struct agent *agent) {}
+static struct bonding_req *bonding_request_new(DBusMessage *msg,struct btd_device *device,uint8_t type,struct agent *agent) { struct bonding_req *req=calloc(1,sizeof(*req)); req->msg=dbus_message_ref(msg); return req; }
+static void bonding_request_free(struct bonding_req *bonding) { dbus_message_unref(bonding->msg); if(bonding->device)bonding->device->bonding=NULL; free(bonding); }
+static void device_request_disconnect(struct btd_device *device, DBusMessage *msg);
+static void device_cancel_authentication(struct btd_device *device, bool aborted);
+static void ba2str(void *address, char *text) { text[0]=0; }
+{{FUNCTION:create_bond_req_exit}}
+static void device_set_auto_connect(struct btd_device *device,bool enabled) {}
+static bool btd_le_connect_before_pairing(void) { return true; }
+static unsigned int explicit_security_requests;
+static bool bt_att_set_security(struct bt_att *att,int security) { assert(security==BT_ATT_SECURITY_MEDIUM); explicit_security_requests++; return true; }
+static unsigned int classic_pairing_dispatches;
+static int classic_pairing_result;
+static int adapter_create_bonding(struct btd_adapter *adapter,void *address,uint8_t type,enum mgmt_io_capability cap) { assert(type==BDADDR_BREDR); classic_pairing_dispatches++; return classic_pairing_result; }
+static int bt_att_chan_get_security(struct bt_att_chan *chan) { return chan->observed_security; }
+static bool bt_att_chan_set_security(struct bt_att_chan *chan,int security) { chan->observed_security=security; return true; }
+#define MGMT_STATUS_AUTH_FAILED 5
+#define WAKE_FLAG_ENABLED 1
+#define DEVICE_INTERFACE "org.bluez.Device1"
+#define DISCOVERY_TIMER 1
+static void btd_bearer_paired(void *bearer) {}
+static unsigned int request_disconnect_boundaries;
+static void device_request_disconnect(struct btd_device *device,DBusMessage *msg) { request_disconnect_boundaries++; }
+static void agent_cancel(struct agent *agent) {}
+static void device_cancel_authentication(struct btd_device *device,bool aborted) {}
+static bool btd_device_bearer_is_connected(struct btd_device *device) { return device->le_state.connected || device->bredr_state.connected; }
+static bool device_is_paired(struct btd_device *device,uint8_t type) { return get_state(device,type)->paired; }
+static bool btd_device_is_trusted(struct btd_device *device) { return false; }
+static void device_bonding_failed(struct btd_device *device,uint8_t status) { bonding_request_free(device->bonding); }
+static void device_auth_req_free(struct btd_device *device) {}
+static void device_set_wake_allowed(struct btd_device *device,bool allowed,unsigned int flags) {}
+static void store_gatt_db(struct btd_device *device) {}
+static bool g_dbus_send_reply(DBusConnection *conn,DBusMessage *msg,int type,...) { return true; }
+static int device_discover_services(struct btd_device *device,uint8_t type,DBusMessage *msg) { abort(); }
+static void timeout_remove(unsigned int id) {}
+static gboolean start_discovery_cb(void *data) { abort(); }
+static unsigned int timeout_add_seconds(unsigned int time,gboolean (*cb)(void*),void *data,void *destroy) { abort(); }
+
+{{FUNCTION:pair_device}}
+static struct { bool reverse_discovery; } btd_opts;
+static void device_set_paired(struct btd_device *device, uint8_t type) { get_state(device,type)->paired=true; get_state(device,type)->bonded=true; }
+static void bt_att_set_security_retry(struct bt_att *att, bool enabled) { att->no_security_retry=!enabled; }
+{{FUNCTION:device_bonding_complete}}
+
+static DBusMessage arriving={.sender=":1.ubm",.member="ConnectLease",.refs=1};
+static struct lease *owned(struct peer *peer) {
+ struct lease *lease=calloc(1,sizeof(*lease)); assert(lease);
+ lease->peer=peer; lease->sender=strdup(":1.ubm"); lease->path=strdup("/dev/test");
+ lease->generation=peer->generation; leases=g_slist_prepend(leases,lease); return lease;
+}
+static struct lease *exclusive_arrival(struct btd_device *device, uint64_t generation) {
+ struct peer *peer=get_peer(device); struct lease *lease=owned(peer);
+ lease->connecting=true; lease->accepted=true; lease->connect=dbus_message_ref(&arriving);
+ device->generation=generation; btd_ubm_le_connected(device,generation,true);
+ assert(peer->born_exclusive && peer->origin==ORIGIN_DAEMON_AUTO); return lease;
+}
+static void release_exclusive(struct lease *lease) {
+ unsigned int before=disconnect_calls; lease->released=true; release_peer(lease);
+ assert(disconnect_calls==before+1 && lease->peer->releasing);
+}
+int main(void) {
+ static struct bt_att att[7]; static struct btd_device devices[7];
+ static DBusMessage requests[7];
+ for (unsigned int i=0;i<7;i++) {
+  devices[i]=(struct btd_device){.adapter=&adapter,.initiator=true,.bdaddr_type=BDADDR_BREDR,
+   .le=(void*)1,.bredr=(void*)2,.att=&att[i]};
+  requests[i]=(DBusMessage){.sender=":1.external",.member="Pair",.refs=1};
+ }
+ selected_bearer=BDADDR_BREDR;
+ // Classic acceptance during LE release must select the independent bearer.
+ struct peer *releasing=get_peer(&devices[0]); releasing->releasing=true;
+ unsigned int selected=bearer_selections, dispatched=classic_pairing_dispatches;
+ assert(pair_device(NULL,&requests[0],&devices[0])==NULL);
+ assert(bearer_selections==selected+1 && classic_pairing_dispatches==dispatched+1);
+ assert(!find_admission_message(&requests[0]) && !releasing->interests);
+ releasing->releasing=false;
+ release_exclusive(exclusive_arrival(&devices[0],101));
+ puts("PASS Classic accepted during LE release selects BR/EDR without LE ownership");
+ // Production completion leaves no LE admission or fabricated LE origin.
+ assert(pair_device(NULL,&requests[1],&devices[1])==NULL);
+ devices[1].bredr_state.svc_resolved=true;
+ device_bonding_complete(&devices[1],BDADDR_BREDR,0);
+ assert(!devices[1].bonding && devices[1].bredr_state.paired);
+ assert(!find_admission_message(&requests[1]));
+ release_exclusive(exclusive_arrival(&devices[1],102));
+ puts("PASS completed Classic Pair cannot protect an unrelated UBM-only LE arrival");
+ // Refusal rolls back its native bonding request without creating LE records.
+ classic_pairing_result=-EPERM;
+ assert(pair_device(NULL,&requests[2],&devices[2])!=NULL);
+ classic_pairing_result=0;
+ assert(!devices[2].bonding && !find_admission_message(&requests[2]));
+ release_exclusive(exclusive_arrival(&devices[2],103));
+ puts("PASS refused Classic Pair leaves LE arrival and release exclusive");
+ // Exact Pair sender-death callback reaches controlled native disconnect,
+ // never an LE ledger owner. We measure the request boundary, not RF teardown.
+ assert(pair_device(NULL,&requests[3],&devices[3])==NULL);
+ unsigned int requests_before=request_disconnect_boundaries;
+ create_bond_req_exit(NULL,&devices[3]);
+ assert(request_disconnect_boundaries==requests_before+1);
+ assert(!find_admission_message(&requests[3]));
+ release_exclusive(exclusive_arrival(&devices[3],104));
+ puts("PASS Classic sender death cannot leave false LE provenance");
+ release_exclusive(exclusive_arrival(&devices[4],105));
+ puts("PASS UBM-only LE arrival retains final physical disconnect request");
+ // Real LE Pair remains protected for the whole accepted asynchronous lifetime.
+ struct lease *le=exclusive_arrival(&devices[5],106);
+ selected_bearer=BDADDR_LE_PUBLIC; devices[5].bdaddr_type=BDADDR_LE_PUBLIC;
+ devices[5].le_state.connected=true;
+ unsigned int before=disconnect_calls;
+ assert(pair_device(NULL,&requests[5],&devices[5])==NULL);
+ struct admission *admission=find_admission_message(&requests[5]);
+ assert(admission && !admission->committed && protecting_interest(le->peer));
+ le->released=true; release_peer(le);
+ assert(disconnect_calls==before && !strcmp(le->receipt,"lease-released-protected"));
+ btd_ubm_le_rollback(&devices[5],&requests[5]);
+ assert(!find_admission_message(&requests[5]) && !protecting_interest(le->peer));
+ release_peer(le); assert(disconnect_calls==before+1);
+ puts("PASS pending LE Pair protects until rollback, then exact owner can release");
+ // LE selection still refuses admission while its own bearer is releasing.
+ struct peer *le_releasing=get_peer(&devices[6]); le_releasing->releasing=true;
+ devices[6].bdaddr_type=BDADDR_LE_PUBLIC;
+ assert(pair_device(NULL,&requests[6],&devices[6])!=NULL);
+ assert(!devices[6].bonding && !find_admission_message(&requests[6]));
+ puts("PASS LE Pair continues to refuse while LE release is active");
+ puts("All production Pair/bearer controls passed (controlled native boundaries; no radio proof)");
+ return 0;
+}

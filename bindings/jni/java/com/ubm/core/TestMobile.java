@@ -133,12 +133,12 @@ public final class TestMobile {
         check(scan.contains("\"ok\":true"), "scan.start");
         int status = MobileCoreBridge.nativeIngestAdvertisement("AA:BB:CC:DD:EE:FF", "AA:BB:CC:DD:EE:FF", "Polar H10", -58,
             MobileCoreBridge.ABSENT_INT, new String[] {"180D"}, new int[] {0x006b}, new byte[][] {{0, (byte) 0x80, (byte) 0xff}},
-            new String[0], new byte[0][], 1, null, new String[0], 0x0341, new byte[] {2, 1, 6});
+            new String[0], new byte[0][], 1, null, new String[0], 0x0341, new byte[] {2, 1, 6}, "cached display", 1234L);
         check(status == MobileCoreBridge.STATUS_ACCEPTED, "advertisement accepted");
         Long woken = wakes.poll(5, TimeUnit.SECONDS);
         check(woken != null && woken == session, "wake for the scanning session");
         String drained = MobileCoreBridge.nativeDrain(session, 256, 65536);
-        check(drained.contains("\"t\":\"adv\"") && drained.contains("\"payloadB64\":\"AID/\"") && drained.contains("\"appearance\":833") && drained.contains("\"rawRecordB64\":\"AgEG\""), "drain carries the advertisement");
+        check(drained.contains("\"t\":\"adv\"") && drained.contains("\"payloadB64\":\"AID/\"") && drained.contains("\"appearance\":833") && drained.contains("\"rawRecordB64\":\"AgEG\"") && drained.contains("\"sourceTimestampMs\":1234"), "drain carries the advertisement");
         String connect = call(session, "connection.connect", "{\"peerId\":\"AA:BB:CC:DD:EE:FF\",\"lease\":\"l1\",\"operationId\":\"c1\",\"preferredPhy\":[\"le-2m\",\"le-1m\"]}");
         check(connect.contains("\"connectionGeneration\""), "connect through the RadioHost");
         check("le-2m,le-1m".equals(lastPreferredPhy), "preferred PHYs reach the RadioHost: " + lastPreferredPhy);

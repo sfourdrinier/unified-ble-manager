@@ -378,3 +378,10 @@ See [`PLATFORMS.md`](PLATFORMS.md) and the controlling
 IPC version 6 requires nullable observed service graph facts and the native
 readiness/acquired-GATT route contract. Version-5 peers are refused during
 bootstrap, before a renderer lease or radio effect is created.
+
+Connection parameter/readiness streams preserve the shared
+[observation ownership and source recovery rules](NODE.md#connection-observation-ownership)
+through main-process IPC. Windows renderers can
+[read the observed TX/RX PHY](NODE.md#windows-phy-observation) when their
+instantiated backend reports that runtime capability; this grants no PHY
+request or selection support.

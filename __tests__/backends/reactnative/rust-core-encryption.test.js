@@ -145,9 +145,10 @@ test.each([false, true])(
         reason: 'source-failed',
         error: { code: 'permission.denied' }
       })
-      await expect(security.state(peer, { signal: null, deadline: null })).rejects.toMatchObject({
-        normalized: { code: 'permission.denied' }
-      })
+      // A new explicit request is a recovery boundary even without a native event.
+      const before = h.native.opsInvoked('security.state').length
+      await expect(security.state(peer, { signal: null, deadline: null })).resolves.toHaveProperty('encryption')
+      expect(h.native.opsInvoked('security.state').length).toBe(before + 1)
       h.native.loseControl(() => h.native.reportSecurity(nativePeer, state('encrypted')))
       await settle(100)
       await expect(security.state(peer, { signal: null, deadline: null })).resolves.toHaveProperty('encryption')
@@ -159,3 +160,67 @@ test.each([false, true])(
     }
   }
 )
+
+test.each(['peer', null])(
+  'fresh security probes recover an older scoped failure without an unsolicited event: %s',
+  async attribution => {
+    let calls = 0
+    const backend = new RustCoreSecurityBackend({
+      now: () => 1000,
+      nativePeerId: peer => peer,
+      mintOperationId: () => 'probe',
+      budget: () => ({}),
+      securityState: async () => {
+        calls++
+        return state('encrypted')
+      },
+      watchAbort: () => () => {}
+    })
+    backend.sourceFailed(attribution, contractError('permission.denied', 'platform', 'security.state'))
+    await expect(backend.state('peer', { signal: null, deadline: null })).resolves.toMatchObject({
+      encryption: 'encrypted'
+    })
+    expect(calls).toBe(1)
+    const iterator = backend.watch('peer')[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({
+      kind: 'value',
+      value: { state: { encryption: 'encrypted' } }
+    })
+    expect(calls).toBe(2)
+    backend.close()
+  }
+)
+
+test('an older successful security probe cannot clear a newer scoped failure', async () => {
+  const { backend, resolve } = heldSource()
+  backend.sourceFailed('peer', contractError('permission.denied', 'platform', 'older'))
+  const probe = backend.state('peer', { signal: null, deadline: null })
+  backend.sourceFailed('peer', contractError('platform.failure', 'platform', 'newer'))
+  resolve(state('encrypted'))
+  await expect(probe).rejects.toMatchObject({ normalized: { operation: 'newer' } })
+  backend.close()
+})
+
+test('a native retry refusal remains visible, and a closed security source still refuses dispatch', async () => {
+  let calls = 0
+  const failure = contractError('permission.denied', 'platform', 'native-current')
+  const backend = new RustCoreSecurityBackend({
+    now: () => 1000,
+    nativePeerId: peer => peer,
+    mintOperationId: () => 'probe',
+    budget: () => ({}),
+    securityState: async () => {
+      calls++
+      throw failure
+    },
+    watchAbort: () => () => {}
+  })
+  backend.sourceFailed('peer', contractError('platform.failure', 'platform', 'historical'))
+  await expect(backend.state('peer', { signal: null, deadline: null })).rejects.toBe(failure)
+  expect(calls).toBe(1)
+  backend.close()
+  await expect(backend.state('peer', { signal: null, deadline: null })).rejects.toMatchObject({
+    normalized: { code: 'lifecycle.destroyed' }
+  })
+  expect(calls).toBe(1)
+})
