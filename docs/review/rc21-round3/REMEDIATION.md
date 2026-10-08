@@ -404,3 +404,12 @@ racing it away. Receipt prefixes: `control-watch-acquisition-*`,
 `ipc-watch-cancel-*`, `ipc-all-watch-cancel-*` and `watch-admission-*`.
 The immutable successor requires clean Linux preflight and current-head CI;
 prior-head results retain their identities and hardware gaps remain explicit.
+
+The `7d3bea24` clean preflight failed one stale guide assertion after 435 suites /
+5,675 tests passed (436 suites / 5,676 tests total); Tauri passed. The guide now
+names parameter watches as well, but its existing test still required the old
+two-watch phrase. The corrective assertion uses normalized whitespace and checks
+all three watch families, abort-before-wait, IPC security subscription abort and
+retained failed cleanup. All 18 guide tests pass. Production and native sources
+are unchanged by this test/receipt correction. The failed receipt is retained
+separately and is not a complete qualification pass.
