@@ -669,12 +669,19 @@ export class CoreOperationCoordinator<Attachment extends string> {
         ? error.normalized
         : contractError('platform.failure', 'core', 'operation-coordinator.backend-rejection').normalized
     const mayHaveCommitted = operation.execution.mayCommit
+    const ownerReportedCommit = normalized.commit
     const result: CoreOperationFailure<Attachment> = {
       correlation: operation.correlation,
       outcome: 'failed',
       value: null,
-      error: mayHaveCommitted ? { ...normalized, retryability: 'never', commit: 'uncertain' } : normalized,
-      commitState: mayHaveCommitted ? 'unknown' : 'not-applicable'
+      error:
+        mayHaveCommitted && ownerReportedCommit == null
+          ? { ...normalized, retryability: 'never', commit: 'uncertain' }
+          : normalized,
+      commitState:
+        ownerReportedCommit === 'uncertain' || (mayHaveCommitted && ownerReportedCommit == null)
+          ? 'unknown'
+          : 'not-applicable'
     }
     this.settlePublic(operation, result)
     this.completeAcknowledged(operation)

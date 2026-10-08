@@ -74,11 +74,19 @@ export function coreDispatch<Attachment extends string, Value>(
   terminalFor: (value: Value) => OperationTerminalRecord<Attachment, string>
 ): CoreOperationDispatch<Value> {
   let completedOutcome = false
-  const completion = dispatch.completion.then(value => {
-    assertSuccessfulOperationTerminal(terminalFor(value), correlation, 'unified-core.operation-terminal')
-    completedOutcome = true
-    return value
-  })
+  const completion = dispatch.completion.then(
+    value => {
+      assertSuccessfulOperationTerminal(terminalFor(value), correlation, 'unified-core.operation-terminal')
+      completedOutcome = true
+      return value
+    },
+    error => {
+      if (error instanceof BackendContractError && error.normalized.commit != null) {
+        completedOutcome = true
+      }
+      throw error
+    }
+  )
   return {
     completion: awaitPhysicalSettlement(completion, dispatch.physicalSettlement),
     hasCompletedOutcome: () => completedOutcome,

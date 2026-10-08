@@ -8,6 +8,7 @@ const {
 const { CoreOperationCoordinator } = require('../../src/core/operation-coordinator')
 const { ResourceLedger } = require('../../src/core/resource-ledger')
 const { CoreTraceRecorder } = require('../../src/core/trace-recorder')
+const { BackendContractError, contractError } = require('../../src/backend-contract/errors')
 const { opaqueId } = require('../../src/backend-contract/primitives')
 
 function deferred() {
@@ -96,6 +97,83 @@ describe.each(effects)('%s effectful shared-core control', (_name, method, reque
     await coordinator.waitForQuarantineDrain()
     expect(ledger.isZero()).toBe(true)
     jest.useRealTimers()
+  })
+
+  test.each(['unstructured', 'no-owner-commit'])('does not latch %s failure before cancellation while cleanup drains', async kind => {
+    const { coordinator, connection } = fixture()
+    const controller = new AbortController()
+    const physical = deferred()
+    const error = kind === 'unstructured' ? new Error('unknown native failure') : contractError('permission.denied', 'connection', 'native.request')
+    const cancellation = jest.fn(async () => ({ state: 'cancellation-requested' }))
+    const backend = backendFor(method, () => ({ completion: Promise.reject(error),
+      physicalSettlement: physical.promise, requestCancellation: cancellation }))
+    const result = request(backend, coordinator, connection, argument, { signal: controller.signal, deadline: null })
+    const rejected = expect(result).rejects.toMatchObject({ normalized: {
+      code: 'operation.aborted', commit: 'uncertain', retryability: 'never'
+    } })
+    await Promise.resolve()
+    controller.abort()
+    physical.resolve()
+    await rejected
+    await coordinator.waitForQuarantineDrain('connection-1')
+    expect(cancellation).toHaveBeenCalledTimes(1)
+  })
+
+  test.each([
+    ['not-dispatched', 'caller-decides', 'abort'],
+    ['not-dispatched', 'caller-decides', 'deadline'],
+    ['uncertain', 'never', 'abort'],
+    ['uncertain', 'never', 'deadline']
+  ])('preserves validated owner refusal commit=%s before %s cleanup cancellation', async (commit, retryability, cause) => {
+    if (cause === 'deadline') jest.useFakeTimers()
+    const { coordinator, ledger, connection } = fixture()
+    const controller = new AbortController()
+    const physical = deferred()
+    const platform = { domain: 'native-control', code: 'refused', safeMessage: 'owner refusal', metadata: { nativeStatus: 17 } }
+    const normalized = { ...contractError('permission.denied', 'connection', 'native.request', platform).normalized,
+      commit, retryability }
+    const cancellation = jest.fn(async () => ({ state: 'already-terminal' }))
+    const backend = backendFor(method, () => ({
+      completion: Promise.reject(new BackendContractError(normalized)),
+      physicalSettlement: physical.promise,
+      requestCancellation: cancellation
+    }))
+    const result = request(backend, coordinator, connection, argument, {
+      signal: controller.signal, deadline: cause === 'deadline' ? 11 : null
+    })
+    const rejected = expect(result).rejects.toMatchObject({ normalized })
+    await Promise.resolve()
+    if (cause === 'abort') controller.abort()
+    else jest.advanceTimersByTime(1)
+    jest.useRealTimers()
+    coordinator.destroy()
+    const stillDraining = coordinator.hasPendingDrain('connection-1')
+    const drain = coordinator.waitForQuarantineDrain('connection-1')
+    physical.resolve()
+    await rejected
+    await drain
+    expect(stillDraining).toBe(true)
+    expect(cancellation).not.toHaveBeenCalled()
+    expect(ledger.isZero()).toBe(true)
+  })
+
+  test.each([
+    ['not-dispatched', 'caller-decides', 'not-applicable'],
+    ['not-dispatched', 'never', 'not-applicable'],
+    ['uncertain', 'never', 'unknown'],
+    [null, 'caller-decides', 'unknown']
+  ])('preserves owner commit=%s retryability=%s instead of guessing', async (commit, retryability, commitState) => {
+    const { coordinator, connection } = fixture()
+    const platform = { domain: 'native-control', code: 'refused', safeMessage: 'owner refusal', metadata: { nativeStatus: 17 } }
+    const normalized = { ...contractError('operation.aborted', 'connection', 'native.request', platform).normalized,
+      commit, retryability }
+    const ownerError = new BackendContractError(normalized)
+    const run = jest.spyOn(coordinator, 'run')
+    const backend = backendFor(method, () => ({ completion: Promise.reject(ownerError), requestCancellation: async () => {} }))
+    await expect(request(backend, coordinator, connection, argument, { signal: null, deadline: null })).rejects.toMatchObject({
+      normalized: { ...normalized, commit: commit ?? 'uncertain', retryability: commit === null ? 'never' : retryability }
+    })
+    await expect(run.mock.results[0].value).resolves.toMatchObject({ commitState })
   })
 
   test('queued cancellation removes the request without a backend effect or uncertain commit', async () => {

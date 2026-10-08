@@ -223,3 +223,27 @@ control vectors were checked. Three complete golden/wire/subrate suites pass
 source-identity inputs, so no native rebuild is required. The failed candidate
 is not qualified for push; its corrected successor requires clean preflight and
 current-head final qualification.
+
+### Preserve explicit backend refusal outcomes
+
+A final related-path check found that shared coordinator failure handling replaced
+an owner's explicit `not-dispatched` commitment and retry advice with uncertainty
+for effectful requests. The real desktop priority route supplies that metadata.
+The correction preserves explicit owner commitment, retryability and native
+details; uncertainty is only the fallback when an effectful owner omits commitment.
+A typed owner failure with explicit commitment already validated at the core
+boundary also retains its answer during physical retirement. Unstructured failures
+and failures without commitment metadata remain prompt cancellation contenders.
+The same existing finite drain and queue ownership apply to known failure and
+success, and waiters wake only after retirement.
+
+The final six complete focused suites pass 448 tests, including 73 current core
+controls cases. Type checking, focused ESLint, package build and documentation
+checks pass; independent narrow source review found zero blockers. Receipts:
+`effect-controls-final-integration.log`, `effect-controls-final-package-build.log`
+and `effect-controls-final-docs.log`. Native source and artifact identities are
+unchanged. The `974606fa` preflight was deliberately interrupted when this
+related source correction invalidated its freeze; 435 suites / 5,580 tests and
+67 plugin tests had passed before interruption. Its incomplete receipt is not a
+complete preflight pass or a product-test failure. The new immutable successor
+requires clean preflight and current-head qualification.

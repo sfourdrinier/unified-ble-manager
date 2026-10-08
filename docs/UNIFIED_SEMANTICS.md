@@ -753,10 +753,12 @@ backend generation and an unrepeatable dispatch epoch.
 MTU, priority, PHY-selection and subrate requests are effectful controls. A
 request cancelled before native dispatch reports no committed effect. Once
 native dispatch may have applied the request, cancellation without a validated
-answer reports uncertain commitment and forbids automatic retry. An accepted
-or rejected operation response already validated at the core boundary retains
-its outcome while owned physical retirement drains; cancellation cannot rewrite
-that known answer. Merely receiving an unvalidated native callback does not
+answer reports uncertain commitment and forbids automatic retry. A complete
+response already validated at the core boundary, including an accepted/rejected
+request or a normalized owner failure with explicit commitment, retains its
+outcome while owned physical retirement drains; cancellation cannot rewrite
+that known answer. Explicit owner commitment and retry advice are preserved;
+uncertainty is inferred only when an effectful owner leaves commitment unstated. Merely receiving an unvalidated native callback does not
 establish success, and pending requests still settle promptly when cancelled.
 Observation-only controls remain noncommitting. Acceptance is distinct from
 observing the resulting link parameters or PHY.
