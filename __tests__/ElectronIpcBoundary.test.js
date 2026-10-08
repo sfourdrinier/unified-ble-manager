@@ -4172,3 +4172,61 @@ test('snapshot rejection compensates the database admitted before serialization'
     await current.router.destroy()
   }
 })
+
+test.each(['manufacturer', 'name'])('authenticated Electron public filtering preserves %s capture ordering through full observation cloning', async fact => {
+  const scanStream = createControlledStream()
+  const current = createMainFixture({ scan: jest.fn(async () => ({ observations: scanStream,
+    stop: async () => { scanStream.close(); return released() } })) })
+  const sender = createSender('capture-client', 'capture-window', 'capture-session')
+  const listeners = []
+  const originalSend = sender.send
+  sender.send = (channel, event) => {
+    originalSend.call(sender, channel, event)
+    for (const listener of [...listeners]) listener(event)
+  }
+  const manager = await createElectronRendererBleManager({ transport: {
+    invoke: request => current.port.handler({ sender }, request),
+    subscribe(listener) { listeners.push(listener); return () => listeners.splice(listeners.indexOf(listener), 1) },
+    acknowledge: (rendererLease, eventId) => current.port.handler({ sender }, { kind: 'event.ack', rendererLease, eventId })
+  } })
+  const present = value => ({ state: 'present', provenance: 'observed', value })
+  const absent = () => ({ state: 'absent', provenance: 'not-provided', reason: 'not in this packet' })
+  const scan = await manager.scan({ duplicates: 'all', query: { anyOf: [{
+    names: { exact: ['Capture target'] },
+    manufacturerData: { all: [{ companyId: 107, dataPrefix: new Uint8Array([1]) }] }
+  }] } })
+  const iterator = scan.observations[Symbol.asyncIterator]()
+  try {
+    const next = iterator.next()
+    let ordinal = 0
+    const packets = fact === 'manufacturer'
+      ? [[200, null, [2]], [100, null, [1]], [300, 'Capture target', null], [400, null, [1]]]
+      : [[200, 'Other capture', null], [100, 'Capture target', null], [300, null, [1]], [400, 'Capture target', null]]
+    for (const [capture, name, bytes] of packets) {
+      ordinal++
+      scanStream.push({ kind: 'value', value: {
+        device: { id: 'capture-peer', backendInstanceId: 'electron-backend', scope: 'backend',
+          stableAcrossRestarts: false, address: { value: 'capture-peer', type: 'opaque' } },
+        provenance: 'platform-raw', origin: 'advertisement',
+        sourceTimestamp: present({ monotonicMs: capture, origin: 'platform', clockScope: 'capture-platform-epoch' }),
+        receivedAtMonotonicMs: 20000 + ordinal, ingressOrdinal: ordinal, scanSessionId: 'capture-scan',
+        localName: name === null ? absent() : present(name), rssi: present(-45),
+        txPower: absent(), connectable: present(true), appearance: absent(), serviceUuids: present([]),
+        solicitedServiceUuids: absent(), overflowServiceUuids: absent(), serviceData: present([]),
+        manufacturerData: present(bytes === null ? [] : [{ companyIdentifier: 107, value: new Uint8Array(bytes) }]),
+        rawRecord: absent(), scanResponseRecord: absent()
+      } })
+      await flushAsyncWork()
+    }
+    const item = (await next).value
+    expect(item).toMatchObject({ kind: 'value', value: { localName: 'Capture target', observedAtMonotonicMs: 20004 } })
+    expect([...item.value.manufacturerData[0].data]).toEqual([1])
+    expect(sender.sent.filter(({ event }) => event.item.kind === 'value').map(({ event }) => event.item.value.sourceTimestamp.value))
+      .toEqual([200, 100, 300, 400].map(monotonicMs => ({ monotonicMs, origin: 'platform', clockScope: 'capture-platform-epoch' })))
+  } finally {
+    await iterator.return()
+    await scan.stop()
+    await manager.destroy()
+    await current.binding.destroy()
+  }
+})

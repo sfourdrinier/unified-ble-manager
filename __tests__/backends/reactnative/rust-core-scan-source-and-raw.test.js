@@ -112,3 +112,37 @@ test('raw bytes belong independently to each public subscriber', async () => {
     await manager.destroy()
   }
 })
+
+test.each(['manufacturer', 'name'])('Android public filtering retains newer captured %s facts across an out-of-order OS batch', async fact => {
+  const h = rustCoreHarness({ platform: 'android' })
+  let now = 20000
+  const internal = await createReactNativeBleManagerWithEnvironment(environment(h, { now: () => now }))
+  const manager = await createPublicBleManager(internal, () => now)
+  const scan = await manager.scan({ duplicates: 'all', query: { anyOf: [{
+    names: { exact: ['Capture target'] },
+    manufacturerData: { all: [{ companyId: 107, dataPrefix: new Uint8Array([1]) }] }
+  }] } })
+  const iterator = scan.observations[Symbol.asyncIterator]()
+  try {
+    const next = iterator.next()
+    const packets = fact === 'manufacturer'
+      ? [[200, null, [2]], [100, null, [1]], [300, 'Capture target', null], [400, null, [1]]]
+      : [[200, 'Other capture', null], [100, 'Capture target', null], [300, null, [1]], [400, 'Capture target', null]]
+    for (const [capture, name, bytes] of packets) {
+      now++
+      h.native.emitAdvertisement(DEFAULT_PEER, { localName: name,
+        manufacturerData: bytes === null ? null : [{ companyId: 107, payloadB64: Buffer.from(bytes).toString('base64') }],
+        sourceTimestampMs: capture, observedAtMs: now })
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    const item = (await next).value
+    if (item.kind === 'terminal') throw new Error(JSON.stringify(item))
+    expect(item).toMatchObject({ kind: 'value', value: { localName: 'Capture target' } })
+    expect(item.value.observedAtMonotonicMs).toBe(20004)
+    expect([...item.value.manufacturerData[0].data]).toEqual([1])
+  } finally {
+    await iterator.return()
+    await scan.stop()
+    await manager.destroy()
+  }
+})

@@ -87,3 +87,39 @@ missing Windows C runtime headers needed by bundled SQLite; this is not a
 Windows desktop compile pass. The new candidate must pass Windows CI and the
 mandatory clean preflight; unchanged hardware evidence remains applicable at
 its original identity and scope.
+
+## Capture-order follow-up (R2-12/R2-13, R3-14)
+
+Automated review 4213808529 identified a surviving invariant violation: receipt
+order must not overwrite or combine facts from the future of a packet when its
+capture clock is comparable. The reproduction failed through both RN Android
+and authenticated Electron public scan filtering before the correction. The
+shared cache now retains per-fact source origin, explicit clock scope and ingress
+ordinal, orders comparable facts by capture time, and uses receipt order for
+incomparable clocks. Projections use only fresh selected facts at or before the
+current packet; fully matching raw packets retain their original observation.
+Duplicate captures do not renew freshness. Expired payloads are released while
+ordering metadata remains bounded by the existing fact limit and scan lifetime.
+
+Cross-platform assessment: RN Android and rich Electron preserve source metadata
+and exercise capture ordering. Desktop observations without capture clocks and
+compact Electron/Tauri IPC retain receipt ordering; no transport metadata or
+platform clock is fabricated. Web and shared public paths use the same cache
+contract when applicable. Native ingress, private wire formats and native artifact
+identities are unchanged.
+
+Regression evidence: 37 shared-cache tests pass, including keyed/scalar replacement,
+future-fact exclusion, duplicate expiry, clock scope/origin changes, equal-capture
+ordinal ordering, bounded watermark payload release, truthful raw packets and
+compact IPC receipt ties. Rejected list facts project explicit derived absence;
+genuinely observed empty lists remain unchanged. Two RN/Electron public-route suites pass 91 tests,
+including four new capture-order regressions and Electron metadata cloning. These
+counts overlap existing coverage and are not a new full-suite denominator.
+Receipts: `scan-source-order-test-final.log` and
+`scan-capture-public-corrected-pass.log` under the retained batch directory.
+TypeScript checking, focused ESLint, the package build and documentation checks
+pass. Independent read-only review found zero remaining concrete source blockers
+after correcting rejected-list absence; this is not execution evidence.
+This is deterministic public-route evidence; final clean preflight and
+cross-platform qualification must identify the new frozen fixing commit, and no
+physical-radio claim or evidence-label promotion is made.

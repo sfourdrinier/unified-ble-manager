@@ -334,8 +334,19 @@ Android advertised local names come from the current ScanRecord only. Its cached
 remote friendly name is directory display state and never refreshes a missing
 advertised-name fact. Mobile source timestamps retain their platform/backend
 origin and backend-instance clock scope, independently of host receipt time.
-The current shared query-evidence expiry window uses receipt time; preserving
-capture time does not make different clock epochs comparable.
+The shared query-evidence cache orders each scalar or keyed data fact by
+capture time only when source origin and explicit nonempty clock scope agree;
+equal capture times use ingress ordinal. Missing or different clock scopes or
+origins use receipt order, with ingress ordinal breaking receipt ties. A late
+older packet cannot replace or renew a newer comparable fact, and a merged
+projection cannot borrow a fact captured after the current packet. A complete
+raw packet may still satisfy its own filter and retains its original timestamp.
+The evidence expiry window uses accepted facts' receipt time. Expired values
+release their payloads; comparable ordering metadata remains within the existing
+1,024-fact bound for an active peer and is cleared with inactive peers or the scan
+generation. Capture timestamps do not extend freshness or make different clock
+epochs comparable. Compact IPC reports without capture metadata retain receipt ordering; rich Electron reports
+preserve their source clock and ordinal through transport.
 
 The public raw-record option delivers `rawAdvertisement` as owned bytes with
 provenance or explicit absence/unavailability. Android supplies a combined scan

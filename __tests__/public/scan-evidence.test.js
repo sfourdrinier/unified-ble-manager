@@ -27,7 +27,15 @@ function packet({
   services = null,
   at = 0,
   session = 'scan-1',
-  backend = 'backend'
+  backend = 'backend',
+  capture = null,
+  clockScope = 'native-clock',
+  origin = 'platform',
+  ordinal = 1,
+  manufacturer = null,
+  data = null,
+  connectable = null,
+  rssi = null
 }) {
   return Object.freeze({
     device: Object.freeze({
@@ -39,20 +47,20 @@ function packet({
     }),
     provenance: 'platform-raw',
     origin: 'advertisement',
-    sourceTimestamp: absent(),
+    sourceTimestamp: capture === null ? absent() : present({ monotonicMs: capture, origin, ...(clockScope === null ? {} : { clockScope }) }),
     receivedAtMonotonicMs: monotonicTimestamp(at),
-    ingressOrdinal: 1,
+    ingressOrdinal: ordinal,
     scanSessionId: opaqueId(session, 'scan-session', 'test'),
     localName: name === null ? absent() : present(name),
-    rssi: absent(),
+    rssi: rssi === null ? absent() : present(rssi),
     txPower: absent(),
-    connectable: absent(),
+    connectable: connectable === null ? absent() : present(connectable),
     appearance: absent(),
     serviceUuids: services === null ? present(Object.freeze([])) : present(Object.freeze(services)),
     solicitedServiceUuids: absent(),
     overflowServiceUuids: absent(),
-    serviceData: present(Object.freeze([])),
-    manufacturerData: present(Object.freeze([])),
+    serviceData: present(Object.freeze(data ?? [])),
+    manufacturerData: present(Object.freeze(manufacturer ?? [])),
     rawRecord: absent(),
     scanResponseRecord: absent()
   })
@@ -69,6 +77,103 @@ function keep(session, observation) {
 }
 
 describe('split advertisement evidence', () => {
+  test('an older captured packet cannot borrow name evidence from its captured future', () => {
+    const session = new ScanEvidenceSession()
+    keep(session, packet({ address: 'order', name: 'Polar H10 new', capture: 200, at: 200 }))
+    expect(keep(session, packet({ address: 'order', services: [canonicalUuid(HEART)], capture: 100, at: 300 }))).toBeNull()
+    const forward = keep(session, packet({ address: 'order', services: [canonicalUuid(HEART)], capture: 300, at: 400 }))
+    expect(forward.localName.value).toBe('Polar H10 new')
+  })
+
+  test.each(['name', 'connectable', 'rssi', 'manufacturer', 'data'])('older same-key %s does not replace or refresh accepted source evidence', field => {
+    const session = new ScanEvidenceSession()
+    const changes = (value) => ({
+      name: { name: value ? 'accepted' : 'stale' }, connectable: { connectable: value }, rssi: { rssi: value ? -40 : -90 },
+      manufacturer: { manufacturer: [{ companyIdentifier: 7, value: new Uint8Array([value ? 2 : 1]) }] },
+      data: { data: [{ serviceUuid: canonicalUuid(HEART), value: new Uint8Array([value ? 2 : 1]) }] }
+    })[field]
+    session.matchAdvertisement(packet({ address: 'same-key', at: 100, capture: 200, ...changes(true) }), () => false)
+    session.matchAdvertisement(packet({ address: 'same-key', at: 200, capture: 100, ...changes(false) }), () => false)
+    const selected = candidate => ({ name: candidate.localName.value === 'accepted', connectable: candidate.connectable.value === true,
+      rssi: candidate.rssi.value === -40, manufacturer: candidate.manufacturerData.value?.[0]?.value[0] === 2,
+      data: candidate.serviceData.value?.[0]?.value[0] === 2 })[field]
+    const late = packet({ address: 'same-key', at: 300, capture: 300 })
+    expect(session.matchAdvertisement(late, selected)).not.toBeNull()
+    session.matchAdvertisement(packet({ address: 'same-key', at: 10_200, capture: 100, ...changes(false) }), () => false)
+    expect(session.matchAdvertisement(packet({ address: 'same-key', at: 10_201, capture: 400 }), selected)).toBeNull()
+  })
+
+  test('expired payload storage is released while bounded source watermarks reject repeated captures', () => {
+    const session = new ScanEvidenceSession()
+    const first = packet({ address: 'watermark', capture: 200, at: 0,
+      manufacturer: [{ companyIdentifier: 7, value: new Uint8Array([2]) }] })
+    session.matchAdvertisement(first, () => false)
+    session.matchAdvertisement(packet({ address: 'watermark', capture: 300, at: 10001 }), () => false)
+    const stored = [...session.advertisements.values()][0].facts.get('manufacturer:7')
+    expect(stored.manufacturerData).toBeNull()
+    expect(stored.sourceTime.monotonicMs).toBe(200)
+    session.matchAdvertisement({ ...first, receivedAtMonotonicMs: monotonicTimestamp(11000) }, () => false)
+    expect(session.matchAdvertisement(packet({ address: 'watermark', capture: 400, at: 11001 }), candidate =>
+      candidate.manufacturerData.state === 'present' && candidate.manufacturerData.value.length > 0)).toBeNull()
+  })
+
+  test('identical source timestamp and ordinal cannot renew TTL at expiry', () => {
+    const session = new ScanEvidenceSession()
+    keep(session, packet({ address: 'identical', name: 'Polar H10 duplicate', capture: 200, at: 0, ordinal: 1 }))
+    keep(session, packet({ address: 'identical', name: 'Polar H10 duplicate', capture: 200, at: 10001, ordinal: 1 }))
+    expect(keep(session, packet({ address: 'identical', services: [canonicalUuid(HEART)], capture: 300, at: 10002 }))).toBeNull()
+  })
+
+  test('a duplicate source capture with a newer ordinal cannot renew receipt freshness', () => {
+    const session = new ScanEvidenceSession()
+    keep(session, packet({ address: 'duplicate', name: 'Polar H10 first', capture: 200, at: 0, ordinal: 1 }))
+    keep(session, packet({ address: 'duplicate', name: 'Polar H10 second', capture: 200, at: 9000, ordinal: 2 }))
+    expect(keep(session, packet({ address: 'duplicate', services: [canonicalUuid(HEART)], capture: 300, at: 10001 }))).toBeNull()
+  })
+
+  test('equal captures choose larger ingress ordinal regardless of delivery order', () => {
+    const session = new ScanEvidenceSession()
+    session.matchAdvertisement(packet({ address: 'equal', name: 'winner', capture: 200, at: 100, ordinal: 2 }), () => false)
+    session.matchAdvertisement(packet({ address: 'equal', name: 'older ordinal', capture: 200, at: 200, ordinal: 1 }), () => false)
+    const merged = session.matchAdvertisement(packet({ address: 'equal', capture: 300, at: 300 }), candidate => candidate.localName.value === 'winner')
+    expect(merged.localName.value).toBe('winner')
+  })
+
+  test.each([{ clockScope: 'other-clock' }, { clockScope: null }, { origin: 'backend' }, { capture: null }])('incomparable capture metadata uses receipt ordering: %j', timing => {
+    const session = new ScanEvidenceSession()
+    keep(session, packet({ address: 'incomparable', name: 'Polar H10 name', capture: 200, at: 100 }))
+    expect(keep(session, packet({ address: 'incomparable', services: [canonicalUuid(HEART)], capture: 1, at: 200, ...timing }))).not.toBeNull()
+  })
+
+  test.each(['manufacturerData', 'serviceData', 'serviceUuids'])('source-rejected %s becomes absent rather than an invented empty list', field => {
+    const session = new ScanEvidenceSession()
+    const payloads = { manufacturer: [{ companyIdentifier: 7, value: new Uint8Array([2]) }],
+      data: [{ serviceUuid: canonicalUuid(HEART), value: new Uint8Array([2]) }], services: [canonicalUuid(HEART)] }
+    session.matchAdvertisement(packet({ address: 'list-absence', capture: 200, at: 100, ...payloads }), () => false)
+    const older = packet({ address: 'list-absence', capture: 100, at: 200, name: 'packet name', ...payloads })
+    const merged = session.matchAdvertisement(older, candidate => candidate.provenance === 'core-merged')
+    expect(merged[field]).toMatchObject({ state: 'absent', provenance: 'derived' })
+    expect(older[field]).toMatchObject({ state: 'present' })
+  })
+
+  test('a genuine raw observed empty list stays observed empty in a merged projection', () => {
+    const session = new ScanEvidenceSession()
+    keep(session, packet({ address: 'observed-empty', services: [canonicalUuid(HEART)], capture: 100, at: 100 }))
+    const name = packet({ address: 'observed-empty', name: 'Polar H10', capture: 200, at: 200 })
+    const merged = keep(session, name)
+    expect(merged.manufacturerData).toBe(name.manufacturerData)
+    expect(merged.manufacturerData).toEqual({ state: 'present', provenance: 'observed', value: [] })
+  })
+
+  test('a complete older raw packet passes unchanged and does not replace newer cached name', () => {
+    const session = new ScanEvidenceSession()
+    keep(session, packet({ address: 'raw', name: 'Polar H10 newer', capture: 200, at: 100 }))
+    const old = packet({ address: 'raw', name: 'Polar H10 older', services: [canonicalUuid(HEART)], capture: 100, at: 200 })
+    expect(keep(session, old)).toBe(old)
+    expect(keep(session, packet({ address: 'raw', services: [canonicalUuid(HEART)], capture: 300, at: 300 })).localName.value).toBe('Polar H10 newer')
+  })
+
+
   test('downstream filtering does not turn an upstream merged projection into fresh radio facts', () => {
     const upstream = new ScanEvidenceSession()
     const downstream = new ScanEvidenceSession()
@@ -153,6 +258,15 @@ describe('split advertisement evidence', () => {
     keep(session, packet({ address: 'new', at: 60_000 }))
     expect(session.advertisements.size).toBe(1)
     expect(keep(session, packet({ address: 'peer-0', services: [canonicalUuid(HEART)], at: 60_001 }))).toBeNull()
+  })
+
+  test('compact IPC uses delivery order when receipt precision ties and native ordinal is unavailable', () => {
+    const session = new ScanEvidenceSession()
+    const base = { peerId: 'receipt-tie', localName: null, rssi: null, txPowerLevel: null, serviceUuids: [], manufacturerData: [], serviceData: [] }
+    session.matchIpc({ ...base, localName: 'old' }, 100, 'scan', () => false)
+    session.matchIpc({ ...base, localName: 'new' }, 100, 'scan', () => false)
+    expect(session.matchIpc({ ...base, serviceUuids: [HEART] }, 101, 'scan', candidate =>
+      candidate.localName === 'new' && candidate.serviceUuids.includes(HEART)).localName).toBe('new')
   })
 
   test('IPC list evidence unions by key and each key expires independently', () => {

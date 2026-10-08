@@ -4,6 +4,11 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.0-rc.21] - 2026-10-05
 
+- Order merged scan facts by comparable capture clocks and ingress ordinals,
+  preventing late older packets from replacing newer values or borrowing future
+  evidence. Receipt clocks continue to govern expiry; unknown clocks retain
+  receipt ordering.
+
 - Scope Electron admission rollback to the resources acquired by that operation,
   retain refused cleanup for retry, and preserve accepted Windows priority
   outcomes after the caller deadline. Electron and Tauri expose the instantiated

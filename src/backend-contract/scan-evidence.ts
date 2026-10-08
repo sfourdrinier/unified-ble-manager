@@ -7,7 +7,13 @@
 // that needs more than one packet is a new observation, marked
 // `core-merged`, and it does not claim an origin the radio did not report.
 
-import type { AdvertisementField, AdvertisementObservation, ManufacturerData, ServiceDataEntry } from './advertisement'
+import type {
+  AdvertisementField,
+  AdvertisementObservation,
+  ManufacturerData,
+  ServiceDataEntry,
+  SourceTimestamp
+} from './advertisement'
 import type { IpcAdvertisement } from '../ipc/manager'
 import type { Uuid } from './primitives'
 import { contractError } from './errors'
@@ -22,8 +28,13 @@ interface EvidenceBucket<Carried> {
   facts: Map<string, Carried>
 }
 
-interface CarriedAdvertisement {
+interface EvidenceTiming {
   atMs: number
+  sourceTime: SourceTimestamp | null
+  ingressOrdinal: number | null
+}
+
+interface CarriedAdvertisement extends EvidenceTiming {
   localName: string | null
   serviceUuids: readonly Uuid[] | null
   manufacturerData: readonly ManufacturerData[] | null
@@ -32,8 +43,7 @@ interface CarriedAdvertisement {
   rssi: number | null
 }
 
-interface CarriedIpc {
-  atMs: number
+interface CarriedIpc extends EvidenceTiming {
   localName: string | null
   serviceUuids: readonly string[] | null
   manufacturerData: IpcAdvertisement['manufacturerData'] | null
@@ -114,7 +124,7 @@ export class ScanEvidenceSession {
   }
 }
 
-function remember<Carried extends { atMs: number }>(
+function remember<Carried extends EvidenceTiming>(
   peers: Map<string, EvidenceBucket<Carried>>,
   key: string,
   atMs: number,
@@ -127,12 +137,22 @@ function remember<Carried extends { atMs: number }>(
     throw contractError('protocol.violation', 'scan', 'scan.evidence.receipt-clock')
   let newest = atMs
   for (const bucket of peers.values()) newest = Math.max(newest, bucket.atMs)
-  // Expiration is driven by receipt progress, even for peers that never advertise again.
+  // Expiration is driven by receipt progress. Keep bounded source ordering
+  // watermarks for this active peer so late captures cannot renew old facts.
+  // All other inactive peers are swept, including their ordering metadata.
   for (const [peer, bucket] of peers) {
-    if (newest - bucket.atMs > SCAN_EVIDENCE_WINDOW_MS) peers.delete(peer)
+    if (newest - bucket.atMs > SCAN_EVIDENCE_WINDOW_MS && peer !== key) peers.delete(peer)
     else
       for (const [fact, value] of bucket.facts) {
-        if (newest - value.atMs > SCAN_EVIDENCE_WINDOW_MS) bucket.facts.delete(fact)
+        if (newest - value.atMs > SCAN_EVIDENCE_WINDOW_MS) {
+          if (!scopedSource(value.sourceTime)) bucket.facts.delete(fact)
+          else
+            bucket.facts.set(fact, {
+              ...empty(value.atMs),
+              sourceTime: value.sourceTime,
+              ingressOrdinal: value.ingressOrdinal
+            })
+        }
       }
   }
   if (newest - atMs > SCAN_EVIDENCE_WINDOW_MS) return incoming
@@ -143,22 +163,77 @@ function remember<Carried extends { atMs: number }>(
   const facts = new Map(previous?.facts)
   for (const [fact, value] of split(incoming)) {
     const existing = facts.get(fact)
-    if (existing === undefined || value.atMs >= existing.atMs) facts.set(fact, value)
+    const order = existing === undefined ? 1 : compareTiming(value, existing)
+    // Compact IPC has no native ordinal. Preserve deterministic delivery
+    // ordering when its receipt clock resolves consecutive packets equally.
+    const receiptTie =
+      existing !== undefined &&
+      !comparable(value, existing) &&
+      order === 0 &&
+      value.ingressOrdinal === null &&
+      existing.ingressOrdinal === null
+    if (existing === undefined || order > 0 || receiptTie) {
+      // A newer ingress ordinal on the same capture can replace its value,
+      // but observing that capture twice does not make it fresh twice.
+      const accepted =
+        existing !== undefined && sameCapture(value, existing)
+          ? { ...value, atMs: Math.min(existing.atMs, value.atMs) }
+          : value
+      facts.set(
+        fact,
+        newest - accepted.atMs > SCAN_EVIDENCE_WINDOW_MS
+          ? { ...empty(accepted.atMs), sourceTime: accepted.sourceTime, ingressOrdinal: accepted.ingressOrdinal }
+          : accepted
+      )
+    }
   }
   if (facts.size > SCAN_EVIDENCE_FACT_CAPACITY)
     throw contractError('stream.quota', 'scan', 'scan.evidence.fact-capacity')
   peers.set(key, { atMs: Math.max(previous?.atMs ?? atMs, atMs), facts })
-  // An out-of-order packet must not borrow observations from its future.
+  // The selected latest fact must be fresh and not from this packet's future.
+  // Do not merge incoming again: that would undo the per-fact ordering choice.
   let carried = empty(atMs)
-  for (const value of [...facts.values()].sort((left, right) => left.atMs - right.atMs)) {
-    if (value.atMs <= atMs) carried = merge(carried, value)
+  for (const value of facts.values()) {
+    if (newest - value.atMs <= SCAN_EVIDENCE_WINDOW_MS && compareTiming(value, incoming) <= 0)
+      carried = merge(carried, value)
   }
-  return merge(carried, incoming)
+  return carried
+}
+
+function scopedSource(source: SourceTimestamp | null): boolean {
+  return source !== null && typeof source.clockScope === 'string' && source.clockScope.trim().length > 0
+}
+
+function comparable(left: EvidenceTiming, right: EvidenceTiming): boolean {
+  return (
+    scopedSource(left.sourceTime) &&
+    scopedSource(right.sourceTime) &&
+    left.sourceTime?.clockScope === right.sourceTime?.clockScope &&
+    left.sourceTime?.origin === right.sourceTime?.origin
+  )
+}
+
+function sameCapture(left: EvidenceTiming, right: EvidenceTiming): boolean {
+  return comparable(left, right) && left.sourceTime?.monotonicMs === right.sourceTime?.monotonicMs
+}
+
+function compareTiming(left: EvidenceTiming, right: EvidenceTiming): number {
+  if (comparable(left, right) && left.sourceTime !== null && right.sourceTime !== null) {
+    const capture = Number(left.sourceTime.monotonicMs) - Number(right.sourceTime.monotonicMs)
+    if (capture !== 0) return capture
+    const ordinal = (left.ingressOrdinal ?? 0) - (right.ingressOrdinal ?? 0)
+    if (ordinal !== 0) return ordinal
+    return 0
+  }
+  const receipt = left.atMs - right.atMs
+  return receipt !== 0 ? receipt : (left.ingressOrdinal ?? 0) - (right.ingressOrdinal ?? 0)
 }
 
 function emptyEvidence(atMs: number) {
   return {
     atMs,
+    sourceTime: null,
+    ingressOrdinal: null,
     localName: null,
     serviceUuids: null,
     manufacturerData: null,
@@ -197,6 +272,8 @@ function carriedFromAdvertisement<Attachment extends string>(
   const name = presentValue(observation.localName)
   return {
     atMs: Number(observation.receivedAtMonotonicMs),
+    sourceTime: presentValue(observation.sourceTimestamp),
+    ingressOrdinal: observation.ingressOrdinal,
     localName: name !== null && name.length > 0 ? name : null,
     serviceUuids: services !== null && services.length > 0 ? services : null,
     manufacturerData: manufacturer !== null && manufacturer.length > 0 ? manufacturer : null,
@@ -209,6 +286,8 @@ function carriedFromAdvertisement<Attachment extends string>(
 function mergeAdvertisement(previous: CarriedAdvertisement, incoming: CarriedAdvertisement): CarriedAdvertisement {
   return {
     atMs: incoming.atMs,
+    sourceTime: incoming.sourceTime,
+    ingressOrdinal: incoming.ingressOrdinal,
     localName: incoming.localName ?? previous.localName,
     serviceUuids: union(previous.serviceUuids, incoming.serviceUuids, value => value),
     manufacturerData: union(previous.manufacturerData, incoming.manufacturerData, value => value.companyIdentifier),
@@ -230,7 +309,11 @@ function union<Value>(
 }
 
 function splitAdvertisement(incoming: CarriedAdvertisement): ReadonlyMap<string, CarriedAdvertisement> {
-  const empty = emptyEvidence(incoming.atMs)
+  const empty = {
+    ...emptyEvidence(incoming.atMs),
+    sourceTime: incoming.sourceTime,
+    ingressOrdinal: incoming.ingressOrdinal
+  }
   const facts = new Map<string, CarriedAdvertisement>()
   if (incoming.localName !== null) facts.set('name', { ...empty, localName: incoming.localName })
   if (incoming.connectable !== null) facts.set('connectable', { ...empty, connectable: incoming.connectable })
@@ -248,6 +331,38 @@ function carriedList<Value>(raw: readonly Value[] | null, carried: readonly Valu
   return raw !== null && raw.length === carried.length && carried.every(value => raw.includes(value)) ? raw : carried
 }
 
+function selectedField<Value>(
+  field: AdvertisementField<Value>,
+  raw: Value | null,
+  selected: Value | null
+): AdvertisementField<Value> {
+  if (raw === selected) return field
+  return selected === null
+    ? Object.freeze({
+        state: 'absent',
+        provenance: 'derived',
+        reason: 'No fresh source-ordered evidence for this packet'
+      })
+    : derived(selected)
+}
+
+function selectedList<Value>(
+  field: AdvertisementField<readonly Value[]>,
+  raw: readonly Value[] | null,
+  selected: readonly Value[] | null
+): AdvertisementField<readonly Value[]> {
+  if (carriedList(raw, selected) === raw && selected !== null) return field
+  if (selected === null) {
+    if (raw === null || raw.length === 0) return field
+    return Object.freeze({
+      state: 'absent',
+      provenance: 'derived',
+      reason: 'No fresh source-ordered evidence for this packet'
+    })
+  }
+  return derived(selected)
+}
+
 function derived<Value>(value: Value): AdvertisementField<Value> {
   return Object.freeze({ state: 'present', value, provenance: 'derived' })
 }
@@ -258,24 +373,12 @@ function mergedAdvertisement<Attachment extends string>(
 ): AdvertisementObservation<Attachment> | null {
   const raw = carriedFromAdvertisement(observation)
   let added = false
-  const localName =
-    raw.localName === null && carried.localName !== null ? derived(carried.localName) : observation.localName
-  const serviceUuids =
-    carriedList(raw.serviceUuids, carried.serviceUuids) !== raw.serviceUuids && carried.serviceUuids !== null
-      ? derived(carried.serviceUuids)
-      : observation.serviceUuids
-  const manufacturerData =
-    carriedList(raw.manufacturerData, carried.manufacturerData) !== raw.manufacturerData &&
-    carried.manufacturerData !== null
-      ? derived(carried.manufacturerData)
-      : observation.manufacturerData
-  const serviceData =
-    carriedList(raw.serviceData, carried.serviceData) !== raw.serviceData && carried.serviceData !== null
-      ? derived(carried.serviceData)
-      : observation.serviceData
-  const connectable =
-    raw.connectable === null && carried.connectable !== null ? derived(carried.connectable) : observation.connectable
-  const rssi = raw.rssi === null && carried.rssi !== null ? derived(carried.rssi) : observation.rssi
+  const localName = selectedField(observation.localName, raw.localName, carried.localName)
+  const serviceUuids = selectedList(observation.serviceUuids, raw.serviceUuids, carried.serviceUuids)
+  const manufacturerData = selectedList(observation.manufacturerData, raw.manufacturerData, carried.manufacturerData)
+  const serviceData = selectedList(observation.serviceData, raw.serviceData, carried.serviceData)
+  const connectable = selectedField(observation.connectable, raw.connectable, carried.connectable)
+  const rssi = selectedField(observation.rssi, raw.rssi, carried.rssi)
   added =
     localName !== observation.localName ||
     serviceUuids !== observation.serviceUuids ||
@@ -300,6 +403,8 @@ function mergedAdvertisement<Attachment extends string>(
 function carriedFromIpc(observation: IpcAdvertisement): CarriedIpc {
   return {
     atMs: 0,
+    sourceTime: null,
+    ingressOrdinal: null,
     localName: observation.localName !== null && observation.localName.length > 0 ? observation.localName : null,
     serviceUuids: observation.serviceUuids.length > 0 ? observation.serviceUuids : null,
     manufacturerData: observation.manufacturerData.length > 0 ? observation.manufacturerData : null,
@@ -312,6 +417,8 @@ function carriedFromIpc(observation: IpcAdvertisement): CarriedIpc {
 function mergeIpc(previous: CarriedIpc, incoming: CarriedIpc): CarriedIpc {
   return {
     atMs: incoming.atMs,
+    sourceTime: incoming.sourceTime,
+    ingressOrdinal: incoming.ingressOrdinal,
     localName: incoming.localName ?? previous.localName,
     serviceUuids: union(previous.serviceUuids, incoming.serviceUuids, value => value),
     manufacturerData: union(previous.manufacturerData, incoming.manufacturerData, value => value.companyId),
@@ -322,7 +429,11 @@ function mergeIpc(previous: CarriedIpc, incoming: CarriedIpc): CarriedIpc {
 }
 
 function splitIpc(incoming: CarriedIpc): ReadonlyMap<string, CarriedIpc> {
-  const empty = emptyEvidence(incoming.atMs)
+  const empty = {
+    ...emptyEvidence(incoming.atMs),
+    sourceTime: incoming.sourceTime,
+    ingressOrdinal: incoming.ingressOrdinal
+  }
   const facts = new Map<string, CarriedIpc>()
   if (incoming.localName !== null) facts.set('name', { ...empty, localName: incoming.localName })
   if (incoming.connectable !== null) facts.set('connectable', { ...empty, connectable: incoming.connectable })
@@ -336,13 +447,13 @@ function splitIpc(incoming: CarriedIpc): ReadonlyMap<string, CarriedIpc> {
 
 function mergedIpc(observation: IpcAdvertisement, carried: CarriedIpc): IpcAdvertisement | null {
   const raw = carriedFromIpc(observation)
-  const localName = raw.localName === null && carried.localName !== null ? carried.localName : observation.localName
-  const serviceUuids = carriedList(raw.serviceUuids, carried.serviceUuids) ?? observation.serviceUuids
-  const manufacturerData = carriedList(raw.manufacturerData, carried.manufacturerData) ?? observation.manufacturerData
-  const serviceData = carriedList(raw.serviceData, carried.serviceData) ?? observation.serviceData
-  const connectable =
-    raw.connectable === null && carried.connectable !== null ? carried.connectable : (observation.connectable ?? null)
-  const rssi = raw.rssi === null && carried.rssi !== null ? carried.rssi : observation.rssi
+  const localName = carried.localName
+  const serviceUuids = carried.serviceUuids === null ? [] : (carriedList(raw.serviceUuids, carried.serviceUuids) ?? [])
+  const manufacturerData =
+    carried.manufacturerData === null ? [] : (carriedList(raw.manufacturerData, carried.manufacturerData) ?? [])
+  const serviceData = carried.serviceData === null ? [] : (carriedList(raw.serviceData, carried.serviceData) ?? [])
+  const connectable = carried.connectable
+  const rssi = carried.rssi
   if (
     localName === observation.localName &&
     serviceUuids === observation.serviceUuids &&
