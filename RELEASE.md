@@ -12,7 +12,8 @@ This document is the canonical release procedure for `unified-ble-manager`.
 - GitHub Actions workflow: `.github/workflows/publish.yml`
 - GitHub Environment used by the publish job: `npm`
 - Stable npm dist-tag: `latest`
-- Current 5.0 prerelease npm dist-tag: `next`. The 4.0 stable line remains on `latest` until a final 5.0 release.
+- Numbered 5.x release-candidate npm dist-tag: `next`. Stable 5.x publishes to
+  `latest`; the registry establishes which version is currently published.
 
 The current publisher and packaging guards share
 `scripts/release/release-version-policy.js`: stable `5.x.y` selects `latest`;
@@ -60,7 +61,7 @@ If the trusted publisher still points at the legacy repository, update it before
 
 Stable SemVer and platform support qualification are independent.
 
-A stable `4.0.0` release means the documented public package/API contract is the supported 4.0 contract and is governed by normal SemVer expectations. It does **not** automatically promote any React Native, Web, Electron, CoreBluetooth, WinRT, or BlueZ backend to Preview, Supported, or Reliability-qualified.
+A stable `5.0.0` release means the documented public package/API contract is the supported 5.0 contract and is governed by normal SemVer expectations. It does **not** automatically promote any React Native, Web, Electron, CoreBluetooth, WinRT, or BlueZ backend to Preview, Supported, or Reliability-qualified.
 
 Backend labels are derived from retained evidence and remain fail-closed. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md) and [`docs/generated/PLATFORM_SUPPORT.md`](docs/generated/PLATFORM_SUPPORT.md).
 
@@ -214,7 +215,9 @@ once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
 history. `4.0.28` is immutable tagged history. The unpublished
 `v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
-The next prepared candidate is `5.0.0-rc.21`. `5.0.0-rc.20` is immutable published history. rc.19, rc.18, rc.17, rc.16 and rc.14 are immutable published history.
+The `v5.0.0-rc.21` tag records the final candidate; its registry receipt
+establishes publication. Stable `5.0.0` follows only after rc.21 publication
+and verification. `5.0.0-rc.20` is immutable published history. rc.19, rc.18, rc.17, rc.16 and rc.14 are immutable published history.
 The immutable `v5.0.0-rc.15` tag remains unpublished: its publisher was cancelled
 before npm publication when the Apple architecture policy changed.
 
@@ -244,7 +247,51 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
+## Releasing 5.0.0
+
+Publish and independently verify `5.0.0-rc.21` before integrating this stable
+release. Keep its immutable tag, registry artifact and receipts. Stable 5.0.0
+carries the rc.21 runtime unchanged: prepare final package identities, generated
+artifacts, installation/migration guides and this changelog entry, then qualify
+one frozen commit through the existing clean preflight, cross-platform CI,
+independent review and sealed-package publisher gates. Version-only preparation
+does not require rebuilding source-identical native artifacts or repeating
+unaffected physical-device scenarios; their identities and all final release
+gates remain required.
+
+Retain the existing [rc.21 closure record](docs/review/RC21_REMEDIATION.md) and
+the owner's deferral of physical Classic/LE dual-mode bearer qualification
+recorded in [the rc.21 publication receipt](#releasing-500-rc21). That unexecuted scenario is not a pass. Preserve every other
+qualification limitation, runtime capability boundary and generated backend
+evidence label. Stable package SemVer does not promote host/profile radio
+qualification or establish real-application production readiness.
+
+After the prepared release integrates into `main`, verify the exact current
+`main` commit, clean tree, `5.0.0` package/generated identities, matching
+`## [5.0.0]` changelog entry, canonical CI and all required release gates.
+Confirm both the npm version and annotated `v5.0.0` tag are absent. Create one
+new annotated `v5.0.0` tag on that qualified exact `main` commit, then let the
+trusted `publish.yml` workflow publish with provenance to npm `latest` and
+create a non-prerelease GitHub Release. Do not advance `main` during initial
+publication, retag any candidate or publish manually. Verify registry bytes,
+provenance, release assets and explicit plus bare fresh-consumer installs using
+[Post-release verification](#post-release-verification). Keep `next` on the
+separately published release candidate.
+
 ## Releasing 5.0.0-rc.21
+
+`5.0.0-rc.21` was published on 2026-10-08 from
+`030aeba43f21e1016d97d385526a26a680cbe483` by trusted publisher run
+[37814804439](https://github.com/sfourdrinier/unified-ble-manager/actions/runs/37814804439).
+Registry integrity, source/tag provenance, fresh external host imports and npm
+signatures/attestations were verified. The registry tarball SHA-256 is
+`ca0fd519e51f5f82c1975a76a15748bdd2fc2761f915d95e8ba0ea5d5e889e0b`,
+matching the GitHub prerelease asset. npm `next` advanced to rc.21; `latest`
+remained 4.0.28. The owner explicitly deferred only the remaining Classic-only
+physical bearer qualification to permit real-application testing. That scenario
+remains unverified; backend evidence labels and other release gates are unchanged.
+The preparation requirements below are retained history, not instructions to
+recreate this immutable release tag.
 
 This candidate includes the PR #251 remediation batch. Before publication,
 complete the item-by-item acceptance ledger in
@@ -1056,7 +1103,8 @@ requires that every required lane succeeds before publication.
 2. loads each prebuild under Node and the same file under Electron through the shared `scripts/ci/run-electron-main-smoke.sh` launcher (Linux uses Xvfb and `--no-sandbox`; other hosts retain normal Electron launch). Missing addons and smoke failures remain fatal; this synthetic check makes no physical-radio claim;
 3. assembles and hashes the complete prebuild matrix into `native/PREBUILDS.json`;
 4. verifies tag name and `package.json` version agree;
-5. classifies the npm dist-tag (`4.0.0-rc.*` and later stables to `latest`; other prereleases to `next`);
+5. applies the shared version policy: stable `5.x.y` selects `latest`, numbered
+   `5.x.y-rc.N` selects `next`, and other release identities are refused;
 6. before any initial publication, verifies the tag commit equals the current `main` commit;
 7. validates evidence-record syntax/integrity without manufacturing support claims;
 8. runs package, plugin, lint/typecheck, generated-artifact, packed-consumer, and deterministic Electron checks;
@@ -1076,7 +1124,9 @@ that sealed candidate in its own lane. It has no ordering guarantee relative
 to the independent Android/example lanes; any required lane failure prevents
 publication.
 
-Stable versions publish to `latest`. Active `4.0.0-rc.*` candidates also publish to `latest`; other hyphenated SemVer prereleases publish to `next` and create GitHub prereleases.
+Current stable `5.x.y` versions publish to `latest`. Numbered `5.x.y-rc.N`
+candidates publish to `next` and create GitHub prereleases. Historical 4.0 RC
+channel rules are retained above as history, not current publisher admission.
 
 ## Post-release verification
 
@@ -1085,7 +1135,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.0-rc.21
+version=5.0.0
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -1096,16 +1146,19 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `next` resolves to `5.0.0-rc.21`, while `latest` remains on the 4.0 stable
-  line; a stable release moves `latest`;
+- for stable `5.0.0`, npm `latest` resolves to `5.0.0` and `next` retains the
+  separately published rc.21; for a numbered RC, verify `next` resolves to that
+  exact candidate without changing `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
   version is one;
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.0-rc.21` explicitly and import the documented host
-  entrypoints. A bare install still selects `latest` (the 4.0 line). This
+  `unified-ble-manager@5.0.0` explicitly and import the documented host
+  entrypoints. A separate bare install must select npm `latest` (`5.0.0` after
+  stable publication). For RC verification, pin the actual numbered candidate
+  instead and verify `next` separately. This
   catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a
   real external consumer surfaced it.
@@ -1118,10 +1171,11 @@ Never move or recreate a published version tag to hide a failed release.
 - If npm publication succeeds but a later GitHub-release step fails, preserve the immutable npm version and rerun the workflow. The recovery path skips the current-`main` admission check and attaches the exact npm registry tarball rather than newly linked native binaries.
 - If a defect is discovered after a stable tag is published, fix it and release a new patch; do not replace the published tag.
 
-## Prereleases after 4.0.0
+## Current 5.x release candidates
 
-Prereleases such as `5.0.0-rc.6` use normal SemVer suffixes. They publish to
-`next` and must never replace `latest` until a final version is released.
+Numbered `5.x.y-rc.N` prereleases use normal SemVer suffixes. They publish to
+`next` and never replace `latest`. Stable `5.x.y` releases publish to `latest`;
+other prerelease channels are refused by the shared release policy.
 
 ## Release artifacts and evidence
 

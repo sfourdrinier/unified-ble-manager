@@ -41,8 +41,9 @@ or local fixture run is not physical-radio, background, restoration, or
 reliability evidence.
 
 For a consuming application, install
-`unified-ble-manager@5.0.0-rc.21`, after that exact version is published and read back
+`unified-ble-manager@5.0.0`, after that exact version is published and read back
 from npm, configure native permissions and lifecycle
 ownership in that application, and follow the root [README](../README.md) and
-[Expo plugin reference](../docs/EXPO_PLUGIN.md). The 4.0 package is Experimental;
-do not use this fixture to infer Preview-or-higher support.
+[Expo plugin reference](../docs/EXPO_PLUGIN.md). Backend support remains
+evidence-derived; do not use this fixture or stable package SemVer to infer
+Preview-or-higher support.

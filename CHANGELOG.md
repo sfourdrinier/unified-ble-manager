@@ -2,6 +2,20 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0] - 2026-10-08
+
+- Stabilize the documented 5.0 bytes-first public package/API, with explicit
+  host construction, runtime capabilities and owned asynchronous teardown.
+  Publish the stable release to npm `latest` through trusted publishing with
+  provenance; numbered 5.x release candidates remain on `next`.
+- Carry the rc.21 runtime and remediation unchanged into the stable release;
+  align installation guides, package identities and generated release artifacts.
+  Backend evidence labels and genuine OS limitations remain unchanged.
+- Retain the owner-authorized deferral of Classic/LE dual-mode physical bearer
+  qualification and all other disclosed scenario limits in the rc.21 closure
+  record. Stable SemVer does not claim unexecuted radio tests or production
+  readiness for every host/profile.
+
 ## [5.0.0-rc.21] - 2026-10-05
 
 - Fence desktop control-watch opening and gap recovery with accepted-observation

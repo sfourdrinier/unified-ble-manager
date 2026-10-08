@@ -6,15 +6,15 @@
   "metadata": {
     "component": {
       "type": "library",
-      "bom-ref": "pkg:npm/unified-ble-manager@5.0.0-rc.21",
+      "bom-ref": "pkg:npm/unified-ble-manager@5.0.0",
       "name": "unified-ble-manager",
-      "version": "5.0.0-rc.21",
+      "version": "5.0.0",
       "licenses": [
         {
           "expression": "LicenseRef-UBM-Source-Available-1.0"
         }
       ],
-      "purl": "pkg:npm/unified-ble-manager@5.0.0-rc.21"
+      "purl": "pkg:npm/unified-ble-manager@5.0.0"
     },
     "properties": [
       {
@@ -4002,7 +4002,7 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:npm/unified-ble-manager@5.0.0-rc.21",
+      "ref": "pkg:npm/unified-ble-manager@5.0.0",
       "dependsOn": [
         "pkg:npm/%40babel/runtime@7.29.7"
       ]
