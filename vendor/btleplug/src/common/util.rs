@@ -80,6 +80,7 @@ impl NotificationFaults {
         )
     }
 
+    #[cfg(any(test, target_vendor = "apple"))]
     pub fn publish(
         &self,
         sender: &tokio::sync::broadcast::Sender<NotificationEnvelope>,

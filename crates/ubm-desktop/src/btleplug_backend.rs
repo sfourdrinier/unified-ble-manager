@@ -3536,10 +3536,10 @@ fn property_flags(flags: CharPropFlags) -> PropertyFlags {
 /// are preserved (section present), never dropped.
 /// True when a disconnect error proves the peer is no longer present
 /// (T-R1, legacy `error_confirms_device_released`): the D-Bus error *name*,
-/// a protocol constant rather than rendered text. Off Linux nothing reaches
-/// here — CoreBluetooth and WinRT report a missing peer as `Ok(false)`
-/// rather than as an error — so no `cfg` gate is needed.
-#[cfg(any(test, not(target_os = "linux")))]
+/// a protocol constant rather than rendered text. Linux uses lease receipts;
+/// Windows uses retained native owners. Only the remaining disconnect route
+/// and the classifier tests use this helper.
+#[cfg(any(test, not(any(target_os = "linux", target_os = "windows"))))]
 fn disconnect_error_confirms_released(error: &btleplug::Error) -> bool {
     match error {
         btleplug::Error::Platform(detail) => matches!(

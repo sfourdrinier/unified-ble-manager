@@ -70,3 +70,20 @@ establish physical-radio qualification. Runtime changes require only affected
 physical scenarios to be repeated. Retain the earlier platform/hardware gaps
 and failures; this batch does not promote an evidence label or establish GA
 qualification.
+
+## Post-freeze Windows compile correction (R3-04/R3-12)
+
+Windows CI at `27060076` rejected an unused disconnect classifier compiled on
+Windows after its caller moved to retained native-owner cleanup. It also
+reported the CoreBluetooth notification publisher as unused on Windows.
+The correction aligns both helpers with their production callers and preserves
+`cfg(test)` coverage; no warning is suppressed and no radio behavior changes.
+An independent OS-conditional caller audit found no further defect in this
+class. Windows-target vendored-library Clippy and macOS all-target workspace
+Clippy pass. The disconnect classifier regression and all six notification
+queue/fault-lifetime controls pass. Canonical Android, Apple and macOS native
+artifacts were refreshed for the new source identities. Cross-compiling the desktop crate on macOS is blocked by the
+missing Windows C runtime headers needed by bundled SQLite; this is not a
+Windows desktop compile pass. The new candidate must pass Windows CI and the
+mandatory clean preflight; unchanged hardware evidence remains applicable at
+its original identity and scope.
