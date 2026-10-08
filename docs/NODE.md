@@ -97,6 +97,12 @@ pending, publication fails with `backend.reset` and the sender and descriptor
 are closed. The operation retains the D-Bus failure or observed owner identities;
 it never redirects the acquisition to the replacement daemon.
 
+A returned native handle is owned before validating its transport metadata.
+Malformed metadata rejects with `protocol.violation`; failed compensating
+cleanup is reported alongside that cause and remains owned for connection
+release or manager destruction to retry. No usable acquired transport is
+published from the malformed response.
+
 Connection lease release closes its acquired descendants. Database changes,
 physical link loss, adapter reset and source failure terminalize old sessions;
 reconnection requires a new acquisition and native MTU. The optional native

@@ -307,3 +307,47 @@ pass, with documentation checks after the completed build. Independent review
 of the shared predicate, private IPC terminal/cleanup handling and TCK mapping
 also found zero blockers. Private event failure still uses its existing owned
 unsubscribe/retry route; malformed values never become public measurements.
+
+### Malformed acquired-GATT receipt cleanup ownership
+
+Automated finding `4214241983` survives `29a77551`. Its violated invariant is
+resource ownership before validation: a usable native handle was compensated
+outside the connection's owned closer ledger when MTU validation failed. A
+close failure could replace the protocol cause and leave no retry owner.
+
+The desktop provider now registers the exact returned handle and lease with its
+connection owner before checking MTU or awaiting connection-state validation.
+Invalid metadata rejects with its protocol error and any separately retained
+cleanup failure. Failed compensation stays in `acquiredClosers`; connection
+release and manager destruction retry it, and only confirmed close removes it.
+Write and notification acquisition share this admission path and reuse one
+closer. Notification teardown hooks are supplied before acquisition so rollback
+also closes its view. Terminal connection records remain retained for late
+receipt cleanup; a stale receipt never publishes a usable transport.
+
+The optional acquired-FD mechanism is BlueZ-specific. Node/Bun and Electron's
+trusted-main desktop provider use this correction. The Tauri native owner uses
+its separate Rust acquisition/compensation route, already retaining exact-handle
+cleanup; renderer IPC compensation retains its own admission owner. React Native,
+Web, CoreBluetooth and WinRT do not gain a fabricated acquired-FD capability.
+Native source and artifacts are unchanged.
+
+The authentic baseline on an isolated Linux checkout at `29a77551` fails all
+four new write/notify × release/destroy regression cases while six existing
+controls pass. It uses the qualified cached addon without rebuilding and leaves
+the original preflight tree untouched. The first local attempt failed native
+identity admission with a stale default addon, before product execution; it is
+not a product reproduction. The canonical refreshed addon passes the corrected
+joined public/provider/NAPI/native synthetic suite. Tests deliberately corrupt
+the native MTU and refuse the first close; successful retry leaves zero native
+transports and exercises the real public acquisition/cleanup path. This is native
+synthetic integration with controlled faults, not physical-radio qualification.
+Receipts use `acquired-close-*` in the retained qualification directory.
+
+Final focused integration passes all 12 tests, including write and notification
+handles delivered after connection release with refused first compensation.
+The original stale/protocol cause remains alongside cleanup debt and manager
+destruction settles the retained native resource. Package build/type generation,
+focused lint and documentation checks pass. Independent narrow source review
+found zero blockers. The immutable successor requires clean Linux preflight and
+current-head cross-platform qualification; existing hardware gaps remain explicit.

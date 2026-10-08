@@ -4,6 +4,9 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.0-rc.21] - 2026-10-05
 
+- Retain malformed native acquired-GATT handles for owned cleanup retry while
+  preserving the metadata protocol failure and any compensating cleanup debt.
+
 - Preserve structured scan source and evidence failures for discovery-event
   consumers, including late subscribers, and reject fractional or unsafe
   connection-parameter measurements on snapshot and event boundaries.

@@ -4771,7 +4771,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private async acquireGattNative(
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions,
-    kind: 'write' | 'notify'
+    kind: 'write' | 'notify',
+    beforeClose: () => void = () => undefined
   ) {
     const operation = this.op(kind === 'write' ? 'gatt.acquire-write' : 'gatt.acquire-notify')
     this.assertOperational(operation)
@@ -4789,18 +4790,25 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         ),
       record.nativePeerId
     )
-    if (
-      typeof acquired.handle !== 'string' ||
-      acquired.handle.length === 0 ||
-      !Number.isInteger(acquired.mtu) ||
-      acquired.mtu < 23 ||
-      acquired.mtu > 517
-    ) {
-      if (typeof acquired.handle === 'string')
-        await this.central.closeAcquired({ handle: acquired.handle, lease: record.lease })
+    if (typeof acquired.handle !== 'string' || acquired.handle.length === 0) {
       throw contractError('protocol.violation', 'gatt', operation)
     }
-    return { acquired, record }
+    // A native handle transfers ownership before its remaining receipt is
+    // validated. Failed compensation stays on this exact connection's ledger.
+    const close = this.ownedAcquiredCloser(record, acquired.handle, beforeClose)
+    if (!Number.isInteger(acquired.mtu) || acquired.mtu < 23 || acquired.mtu > 517) {
+      const primary = contractError('protocol.violation', 'gatt', operation)
+      const cleanup = await close()
+      if (cleanup.failures.length > 0) {
+        throw new AggregateError(
+          [primary, ...cleanup.failures.map(failure => new BackendContractError(failure.error))],
+          'Invalid acquired GATT receipt; cleanup remains owned'
+        )
+      }
+      throw primary
+    }
+    await this.acceptAcquiredConnection(record, close)
+    return { acquired, record, close }
   }
 
   private ownedAcquiredCloser(
@@ -4872,9 +4880,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions
   ): Promise<AcquiredGattWriter<string>> {
-    const { acquired, record } = await this.acquireGattNative(path, options, 'write')
-    const close = this.ownedAcquiredCloser(record, acquired.handle)
-    await this.acceptAcquiredConnection(record, close)
+    const { acquired, record, close } = await this.acquireGattNative(path, options, 'write')
     return Object.freeze({
       mtuBytes: acquired.mtu,
       write: async (
@@ -4909,16 +4915,14 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: SubscriptionOptions
   ): Promise<AcquiredGattNotifications> {
-    const { acquired, record } = await this.acquireGattNative(path, options, 'notify')
     const stream = new CoreBoundedStream<NotificationValue>(options.delivery, options.delivery.overflowPolicy)
     const stop = new AbortController()
     let closing = false
-    const close = this.ownedAcquiredCloser(record, acquired.handle, () => {
+    const { acquired, record, close } = await this.acquireGattNative(path, options, 'notify', () => {
       closing = true
       stream.closeWithReason('owner-released')
       stop.abort()
     })
-    await this.acceptAcquiredConnection(record, close)
     const pump = async (): Promise<void> => {
       try {
         while (!closing) {
