@@ -206,3 +206,20 @@ The new fixing candidate must be pinned, then pass clean preflight and current-h
 cross-platform qualification.
 The previous scan candidate's green Linux run does not qualify this new batch.
 Existing physical qualification gaps remain explicit; no evidence label is promoted.
+
+### Generated mobile wire-vector correction
+
+Clean preflight at `4aaaf030` failed two assertions in the same golden-vector
+suite: 434 suites / 5,578 tests passed, one suite / two tests failed; Tauri
+passed. The retained subrate refusal vector still carried null commit metadata.
+The existing generator already invokes the real Rust session owner, so its source
+required no change. Running its documented command
+`UBM_MOBILE_GOLDEN_WRITE=1 cargo test -p ubm-mobile --test golden` regenerated
+the vectors successfully. The sole artifact change is subrate refusal commit
+`null` to `not-dispatched`; its owner retryability stays `never`. All effectful
+control vectors were checked. Three complete golden/wire/subrate suites pass
+322 tests. Receipts: `effect-controls-golden-regenerate.log` and
+`effect-controls-golden-replay-final.log`. The golden artifact is outside native
+source-identity inputs, so no native rebuild is required. The failed candidate
+is not qualified for push; its corrected successor requires clean preflight and
+current-head final qualification.

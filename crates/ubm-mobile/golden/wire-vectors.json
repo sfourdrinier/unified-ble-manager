@@ -225,7 +225,7 @@
     },
     {
       "args": "{\"admission\":24,\"lease\":\"lease-1\",\"mode\":\"low-power\",\"operationId\":\"subrate-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
-      "envelope": "{\"commit\":null,\"error\":{\"code\":\"capability.unsupported\",\"detail\":\"Android public subrate requests require an available SDK 36.1+ API\",\"domain\":\"capability\",\"operation\":\"connection.request-subrate\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
+      "envelope": "{\"commit\":\"not-dispatched\",\"error\":{\"code\":\"capability.unsupported\",\"detail\":\"Android public subrate requests require an available SDK 36.1+ API\",\"domain\":\"capability\",\"operation\":\"connection.request-subrate\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
       "expect": "failure",
       "name": "subrate unavailable",
       "op": "connection.request-subrate"
