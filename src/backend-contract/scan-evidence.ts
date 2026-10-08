@@ -445,13 +445,16 @@ function splitIpc(incoming: CarriedIpc): ReadonlyMap<string, CarriedIpc> {
   return facts
 }
 
+function selectedIpcList<Value>(raw: readonly Value[], selected: readonly Value[] | null): readonly Value[] {
+  if (selected === null) return raw.length === 0 ? raw : Object.freeze([])
+  return carriedList(raw, selected) ?? raw
+}
+
 function mergedIpc(observation: IpcAdvertisement, carried: CarriedIpc): IpcAdvertisement | null {
-  const raw = carriedFromIpc(observation)
   const localName = carried.localName
-  const serviceUuids = carried.serviceUuids === null ? [] : (carriedList(raw.serviceUuids, carried.serviceUuids) ?? [])
-  const manufacturerData =
-    carried.manufacturerData === null ? [] : (carriedList(raw.manufacturerData, carried.manufacturerData) ?? [])
-  const serviceData = carried.serviceData === null ? [] : (carriedList(raw.serviceData, carried.serviceData) ?? [])
+  const serviceUuids = selectedIpcList(observation.serviceUuids, carried.serviceUuids)
+  const manufacturerData = selectedIpcList(observation.manufacturerData, carried.manufacturerData)
+  const serviceData = selectedIpcList(observation.serviceData, carried.serviceData)
   const connectable = carried.connectable
   const rssi = carried.rssi
   if (
@@ -472,7 +475,8 @@ function mergedIpc(observation: IpcAdvertisement, carried: CarriedIpc): IpcAdver
     serviceUuids,
     manufacturerData,
     serviceData,
-    connectable,
+    ...(connectable !== null || observation.connectable !== undefined ? { connectable } : {}),
+    ...(connectable !== null && observation.txPowerLevel === undefined ? { txPowerLevel: null } : {}),
     rssi
   })
 }

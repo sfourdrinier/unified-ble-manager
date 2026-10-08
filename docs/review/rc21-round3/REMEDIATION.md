@@ -123,3 +123,22 @@ after correcting rejected-list absence; this is not execution evidence.
 This is deterministic public-route evidence; final clean preflight and
 cross-platform qualification must identify the new frozen fixing commit, and no
 physical-radio claim or evidence-label promotion is made.
+
+### Clean-checkout compact projection correction
+
+Clean Linux preflight at `3968353e` exposed one regression: 433 package suites
+passed and one failed (5,532 passed / one failed test), while Tauri passed.
+The cache recreated genuine empty compact lists, causing a spurious merged
+projection; adding absent connectability then violated the existing strict public
+shape. The correction preserves unchanged list identities and optional absence.
+A genuine merge that borrows connectability into a minimal packet reports current
+unreported TX power as null rather than borrowing an old measurement. Private
+validators remain strict. Minimal and mixed full/minimal compact projections are
+covered through direct normalization and the real public filter. The original
+quota-terminal regression remains unchanged and passes. The two complete
+cache/public-query suites pass all 140 tests with no skips; TypeScript checking,
+focused lint, package build and documentation checks pass. Receipt:
+`scan-compact-projection-final.log` under the retained batch directory. Independent narrow
+source review found zero remaining blockers. The failed freeze is retained as
+failed evidence; the corrective successor requires a new clean preflight and
+current-head cross-platform qualification.

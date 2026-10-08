@@ -8,7 +8,8 @@ const {
   SCAN_EVIDENCE_PEER_CAPACITY
 } = require('../../src/backend-contract/scan-evidence')
 const { filterScanObservations } = require('../../src/public/ble-manager')
-const { normalizeScanQuery } = require('../../src/public/scan-query')
+const { normalizeScanQuery, normalizeScanObservation } = require('../../src/public/scan-query')
+const { CoreBoundedStream } = require('../../src/core/bounded-stream')
 
 const HEART = '0000180d-0000-1000-8000-00805f9b34fb'
 
@@ -258,6 +259,55 @@ describe('split advertisement evidence', () => {
     keep(session, packet({ address: 'new', at: 60_000 }))
     expect(session.advertisements.size).toBe(1)
     expect(keep(session, packet({ address: 'peer-0', services: [canonicalUuid(HEART)], at: 60_001 }))).toBeNull()
+  })
+
+  test('a minimal compact packet with no carried additions produces no spurious merged projection', () => {
+    const session = new ScanEvidenceSession()
+    const incoming = { peerId: 'minimal', localName: 'not matching', rssi: -40,
+      serviceUuids: [], manufacturerData: [], serviceData: [] }
+    const seen = []
+    expect(session.matchIpc(incoming, 100, 'scan', candidate => { seen.push(candidate); return false })).toBeNull()
+    expect(seen).toEqual([incoming])
+  })
+
+  test('a legitimately merged minimal compact packet preserves optional field absence and raw empty lists', () => {
+    const session = new ScanEvidenceSession()
+    const base = { peerId: 'minimal', localName: null, rssi: null, serviceUuids: [], manufacturerData: [], serviceData: [] }
+    const match = candidate => candidate.localName === 'target' && candidate.serviceUuids.includes(HEART)
+    expect(session.matchIpc({ ...base, serviceUuids: [HEART] }, 100, 'scan', match)).toBeNull()
+    const incoming = { ...base, localName: 'target' }
+    const merged = session.matchIpc(incoming, 200, 'scan', match)
+    expect(merged).toMatchObject({ provenance: 'core-merged', localName: 'target', serviceUuids: [HEART], rssi: null })
+    expect(merged).not.toHaveProperty('connectable')
+    expect(merged).not.toHaveProperty('txPowerLevel')
+    expect(merged.manufacturerData).toBe(incoming.manufacturerData)
+    expect(merged.serviceData).toBe(incoming.serviceData)
+  })
+
+  test.each([false, true])('actual public filter accepts minimal/mixed compact conjunction: previous full=%s', async full => {
+    const source = new CoreBoundedStream({ itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) }, 'drop-oldest')
+    const base = { peerId: 'minimal-public', localName: null, rssi: null, serviceUuids: [], manufacturerData: [], serviceData: [] }
+    const query = normalizeScanQuery({ anyOf: [{ names: { exact: ['target'] }, services: { all: [HEART] }, ...(full ? { connectable: true } : {}) }] })
+    const filtered = filterScanObservations(source, query, 'all', () => 100)
+    const iterator = filtered[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    source.emit({ ...base, localName: 'target', ...(full ? { connectable: true, txPowerLevel: -5 } : {}) }, 32)
+    source.emit({ ...base, serviceUuids: [HEART] }, 32)
+    source.finishWithReason('closed')
+    const item = await pending
+    expect(item).toMatchObject({ value: { kind: 'value', value: { localName: 'target', serviceUuids: [HEART], provenance: 'core-merged' } } })
+    expect(item.value.value.connectable).toBe(full ? true : null)
+    await iterator.return()
+  })
+
+  test('mixed full/minimal compact merge truthfully marks current unreported TX power unknown', () => {
+    const session = new ScanEvidenceSession()
+    const base = { peerId: 'mixed', localName: null, rssi: null, serviceUuids: [], manufacturerData: [], serviceData: [] }
+    const match = candidate => candidate.localName === 'target' && candidate.serviceUuids.includes(HEART) && candidate.connectable === true
+    session.matchIpc({ ...base, localName: 'target', connectable: true, txPowerLevel: -5 }, 100, 'scan', match)
+    const merged = session.matchIpc({ ...base, serviceUuids: [HEART] }, 200, 'scan', match)
+    expect(merged).toMatchObject({ connectable: true, txPowerLevel: null })
+    expect(() => normalizeScanObservation(merged)).not.toThrow()
   })
 
   test('compact IPC uses delivery order when receipt precision ties and native ordinal is unavailable', () => {
