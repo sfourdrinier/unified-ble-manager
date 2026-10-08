@@ -1,0 +1,17 @@
+
+> unified-ble-manager@5.0.0-rc.21 test:plugin /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> jest --config plugin/jest.config.js
+
+PASS plugin/src/__tests__/withBLEDebugLogging-test.ts
+PASS plugin/src/__tests__/expoPluginSchema-continuation-test.ts
+PASS plugin/src/__tests__/withBLE-v2-test.ts
+PASS plugin/src/__tests__/withBLEAndroidManifest-test.ts
+PASS plugin/src/__tests__/withBLEAndroidContinuation-test.ts
+PASS plugin/src/__tests__/withBLEAndroidCompanionPresence-test.ts
+PASS plugin/src/__tests__/withBLEAndroidForegroundService-test.ts
+
+Test Suites: 7 passed, 7 total
+Tests:       67 passed, 67 total
+Snapshots:   0 total
+Time:        0.53 s, estimated 1 s
+Ran all test suites.

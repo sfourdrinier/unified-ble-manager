@@ -340,6 +340,10 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
     ) else {
         return;
     };
+    // Keep the existing 20s command budget. On a slow/failing runner the
+    // retained phase timings distinguish late test admission from a stuck
+    // native intake/persistence path instead of hiding either with a retry.
+    let fixture_started = std::time::Instant::now();
     let (radio, ready) = setup_radio();
     let (host, wakes) = open_events(&radio, MobilePlatform::Android).await;
     let other = host.open_session("fairness-other").unwrap();
@@ -361,6 +365,10 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
     let mut execution =
         tokio::spawn(async move { worker.execute(POLAR, &declaration("fairness")).await });
     tokio::select! { result=ready=>result.unwrap(), result=&mut execution=>panic!("native setup ended before write admission: {result:?}") }
+    eprintln!(
+        "recording-fairness phase=write-admitted elapsed_ms={}",
+        fixture_started.elapsed().as_millis()
+    );
     let epochs: std::collections::HashMap<String, u64> = radio
         .requests
         .lock()
@@ -391,8 +399,13 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
     });
+    // The setup acknowledgement stays behind these drains. Each one has to
+    // finish while the source peer is still journaling, and the setup
+    // deadline is 20s. The pump admits one journaled record per value turn
+    // so a queued security or lifecycle signal is not stuck behind the
+    // whole backlog.
     let mut worst = std::time::Duration::ZERO;
-    for _ in 0..5 {
+    for turn in 0..5 {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         host.ingest(RadioIngress::Notification {
             instance: Instance {
@@ -414,6 +427,11 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
         .await;
         assert!(rows.iter().any(|row| row["consumer"] == "other-values"));
         worst = worst.max(started.elapsed());
+        eprintln!(
+            "recording-fairness phase=other-drain turn={turn} elapsed_ms={} drain_ms={}",
+            fixture_started.elapsed().as_millis(),
+            started.elapsed().as_millis()
+        );
     }
     let started = std::time::Instant::now();
     host.ingest(RadioIngress::ServicesChanged {
@@ -425,9 +443,28 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
     })
     .await;
     worst = worst.max(started.elapsed());
+    eprintln!(
+        "recording-fairness phase=other-invalidated elapsed_ms={} drain_ms={}",
+        fixture_started.elapsed().as_millis(),
+        started.elapsed().as_millis()
+    );
     producer.await.unwrap();
+    eprintln!(
+        "recording-fairness phase=response-admitted elapsed_ms={} status={:?}",
+        fixture_started.elapsed().as_millis(),
+        engine.recording_status("fairness")
+    );
     commit_response(&host, epoch);
-    execution.await.unwrap().unwrap();
+    let result = execution.await.unwrap();
+    if let Err(error) = &result {
+        eprintln!(
+            "recording-fairness phase=setup-failed elapsed_ms={} error={error} status={:?} radio_requests={:?}",
+            fixture_started.elapsed().as_millis(),
+            engine.recording_status("fairness"),
+            radio.requests.lock().unwrap()
+        );
+    }
+    result.unwrap();
     let status = engine.recording_status("fairness").unwrap();
     let counters = ok(&call(&other, "counters.describe", "{}").await);
     assert_eq!(status["lostRecords"], 0);

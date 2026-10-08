@@ -1,0 +1,9 @@
+{"phase": "owned-fresh-pair-fixture-baseline", "existingTestBonds": false, "pairable": [false, false]}
+{"phase": "authorization-held", "device": "/org/bluez/hci1/dev_20_E1_5D_9E_A0_7F"}
+{"phase": "pending-pair-protected", "generation": 3, "receipt": "lease-released-protected", "connected": true, "foreignSender": ":1.15802", "agentDevice": "/org/bluez/hci1/dev_20_E1_5D_9E_A0_7F"}
+{"phase": "pair-success-committed", "connected": true, "paired": true, "foreignSender": ":1.15802"}
+{"phase": "foreign-origin-explicit-owner-cleanup", "sender": ":1.15802", "libraryForcedDisconnect": false}
+{"result": "passed", "pairOutcome": {"kind": "success"}, "mode": "success-before-lease", "physicalReleasedAfterRetirement": false, "physicalReleaseCause": "explicit-foreign-owner-cleanup", "foreignSenderStillAlive": false, "controller": "hci0 with hci1 simulated peripheral"}
+{"phase": "only-newly-created-test-bond-removed", "path": "/org/bluez/hci0/dev_DC_56_7B_D9_E8_A4"}
+{"phase": "only-newly-created-test-bond-removed", "path": "/org/bluez/hci1/dev_20_E1_5D_9E_A0_7F"}
+{"phase": "held-success-fixture-restored", "pairable": [false, false], "existingUserBondPreserved": true, "connectedDevices": []}

@@ -15,7 +15,7 @@ use super::{
     advertisement_data_type,
     ble::characteristic::{BLECharacteristic, NotifyEventHandler},
     ble::descriptor::{AttributeKey, BLEDescriptor},
-    ble::device::BLEDevice,
+    ble::device::{BLEDevice, CharacteristicList},
     ble::service::BLEService,
     gatt_model::{self, index_unique},
     utils,
@@ -24,10 +24,10 @@ use crate::{
     Error, Result,
     api::{
         self, AddressType, BDAddr, CentralEvent, Characteristic, ConnectionParameterPreset,
-        ConnectionParameters, Descriptor, Peripheral as ApiPeripheral, PeripheralProperties,
-        Service, ValueNotification, WriteType,
+        ConnectionParameters, ConnectionParametersReport, Descriptor, Peripheral as ApiPeripheral,
+        PeripheralProperties, Service, ValueNotification, WriteType,
     },
-    common::{adapter_manager::AdapterManager, util::notifications_stream_from_broadcast_receiver},
+    common::{adapter_manager::AdapterManager, util::{retained_notifications, NotificationEnvelope, NotificationFaults}},
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -60,9 +60,27 @@ use windows::Devices::Bluetooth::{Advertisement::*, BluetoothAddressType};
     serde(crate = "serde_cr")
 )]
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PeripheralId(BDAddr);
+pub struct PeripheralId(BDAddr, u8);
 
 impl PeripheralId {
+    pub fn with_address_type(address: BDAddr, kind: Option<AddressType>) -> Self {
+        Self(
+            address,
+            match kind {
+                None => 0,
+                Some(AddressType::Public) => 1,
+                Some(AddressType::Random) => 2,
+            },
+        )
+    }
+
+    pub fn address_type(&self) -> Option<AddressType> {
+        match self.1 {
+            1 => Some(AddressType::Public),
+            2 => Some(AddressType::Random),
+            _ => None,
+        }
+    }
     /// UBM patch (UBM_PATCHES.md #19): the peripheral's Bluetooth address.
     pub(crate) fn address(&self) -> BDAddr {
         self.0
@@ -71,7 +89,31 @@ impl PeripheralId {
 
 impl Display for PeripheralId {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        Display::fmt(&self.0, f)
+        let kind = match self.1 {
+            1 => "public",
+            2 => "random",
+            _ => "unknown",
+        };
+        write!(f, "{kind}:{}", self.0)
+    }
+}
+
+impl std::str::FromStr for PeripheralId {
+    type Err = &'static str;
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        let (raw, kind) = if let Some(raw) = value.strip_prefix("public:") {
+            (raw, Some(AddressType::Public))
+        } else if let Some(raw) = value.strip_prefix("random:") {
+            (raw, Some(AddressType::Random))
+        } else if let Some(raw) = value.strip_prefix("unknown:") {
+            (raw, None)
+        } else {
+            (value, None)
+        };
+        let address = raw
+            .parse::<BDAddr>()
+            .map_err(|_| "invalid WinRT peer address")?;
+        Ok(Self::with_address_type(address, kind))
     }
 }
 
@@ -82,6 +124,7 @@ pub struct Peripheral {
 }
 
 struct Shared {
+    identity: PeripheralId,
     device: tokio::sync::Mutex<Option<BLEDevice>>,
     adapter: Weak<AdapterManager<Peripheral>>,
     address: BDAddr,
@@ -90,7 +133,11 @@ struct Shared {
     /// UBM patch (`winrt-attribute-instances`): keyed by (UUID,
     /// `AttributeHandle`), so repeated service UUIDs stay distinct.
     ble_services: DashMap<AttributeKey, BLEService>,
-    notifications_channel: broadcast::Sender<ValueNotification>,
+    notifications_channel: broadcast::Sender<NotificationEnvelope>,
+    notification_faults: Arc<NotificationFaults>,
+    /// Observed WinRT connection parameters. The sender outlives the
+    /// device so a subscriber can see the channel close on disconnect.
+    connection_parameters: broadcast::Sender<ConnectionParametersReport>,
 
     // Mutable, advertised, state...
     address_type: RwLock<Option<AddressType>>,
@@ -106,6 +153,18 @@ struct Shared {
 }
 
 impl Peripheral {
+    pub async fn connection_phy(&self) -> Result<crate::connection_phy_source::ConnectionPhy> {
+        let device = self.shared.device.lock().await;
+        let owner = device.as_ref().ok_or(Error::NotConnected)?;
+        owner.get_connection_phy()
+    }
+    /// Observed connection-parameter changes for this peer. Lagged
+    /// receivers report the gap; the channel closes when the peripheral
+    /// is dropped.
+    pub fn connection_parameter_events(&self) -> broadcast::Receiver<ConnectionParametersReport> {
+        self.shared.connection_parameters.subscribe()
+    }
+
     pub(crate) fn set_explicit_address_type(&self, requested: AddressType) -> Result<()> {
         let mut kind = self
             .shared
@@ -125,10 +184,14 @@ impl Peripheral {
         Ok(())
     }
 
-    pub(crate) fn new(adapter: Weak<AdapterManager<Self>>, address: BDAddr) -> Self {
+    pub(crate) fn new_with_id(adapter: Weak<AdapterManager<Self>>, identity: PeripheralId) -> Self {
+        let address = identity.address();
+        let address_type = identity.address_type();
         let (broadcast_sender, _) = broadcast::channel(crate::ubm::EVENT_CAPACITY);
+        let (connection_parameters, _) = broadcast::channel(crate::ubm::EVENT_CAPACITY);
         Peripheral {
             shared: Arc::new(Shared {
+                identity,
                 adapter,
                 device: tokio::sync::Mutex::new(None),
                 address,
@@ -136,7 +199,9 @@ impl Peripheral {
                 connected: AtomicBool::new(false),
                 ble_services: DashMap::new(),
                 notifications_channel: broadcast_sender,
-                address_type: RwLock::new(None),
+                notification_faults: Arc::new(NotificationFaults::new(crate::ubm::EVENT_CAPACITY)),
+                connection_parameters,
+                address_type: RwLock::new(address_type),
                 explicit_address_type: RwLock::new(None),
                 local_name: RwLock::new(None),
                 advertisement_name: RwLock::new(None),
@@ -183,6 +248,7 @@ impl Peripheral {
     /// properties.
     pub(crate) fn advertisement_report(
         args: &BluetoothLEAdvertisementReceivedEventArgs,
+        address_type: Option<AddressType>,
     ) -> windows::core::Result<api::AdvertisementReport> {
         let advertisement = args.Advertisement()?;
         let local_name = advertisement
@@ -213,6 +279,7 @@ impl Peripheral {
             .ok()
             .and_then(|reference| reference.Value().ok());
         Ok(api::AdvertisementReport {
+            address_type,
             source: api::ReportSource::Advertisement,
             local_name,
             rssi: Some(args.RawSignalStrengthInDBm()?),
@@ -222,7 +289,12 @@ impl Peripheral {
             services,
             solicited_services: None,
             overflow_services: None,
-            connectable: None,
+            connectable: gatt_model::advertisement_connectable(
+                args.AdvertisementType()
+                    .map(|kind| kind.0)
+                    .unwrap_or(i32::MIN),
+                args.IsConnectable().ok(),
+            ),
         })
     }
 
@@ -261,7 +333,7 @@ impl Peripheral {
 
                 // Emit event of newly received advertisement
                 self.emit_event(CentralEvent::ManufacturerDataAdvertisement {
-                    id: self.shared.address.into(),
+                    id: self.id(),
                     manufacturer_data: manufacturer_data_guard.clone(),
                 });
             }
@@ -299,7 +371,7 @@ impl Peripheral {
 
                 // Emit event of newly received advertisement
                 self.emit_event(CentralEvent::ServiceDataAdvertisement {
-                    id: self.shared.address.into(),
+                    id: self.id(),
                     service_data: service_data_guard.clone(),
                 });
             }
@@ -335,7 +407,7 @@ impl Peripheral {
                 }
 
                 self.emit_event(CentralEvent::ServicesAdvertisement {
-                    id: self.shared.address.into(),
+                    id: self.id(),
                     services: services_guard.iter().copied().collect(),
                 });
             }
@@ -368,7 +440,7 @@ impl Peripheral {
             // Emit RssiUpdate event when RSSI changes
             if old_rssi != Some(rssi) {
                 self.emit_event(CentralEvent::RssiUpdate {
-                    id: self.shared.address.into(),
+                    id: self.id(),
                     rssi,
                 });
             }
@@ -377,9 +449,9 @@ impl Peripheral {
 
     /// UBM patch (`winrt-cccd-mode`): write `value` to the CCCD of exactly
     /// this characteristic instance (service and characteristic addressed by
-    /// UUID and handle). `subscribe` writes `Indicate` whenever a
-    /// characteristic can indicate; the desktop core rewrites the mode it
-    /// needs through this, on the same GATT object the subscription uses.
+    /// UUID and handle), on the same GATT object the subscription uses.
+    /// The desktop enable path does not call this as a second write: the
+    /// first subscribe writes the selected mode.
     pub async fn write_client_configuration(
         &self,
         characteristic: &Characteristic,
@@ -387,6 +459,79 @@ impl Peripheral {
     ) -> Result<()> {
         let gatt = self.gatt_characteristic(characteristic, "CCCD write")?;
         BLECharacteristic::write_client_configuration(&gatt, value, "CCCD write").await
+    }
+
+    /// Write `value` on the first subscribe. On failure the handler is
+    /// rolled back and the other mode is not written.
+    pub async fn subscribe_with_configuration(
+        &self,
+        characteristic: &Characteristic,
+        value: GattClientCharacteristicConfigurationDescriptorValue,
+    ) -> Result<()> {
+        self.subscribe_writing(characteristic, Some(value)).await
+    }
+
+    /// `None` keeps Indicate-if-possible. `Some` writes that value once.
+    async fn subscribe_writing(
+        &self,
+        characteristic: &Characteristic,
+        configured: Option<GattClientCharacteristicConfigurationDescriptorValue>,
+    ) -> Result<()> {
+        let notification_epoch = self.shared.notification_faults.begin(characteristic)?;
+        let notifications_sender = self.shared.notifications_channel.clone();
+        let notification_faults = self.shared.notification_faults.clone();
+        let uuid = characteristic.uuid;
+        let instance = characteristic.instance;
+        let service_uuid = characteristic.service_uuid;
+        let service_instance = characteristic.service_instance;
+        let handler: NotifyEventHandler = std::sync::Arc::new(move |value| {
+            let (value, source_failure) = match value {
+                Ok(bytes) => (bytes, None),
+                Err(error) => (Vec::new(), Some(error)),
+            };
+            let notification = ValueNotification {
+                uuid,
+                instance,
+                service_uuid,
+                service_instance,
+                value,
+                source_failure,
+                lost_before: 0,
+            };
+            notification_faults.publish_for_epoch(&notifications_sender, notification, notification_epoch);
+        });
+        let registration =
+            self.with_characteristic_mut(characteristic, "subscribe", |ble_characteristic| {
+                let (config, token) = match configured {
+                    Some(value) => ble_characteristic.register_with(handler, value)?,
+                    None => ble_characteristic.register(handler)?,
+                };
+                Ok((ble_characteristic.gatt().clone(), config, token))
+            });
+        let (gatt, config, token) = match registration {
+            Ok(registration) => registration,
+            Err(error) => {
+                self.shared.notification_faults.clear(characteristic);
+                return Err(error);
+            }
+        };
+        let written =
+            BLECharacteristic::write_client_configuration(&gatt, config, "subscribe").await;
+        if let Err(error) = written {
+            if let Err(rollback) =
+                self.with_characteristic_mut(characteristic, "subscribe", |ble_characteristic| {
+                    ble_characteristic.deregister(token)
+                })
+            {
+                return Err(Error::WithCleanup {
+                    primary: Box::new(error),
+                    cleanup: Box::new(rollback),
+                });
+            }
+            self.shared.notification_faults.clear(characteristic);
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn gatt_characteristic(
@@ -616,7 +761,7 @@ impl Debug for Peripheral {
 #[async_trait]
 impl ApiPeripheral for Peripheral {
     fn id(&self) -> PeripheralId {
-        PeripheralId(self.shared.address)
+        self.shared.identity.clone()
     }
 
     /// Returns the address of the peripheral.
@@ -643,6 +788,22 @@ impl ApiPeripheral for Peripheral {
             .collect()
     }
 
+    fn service_restrictions(&self) -> Vec<(Uuid, u64, &'static str)> {
+        self.shared
+            .ble_services
+            .iter()
+            .filter_map(|item| {
+                let service = item.value();
+                let label = match service.access {
+                    gatt_model::ServiceRestriction::Open => return None,
+                    gatt_model::ServiceRestriction::OsReserved => "os-reserved",
+                    gatt_model::ServiceRestriction::AccessDenied => "access-denied",
+                };
+                Some((service.uuid, service.instance, label))
+            })
+            .collect()
+    }
+
     /// Returns true iff we are currently connected to the device.
     async fn is_connected(&self) -> Result<bool> {
         Ok(self.shared.connected.load(Ordering::Relaxed))
@@ -653,7 +814,7 @@ impl ApiPeripheral for Peripheral {
     /// a time. Operations that attempt to communicate with a device will fail until it is connected.
     async fn connect(&self) -> Result<()> {
         let adapter_clone = self.shared.adapter.clone();
-        let address = self.shared.address;
+        let identity = self.id();
 
         let connection_status_changed = Box::new({
             let shared_clone = Arc::downgrade(&self.shared);
@@ -664,7 +825,7 @@ impl ApiPeripheral for Peripheral {
 
                 if !is_connected {
                     if let Some(adapter) = adapter_clone.upgrade() {
-                        adapter.emit(CentralEvent::DeviceDisconnected(address.into()));
+                        adapter.emit(CentralEvent::DeviceDisconnected(identity.clone()));
                     }
                 }
             }
@@ -685,14 +846,33 @@ impl ApiPeripheral for Peripheral {
             .read()
             .map_err(Error::from)?
             .or(*self.shared.address_type.read().map_err(Error::from)?);
+        let connection_parameters_changed = Box::new({
+            let sender = self.shared.connection_parameters.clone();
+            move |params| {
+                let _ = sender.send(params);
+            }
+        });
         let device = BLEDevice::new(
             self.shared.address,
             address_type,
             connection_status_changed,
             max_pdu_size_changed,
+            connection_parameters_changed,
         )
         .await?;
 
+        // Publish the native owner before awaiting connection discovery. A
+        // cancelled connect must leave its query and device available to the
+        // explicit disconnect/close retry rather than running blocking Drop.
+        let mut d = self.shared.device.lock().await;
+        if let Some(previous) = d.as_mut() {
+            previous.retire_discovery_operations()?;
+            previous.close_preferred_request()?;
+        }
+        *d = Some(device);
+        let Some(device) = d.as_mut() else {
+            return Err(Error::NotConnected);
+        };
         device.connect().await?;
         // Query the system-cached device name (GAP name) and update local_name
         if let Ok(name) = device.name() {
@@ -702,22 +882,26 @@ impl ApiPeripheral for Peripheral {
                 *local_name_guard = Some(name_str);
             }
         }
-        let mut d = self.shared.device.lock().await;
-        *d = Some(device);
         self.shared.connected.store(true, Ordering::Relaxed);
-        self.emit_event(CentralEvent::DeviceConnected(self.shared.address.into()));
+        self.emit_event(CentralEvent::DeviceConnected(self.id()));
         Ok(())
     }
 
     /// Terminates a connection to the device. This is a synchronous operation.
     async fn disconnect(&self) -> Result<()> {
+        let mut device = self.shared.device.lock().await;
+        // Explicit failure preserves this owner for the caller's cleanup retry.
+        if let Some(device) = device.as_mut() {
+            device.retire_discovery_operations()?;
+            device.close_preferred_request()?;
+        }
         // We need to clear the services because if this device is re-connected,
         // the cached service objects will no longer be valid (they must be refreshed).
         self.shared.ble_services.clear();
-        let mut device = self.shared.device.lock().await;
+        self.shared.notification_faults.clear_all();
         *device = None;
         self.shared.connected.store(false, Ordering::Relaxed);
-        self.emit_event(CentralEvent::DeviceDisconnected(self.shared.address.into()));
+        self.emit_event(CentralEvent::DeviceDisconnected(self.id()));
         Ok(())
     }
 
@@ -727,18 +911,53 @@ impl ApiPeripheral for Peripheral {
     /// every service, characteristic and descriptor is queried `Uncached`
     /// and kept as its own instance keyed by (UUID, `AttributeHandle`). The
     /// discovered database REPLACES the previous one, so a discovery after
-    /// `GattServicesChanged` drops removed and changed attributes. Any
-    /// failed query fails the discovery (naming the attribute and the
-    /// status) and leaves the previous table in place.
+    /// `GattServicesChanged` drops removed and changed attributes. A query
+    /// the peer or the link refuses fails the discovery (naming the
+    /// attribute and the status) and leaves the previous table in place.
+    /// A known OS-reserved service, and an ordinary service Windows denies
+    /// without an ATT byte, stay in the table with no characteristics.
     async fn discover_services(&self) -> Result<()> {
         let mut device = self.shared.device.lock().await;
         let Some(device) = device.as_mut() else {
             return Err(Error::NotConnected);
         };
-        let gatt_services = device.discover_services().await?;
+        device.retire_discovery_operations()?;
+        let mut gatt_services = device.discover_services().await?;
         let mut discovered = Vec::with_capacity(gatt_services.len());
-        for service in gatt_services {
-            discovered.push(discover_service(service).await?);
+        let mut visited = HashSet::new();
+        while let Some(service) = gatt_services.pop() {
+            let key = (
+                utils::to_uuid(&service.Uuid()?),
+                u64::from(service.AttributeHandle()?),
+            );
+            if !visited.insert(key) {
+                continue;
+            }
+            let mut graph_service = discover_service(device, service.clone()).await?;
+            if graph_service.access == gatt_model::ServiceRestriction::Open {
+                if let Some(included) = device
+                    .get_included_services(&service)
+                    .await
+                    .map_err(|error| annotate_attribute("service", key.0, key.1, error))?
+                {
+                    for target in &included {
+                        device.retain_included_service(target);
+                    }
+                    graph_service.included_services = Some(
+                        included
+                            .iter()
+                            .map(|target| {
+                                Ok(crate::api::IncludedService {
+                                    uuid: utils::to_uuid(&target.Uuid()?),
+                                    instance: u64::from(target.AttributeHandle()?),
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                    );
+                    gatt_services.extend(included);
+                }
+            }
+            discovered.push(graph_service);
         }
         let table = index_unique(
             discovered
@@ -766,49 +985,25 @@ impl ApiPeripheral for Peripheral {
     }
 
     /// Enables either notify or indicate (depending on support) for the specified characteristic.
-    /// This is a synchronous call.
+    /// This is a synchronous call. Non-ubm callers keep Indicate-if-possible.
     async fn subscribe(&self, characteristic: &Characteristic) -> Result<()> {
-        let notifications_sender = self.shared.notifications_channel.clone();
-        let uuid = characteristic.uuid;
-        let instance = characteristic.instance;
-        let service_uuid = characteristic.service_uuid;
-        let service_instance = characteristic.service_instance;
-        let handler: NotifyEventHandler = std::sync::Arc::new(move |value| {
-            let notification = ValueNotification {
-                uuid,
-                instance,
-                service_uuid,
-                service_instance,
-                value,
-                lost_before: 0,
-            };
-            // Note: we ignore send errors here which may happen while there are no
-            // receivers...
-            let _ = notifications_sender.send(notification);
-        });
-        let (gatt, config, token) =
-            self.with_characteristic_mut(characteristic, "subscribe", |ble_characteristic| {
-                let (config, token) = ble_characteristic.register(handler)?;
-                Ok((ble_characteristic.gatt().clone(), config, token))
-            })?;
-        let written =
-            BLECharacteristic::write_client_configuration(&gatt, config, "subscribe").await;
-        if let Err(error) = written {
-            // Roll back only this subscribe's handler; a rollback failure is
-            // reported with the write failure, never dropped.
-            if let Err(rollback) =
-                self.with_characteristic_mut(characteristic, "subscribe", |ble_characteristic| {
-                    ble_characteristic.deregister(token)
-                })
-            {
-                return Err(Error::Other(
-                    format!("{error}; removing the ValueChanged handler also failed: {rollback}")
-                        .into(),
-                ));
+        self.subscribe_writing(characteristic, None).await
+    }
+
+    /// The first CCCD write is the selected mode. `None` stays Indicate-if-possible.
+    async fn subscribe_selecting(
+        &self,
+        characteristic: &Characteristic,
+        notify: Option<bool>,
+    ) -> Result<()> {
+        let configured = notify.map(|notify| {
+            if notify {
+                GattClientCharacteristicConfigurationDescriptorValue::Notify
+            } else {
+                GattClientCharacteristicConfigurationDescriptorValue::Indicate
             }
-            return Err(error);
-        }
-        Ok(())
+        });
+        self.subscribe_writing(characteristic, configured).await
     }
 
     /// Disables either notify or indicate (depending on support) for the specified characteristic.
@@ -824,7 +1019,9 @@ impl ApiPeripheral for Peripheral {
             GattClientCharacteristicConfigurationDescriptorValue::None,
             "unsubscribe",
         )
-        .await
+        .await?;
+        self.shared.notification_faults.clear(characteristic);
+        Ok(())
     }
 
     async fn read(&self, characteristic: &Characteristic) -> Result<Vec<u8>> {
@@ -834,7 +1031,7 @@ impl ApiPeripheral for Peripheral {
 
     async fn notifications(&self) -> Result<Pin<Box<dyn Stream<Item = ValueNotification> + Send>>> {
         let receiver = self.shared.notifications_channel.subscribe();
-        Ok(notifications_stream_from_broadcast_receiver(receiver))
+        Ok(retained_notifications(receiver, self.shared.notification_faults.clone()))
     }
 
     async fn write_descriptor(&self, descriptor: &Descriptor, data: &[u8]) -> Result<()> {
@@ -864,8 +1061,8 @@ impl ApiPeripheral for Peripheral {
     }
 
     async fn request_connection_parameters(&self, preset: ConnectionParameterPreset) -> Result<()> {
-        let device = self.shared.device.lock().await;
-        match &*device {
+        let mut device = self.shared.device.lock().await;
+        match device.as_mut() {
             Some(device) => device.request_connection_parameters(preset),
             None => Err(Error::NotConnected),
         }
@@ -874,7 +1071,28 @@ impl ApiPeripheral for Peripheral {
 
 impl From<BDAddr> for PeripheralId {
     fn from(address: BDAddr) -> Self {
-        PeripheralId(address)
+        Self::with_address_type(address, None)
+    }
+}
+
+#[cfg(test)]
+mod peer_identity_tests {
+    use super::PeripheralId;
+    use crate::api::{AddressType, BDAddr};
+    #[test]
+    fn equal_address_bits_have_distinct_immutable_native_peer_identities() {
+        let address: BDAddr = "AA:BB:CC:DD:EE:FF".parse().unwrap();
+        let public = PeripheralId::with_address_type(address, Some(AddressType::Public));
+        let random = PeripheralId::with_address_type(address, Some(AddressType::Random));
+        let unknown = PeripheralId::from(address);
+        assert_ne!(public, random);
+        assert_ne!(public, unknown);
+        assert_ne!(random, unknown);
+        for id in [public, random, unknown] {
+            assert_eq!(id.to_string().parse::<PeripheralId>().unwrap(), id);
+            assert_eq!(id.address(), address);
+        }
+        assert!("invalid:AA:BB:CC:DD:EE:FF".parse::<PeripheralId>().is_err());
     }
 }
 
@@ -884,21 +1102,77 @@ fn not_found(kind: &str, uuid: Uuid, instance: u64, operation: &str) -> Error {
     ))
 }
 
+/// Keep a typed platform error. Add the attribute's identity as metadata
+/// instead of folding the error into a string.
+fn annotate_attribute(kind: &str, uuid: Uuid, handle: u64, error: Error) -> Error {
+    match error {
+        Error::Platform(platform) => Error::Platform(
+            platform
+                .with("attribute", kind)
+                .with("uuid", uuid.to_string())
+                .with("handle", handle.to_string()),
+        ),
+        Error::WithCleanup { primary, cleanup } => Error::WithCleanup {
+            primary: Box::new(annotate_attribute(kind, uuid, handle, *primary)),
+            cleanup,
+        },
+        other => Error::Other(format!("{kind} {uuid} (handle {handle}): {other}").into()),
+    }
+}
+
+fn restricted_service(
+    uuid: Uuid,
+    instance: u64,
+    access: gatt_model::ServiceRestriction,
+) -> BLEService {
+    BLEService {
+        uuid,
+        instance,
+        characteristics: HashMap::new(),
+        access,
+        included_services: None,
+    }
+}
+
 /// UBM patch (`winrt-attribute-instances`, `winrt-uncached-discovery`): one
 /// service with every characteristic and descriptor it lists, each kept as
-/// its own instance. A failed query names the service it belongs to.
-async fn discover_service(service: GattDeviceService) -> Result<BLEService> {
+/// its own instance. A failed query keeps its platform error and names the
+/// service. A known OS-reserved UUID is recorded and not queried. An
+/// ordinary AccessDenied with no ATT byte keeps the service identity.
+async fn discover_service(device: &BLEDevice, service: GattDeviceService) -> Result<BLEService> {
     let uuid = utils::to_uuid(&service.Uuid()?);
     let instance = u64::from(service.AttributeHandle()?);
-    let context =
-        |error: Error| Error::Other(format!("service {uuid} (handle {instance}): {error}").into());
-    let characteristics = BLEDevice::get_characteristics(&service)
+    let context = |error: Error| annotate_attribute("service", uuid, instance, error);
+    if gatt_model::windows_reserves_service(uuid.as_u128()) {
+        trace!("service {uuid} (handle {instance}) is reserved by Windows");
+        return Ok(restricted_service(
+            uuid,
+            instance,
+            gatt_model::ServiceRestriction::OsReserved,
+        ));
+    }
+    let characteristics = match device
+        .get_characteristics(&service)
         .await
-        .map_err(context)?;
-    let characteristics =
-        futures::future::try_join_all(characteristics.into_iter().map(discover_characteristic))
-            .await
-            .map_err(context)?;
+        .map_err(context)?
+    {
+        CharacteristicList::AccessDenied => {
+            trace!("service {uuid} (handle {instance}) denied characteristic discovery");
+            return Ok(restricted_service(
+                uuid,
+                instance,
+                gatt_model::ServiceRestriction::AccessDenied,
+            ));
+        }
+        CharacteristicList::Ready(characteristics) => characteristics,
+    };
+    let characteristics = futures::future::try_join_all(
+        characteristics
+            .into_iter()
+            .map(|characteristic| discover_characteristic(device, characteristic)),
+    )
+    .await
+    .map_err(context)?;
     let characteristics = index_unique(
         characteristics
             .into_iter()
@@ -913,16 +1187,21 @@ async fn discover_service(service: GattDeviceService) -> Result<BLEService> {
         uuid,
         instance,
         characteristics,
+        access: gatt_model::ServiceRestriction::Open,
+        included_services: None,
     })
 }
 
-async fn discover_characteristic(characteristic: GattCharacteristic) -> Result<BLECharacteristic> {
+async fn discover_characteristic(
+    device: &BLEDevice,
+    characteristic: GattCharacteristic,
+) -> Result<BLECharacteristic> {
     let uuid = utils::to_uuid(&characteristic.Uuid()?);
     let handle = characteristic.AttributeHandle()?;
-    let context = |error: Error| {
-        Error::Other(format!("characteristic {uuid} (handle {handle}): {error}").into())
-    };
-    let descriptors = BLEDevice::get_characteristic_descriptors(&characteristic)
+    let context =
+        |error: Error| annotate_attribute("characteristic", uuid, u64::from(handle), error);
+    let descriptors = device
+        .get_characteristic_descriptors(&characteristic)
         .await
         .map_err(context)?
         .into_iter()

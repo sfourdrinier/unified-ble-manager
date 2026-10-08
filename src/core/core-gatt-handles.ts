@@ -41,6 +41,10 @@ import type {
   ConnectionPhyRequest,
   ConnectionPriority,
   ConnectionPriorityRequest,
+  ConnectionSubrateRequest,
+  ConnectionSubrateMode,
+  ConnectionParametersMeasurement,
+  ConnectionParametersWatch,
   ConnectionWriteReadinessWatch,
   EffectiveMtuMeasurement,
   MtuNegotiation,
@@ -159,6 +163,13 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     return this.controls.requestPriority(this, priority, options)
   }
 
+  requestSubrate(
+    mode: ConnectionSubrateMode,
+    options: PublicOperationOptions
+  ): Promise<ConnectionSubrateRequest<Attachment, string>> {
+    return this.controls.requestSubrate(this, mode, options)
+  }
+
   readPhy(options: PublicOperationOptions): Promise<ConnectionPhyObservation<Attachment, string>> {
     return this.controls.readPhy(this, options)
   }
@@ -179,6 +190,14 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
 
   writeWithoutResponseReadiness(options?: PublicOperationOptions): Promise<ConnectionWriteReadinessWatch<Attachment>> {
     return this.controls.writeWithoutResponseReadiness(this, options)
+  }
+
+  parameters(options: PublicOperationOptions): Promise<ConnectionParametersMeasurement<Attachment, string>> {
+    return this.controls.parameters(this, options)
+  }
+
+  parameterEvents(options?: PublicOperationOptions): Promise<ConnectionParametersWatch<Attachment>> {
+    return this.controls.parameterEvents(this, options)
   }
 
   isCurrent(): boolean {
@@ -495,6 +514,36 @@ export class CoreGattDatabase<Attachment extends string, Identity extends Backen
 
   read(path: CurrentCharacteristicPath<Attachment>, options: PublicOperationOptions): Promise<CharacteristicRead> {
     return this.core.read(this, path, options)
+  }
+
+  async acquireWrite(path: CurrentCharacteristicPath<Attachment>, options: PublicOperationOptions) {
+    this.assertCurrent()
+    const acquire = this.backendDatabase.acquireWrite
+    if (acquire === undefined) throw contractError('capability.unsupported', 'gatt', 'gatt.acquire-write')
+    return this.acceptAcquired(await acquire.call(this.backendDatabase, path, options))
+  }
+
+  async acquireNotifications(path: CurrentCharacteristicPath<Attachment>, options: SubscriptionOptions) {
+    this.assertCurrent()
+    const acquire = this.backendDatabase.acquireNotifications
+    if (acquire === undefined) throw contractError('capability.unsupported', 'gatt', 'gatt.acquire-notify')
+    return this.acceptAcquired(await acquire.call(this.backendDatabase, path, options))
+  }
+
+  private async acceptAcquired<Resource extends { close(): Promise<CleanupRecord> }>(resource: Resource) {
+    try {
+      this.assertCurrent()
+      return resource
+    } catch (primary) {
+      const cleanup = await resource.close()
+      if (cleanup.state === 'release-failed') {
+        throw new AggregateError(
+          [primary, ...cleanup.failures.map(failure => new BackendContractError(failure.error))],
+          'Acquired GATT admission and cleanup failed; native cleanup remains owned'
+        )
+      }
+      throw primary
+    }
   }
 
   write(

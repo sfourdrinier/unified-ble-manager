@@ -7,7 +7,7 @@
 // the shipped AAR and standalone JVM smoke compile this authoritative facade;
 // there is no separately maintained probe-side copy.
 //
-// Shape (wire revision `ubm-mobile-wire/1`, docs/MOBILE_RUST_WIRE.md):
+// Shape (wire revision `ubm-mobile-wire/2`, docs/MOBILE_RUST_WIRE.md):
 //   * one host per process: `nativeInstallHost` binds the platform radio
 //     (`RadioHost`, implemented over OwnedAndroidGattRadio) and the wake
 //     listener; the host outlives every RN manager (restoration, FGS);
@@ -85,8 +85,10 @@ public final class MobileCoreBridge {
         /** Answer: {@link #nativeCompleteAdapter}. */
         void adapterState(long requestId);
 
-        /** Answer: {@link #nativeCompleteUnit}. {@code scanMode}: low-power|balanced|low-latency|opportunistic; {@code callbackType}: all-matches|first-match. */
-        void startScan(long requestId, String[] serviceUuids, String[] deviceAddresses, String scanMode, String callbackType, int legacy);
+        /** Answer: {@link #nativeCompleteUnit}. {@code scanMode}: low-power|balanced|low-latency|opportunistic;
+         * {@code callbackType}: all-matches|first-match; {@code reportDelayMs}: 0 for immediate delivery;
+         * {@code phy}: null|all-supported|1m|coded, with explicit PHY requiring nonlegacy scanning. */
+        void startScan(long requestId, String[] serviceUuids, String[] deviceAddresses, String scanMode, String callbackType, int legacy, long reportDelayMs, String phy);
 
         /** Answer: {@link #nativeCompleteUnit}. */
         void stopScan(long requestId);
@@ -140,6 +142,13 @@ public final class MobileCoreBridge {
          */
         void readWriteLimits(long requestId, String peerId);
 
+        /**
+         * Apple write-without-response readiness. Android has no equivalent
+         * signal. Answer: {@link #nativeCompleteFailure} kind {@code unsupported},
+         * dispatched=false. Do not invent a ready=true from a GATT commit.
+         */
+        void readWriteReadiness(long requestId, String peerId);
+
         /** Answer: {@link #nativeCompleteMtu} with the negotiated MTU. */
         void requestMtu(long requestId, String peerId, int mtu);
 
@@ -148,6 +157,11 @@ public final class MobileCoreBridge {
 
         /** {@code priority}: low-power|balanced|high-throughput. Answer: {@link #nativeCompleteAccepted}. */
         void requestConnectionPriority(long requestId, String peerId, String priority);
+
+        /** Public SDK 36.1 int-returning API availability, independently of app entitlements. */
+        boolean subrateAvailable();
+        /** Answer with the actual BluetoothStatusCodes value through nativeCompleteSubrateStatus. */
+        void requestSubrate(long requestId, String peerId, String mode);
 
         /** Answer: {@link #nativeCompletePhy}. */
         void readPhy(long requestId, String peerId);
@@ -166,6 +180,9 @@ public final class MobileCoreBridge {
 
         /** Answer: {@link #nativeCompleteBondedPeers}. */
         void bondedPeers(long requestId);
+        /** Read system GATT connections; services must be empty on Android. */
+        void connectedPeers(long requestId, String[] services);
+        void resolvePeer(long requestId, String peerId);
 
         /** {@code kind}: connected-device. Answer: {@link #nativeCompleteLease}. */
         void acquireBackground(long requestId, String kind, String reason);
@@ -210,7 +227,7 @@ public final class MobileCoreBridge {
     /** The core's contract revision, answered by Rust. */
     public static native String nativeContractRevision();
 
-    /** The mobile wire revision ({@code ubm-mobile-wire/1}). */
+    /** The mobile wire revision ({@code ubm-mobile-wire/2}). */
     public static native String nativeWireRevision();
 
     // -- host (one per process) ------------------------------------------
@@ -280,11 +297,15 @@ public final class MobileCoreBridge {
 
     /**
      * Discovery tree in pre-order: {@code levels[i]} is 0 (service),
-     * 1 (characteristic of the last service) or 2 (descriptor of the last
-     * characteristic); {@code properties[i]} is the characteristic's
+     * 1 (characteristic of the last service), 2 (descriptor of the last
+     * characteristic) or 3 (included-service reference of the last service).
+     * Service properties encode unknown/primary/secondary as 0/1/2 in
+     * bits 0..1 and observed inclusion-list presence in bit 2. Inclusion
+     * rows carry the target's UUID and occurrence, with zero properties.
+     * Descriptor properties are zero; characteristic properties carry
      * property bits (read 0x02, write-without-response 0x04, write 0x08,
      * notify 0x10, indicate 0x20 — Android {@code BluetoothGattCharacteristic}
-     * values), 0 for other levels.
+     * values).
      */
     public static native int nativeCompleteDiscovered(long requestId, int[] levels, String[] uuids, long[] occurrences, int[] properties);
 
@@ -300,6 +321,7 @@ public final class MobileCoreBridge {
     public static native int nativeCompleteRssi(long requestId, int rssi);
 
     public static native int nativeCompleteAccepted(long requestId, boolean accepted);
+    public static native int nativeCompleteSubrateStatus(long requestId, int status);
 
     public static native int nativeCompletePhy(long requestId, String tx, String rx);
 
@@ -311,6 +333,8 @@ public final class MobileCoreBridge {
 
     /** names[i] may be null. */
     public static native int nativeCompleteBondedPeers(long requestId, String[] peerIds, String[] names);
+    public static native int nativeCompleteResolvedPeer(long requestId, String peerId, String name);
+    public static native int nativeCompleteConnectedPeers(long requestId, String[] peerIds, String[] names);
 
     public static native int nativeCompleteLease(long requestId, String leaseId);
 
@@ -345,7 +369,7 @@ public final class MobileCoreBridge {
      * ABSENT_INT when not carried; rawRecord: the raw advertising bytes, or null
      * when not reported.
      */
-    public static native int nativeIngestAdvertisement(String peerId, String address, String localName, int rssi, int txPower, String[] serviceUuids, int[] companyIds, byte[][] manufacturerPayloads, String[] serviceDataUuids, byte[][] serviceDataPayloads, int connectable, String[] solicitedServiceUuids, String[] overflowServiceUuids, int appearance, byte[] rawRecord);
+    public static native int nativeIngestAdvertisement(String peerId, String address, String localName, int rssi, int txPower, String[] serviceUuids, int[] companyIds, byte[][] manufacturerPayloads, String[] serviceDataUuids, byte[][] serviceDataPayloads, int connectable, String[] solicitedServiceUuids, String[] overflowServiceUuids, int appearance, byte[] rawRecord, String cachedName, long captureTimestampMs);
 
     /** status: platform GATT status or ABSENT_INT. */
     public static native int nativeIngestConnection(String peerId, boolean connected, int status);
@@ -359,6 +383,7 @@ public final class MobileCoreBridge {
     public static native int nativeIngestScanFailed(String detail);
 
     public static native int nativeIngestSecurity(String peerId, String bond, String encryption, String authentication, String secureConnections, int pairingPossible);
+    public static native int nativeIngestSecurityFailure(String peerId, String kind, int encryptionStatus, String detail);
 
     /** names[i] may be null. */
     public static native int nativeIngestRestored(String[] peerIds, String[] names, boolean[] connected);

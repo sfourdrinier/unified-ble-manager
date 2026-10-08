@@ -753,9 +753,12 @@ async fn pristine_apple_restored_native_setup_collects_before_att_completion_wit
             data.uuid = DATA.into();
             data.properties.write = false;
             services.push(ubm_desktop::ServiceSnapshot {
+                primary: None,
+                included_services: None,
                 uuid: PMD.into(),
                 occurrence: 0,
                 characteristics: vec![cp, data],
+                access: std::default::Default::default(),
             });
             Reply::Now(RadioCompletion::Discovered(services))
         }

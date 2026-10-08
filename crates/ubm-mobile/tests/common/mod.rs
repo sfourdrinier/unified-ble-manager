@@ -5,7 +5,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
@@ -32,6 +32,7 @@ pub enum Reply {
 type Responder = Box<dyn FnMut(&RadioRequest) -> Reply + Send>;
 
 pub struct Scripted {
+    pub subrate_available: AtomicBool,
     pub requests: Mutex<Vec<RadioRequest>>,
     pub cancels: Mutex<Vec<u64>>,
     pub held: Mutex<HashMap<u64, RadioRequest>>,
@@ -42,6 +43,7 @@ pub struct Scripted {
 impl Scripted {
     pub fn new(responder: Responder) -> Arc<Self> {
         Arc::new(Self {
+            subrate_available: AtomicBool::new(false),
             requests: Mutex::new(Vec::new()),
             cancels: Mutex::new(Vec::new()),
             held: Mutex::new(HashMap::new()),
@@ -102,6 +104,9 @@ impl Scripted {
 }
 
 impl PlatformRadio for Scripted {
+    fn connection_subrate_available(&self) -> bool {
+        self.subrate_available.load(Ordering::SeqCst)
+    }
     fn submit(&self, request: RadioRequest) {
         self.requests.lock().unwrap().push(request.clone());
         let reply = (self.responder.lock().unwrap())(&request);
@@ -131,6 +136,8 @@ pub fn adapter_on() -> AdapterSnapshot {
 
 pub fn polar_services() -> Vec<ServiceSnapshot> {
     vec![ServiceSnapshot {
+        primary: None,
+        included_services: None,
         uuid: HR_SERVICE.to_owned(),
         occurrence: 0,
         characteristics: vec![CharacteristicSnapshot {
@@ -148,6 +155,7 @@ pub fn polar_services() -> Vec<ServiceSnapshot> {
                 occurrence: 0,
             }],
         }],
+        access: std::default::Default::default(),
     }]
 }
 
@@ -173,8 +181,16 @@ pub fn polar_responder(request: &RadioRequest) -> Reply {
                 without_response: 244,
             })
         }
+        RadioRequest::ReadWriteReadiness { .. } => RadioCompletion::Ready(true),
         RadioRequest::RequestMtu { mtu, .. } => RadioCompletion::Mtu(Some(*mtu)),
         RadioRequest::ReadRssi { .. } => RadioCompletion::Rssi(-61),
+        RadioRequest::ResolvePeer { .. } => RadioCompletion::ResolvedPeer(None),
+        RadioRequest::ConnectedPeers { .. } => {
+            RadioCompletion::ConnectedPeers(vec![ubm_mobile::ConnectedPeer {
+                peer_id: POLAR.into(),
+                name: Some("system LE peer".into()),
+            }])
+        }
         RadioRequest::Close { .. } => RadioCompletion::Closed(Vec::new()),
         _ => RadioCompletion::Unit,
     })

@@ -409,6 +409,8 @@ pub struct OpControl {
     pub ticket: OpTicket,
     /// Authenticated connection owner for GATT work on a shared topology.
     connection_lease: Option<String>,
+    delivery_preference: Option<crate::boundary::DeliveryMode>,
+    gatt_admission: Option<std::sync::Arc<crate::GattAdmission>>,
 }
 
 impl OpControl {
@@ -419,7 +421,20 @@ impl OpControl {
             budget,
             ticket,
             connection_lease: None,
+            delivery_preference: None,
+            gatt_admission: None,
         }
+    }
+
+    /// Bind the synchronous native queue position to this operation's lifetime.
+    #[must_use]
+    pub fn with_gatt_admission(mut self, admission: crate::GattAdmission) -> Self {
+        self.gatt_admission = Some(std::sync::Arc::new(admission));
+        self
+    }
+
+    pub(crate) fn gatt_admission(&self) -> Option<std::sync::Arc<crate::GattAdmission>> {
+        self.gatt_admission.clone()
     }
 
     /// Bind GATT admission to the caller's existing authoritative lease.
@@ -433,6 +448,21 @@ impl OpControl {
     #[must_use]
     pub fn connection_lease(&self) -> Option<&str> {
         self.connection_lease.as_deref()
+    }
+
+    /// A soft subscription preference, separate from the required mode.
+    #[must_use]
+    pub fn with_delivery_preference(
+        mut self,
+        preference: Option<crate::boundary::DeliveryMode>,
+    ) -> Self {
+        self.delivery_preference = preference;
+        self
+    }
+
+    #[must_use]
+    pub fn delivery_preference(&self) -> Option<crate::boundary::DeliveryMode> {
+        self.delivery_preference
     }
 
     pub(crate) fn gatt_path(&self, index: usize) -> ubm_core::central::GattOperationPath {

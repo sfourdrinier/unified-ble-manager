@@ -22,6 +22,8 @@ async fn fixture() -> (DesktopCentral<FakeRadio>, NativeContinuation) {
     radio.set_services(
         PEER,
         vec![ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: SERVICE.into(),
             occurrence: 0,
             characteristics: [CHARACTERISTIC, SECOND_CHARACTERISTIC]
@@ -39,6 +41,7 @@ async fn fixture() -> (DesktopCentral<FakeRadio>, NativeContinuation) {
                     descriptors: vec![],
                 })
                 .collect(),
+            access: std::default::Default::default(),
         }],
     );
     let central = DesktopCentral::open(radio, "continuation-test")

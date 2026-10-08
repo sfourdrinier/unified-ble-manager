@@ -10,6 +10,10 @@ use std::hash::Hash;
 /// The name of a raw `GattCommunicationStatus` (`Success` 0, `Unreachable`
 /// 1, `ProtocolError` 2, `AccessDenied` 3). A value outside the enum has
 /// no name and is reported by number.
+///
+/// The WinRT I/O path uses the typed enum in `utils.rs`. This raw mapping
+/// exists for the pure model, which the Windows library build does not call.
+#[cfg(test)]
 pub fn gatt_status_name(raw: i32) -> Option<&'static str> {
     match raw {
         0 => Some("Success"),
@@ -20,9 +24,118 @@ pub fn gatt_status_name(raw: i32) -> Option<&'static str> {
     }
 }
 
+/// What one characteristic-discovery status does to the rest of discovery.
+///
+/// `AccessDenied` (3) with no ATT error byte keeps the service in the
+/// table with no characteristics. Missing ATT metadata does not mean
+/// Windows permanently reserved the service: Heart Rate, Battery, Device
+/// Information, and vendor services can answer this way. Known OS-reserved
+/// UUIDs are decided by [`windows_reserves_service`] before this query.
+/// A peer refusal is a `ProtocolError`, or an `AccessDenied` that still
+/// carries an ATT byte, and that still fails discovery. `Unreachable` and
+/// every other non-success fail it too.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CharacteristicDiscovery {
+    Continue,
+    /// AccessDenied with no ATT byte. The service stays, restricted.
+    AccessDenied,
+    Failed,
+}
+
+/// Why a service is present with no characteristics.
+///
+/// `Open` listed characteristics normally. `OsReserved` was not queried.
+/// `AccessDenied` was queried and Windows refused it without an ATT byte.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceRestriction {
+    Open,
+    OsReserved,
+    AccessDenied,
+}
+
+/// Connectable bit of one Windows advertisement type.
+///
+/// `0` and `1` are connectable undirected and directed. `2` and `3` are
+/// scannable and non-connectable undirected. A scan response (`4`) does not
+/// say, even when `is_connectable` is `Some(false)`. Extended (`5`) uses
+/// that flag only when the OS returned it. Any other discriminant stays
+/// unknown.
+pub fn advertisement_connectable(
+    advertisement_type: i32,
+    is_connectable: Option<bool>,
+) -> Option<bool> {
+    match advertisement_type {
+        0 | 1 => Some(true),
+        2 | 3 => Some(false),
+        4 => None,
+        5 => is_connectable,
+        _ => None,
+    }
+}
+
+/// Windows keeps these 16-bit services for the system (HID, LE Audio, and
+/// the Ranging service on this host). Asking `GetCharacteristics` for one
+/// of them returns `AccessDenied` with no ATT request. Discovery leaves
+/// them out before that call. Heart Rate, Battery, Device Information, and
+/// vendor 128-bit services are not in this set.
+pub fn windows_reserves_service(uuid: u128) -> bool {
+    const BASE_LOW_96: u128 = 0x0000_1000_8000_0080_5f9b_34fb;
+    if uuid & ((1_u128 << 96) - 1) != BASE_LOW_96 || (uuid >> 112) != 0 {
+        return false;
+    }
+    matches!(
+        ((uuid >> 96) & 0xffff) as u16,
+        0x1812 | // Human Interface Device
+        0x1843 | 0x1844 | 0x1845 | 0x1846 | // Audio Input, Volume, Volume Offset, Coordinated Set
+        0x1848 | 0x1849 | // Media Control, Generic Media Control
+        0x184D | 0x184E | 0x184F | // Microphone, Audio Stream, Broadcast Audio Scan
+        0x1850 | 0x1851 | 0x1852 | 0x1853 | 0x1854 | 0x1855 | // Published Audio through Telephony and Media Audio
+        0x1858 | // Gaming Audio
+        0x185B | // Ranging
+        0x185C // HID over ISO
+    )
+}
+
+/// Decide one characteristic query. `status` is the raw
+/// `GattCommunicationStatus`. `att_error` is the result's protocol byte,
+/// when the result had one.
+pub fn characteristic_discovery(status: i32, att_error: Option<u8>) -> CharacteristicDiscovery {
+    match (status, att_error) {
+        (0, _) => CharacteristicDiscovery::Continue,
+        (3, None) => CharacteristicDiscovery::AccessDenied,
+        _ => CharacteristicDiscovery::Failed,
+    }
+}
+
+/// Outcome of one `GetDescriptors` enumeration.
+///
+/// Success lists every descriptor the peer returned, including an empty
+/// list when the characteristic has none. Attribute Not Found is not
+/// success. AccessDenied and ProtocolError fail the query and keep the
+/// ATT byte when the result carried one. The caller cancels the owned
+/// WinRT operation if the discovery budget ends first.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DescriptorEnumeration {
+    Listed,
+    Failed,
+}
+
+/// `Success` (0) is the only status that publishes a descriptor list.
+pub fn descriptor_enumeration(status: i32) -> DescriptorEnumeration {
+    if status == 0 {
+        DescriptorEnumeration::Listed
+    } else {
+        DescriptorEnumeration::Failed
+    }
+}
+
 /// `Ok` for `Success`. Any other status is the failure of `stage`, with the
 /// status named: WinRT discovery never turns a failed query into an empty
 /// list.
+///
+/// Production WinRT code reports the typed `GattCommunicationStatus`. The
+/// pure model keeps this check for the tests that compile this file.
+#[cfg(test)]
 pub fn require_gatt_success(stage: &str, raw: i32) -> Result<(), String> {
     match gatt_status_name(raw) {
         Some("Success") => Ok(()),
@@ -109,8 +222,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        att_error_metadata, gatt_status_code, gatt_status_name, hresult_code, index_unique,
-        require_gatt_success, service_data_section,
+        CharacteristicDiscovery, DescriptorEnumeration, ServiceRestriction, att_error_metadata,
+        characteristic_discovery, descriptor_enumeration, gatt_status_code, gatt_status_name,
+        hresult_code, index_unique, require_gatt_success, service_data_section,
+        windows_reserves_service,
     };
 
     #[test]
@@ -149,6 +264,102 @@ mod tests {
     fn a_repeated_handle_is_refused_not_overwritten() {
         let repeated = index_unique([((0x2a37_u16, 0x000e_u64), 1), ((0x2a37_u16, 0x000e_u64), 2)]);
         assert_eq!(repeated, Err((0x2a37, 0x000e)));
+    }
+
+    #[test]
+    fn advertisement_type_keeps_connectable_and_a_scan_response_stays_unknown() {
+        assert_eq!(super::advertisement_connectable(0, None), Some(true));
+        assert_eq!(super::advertisement_connectable(1, Some(false)), Some(true));
+        assert_eq!(super::advertisement_connectable(2, None), Some(false));
+        assert_eq!(super::advertisement_connectable(3, Some(true)), Some(false));
+        assert_eq!(super::advertisement_connectable(4, Some(false)), None);
+        assert_eq!(super::advertisement_connectable(4, None), None);
+        assert_eq!(super::advertisement_connectable(5, Some(true)), Some(true));
+        assert_eq!(
+            super::advertisement_connectable(5, Some(false)),
+            Some(false)
+        );
+        assert_eq!(super::advertisement_connectable(5, None), None);
+        assert_eq!(super::advertisement_connectable(9, Some(true)), None);
+    }
+
+    /// Windows keeps HID and the LE Audio services. Heart Rate, Battery,
+    /// and a 128-bit vendor service stay in discovery.
+    #[test]
+    fn windows_reserved_services_are_the_os_audio_and_hid_set() {
+        let base = 0x0000_1000_8000_0080_5f9b_34fb_u128;
+        let short = |id: u16| -> u128 { (u128::from(id) << 96) | base };
+        assert!(windows_reserves_service(short(0x184D)));
+        assert!(windows_reserves_service(short(0x1844)));
+        assert!(windows_reserves_service(short(0x1812)));
+        assert!(windows_reserves_service(short(0x185B)));
+        assert!(!windows_reserves_service(short(0x180D)));
+        assert!(!windows_reserves_service(short(0x180F)));
+        assert!(!windows_reserves_service(short(0x180A)));
+        assert!(!windows_reserves_service(
+            0xfb005c80_02e7_f387_1cad_8acd2d8df0c8
+        ));
+    }
+
+    /// AccessDenied without an ATT byte keeps an ordinary service. A
+    /// protocol error, or an access denial that still carries an ATT byte,
+    /// still fails discovery. Known reserved UUIDs are a separate decision.
+    #[test]
+    fn access_denied_without_an_att_byte_keeps_the_service() {
+        assert_eq!(
+            characteristic_discovery(0, None),
+            CharacteristicDiscovery::Continue
+        );
+        assert_eq!(
+            characteristic_discovery(3, None),
+            CharacteristicDiscovery::AccessDenied
+        );
+        assert_eq!(
+            characteristic_discovery(3, Some(5)),
+            CharacteristicDiscovery::Failed
+        );
+        assert_eq!(
+            characteristic_discovery(2, Some(5)),
+            CharacteristicDiscovery::Failed
+        );
+        assert_eq!(
+            characteristic_discovery(2, None),
+            CharacteristicDiscovery::Failed
+        );
+        assert_eq!(
+            characteristic_discovery(1, None),
+            CharacteristicDiscovery::Failed
+        );
+        let base = 0x0000_1000_8000_0080_5f9b_34fb_u128;
+        let battery = (u128::from(0x180Fu16) << 96) | base;
+        assert!(!windows_reserves_service(battery));
+        assert_eq!(
+            if windows_reserves_service(battery) {
+                ServiceRestriction::OsReserved
+            } else if characteristic_discovery(3, None) == CharacteristicDiscovery::AccessDenied {
+                ServiceRestriction::AccessDenied
+            } else {
+                ServiceRestriction::Open
+            },
+            ServiceRestriction::AccessDenied
+        );
+        let microphone = (u128::from(0x184Du16) << 96) | base;
+        assert!(windows_reserves_service(microphone));
+    }
+
+    /// Success is the only status that publishes a descriptor list, and
+    /// that list may be empty. Attribute Not Found, Insufficient
+    /// Encryption, and AccessDenied are failures, not an empty success.
+    #[test]
+    fn descriptor_enumeration_lists_only_a_successful_result() {
+        assert_eq!(descriptor_enumeration(0), DescriptorEnumeration::Listed);
+        assert_eq!(
+            descriptor_enumeration(2),
+            DescriptorEnumeration::Failed,
+            "Attribute Not Found is not an empty list"
+        );
+        assert_eq!(descriptor_enumeration(3), DescriptorEnumeration::Failed);
+        assert_eq!(descriptor_enumeration(1), DescriptorEnumeration::Failed);
     }
 
     /// UBM patch #20: the ATT error byte rides the platform detail as

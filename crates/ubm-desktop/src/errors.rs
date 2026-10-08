@@ -12,10 +12,6 @@ use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CommitState, CoreError};
 
 /// Preserve every independent native cleanup refusal in a singular result.
 /// One failure retains its exact identity and native answer unchanged.
-#[cfg(any(
-    test,
-    all(feature = "btleplug", any(target_os = "linux", target_os = "windows"))
-))]
 pub(crate) fn cleanup_result(
     domain: &str,
     mut failures: Vec<DesktopError>,
@@ -194,7 +190,12 @@ pub fn is_link_loss_answer(platform: &PlatformDetail) -> bool {
             text("nsErrorDomain") == Some("CBErrorDomain")
                 && matches!(platform.code.as_str(), "3" | "7")
         }
-        "winrt" => platform.code == "gatt-status" && text("gattStatus") == Some("unreachable"),
+        "winrt" => {
+            matches!(
+                platform.code.as_str(),
+                "connection-parameters-disconnected" | "connection-phy-disconnected"
+            ) || (platform.code == "gatt-status" && text("gattStatus") == Some("unreachable"))
+        }
         "bluez-dbus" => {
             platform.code == "org.bluez.Error.NotConnected"
                 || (platform.code == "org.bluez.Error.Failed"
@@ -278,6 +279,9 @@ fn is_link_operation(operation: &str) -> bool {
         || operation.starts_with("discovery.")
         || operation == "connection.effective-mtu"
         || operation == "connection.rssi"
+        || operation == "connection.phy"
+        || operation == "connection.parameters"
+        || operation == "connection.request-priority"
         || operation == "peer.rssi"
 }
 
@@ -470,6 +474,7 @@ impl DesktopError {
                 | BleErrorCode::GattReadFailed
                 | BleErrorCode::GattWriteFailed
                 | BleErrorCode::GattSubscribeFailed
+                | BleErrorCode::GattDiscoveryRequired
         );
         let refused = generic
             && is_link_operation(&self.operation)
@@ -884,6 +889,7 @@ mod tests {
             cb("7"),
             PlatformDetail::new("winrt", "gatt-status")
                 .with_metadata("gattStatus", PlatformValue::Text("unreachable".to_owned())),
+            PlatformDetail::new("winrt", "connection-parameters-disconnected"),
             PlatformDetail::new("bluez-dbus", "org.bluez.Error.NotConnected"),
             PlatformDetail::new("bluez-dbus", "org.bluez.Error.Failed")
                 .with_message("Not connected"),
@@ -909,6 +915,7 @@ mod tests {
                 "gatt.write-readiness",
                 "connection.effective-mtu",
                 "connection.rssi",
+                "connection.parameters",
                 // The radio seam's name for the central `connection.rssi` read.
                 "peer.rssi",
             ] {
@@ -1046,6 +1053,40 @@ mod tests {
                 .classify_security();
             assert_eq!(error.code(), BleErrorCode::GattReadFailed, "{platform:?}");
         }
+        // The code each verb actually carries into classify(): read, write,
+        // and subscribe keep their GATT codes; discovery arrives as
+        // GattDiscoveryRequired from map_radio. A security ATT byte renames
+        // all of them. A non-security discovery stays discovery-required.
+        for byte in ["5", "8", "12", "15"] {
+            let platform = winrt_att(byte);
+            for (operation, code) in [
+                ("gatt.read", BleErrorCode::GattReadFailed),
+                ("gatt.discover", BleErrorCode::GattDiscoveryRequired),
+                ("discovery.complete", BleErrorCode::GattDiscoveryRequired),
+                ("gatt.subscribe", BleErrorCode::GattSubscribeFailed),
+                ("gatt.write", BleErrorCode::GattWriteFailed),
+            ] {
+                let error = DesktopError::new(code, BleErrorDomain::Gatt, operation)
+                    .with_platform(platform.clone())
+                    .classify_security();
+                assert_eq!(
+                    error.code(),
+                    BleErrorCode::PlatformSecurity,
+                    "{operation} att {byte}"
+                );
+                assert_eq!(error.platform(), Some(&platform));
+            }
+        }
+        let ordinary = winrt_att("3");
+        let discovery = DesktopError::new(
+            BleErrorCode::GattDiscoveryRequired,
+            BleErrorDomain::Gatt,
+            "discovery.complete",
+        )
+        .with_platform(ordinary.clone())
+        .classify_security();
+        assert_eq!(discovery.code(), BleErrorCode::GattDiscoveryRequired);
+        assert_eq!(discovery.platform(), Some(&ordinary));
         let connect = DesktopError::connection_failed("x")
             .with_platform(android(5))
             .classify_security();

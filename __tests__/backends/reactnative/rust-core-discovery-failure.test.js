@@ -4,7 +4,7 @@
 // discovery with a typed failure. The wire answer carries no `skipped` list,
 // and the refusal reaches the manager unchanged, with no partial database.
 // The answers cross the production binding and serializer from the owner
-// double, which speaks `ubm-mobile-wire/1` as the Rust owner does.
+// double, which speaks `ubm-mobile-wire/2` as the Rust owner does.
 
 const { createReactNativeBleManagerWithEnvironment } = require('../../../src/react-native-manager')
 const { rustCoreHarness, environment } = require('../../../test-support/react-native/rust-core-harness')

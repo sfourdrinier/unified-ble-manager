@@ -1,0 +1,59 @@
+bun test v1.4.2 (744846f84)
+
+../../../../../private/tmp/ubm-rc21-verification/review-ca8f66ad/unified-ble-manager-pr251-review-ca8f66ad/evidence/mobile/encryption-recovery-repro.test.ts:
+CONFIRMED {
+  attribution: "peer",
+  freshPublicAttempts: 3,
+  nativeDispatchesDuringAttempts: 0,
+  recoveredOnlyAfterUnsolicitedObservation: true,
+}
+(pass) REPRO: peer transient encryption source error prevents a fresh healthy public security snapshot [14.59ms]
+CONFIRMED {
+  attribution: "unattributed",
+  freshPublicAttempts: 3,
+  nativeDispatchesDuringAttempts: 0,
+  recoveredOnlyAfterUnsolicitedObservation: true,
+}
+(pass) REPRO: unattributed transient encryption source error prevents a fresh healthy public security snapshot [1.66ms]
+
+../../../../../private/tmp/ubm-rc21-verification/review-ca8f66ad/unified-ble-manager-pr251-review-ca8f66ad/evidence/mobile/android-cached-name-repro.test.ts:
+CONFIRMED {
+  acceptedNoNamePacketsAtMs: [ 0, 6000, 12000, 18000, 24000, 30000 ],
+  evidenceWindowMs: 10000,
+  nativeCacheSubstitutionKeptMatching: true,
+  nullNameControlDidNotMatch: true,
+}
+(pass) REPRO: Android cached native name keeps a public name query matching no-name advertisements [11.17ms]
+
+../../../../../private/tmp/ubm-rc21-verification/review-ca8f66ad/unified-ble-manager-pr251-review-ca8f66ad/evidence/mobile/android-raw-and-timestamps-repro.test.ts:
+CONFIRMED {
+  publicRawOption: "capability.unsupported",
+  radioDispatchedForRefusedOption: false,
+  existingProviderRawBytes: [ 2, 1, 6 ],
+}
+(pass) REPRO: the public Android raw-advertisement option refuses an available production provider field [5.93ms]
+CONFIRMED [
+  {
+    suppliedNativeObservedAtMs: 100,
+    sourceTimestamp: {
+      state: "absent",
+      reason: "the owner clock is not the host monotonic clock",
+      provenance: "not-provided",
+    },
+    receipt: 20000,
+  }, {
+    suppliedNativeObservedAtMs: 19000,
+    sourceTimestamp: {
+      state: "absent",
+      reason: "the owner clock is not the host monotonic clock",
+      provenance: "not-provided",
+    },
+    receipt: 20000,
+  }
+]
+(pass) REPRO: source-then-receipt Android scan discards both supplied native timestamps [1.75ms]
+
+ 5 pass
+ 0 fail
+ 46 expect() calls
+Ran 5 tests across 3 files. [87.00ms]

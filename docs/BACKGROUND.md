@@ -153,7 +153,10 @@ Configure `background.ios.restoration` (`{ id, generation }` in the Expo
 plugin, or the `restoration` manager option) and rebuild: the system
 relaunches the terminated app on a BLE event, delivers the peripherals
 through `willRestoreState`, and the app adopts them with
-`restoration.claim()`. iOS does not implement `intent: 'when-available'`.
+`restoration.claim()`. The Rust route keeps a pending CoreBluetooth connect
+for a known peer until that peripheral is available, the deadline expires, or
+the caller cancels. That is pending initial acquisition. It is not automatic
+reconnection after a link loss, and it is not tvOS background restoration.
 After a relaunch, a direct app-owned reconnect must target a durable restored
 `PeerReference`, not a peer id retained by the former manager instance, then
 the app resubscribes. The shared driver accepts that reference for a direct
@@ -214,7 +217,9 @@ iOS (iPhone 16 Pro Max):
    for once-per-process claim semantics.
 4. Pass the restored peer's `reference` to `restoration` `reconnect` as
    `{ "peerReference": <reference>, "intent": "direct" }`, then verify a new
-   connection and subscription values. Do not use `when-available` on iOS or
+   connection and subscription values. Do not use `when-available` for this
+   relaunch. Restoration reconnect stays `intent: direct`. `when-available` is
+   pending initial acquisition of a known peer, not a restored relaunch. Do not
    pass a previous manager-local peer id to a fresh manager. This physical
    direct-reconnect proof remains open.
 

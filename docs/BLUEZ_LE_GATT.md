@@ -14,7 +14,7 @@ Scanning does not require this extension; strict connection/GATT work does.
 
 The native authority additionally requires
 `org.unifiedblemanager.LinuxAuthority1.GetContract` on the selected adapter,
-with the exact three-unsigned-integer reply `(1, 2, 1)` for contract, lease and
+with the exact three-unsigned-integer reply `(1, 3, 1)` for contract, lease and
 GATT observer versions. Missing, malformed or unknown answers refuse lifecycle
 admission and keep their native failure details. The maintained source extension
 supplies the lease producer and fresh GATT observer together. Installing UBM
@@ -23,13 +23,13 @@ alone does not install that derivative daemon.
 Initial `when-available` additionally probes the optional revision-1
 `LinuxAuthority1.GetLeAvailability` / `LeAdvertisement` observer introduced in
 maintained `5.87-ubm.5`. It proves fresh connectable LE advertisement availability,
-not GATT readiness, and does not change the `(1, 2, 1)` lease/GATT tuple. Older
+not GATT readiness, and does not change the `(1, 3, 1)` lease/GATT tuple. Older
 daemons retain direct acquisition but report deferred acquisition unsupported.
 See [deployment prerequisites](BLUEZ_DEPLOYMENT.md#optional-authoritative-deferred-le-availability)
 and [client ownership](NODE.md#linux-initial-deferred-acquisition). Installing or
 testing this source is not physical-radio qualification.
 
-Lease revision 2's exact `ReleaseLease` reply is `uttsby` (version, original
+Lease revision 3's exact `ReleaseLease` reply is `uttsby` (version, original
 token, physical generation, scope, observed-reason presence, raw MGMT byte).
 The reason is captured only from the exact generation's native physical-loss
 callback and retained in the release answer, so reply-before-signal scheduling
@@ -60,7 +60,7 @@ stock BlueZ protects another external LE client.
 The maintained source includes the authoritative lease mechanism and versioned
 native capability handshake. Dual-mode/second-client physical qualification
 remains separate: no physical dual-mode peer or second-client test was run during
-this source assessment. SSH host `rtx3090` reports BlueZ 5.72 and one `hci0`
+this source assessment. One inspected host reported stock BlueZ 5.72 and one
 adapter; neither its daemon nor its system configuration was changed.
 
 Primary references: [BlueZ Device API](https://bluez.readthedocs.io/en/latest/device-api/),
@@ -85,17 +85,34 @@ zero answer. Cross-adapter/device retries cannot retarget an original token.
 
 Release replies retain version, exact token, physical LE generation and scope:
 `physical-released`, `reservation-released`, `lease-released-protected`, or
-`lease-released-indeterminate`. Only positive physical termination retires an
-established UBM connection under the current public cleanup contract. Protected
-and indeterminate scopes remain explicit release failures with retry ownership;
-they are not silently converted into successful disconnects. A zero-generation
+`lease-released-indeterminate`. A matching `lease-released-protected` receipt
+retires this logical lease only: the other owner's link stays up, and this
+manager records no physical generation or disconnect reason. It still
+acknowledges the exact token. Lease revision 3 transfers deferred cleanup to
+one daemon-owned obligation for that physical generation before reclaiming
+the token. Once the final protecting interest ends, reconciliation runs even
+while the original sender remains alive. Disconnect refusals retain that
+obligation and a bounded retry; loss or generation replacement retires it.
+An ACK never disconnects a foreign-owned or indeterminate link, evicts an
+unresolved token, or fabricates a physical-loss receipt. Duplicate ACKs remain
+idempotent through exact sender-bound token and reservation fences.
+`lease-released-indeterminate`, a protected receipt whose token or generation
+does not match, and a protected receipt that carries a disconnect reason stay
+retry-owned failures. They are not turned into a successful disconnect. A finished
+characteristic or descriptor read or write is not a protected external
+interest. A zero-generation
 reservation receipt proves no accepted physical work, not that a link closed.
 Fresh ATT discovery identity is separate from physical LE generation.
 
 A confirmed token retirement answers a scoped lease question, not necessarily
 a physical ACL question. A positively exclusive UBM-created attachment is
-eligible for last-owner physical teardown. A preexisting connection, protected
-external interest, or indeterminate external interest is not. The native
+eligible for last-owner physical teardown. A preexisting connection, an
+in-flight characteristic or descriptor read or write, an active StartNotify
+or Acquire, an explicit Connect or Pair, or an indeterminate external
+interest is not. A finished read or write is not an external interest: that
+hold ends when the method returns or its ATT operation completes. StartNotify
+and Acquire last until the sender's bus connection dies; StopNotify does not
+clear that hold. The native
 receipt must retain that distinction; a retained link is never reported as a
 physically closed ACL. Permanent retention of every UBM-created link is not a
 substitute for implementing exclusive teardown.
@@ -107,6 +124,7 @@ The official 5.87 source hook inventory for this implementation is:
 | `src/bearer.c::bearer_connect`                                           | Distinguish private token-bound creation from stock LE/BREDR requests.                    |
 | `src/bearer.c::bearer_disconnect`                                        | No physical release without a current, positive exclusive-attachment proof.               |
 | `src/device.c::dev_connect` and `connect_profile`                        | Accepted stock-client interest must protect an existing UBM-created LE attachment.        |
+| `src/gatt-client.c` ReadValue and WriteValue                             | A one-shot read or write protects only while its ATT operation is in flight.              |
 | `src/device.c::pair_device` and `device_connect_le`                      | Pairing/internal/autoconnect initiation is not automatically a UBM-exclusive acquisition. |
 | `src/device.c::device_add_connection` and `device_remove_connection`     | Fence restored/incoming connections and genuine physical loss by attachment generation.   |
 | `src/adapter.c::adapter_add_connection` and its connection-event callers | Kernel-restored and incoming peers cannot acquire optimistic UBM-exclusive status.        |
@@ -262,3 +280,11 @@ reverified, even when the daemon's ready token is unchanged.
 The existing Linux private-bus CI lane tests the consumer and daemon extension.
 Source tests do not promote a backend evidence label. See the generated
 [platform support evidence](generated/PLATFORM_SUPPORT.md) for retained claims.
+
+Classic (`BDADDR_BREDR`) Pair requests do not admit, commit or roll back LE
+interests. Pair selects its actual bearer before LE admission; only an accepted
+LE Pair protects the LE attachment while pending and through its committed
+lifetime. The source-derived bearer controls exercise accepted, completed,
+refused and sender-death Classic requests alongside LE release and LE positive
+controls. These controlled daemon-function tests are separate from deployment
+and physical dual-bearer qualification of the exact regenerated patch.

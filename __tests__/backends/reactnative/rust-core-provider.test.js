@@ -3,7 +3,7 @@
 // The React Native Rust route end to end, through the ordinary factory
 // (`createReactNativeBleManagerWithEnvironment`), the REAL production binding
 // and serializer, and a deterministic `UnifiedBleRustCore` module that speaks
-// `ubm-mobile-wire/1` exactly as the Rust owner does. Each describe names the
+// `ubm-mobile-wire/2` exactly as the Rust owner does. Each describe names the
 // review finding it proves.
 
 const {
@@ -689,4 +689,44 @@ describe('PR210-09 cleanup keeps its identity until the owner confirms release',
     expect(attempts[0].lease).toBe(attempts[1].lease)
     await manager.destroy()
   })
+})
+
+describe('system-connected native directory', () => {
+  test.each(['android', 'apple'])('%s returns a foreign link without scanning or owning it', async platform => {
+    const foreign = {
+      peerId: platform === 'apple' ? '00112233-4455-6677-8899-aabbccddeeff' : 'AA:BB:CC:DD:EE:FF',
+      name: 'another app link'
+    }
+    const { native, manager, backend } = await openManager({
+      platform,
+      nativeOptions: { peripherals: [], connectedDirectory: [foreign] }
+    })
+    const options = { ...NO_OPTIONS, ...(platform === 'apple' ? { services: ['180d'] } : {}) }
+    const records = await backend.peers.connected(options)
+    expect(records).toHaveLength(1)
+    expect(records[0].source).toBe('system-connected')
+    expect(records[0].state.connection).toBe('connected')
+    expect(await backend.peers.known(NO_OPTIONS)).toEqual([])
+    expect(
+      native.calls.filter(call => ['scan.start', 'connection.connect', 'security.pair'].includes(call.op))
+    ).toEqual([])
+    expect(await backend.peers.resolve(records[0].reference, NO_OPTIONS)).toMatchObject({ name: foreign.name })
+    native.connectedDirectory = []
+    expect(await backend.peers.connected(options)).toEqual([])
+    expect(await backend.peers.resolve(records[0].reference, NO_OPTIONS)).toBeNull()
+    await manager.destroy()
+  })
+
+  test.each(['android', 'apple'])(
+    '%s rejects an unanswerable service filter before the native query',
+    async platform => {
+      const { native, manager, backend } = await openManager({ platform })
+      const options = { ...NO_OPTIONS, ...(platform === 'android' ? { services: ['180d'] } : {}) }
+      await expect(backend.peers.connected(options)).rejects.toMatchObject({
+        normalized: { code: 'capability.unsupported' }
+      })
+      expect(native.calls.filter(call => call.op === 'peers.connected')).toHaveLength(0)
+      await manager.destroy()
+    }
+  )
 })

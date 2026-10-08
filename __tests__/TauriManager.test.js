@@ -17,7 +17,7 @@ class FakeChannel {
 }
 
 function negotiated(axis) {
-  const selected = { axis, value: axis === 'ipc-protocol' ? 5 : 1 }
+  const selected = { axis, value: axis === 'ipc-protocol' ? 6 : 1 }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -409,7 +409,7 @@ describe('Tauri v2 public manager', () => {
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 
-  test('finding 217 follow-up: effective MTU is measured through IPC when the native snapshot reports it limited', async () => {
+  test('macOS effective MTU is unavailable when the native route reports the ATT MTU unobserved', async () => {
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
       if (request.kind === 'bootstrap')
@@ -419,7 +419,7 @@ describe('Tauri v2 public manager', () => {
             'connection:effective-mtu',
             'connection.rssi-and-att-mtu-capability-contract',
             'limited',
-            'corebluetooth-derived-effective-mtu'
+            'corebluetooth-att-mtu-not-observed'
           ])
         }
       if (request.kind === 'event.ack') return { kind: 'event.ack' }
@@ -449,7 +449,12 @@ describe('Tauri v2 public manager', () => {
         }
       }
       if (command === 'connection.events.ready') return { kind: 'route', payload: { state: 'ready' } }
-      if (command === 'connection.effective-mtu') return { kind: 'route', payload: { mtu: 515 } }
+      if (command === 'connection.effective-mtu') {
+        const reads = invoke.mock.calls.filter(
+          ([, call]) => call.request.envelope?.command === 'connection.effective-mtu'
+        ).length
+        return { kind: 'route', payload: { mtu: reads === 1 ? null : 515 } }
+      }
       if (command === 'connection.events.unsubscribe' || command === 'connection.disconnect') {
         return { kind: 'route', payload: { state: 'released', failures: [] } }
       }
@@ -461,6 +466,12 @@ describe('Tauri v2 public manager', () => {
     expect(effectiveMtu).toMatchObject({ state: 'limited' })
 
     const connection = await manager.connect('polar-h10')
+    await expect(connection.controls.effectiveMtu()).resolves.toMatchObject({
+      state: 'unavailable',
+      attMtu: null,
+      payloadBytes: null,
+      platformPduBytes: null
+    })
     await expect(connection.controls.effectiveMtu()).resolves.toMatchObject({
       state: 'measured',
       attMtu: 515,
@@ -1340,7 +1351,7 @@ describe('Tauri v2 public manager', () => {
     ).rejects.toMatchObject({ code: 'protocol.malformed' })
 
     const outOfRangeVersionBootstrap = bootstrap()
-    outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 6 }
+    outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 7 }
     const outOfRangeVersionInvoke = jest.fn(async () => ({ kind: 'bootstrap', bootstrap: outOfRangeVersionBootstrap }))
     await expect(
       createTauriBleManagerWithEnvironment({ invoke: outOfRangeVersionInvoke, Channel: FakeChannel })
@@ -1672,7 +1683,7 @@ describe('Tauri deadline and native retryability through the IPC manager', () =>
 // errors, subscribe `delivery`, lifecycle events), so the IPC protocol is 3.
 // A mixed pair fails at bootstrap as protocol.incompatible, never later as
 // protocol.malformed on its first operation.
-describe('Tauri IPC protocol version 5', () => {
+describe('Tauri IPC protocol version 6', () => {
   function versionAxes(ipcProtocol) {
     const bootstrapValue = bootstrap()
     const selected = { axis: 'ipc-protocol', value: ipcProtocol }
@@ -1681,11 +1692,11 @@ describe('Tauri IPC protocol version 5', () => {
     return bootstrapValue
   }
 
-  test('the webview offers exactly IPC protocol 5', async () => {
+  test('the webview offers exactly IPC protocol 6', async () => {
     const { TAURI_PLUGIN_COMPATIBILITY } = require('../src/tauri/compatibility')
     const { IPC_PROTOCOL_VERSION } = require('../src/ipc/protocol')
-    expect(IPC_PROTOCOL_VERSION).toBe(5)
-    expect(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol).toBe(5)
+    expect(IPC_PROTOCOL_VERSION).toBe(6)
+    expect(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol).toBe(6)
 
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
@@ -1698,8 +1709,8 @@ describe('Tauri IPC protocol version 5', () => {
     const offer = invoke.mock.calls[0][1].request.offer
     expect(offer.ipcProtocol).toEqual({
       axis: 'ipc-protocol',
-      minimum: { axis: 'ipc-protocol', value: 5 },
-      maximum: { axis: 'ipc-protocol', value: 5 }
+      minimum: { axis: 'ipc-protocol', value: 6 },
+      maximum: { axis: 'ipc-protocol', value: 6 }
     })
     await manager.destroy()
   })
@@ -1732,7 +1743,7 @@ describe('Tauri IPC protocol version 5', () => {
     expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap'])
   })
 
-  test.each([3, 4])('plugin selecting protocol %s is refused as incompatible and released', async oldVersion => {
+  test.each([3, 4, 5])('plugin selecting protocol %s is refused as incompatible and released', async oldVersion => {
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: versionAxes(oldVersion) }

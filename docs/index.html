@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 5.0.0-rc.20 | Documentation</title>
+    <title>unified-ble-manager 5.0.0-rc.21 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>5.0.0-rc.20</code></div>
+          <div class="mb1"><code>5.0.0-rc.21</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -64,7 +64,7 @@
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
-            <p>This source targets <code>5.0.0-rc.20</code>; verify the published version in the npm registry.</p>
+            <p>This source targets <code>5.0.0-rc.21</code>; verify the published version in the npm registry.</p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -136,7 +136,7 @@
               The 5.0 candidate is on npm <code>next</code>; npm <code>latest</code> remains the stable 4.0 line.
               Install the exact candidate and commit the resolved lockfile for a known native rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.20
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.21
 </code></pre>
             <p>
               Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
@@ -145,9 +145,9 @@
             <h4>Expo / CNG v2</h4>
             <p>
               The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. Install
-              <code>5.0.0-rc.20</code> and keep that exact version in your lockfile while validating the native build:
+              <code>5.0.0-rc.21</code> and keep that exact version in your lockfile while validating the native build:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.20
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.21
 </code></pre>
             <p>The package does not run in Expo Go.</p>
             <p>Expo also needs a native build and development client:</p>
@@ -510,7 +510,10 @@ const bytes = await battery.read({ signal: controller.signal, timeoutMs: 5000 })
     response: 'required'
   })
 } catch (error) {
-  if (!(error instanceof BleError) || (error.code !== 'gatt.not-found' &#x26;&#x26; error.code !== 'gatt.property-not-supported')) {
+  if (
+    !(error instanceof BleError) ||
+    (error.code !== 'gatt.not-found' &#x26;&#x26; error.code !== 'gatt.property-not-supported')
+  ) {
     throw error
   }
 }
@@ -592,10 +595,10 @@ const connection = await ble.connect(known.id, { intent: 'when-available', timeo
             <p>
               <code>connection.controls.requestMtu(n)</code> and <code>effectiveMtu()</code> do not behave the same
               everywhere: on Android the effective MTU is unavailable before a successful MTU exchange; on Apple there
-              is no caller-directed MTU request and the effective MTU is derived per link as
-              <code>maximumWriteValueLength(for: .withResponse) + 3</code>; on BlueZ a withheld link answers
-              <code>capability.unavailable</code>. Likewise, an Apple read issued while the characteristic notifies
-              resolves with provenance <code>read-or-notification</code>
+              is no caller-directed MTU request and the effective ATT MTU stays unavailable because CoreBluetooth does
+              not observe one (<code>maximumWriteValueLength(for:)</code> is the per-mode write capacity, not an ATT
+              MTU); on BlueZ a withheld link answers <code>capability.unavailable</code>. Likewise, an Apple read issued
+              while the characteristic notifies resolves with provenance <code>read-or-notification</code>
               (the value may be a notification); use
               <code>characteristic.readReceipt()</code> when it matters. The exact per-host rows are in
               <a href="UNIFIED_SEMANTICS.md#172-current-pr8-host-matrix"><code>UNIFIED_SEMANTICS.md</code></a
@@ -1005,7 +1008,7 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in this <code>5.0.0-rc.20</code> source. Those options match the schema
+              Use the v2 plugin options in this <code>5.0.0-rc.21</code> source. Those options match the schema
               introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
@@ -1013,7 +1016,7 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.20
+            <pre><code>pnpm add unified-ble-manager@5.0.0-rc.21
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
@@ -1334,7 +1337,7 @@ await manager.background.updateNotification({
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              This source targets <code>5.0.0-rc.20</code>. Main executes the shared Rust core
+              This source targets <code>5.0.0-rc.21</code>. Main executes the shared Rust core
               (<code>DesktopCentral</code>) through one N-API addon. Tagged releases ship it prebuilt for macOS Apple
               Silicon (<code>arm64</code>) and Windows/Linux <code>arm64</code>/<code>x64</code>. The addon is Node-API,
               so one binary serves Node and modern Electron alike.
@@ -1453,6 +1456,15 @@ const manager = await createBleManagerFromProvider(
               cleanup succeeds.
             </p>
             <h3>Connection and GATT recovery</h3>
+            <p>
+              Eligible Linux <code>acquireWrite()</code> and <code>acquireNotifications()</code> calls cross the
+              trusted-main route to the same native central used by Node. Renderers receive opaque handles and copied
+              packets. The
+              <a href="NODE.md#explicit-bluez-acquired-gatt-transports">acquired transport contract</a> applies to MTU
+              limits, backpressure, cancellation and commit uncertainty. Iterator return closes an acquired notification
+              transport. Main retains failed close ownership through rediscovery, connection release, renderer reload
+              and admission rollback; another renderer lease cannot use or close the handle.
+            </p>
             <p>
               The shared IPC client used by Electron and Tauri invalidates a GATT generation and publishes its change
               cause before waiting for subscription cleanup. Its handles become unusable immediately; an unsubscribe
@@ -1615,8 +1627,8 @@ function recorderForMain(central: DesktopRustCoreCentral) {
               result.
             </p>
             <p>
-              The renderer and main negotiate the IPC protocol at bootstrap; both offer exactly version 5. Version 5
-              adds security routes, address targeting, connection intent and platform scan-option forwarding. A
+              The renderer and main negotiate the IPC protocol at bootstrap; both offer exactly version 6. Version 5
+              added security routes, address targeting, connection intent and platform scan-option forwarding. A
               capability still describes the instantiated backend's implementation; transport support does not invent
               native support. The caller's deadline crosses as a relative <code>budgetMs</code> that main admits against
               its own monotonic clock at receipt (the renderer's <code>performance.now()</code> instant has a different
@@ -1709,6 +1721,18 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
               package digest, OS/runtime/ABI, hardware, scenario, limitations, and proof level. See
               <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a> and the controlling
               <a href="README.md#current-50-authority">Current 5.0 authority</a>.
+            </p>
+            <p>
+              IPC version 6 requires nullable observed service graph facts and the native readiness/acquired-GATT route
+              contract. Version-5 peers are refused during bootstrap, before a renderer lease or radio effect is
+              created.
+            </p>
+            <p>
+              Connection parameter/readiness streams preserve the shared
+              <a href="NODE.md#connection-observation-ownership">observation ownership and source recovery rules</a>
+              through main-process IPC. Windows renderers can
+              <a href="NODE.md#windows-phy-observation">read the observed TX/RX PHY</a> when their instantiated backend
+              reports that runtime capability; this grants no PHY request or selection support.
             </p>
           </section>
         </div>
@@ -1837,8 +1861,22 @@ UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.$(node -p 'process.platform + "-" + 
               This is not automatic post-loss reconnect. Linux implements initial acquisition with maintained daemon
               <code>5.87-ubm.5</code>'s optional observer: a fresh connectable LE advertisement is required before
               token-bound connection admission. Older daemons report <code>capability.unsupported</code>; merged stock
-              discovery signals and cached records do not replace that mechanism. See
-              <a href="NODE.md"><code>NODE.md</code></a> for deployment prerequisites and exact host boundaries.
+              discovery signals and cached records do not replace that mechanism. On source <code>5.87-ubm.6</code>,
+              another process's finished GATT read or write does not keep the ACL when this process is the only
+              application owner. An in-flight read or write, StartNotify, Acquire, or an explicit Connect or Pair still
+              does. Replacing the running <code>5.87-ubm.4</code> daemon with <code>5.87-ubm.6</code> changed the glibc
+              Linux H10 disconnect from <code>lease-released-protected</code> to
+              <code>lease-released-indeterminate</code> and left the link up: profile probing arms auto-connect, and
+              that bookkeeping was recorded as an unknown holder. Source <code>5.87-ubm.7</code> does not treat that
+              bookkeeping as a hold on an exclusive link this process created, and that exclusive release stops kernel
+              auto-connect for an untrusted device, the same gate <code>Device1.Disconnect</code> uses. Installing it
+              changed the glibc Linux H10 disconnect to <code>lease-released-protected</code> and left the link up: the
+              controller had already initiated the bonded link, and the lease adopted it as borrowed. Source
+              <code>5.87-ubm.8</code> releases a locally initiated link when no other application hold remains. A link
+              this controller did not initiate stays protected. The same in-flight and explicit holds still do.
+              Installing <code>5.87-ubm.8</code>, the glibc Linux H10 session reported <code>released</code> and the
+              link was down. See <a href="NODE.md"><code>NODE.md</code></a> for deployment prerequisites and exact host
+              boundaries.
             </p>
             <p>
               CoreBluetooth does not expose unrestricted system bond inventory. Web Bluetooth exposes origin-authorized

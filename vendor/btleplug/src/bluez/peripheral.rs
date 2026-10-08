@@ -50,6 +50,7 @@ struct ServiceInternal {
     handle: u64,
     info: ServiceInfo,
     characteristics: Vec<CharacteristicInternal>,
+    includes: Option<Vec<crate::api::IncludedService>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -89,8 +90,10 @@ fn publish_gatt(publication: &Mutex<PublishedGatt>, candidate: PublishedGatt) ->
 /// BlueZ's naming.
 pub(crate) fn handle_from_object_path(path: &str) -> Option<u64> {
     let segment = path.rsplit('/').next()?;
-    let digits = segment.trim_start_matches(|c: char| c.is_ascii_lowercase());
-    if digits.is_empty() || digits.len() == segment.len() {
+    let digits = segment.strip_prefix("service")
+        .or_else(|| segment.strip_prefix("char"))
+        .or_else(|| segment.strip_prefix("desc"))?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
     u64::from_str_radix(digits, 16).ok()
@@ -165,22 +168,34 @@ impl Peripheral {
 
     /// Metadata housekeeping only, after consuming the exact terminal receipt.
     pub async fn acknowledge_le_lease(&self, owner: &str, token: u64) -> Result<()> {
-        Ok(self.session.acknowledge_le_lease(&self.device, owner, token).await?)
+        Ok(self
+            .session
+            .acknowledge_le_lease(&self.device, owner, token)
+            .await?)
     }
 
     /// Reserve sender ownership before any accepted LE connection effect.
     pub async fn reserve_le_lease(&self, owner: &str, reservation_id: u64) -> Result<u64> {
-        Ok(self.session.reserve_le_lease(&self.device, owner, reservation_id).await?)
+        Ok(self
+            .session
+            .reserve_le_lease(&self.device, owner, reservation_id)
+            .await?)
     }
 
     /// Reconcile an original identity without acquiring any new connection.
     pub async fn recover_le_lease(&self, owner: &str, reservation_id: u64) -> Result<Option<u64>> {
-        Ok(self.session.recover_le_lease(&self.device, owner, reservation_id).await?)
+        Ok(self
+            .session
+            .recover_le_lease(&self.device, owner, reservation_id)
+            .await?)
     }
 
     /// Connect the exact retained reservation on its original daemon owner.
     pub async fn connect_le_lease(&self, owner: &str, token: u64) -> Result<u64> {
-        Ok(self.session.connect_le_lease(&self.device, owner, token).await?)
+        Ok(self
+            .session
+            .connect_le_lease(&self.device, owner, token)
+            .await?)
     }
 
     /// Preserve authoritative scope; lease retirement is not ACL disconnection.
@@ -190,7 +205,10 @@ impl Peripheral {
         token: u64,
         expected_generation: Option<u64>,
     ) -> Result<bluez_async::LeLeaseReleaseReceipt> {
-        Ok(self.session.release_le_lease(&self.device, owner, token, expected_generation).await?)
+        Ok(self
+            .session
+            .release_le_lease(&self.device, owner, token, expected_generation)
+            .await?)
     }
 
     /// Pin this peripheral's GATT calls to an explicitly attested BlueZ
@@ -393,8 +411,34 @@ impl api::Peripheral for Peripheral {
         };
         let mut services_internal = Vec::new();
         let services = self.session.get_services(&self.device).await?;
-        for service in services {
+        for service in &services {
             let service_handle = object_handle(&service.id.to_string())?;
+            let includes = service
+                .includes
+                .as_ref()
+                .map(|references| {
+                    references
+                        .iter()
+                        .map(|id| {
+                            let target = services
+                                .iter()
+                                .find(|candidate| candidate.id == *id)
+                                .ok_or_else(|| {
+                                    Error::Other(
+                                        format!(
+                                            "included service {id} is absent from the current graph"
+                                        )
+                                        .into(),
+                                    )
+                                })?;
+                            Ok(crate::api::IncludedService {
+                                uuid: target.uuid,
+                                instance: object_handle(&target.id.to_string())?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()
+                })
+                .transpose()?;
             let characteristics = self.session.get_characteristics(&service.id).await?;
             let characteristics = join_all(characteristics.into_iter().map(|info| async move {
                 let handle = object_handle(&info.id.to_string())?;
@@ -421,8 +465,9 @@ impl api::Peripheral for Peripheral {
             .collect::<Result<Vec<_>>>()?;
             services_internal.push(ServiceInternal {
                 handle: service_handle,
-                info: service,
+                info: service.clone(),
                 characteristics,
+                includes,
             });
         }
         if let Some(before) = &before {
@@ -532,6 +577,7 @@ fn value_notification(
                 service_uuid: service.info.uuid,
                 service_instance: service.handle,
                 value,
+                source_failure: None,
                 lost_before: 0,
             })
         }
@@ -621,7 +667,8 @@ impl From<&ServiceInternal> for Service {
         Service {
             uuid: service.info.uuid,
             instance: service.handle,
-            primary: service.info.primary,
+            primary: Some(service.info.primary),
+            included_services: service.includes.clone(),
             characteristics: service
                 .characteristics
                 .iter()
@@ -664,6 +711,19 @@ impl From<CharacteristicFlags> for CharPropFlags {
 
 #[cfg(test)]
 mod ubm_instance_tests {
+    #[test]
+    fn gatt_hex_suffix_is_preserved_after_exact_prefix() {
+        for prefix in ["service", "char", "desc"] {
+            for (suffix, expected) in [("0001", 1), ("a001", 0xa001), ("abcd", 0xabcd), ("ffff", 0xffff)] {
+                assert_eq!(super::handle_from_object_path(&format!("/org/bluez/hci0/dev_AA/{prefix}{suffix}")), Some(expected));
+            }
+        }
+        for segment in ["a001", "unknowna001", "service", "charxyz", "desc-1", "service+a001"] {
+            assert_eq!(super::handle_from_object_path(&format!("/org/bluez/hci0/dev_AA/{segment}")), None);
+        }
+        assert_ne!(super::handle_from_object_path("/char0001"), super::handle_from_object_path("/chara001"));
+    }
+
     use super::handle_from_object_path;
 
     #[test]

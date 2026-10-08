@@ -49,7 +49,11 @@ export function snapshotAdvertisementObservation(value: AdvertisementObservation
     provenance: value.provenance,
     ...(value.origin === undefined ? {} : { origin: value.origin }),
     sourceTimestamp: snapshotField(value.sourceTimestamp, item =>
-      Object.freeze({ monotonicMs: item.monotonicMs, origin: item.origin })
+      Object.freeze({
+        monotonicMs: item.monotonicMs,
+        origin: item.origin,
+        ...(item.clockScope === undefined ? {} : { clockScope: item.clockScope })
+      })
     ),
     receivedAtMonotonicMs: value.receivedAtMonotonicMs,
     ingressOrdinal: value.ingressOrdinal,
@@ -216,10 +220,14 @@ function isDeviceAddress(value: unknown): value is DeviceAddress {
 
 function isSourceTimestamp(
   value: unknown
-): value is { readonly monotonicMs: number; readonly origin: 'platform' | 'backend' } {
+): value is { readonly monotonicMs: number; readonly origin: 'platform' | 'backend'; readonly clockScope?: string } {
   return (
     isRecord(value) &&
-    hasExactKeys(value, Object.freeze(['monotonicMs', 'origin'])) &&
+    hasExactKeys(
+      value,
+      Object.freeze('clockScope' in value ? ['monotonicMs', 'origin', 'clockScope'] : ['monotonicMs', 'origin'])
+    ) &&
+    (!('clockScope' in value) || isNonEmptyString(value.clockScope)) &&
     isNonNegativeFiniteNumber(value.monotonicMs) &&
     (value.origin === 'platform' || value.origin === 'backend')
   )

@@ -638,10 +638,13 @@ impl BluetoothSession {
                 let service = self.service(&service_id);
                 let uuid = Uuid::parse_str(&service.uuid().await?)?;
                 let primary = service.primary().await?;
+                let properties = service.get_all("org.bluez.GattService1").await?;
+                let includes = service::inclusion_property(&properties)?;
                 services.push(ServiceInfo {
                     id: service_id,
                     uuid,
                     primary,
+                    includes,
                 });
             }
         }
@@ -760,10 +763,13 @@ impl BluetoothSession {
         let service = self.service(id);
         let uuid = Uuid::parse_str(&service.uuid().await?)?;
         let primary = service.primary().await?;
+        let properties = service.get_all("org.bluez.GattService1").await?;
+        let includes = service::inclusion_property(&properties)?;
         Ok(ServiceInfo {
             id: id.to_owned(),
             uuid,
             primary,
+            includes,
         })
     }
 

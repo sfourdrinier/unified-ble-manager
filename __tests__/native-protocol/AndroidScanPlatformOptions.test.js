@@ -117,7 +117,10 @@ describe('OwnedAndroidGattRadio scan platform source guards', () => {
   const fs = require('fs')
   const path = require('path')
   const radio = fs.readFileSync(
-    path.resolve(__dirname, '../../android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt'),
+    path.resolve(
+      __dirname,
+      '../../android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt'
+    ),
     'utf8'
   )
   const startScan = radio.slice(radio.indexOf('fun startScan('), radio.indexOf('internal fun stopScan()'))
@@ -129,12 +132,12 @@ describe('OwnedAndroidGattRadio scan platform source guards', () => {
   test('rejects legacyScan=false before any scan state changes on pre-26 devices', () => {
     // API 24-25 devices have no ScanSettings.Builder.setLegacy; accepting the
     // option there would start an unchanged legacy scan and report success.
-    const guard = startScan.indexOf('require(legacyScan || Build.VERSION.SDK_INT >= 26)')
+    const guard = startScan.indexOf('require(legacyScan || scanSdkInt >= 26)')
     expect(guard).toBeGreaterThan(-1)
     expect(guard).toBeLessThan(startScan.indexOf('scanSeenDeviceIds.clear()'))
     expect(guard).toBeLessThan(startScan.indexOf('check(scanCallback == null)'))
     // setLegacy stays gated to API 26+ where it is honoured.
-    expect(startScan).toMatch(/if \(Build\.VERSION\.SDK_INT >= 26\) \{\s*\n\s*builder\.setLegacy\(legacyScan\)/)
+    expect(startScan).toMatch(/if \(scanSdkInt >= 26\) \{\s*\n\s*builder\.setLegacy\(legacyScan\)/)
   })
 })
 

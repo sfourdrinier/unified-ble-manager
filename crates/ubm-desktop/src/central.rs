@@ -37,6 +37,10 @@
 //! event loop spawns on the ambient runtime. Physical proof stays queued
 //! (see `PARITY_GAPS.md`).
 
+#[path = "central_acquired.rs"]
+mod acquired;
+pub use acquired::AcquiredGattHandle;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::{
@@ -60,12 +64,16 @@ use crate::boundary::{
     AdapterAuthorization, AdapterAvailability, AdapterLossCause, AdapterPowerState,
     AdmissionPolicy, CharacteristicAccess, CharacteristicRead, DeliveryMode, GattSnapshotIdentity,
     InstanceKey, ObservedDelivery, PeerSnapshot, RadioBoundary, RadioCloseFailure, RadioEvent,
-    ScanFilterSpec,
+    ScanFilterSpec, ServiceAccess,
 };
 use ubm_core::central::ScanDuplicatePolicy;
 
 #[path = "central_parity.rs"]
 mod parity;
+#[path = "central_phy.rs"]
+mod phy;
+#[path = "central_retirement.rs"]
+mod retirement;
 use crate::errors::{DesktopError, Retryability};
 use crate::identity::{AttachmentEpoch, DesktopIdentity, HostIdentity};
 use crate::op_control::{
@@ -73,9 +81,9 @@ use crate::op_control::{
     LIVENESS_CLEANUP, LIVENESS_OP, LIVENESS_SCAN_START, OpControl, OpTicket, SettleOnDrop, Window,
 };
 pub use parity::{
-    CancelPairingOutcome, ControllerFuture, PairRequest, PairingGeneration,
-    PairingGenerationController, ScanTerminalEvent, SecureConnections, SecurityEvent,
-    WriteReadinessEvent, cancel_outcome_for, canonical_address,
+    CancelPairingOutcome, ConnectionParametersEvent, ControllerFuture, PairRequest,
+    PairingGeneration, PairingGenerationController, ScanTerminalEvent, SecureConnections,
+    SecurityEvent, WriteReadinessEvent, cancel_outcome_for, canonical_address,
 };
 
 /// Effect batch capacity per core call (matches the core's own default).
@@ -852,9 +860,36 @@ fn admit_snapshot(
             })
     };
     let mut entries = 0usize;
+    let mut service_identities = HashSet::new();
+    for service in services {
+        well_formed(&service.uuid, "service")?;
+        let uuid = ubm_core::central::canonical_uuid(&service.uuid).map_err(DesktopError::from)?;
+        if !service_identities.insert((uuid, service.occurrence)) {
+            return Err(contract_error(
+                BleErrorCode::ProtocolViolation,
+                BleErrorDomain::Gatt,
+                "discovery.snapshot.service-identity",
+            ));
+        }
+    }
     for service in services {
         well_formed(&service.uuid, "service")?;
         entries += 1;
+        if let Some(included) = &service.included_services {
+            for reference in included {
+                well_formed(&reference.uuid, "included service")?;
+                let uuid = ubm_core::central::canonical_uuid(&reference.uuid)
+                    .map_err(DesktopError::from)?;
+                if !service_identities.contains(&(uuid, reference.occurrence)) {
+                    return Err(contract_error(
+                        BleErrorCode::ProtocolViolation,
+                        BleErrorDomain::Gatt,
+                        "discovery.snapshot.included-service",
+                    ));
+                }
+                entries += 1;
+            }
+        }
         for characteristic in &service.characteristics {
             well_formed(&characteristic.uuid, "characteristic")?;
             entries += 1;
@@ -924,6 +959,19 @@ pub struct DiscoveredPath {
     /// Characteristic facts beyond the core bits (characteristic level
     /// only), when the radio reports them for this platform.
     pub access: Option<CharacteristicAccess>,
+    /// Service-level restriction. `None` is an open service, or any
+    /// characteristic or descriptor path.
+    pub service_access: Option<ServiceAccess>,
+    pub service_primary: Option<bool>,
+    pub included_services: Option<Vec<crate::boundary::IncludedServiceReference>>,
+}
+
+/// Observed service graph facts belonging to one current database.
+#[derive(Clone)]
+struct ServiceGraphFacts {
+    access: ServiceAccess,
+    primary: Option<bool>,
+    included_services: Option<Vec<crate::boundary::IncludedServiceReference>>,
 }
 
 /// Authoritative per-central shutdown outcome (F14/F15): the final
@@ -1080,6 +1128,9 @@ pub enum CentralSignal {
     /// The write-readiness report also published on
     /// [`DesktopCentral::write_readiness_events`] (finding 118).
     WriteReadiness(parity::WriteReadinessEvent),
+    /// The connection-parameter report also published on
+    /// [`DesktopCentral::connection_parameter_events`].
+    ConnectionParameters(parity::ConnectionParametersEvent),
     /// The OS-ended scan also published on
     /// [`DesktopCentral::scan_terminal_events`] (finding 118).
     ScanTerminal(parity::ScanTerminalEvent),
@@ -1328,6 +1379,9 @@ pub type CentralObserver = Arc<dyn Fn(CentralSignal) + Send + Sync>;
 /// Identity and wiring for one central ([`DesktopCentral::open_with`]).
 #[derive(Clone)]
 pub struct CentralProfile {
+    /// Identity vocabulary of the selected native directory mechanism.
+    /// Scripted hosts set this explicitly alongside their capability profile.
+    pub directory_os: crate::capabilities::DesktopOs,
     /// The owning host's names for every scope the central opens
     /// ([`HostIdentity`]): the central mints no identity of its own.
     pub identity: Arc<dyn HostIdentity>,
@@ -1354,6 +1408,8 @@ impl CentralProfile {
     #[must_use]
     pub fn desktop(owner: &str) -> Self {
         Self {
+            directory_os: crate::capabilities::DesktopOs::current()
+                .unwrap_or(crate::capabilities::DesktopOs::MacOs),
             identity: Arc::new(DesktopIdentity::new("btleplug", owner)),
             register_capabilities: crate::capabilities::register_desktop_capabilities,
             observer: None,
@@ -1400,6 +1456,12 @@ pub struct ResourceCounters {
     pub core: CentralResourceCounters,
     /// Radio peer ids resolved to core peer keys.
     pub radio_peers: usize,
+    /// Synchronous native GATT slots, including workers waiting to start.
+    pub native_gatt_admissions: usize,
+    /// Acquired descriptors still owned, including cleanup debt.
+    pub acquired_gatt_transports: usize,
+    /// FD acquisitions awaiting their native answer.
+    pub pending_gatt_acquisitions: usize,
     /// Installed per-instance notification routes.
     pub routed_subscriptions: usize,
     /// Instances whose physical disable failed and awaits a retry.
@@ -1526,8 +1588,23 @@ type LeaseReleaseGate = Mutex<Option<ConnectionReleaseReport>>;
 type LeaseReleaseGates = StdMutex<HashMap<(String, String), Weak<LeaseReleaseGate>>>;
 type LeaseChild = (PathSelector, String);
 type PendingLeaseChildren = StdMutex<HashMap<(String, String), Vec<LeaseChild>>>;
+type DiscoveredLeaseGenerations = (String, Option<String>, Option<String>);
+type DiscoveredLeases = StdMutex<HashMap<(String, String), DiscoveredLeaseGenerations>>;
+
+struct NotificationSourceFailure {
+    peer_id: String,
+    epoch: u64,
+    error: DesktopError,
+    terminal_seen: HashSet<String>,
+}
+
+type RetainedParameterSourceFailure = (Option<String>, DesktopError, u64);
 
 struct Inner<B> {
+    acquired: Arc<crate::acquired_gatt::ownership::Registry>,
+    /// Completed discovery admission per live lease, with exact generations.
+    discovered_leases: DiscoveredLeases,
+    directory_os: crate::capabilities::DesktopOs,
     core: Mutex<Central>,
     boundary: B,
     /// The current attachment; a reset replaces it (finding 57).
@@ -1592,6 +1669,8 @@ struct Inner<B> {
     /// share routing, and a queued value whose epoch no longer matches the
     /// live routing never delivers (F10).
     subscriptions: Mutex<HashMap<InstanceKey, (usize, u64)>>,
+    notification_failures: StdMutex<HashMap<usize, NotificationSourceFailure>>,
+    notification_activation_epochs: StdMutex<HashMap<InstanceKey, u64>>,
     /// Current subscription epoch per radio peer. Bumped every time the
     /// peer's routing invalidates (disconnect, loss, service change), so
     /// forwarders installed before the bump stamp a dead generation.
@@ -1608,6 +1687,7 @@ struct Inner<B> {
     confirmed_releases: StdMutex<HashMap<String, u64>>,
     /// Woken on every [`Inner::link_ends`] change.
     link_end: tokio::sync::Notify,
+    gatt_admission: Arc<crate::gatt_admission::GattAdmissionQueue>,
     /// Per-instance keys whose physical disable failed and is pending
     /// retry through `unsubscribe`. A pending key fails new subscribes
     /// closed until the disable completes.
@@ -1618,6 +1698,10 @@ struct Inner<B> {
     /// Characteristic facts beyond the core bits from the last discovery,
     /// per instance.
     access: StdMutex<HashMap<InstanceKey, CharacteristicAccess>>,
+    /// Service restrictions from the last successful discovery, keyed by
+    /// peer, service UUID, and service occurrence. Open services are absent.
+    /// A failed discovery leaves the previous notes in place.
+    service_access: StdMutex<HashMap<(String, String, u64), ServiceGraphFacts>>,
     /// Physical enablements a service change orphaned (finding 40): the
     /// core paths and routing are gone, but the OS-side CCCD may still be
     /// live. `unsubscribe` releases them by the instance the enable
@@ -1635,6 +1719,10 @@ struct Inner<B> {
     /// Write-without-response readiness reports.
     write_readiness: broadcast::Sender<WriteReadinessEvent>,
     write_readiness_sequence: AtomicU64,
+    /// Observed connection-parameter reports.
+    connection_parameters: broadcast::Sender<parity::ConnectionParametersEvent>,
+    connection_parameters_sequence: AtomicU64,
+    parameter_source_failures: StdMutex<HashMap<String, RetainedParameterSourceFailure>>,
     /// Scans the OS ended without a stop request.
     scan_terminal: broadcast::Sender<ScanTerminalEvent>,
     scan_terminal_sequence: AtomicU64,
@@ -1874,13 +1962,47 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         )
         .map_err(DesktopError::from)?;
         let (loop_stop, loop_stop_rx) = watch::channel(false);
+        crate::capabilities::apply_connection_parameters_capability_limitation(
+            &mut core,
+            boundary.connection_parameters_capability_limitation()?,
+        )
+        .map_err(DesktopError::from)?;
+        crate::capabilities::apply_control_capability_limitation(
+            &mut core,
+            "connection:phy",
+            boundary.connection_phy_capability_limitation()?,
+        )
+        .map_err(DesktopError::from)?;
         let (lifecycle, _) = broadcast::channel(LIFECYCLE_EVENT_CAPACITY);
+        crate::capabilities::apply_control_capability_limitation(
+            &mut core,
+            "connection:priority",
+            boundary.priority_capability_limitation()?,
+        )
+        .map_err(DesktopError::from)?;
+        let (known_limit, connected_limit) =
+            boundary.peer_directory_capability_limitations().await?;
+        crate::capabilities::apply_control_capability_limitation(
+            &mut core,
+            "peer:known",
+            known_limit,
+        )
+        .map_err(DesktopError::from)?;
+        crate::capabilities::apply_control_capability_limitation(
+            &mut core,
+            "peer:system-connected",
+            connected_limit,
+        )
+        .map_err(DesktopError::from)?;
         let (adapter, _) = broadcast::channel(LIFECYCLE_EVENT_CAPACITY);
         let admission = boundary.admission_policy();
         let teardown_on_loss = boundary.tears_down_on_adapter_loss();
         let facts = seed_adapter_facts(&boundary, admission, profile.identity.log_tag()).await;
         let ticket_scope = attachment.attachment_id().as_str().to_owned();
         let inner = Arc::new(Inner {
+            acquired: crate::acquired_gatt::ownership::Registry::new(ordinal),
+            discovered_leases: StdMutex::new(HashMap::new()),
+            directory_os: profile.directory_os,
             core: Mutex::new(core),
             boundary,
             attachment: StdMutex::new(attachment),
@@ -1901,12 +2023,15 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             completed_scans: StdMutex::new(CompletedScanTickets::new(&ticket_scope)),
             peers: Mutex::new(HashMap::new()),
             discoveries: StdMutex::new(HashMap::new()),
+            gatt_admission: crate::gatt_admission::GattAdmissionQueue::new(4096),
             gatt_watch_failure: StdMutex::new(None),
             gatt_observation_failures: StdMutex::new(HashMap::new()),
             lease_releases: StdMutex::new(HashMap::new()),
             pending_lease_children: StdMutex::new(HashMap::new()),
             half_open_cleanup: StdMutex::new(HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
+            notification_failures: StdMutex::new(HashMap::new()),
+            notification_activation_epochs: StdMutex::new(HashMap::new()),
             epochs: Mutex::new(HashMap::new()),
             link_ends: StdMutex::new(HashMap::new()),
             confirmed_releases: StdMutex::new(HashMap::new()),
@@ -1914,6 +2039,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             failed_disables: Mutex::new(HashSet::new()),
             deliveries: StdMutex::new(HashMap::new()),
             access: StdMutex::new(HashMap::new()),
+            service_access: StdMutex::new(HashMap::new()),
             retained_enablements: StdMutex::new(HashSet::new()),
             security: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
             security_sequence: AtomicU64::new(0),
@@ -1921,6 +2047,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             generation_restore_failures: AtomicU64::new(0),
             write_readiness: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
             write_readiness_sequence: AtomicU64::new(0),
+            connection_parameters: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
+            connection_parameters_sequence: AtomicU64::new(0),
+            parameter_source_failures: StdMutex::new(HashMap::new()),
             scan_terminal: broadcast::channel(LIFECYCLE_EVENT_CAPACITY).0,
             scan_terminal_sequence: AtomicU64::new(0),
             advertisements: Mutex::new(VecDeque::new()),
@@ -2038,6 +2167,94 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         self.inner.native_wake.subscribe()
     }
 
+    /// Reserve a native queue position before an asynchronous worker starts.
+    pub fn admit_gatt(&self, peer_id: &str) -> Result<crate::GattAdmission, DesktopError> {
+        self.inner.gatt_admission.reserve(peer_id)
+    }
+
+    pub fn bind_gatt_admission(
+        &self,
+        peer_id: &str,
+        ctl: OpControl,
+    ) -> Result<OpControl, DesktopError> {
+        match ctl.gatt_admission() {
+            Some(admission) if admission.belongs_to(&self.inner.gatt_admission, peer_id) => Ok(ctl),
+            Some(_) => Err(contract_error(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Gatt,
+                "gatt.admission",
+            )),
+            None => Ok(ctl.with_gatt_admission(self.admit_gatt(peer_id)?)),
+        }
+    }
+
+    async fn wait_gatt_admission(
+        &self,
+        peer_id: &str,
+        ctl: &OpControl,
+        operation: &'static str,
+        window: Window,
+    ) -> Result<Arc<crate::GattAdmission>, DesktopError> {
+        let admission = match ctl.gatt_admission() {
+            Some(admission) if admission.belongs_to(&self.inner.gatt_admission, peer_id) => {
+                admission
+            }
+            Some(_) => {
+                return Err(contract_error(
+                    BleErrorCode::OwnershipDenied,
+                    BleErrorDomain::Gatt,
+                    operation,
+                ));
+            }
+            None => Arc::new(self.admit_gatt(peer_id)?),
+        };
+        let mut wakes = self.native_wakes();
+        let waiting = async {
+            loop {
+                if operation == "gatt.write-when-ready" {
+                    self.readiness_source_admission(peer_id, operation)?;
+                } else {
+                    self.gatt_watch_admission(operation)?;
+                    self.gatt_peer_observation_admission(peer_id, operation)?;
+                }
+                tokio::select! {
+                    result = admission.wait() => return result,
+                    wake = wakes.recv() => {
+                        if matches!(wake, Err(broadcast::error::RecvError::Closed)) {
+                            return Err(contract_error(BleErrorCode::PlatformFailure, BleErrorDomain::Gatt, operation)
+                                .with_detail("the native GATT admission source closed"));
+                        }
+                    }
+                }
+            }
+        };
+        match drive_link(
+            &self.inner,
+            peer_id,
+            operation,
+            &ctl.ticket,
+            window,
+            waiting,
+        )
+        .await
+        {
+            Wait::Done(result) => result.map_err(|error| classify(error, OpKind::Read, false))?,
+            Wait::Expired => {
+                return Err(classify(timed_out(operation, window), OpKind::Read, false));
+            }
+            Wait::Cancelled => {
+                return Err(classify(
+                    ctl.ticket.interruption(operation),
+                    OpKind::Read,
+                    false,
+                ));
+            }
+        }
+        self.precheck(ctl, operation)
+            .map_err(|error| classify(error, OpKind::Read, false))?;
+        Ok(admission)
+    }
+
     /// Subscribe to adapter power-state changes the OS reports. Same lag
     /// rule as [`DesktopCentral::lifecycle_events`].
     #[must_use]
@@ -2057,6 +2274,24 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .lock()
             .await
             .registered_capability_descriptors()
+    }
+
+    /// Read OS-known cached identities without adopting a connection lease.
+    /// Native directory identity scope, fixed by the instantiated host profile.
+    pub fn directory_os(&self) -> crate::capabilities::DesktopOs {
+        self.inner.directory_os
+    }
+
+    pub async fn known_directory_peers(
+        &self,
+        ctl: OpControl,
+    ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        self.directory_query(
+            ctl,
+            "peers.known",
+            self.inner.boundary.known_directory_peers(),
+        )
+        .await
     }
 
     /// Read-only system directory facts; never acquires connection ownership.
@@ -2111,6 +2346,24 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 BleErrorDomain::Connection,
                 operation,
             ));
+        }
+        let feature = match operation {
+            "peers.known" | "peers.resolve" => "peer:known",
+            "peers.connected" => "peer:system-connected",
+            _ => "peer:bonded",
+        };
+        {
+            let core = self.inner.core.lock().await;
+            if core
+                .registered_capability_states()
+                .iter()
+                .any(|(id, state)| {
+                    id == feature && *state == ubm_core::central::CapabilityState::Unavailable
+                })
+            {
+                core.check_capability(feature, operation)
+                    .map_err(DesktopError::from)?;
+            }
         }
         let window = ctl.budget.window(LIVENESS_OP);
         let answer = tokio::select! {
@@ -2263,7 +2516,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     fn precheck(&self, ctl: &OpControl, operation: &'static str) -> Result<(), DesktopError> {
         self.admit(operation)?;
         self.track(&ctl.ticket);
-        self.refuse_before_admission(ctl, operation)
+        self.refuse_before_admission(ctl, operation)?;
+        if let Some(admission) = ctl.gatt_admission() {
+            admission.assert_current()?;
+        }
+        Ok(())
     }
 
     /// [`DesktopCentral::precheck`] for a read of the adapter's own state
@@ -2313,15 +2570,31 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         self.gatt_watch_admission(operation)
     }
 
+    fn readiness_source_admission(
+        &self,
+        peer_id: &str,
+        operation: &'static str,
+    ) -> Result<(), DesktopError> {
+        if let Some(cause) = lock_std(&self.inner.gatt_watch_failure).as_ref() {
+            return Err(cause.clone());
+        }
+        self.gatt_peer_observation_admission(peer_id, operation)
+    }
+
     fn gatt_watch_admission(&self, operation: &'static str) -> Result<(), DesktopError> {
         if matches!(
             operation,
             "discovery.complete"
                 | "gatt.read"
                 | "gatt.write"
+                | "gatt.write-when-ready"
                 | "gatt.read-descriptor"
                 | "gatt.write-descriptor"
                 | "gatt.subscribe"
+                | "gatt.acquire-write"
+                | "gatt.acquire-notify"
+                | "gatt.acquired-write"
+                | "gatt.acquired-receive"
         ) && let Some(cause) = lock_std(&self.inner.gatt_watch_failure).as_ref()
         {
             return Err(observation_refusal(cause, operation));
@@ -2334,7 +2607,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         peer_id: &str,
         operation: &'static str,
     ) -> Result<(), DesktopError> {
-        if operation != "gatt.unsubscribe"
+        if !matches!(operation, "gatt.unsubscribe" | "discovery.complete")
             && let Some(cause) = lock_std(&self.inner.gatt_observation_failures).get(peer_id)
         {
             return Err(observation_refusal(cause, operation));
@@ -2510,6 +2783,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         ResourceCounters {
             core,
             radio_peers,
+            native_gatt_admissions: self.inner.gatt_admission.active_slots(),
+            acquired_gatt_transports: self.inner.acquired.counts().0,
+            pending_gatt_acquisitions: self.inner.acquired.counts().1,
             routed_subscriptions,
             pending_disables,
             queued_advertisements,
@@ -2610,6 +2886,35 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .await
             .entry(peer_id.to_owned())
             .or_insert(0)
+    }
+
+    /// Exact active attribute token for synthetic observation controls.
+    pub async fn routing_epoch_for_instance(
+        &self,
+        peer_id: &str,
+        service_uuid: &str,
+        service_occurrence: u64,
+        characteristic_uuid: &str,
+        characteristic_occurrence: u64,
+    ) -> u64 {
+        let scope = (
+            peer_id.to_owned(),
+            service_uuid.to_owned(),
+            service_occurrence,
+            characteristic_uuid.to_owned(),
+            characteristic_occurrence,
+        );
+        let epoch = self
+            .inner
+            .subscriptions
+            .lock()
+            .await
+            .get(&scope)
+            .map(|(_, epoch)| *epoch);
+        match epoch {
+            Some(epoch) => epoch,
+            None => self.routing_epoch(peer_id).await,
+        }
     }
 
     /// Build a validated path selector with canonical UUIDs. Occurrence
@@ -2717,8 +3022,29 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         name_prefix: Option<&str>,
         ctl: OpControl,
     ) -> Result<ScanSession, DesktopError> {
+        self.start_scan_platform(owner, service_uuids, duplicates, name_prefix, None, ctl)
+            .await
+    }
+
+    pub async fn start_scan_platform(
+        &self,
+        owner: &str,
+        service_uuids: &[&str],
+        duplicates: ScanDuplicatePolicy,
+        name_prefix: Option<&str>,
+        windows: Option<crate::boundary::WindowsScanOptions>,
+        ctl: OpControl,
+    ) -> Result<ScanSession, DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "scan.start")?;
+        if windows.is_some() {
+            self.inner
+                .core
+                .lock()
+                .await
+                .check_capability("scan:platform-options", "scan.platform-options")
+                .map_err(DesktopError::from)?;
+        }
         if name_prefix.is_some_and(str::is_empty) {
             return Err(contract_error(
                 BleErrorCode::ArgumentInvalid,
@@ -2740,6 +3066,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             service_uuids: request.service_uuids().to_vec(),
             duplicates,
             name_prefix: name_prefix.map(str::to_owned),
+            windows,
         };
         self.retry_unpublished_scan_cleanup(window, &ctl.ticket)
             .await?;
@@ -3672,9 +3999,39 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
         self.precheck(&ctl, "connection.release")?;
         let window = ctl.budget.window(LIVENESS_CLEANUP);
+        let terminal_peer_key = self.known_peer_key(peer_id).await?;
+        self.release_terminal_cleanup(peer_id, &terminal_peer_key, lease, &ctl, window)
+            .await?;
         let release_budget = window
             .at
             .map_or_else(Budget::unbounded, |at| Budget::from_ms_at(at, 0));
+        self.inner.acquired.retire(
+            Some(peer_id),
+            Some(lease),
+            contract_error(
+                BleErrorCode::OperationDisconnected,
+                BleErrorDomain::Connection,
+                "gatt.acquired",
+            ),
+        );
+        match drive(
+            &ctl.ticket,
+            window,
+            self.inner
+                .acquired
+                .release_scope(Some(peer_id), Some(lease)),
+        )
+        .await
+        {
+            Wait::Done(failures) => {
+                crate::errors::cleanup_result("connection.acquired-gatt", failures)?
+            }
+            Wait::Expired => {
+                return Err(timed_out("connection.release", window)
+                    .with_detail("acquired child cleanup remains owned before link release"));
+            }
+            Wait::Cancelled => return Err(ctl.ticket.interruption("connection.release")),
+        }
         let gate = {
             let mut gates = lock_std(&self.inner.lease_releases);
             gates.retain(|_, gate| gate.strong_count() != 0);
@@ -3883,6 +4240,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         self.precheck(&ctl, "connection.disconnect")?;
         let window = ctl.budget.window(LIVENESS_CLEANUP);
         let peer_key = self.known_peer_key(peer_id).await?;
+        self.release_terminal_cleanup(peer_id, &peer_key, lease, &ctl, window)
+            .await?;
         let release_generation = {
             let mut core = self.inner.core.lock().await;
             if core.connection_state(&peer_key).is_none()
@@ -3922,6 +4281,32 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // now, `operation.disconnected`, as Android's stack ends them at an
         // app disconnect (owner decision, 5.0).
         note_link_end(&self.inner, peer_id);
+        self.inner.acquired.retire(
+            Some(peer_id),
+            None,
+            contract_error(
+                BleErrorCode::OperationDisconnected,
+                BleErrorDomain::Connection,
+                "gatt.acquired",
+            ),
+        );
+        match drive(
+            &ctl.ticket,
+            window,
+            self.inner.acquired.release_scope(Some(peer_id), None),
+        )
+        .await
+        {
+            Wait::Done(failures) => {
+                crate::errors::cleanup_result("connection.acquired-gatt", failures)?
+            }
+            Wait::Expired => {
+                return Err(timed_out("connection.disconnect", window).with_detail(
+                    "acquired child cleanup remains owned before physical disconnect",
+                ));
+            }
+            Wait::Cancelled => return Err(ctl.ticket.interruption("connection.disconnect")),
+        }
         let outcome = drive(
             &ctl.ticket,
             window,
@@ -4089,19 +4474,63 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         lease: &str,
         ctl: OpControl,
     ) -> Result<DiscoveryReport, DesktopError> {
+        let ctl = self.bind_gatt_admission(peer_id, ctl)?;
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "discovery.complete")?;
         let window = ctl.budget.window(LIVENESS_OP);
         let peer_key = self.known_peer_key(peer_id).await?;
+        let rediscover = {
+            let core = self.inner.core.lock().await;
+            if !core.lease_accepts_work(&peer_key, lease) {
+                return Err(contract_error(
+                    BleErrorCode::OwnershipDenied,
+                    BleErrorDomain::Core,
+                    "discovery.lease",
+                ));
+            }
+            let generations = Generations::of(&core, &peer_key);
+            let mut admitted = lock_std(&self.inner.discovered_leases);
+            admitted.retain(|(_, lease), (key, connection, _)| {
+                core.holds_lease(key, lease) && core.connection_generation(key) == *connection
+            });
+            admitted
+                .get(&(peer_id.to_owned(), lease.to_owned()))
+                .is_some_and(|(_, connection, database)| {
+                    *connection == generations.connection
+                        && *database == generations.database
+                        && core.database_state(&peer_key) == Some(DatabaseState::Current)
+                })
+        };
+        if rediscover {
+            if let Some(admission) = ctl.gatt_admission() {
+                self.inner
+                    .gatt_admission
+                    .invalidate_except(&admission, BleErrorCode::GattStaleHandle);
+            }
+            self.inner.acquired.retire(
+                Some(peer_id),
+                None,
+                contract_error(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    "gatt.acquired",
+                ),
+            );
+            let _ = self.inner.native_wake.send(());
+        }
         let coordinator = discovery_coordinator(&self.inner, peer_id);
         let entered = coordinator.completed.load(Ordering::Acquire);
+        let _gatt_admission = self
+            .wait_gatt_admission(peer_id, &ctl, "discovery.complete", window)
+            .await
+            .map_err(|error| classify(error, OpKind::Discover, false))?;
         let mut snapshot = match drive_link(
             &self.inner,
             peer_id,
             "discovery.complete",
             &ctl.ticket,
             window,
-            async { Ok(coordinator.snapshot.lock().await) },
+            _gatt_admission.dispatch(async { Ok(coordinator.snapshot.lock().await) }),
         )
         .await
         {
@@ -4145,6 +4574,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 && let Some(report) = snapshot.report.clone()
             {
                 snapshot.leases.insert(lease.to_owned());
+                let generation = Generations::of(&core, &peer_key);
+                lock_std(&self.inner.discovered_leases).insert(
+                    (peer_id.to_owned(), lease.to_owned()),
+                    (peer_key.clone(), generation.connection, generation.database),
+                );
                 return Ok(report);
             }
         }
@@ -4160,6 +4594,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             snapshot.generations = core
                 .connection_generation(&peer_key)
                 .zip(core.database_generation(&peer_key));
+            let generation = Generations::of(&core, &peer_key);
+            lock_std(&self.inner.discovered_leases).insert(
+                (peer_id.to_owned(), lease.to_owned()),
+                (peer_key.clone(), generation.connection, generation.database),
+            );
             snapshot.leases.insert(lease.to_owned());
             snapshot.identity = result
                 .as_ref()
@@ -4328,9 +4767,45 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .map_err(DesktopError::from)?;
             // Occurrences count per UUID in snapshot order, as before: the
             // radio's order is the discovery order (finding 96).
-            let mut service_counts: HashMap<&str, u64> = HashMap::new();
+            let mut canonical_counts: HashMap<String, u64> = HashMap::new();
+            let mut published_service_identities = HashMap::new();
             for service in &services {
-                let service_occurrence = next_occurrence(&mut service_counts, &service.uuid);
+                let uuid =
+                    ubm_core::central::canonical_uuid(&service.uuid).map_err(DesktopError::from)?;
+                let next = canonical_counts.entry(uuid.clone()).or_insert(0);
+                published_service_identities.insert((uuid, service.occurrence), *next);
+                *next += 1;
+            }
+            let mut service_notes: Vec<(String, u64, ServiceGraphFacts)> = Vec::new();
+            for service in &services {
+                let service_uuid =
+                    ubm_core::central::canonical_uuid(&service.uuid).map_err(DesktopError::from)?;
+                let service_occurrence =
+                    published_service_identities[&(service_uuid.clone(), service.occurrence)];
+                let included_services = service
+                    .included_services
+                    .as_ref()
+                    .map(|references| {
+                        references
+                            .iter()
+                            .map(|reference| {
+                                let uuid = ubm_core::central::canonical_uuid(&reference.uuid)
+                                    .map_err(DesktopError::from)?;
+                                let occurrence = published_service_identities
+                                    .get(&(uuid.clone(), reference.occurrence))
+                                    .copied()
+                                    .ok_or_else(|| {
+                                        contract_error(
+                                            BleErrorCode::ProtocolViolation,
+                                            BleErrorDomain::Gatt,
+                                            "discovery.snapshot.included-service",
+                                        )
+                                    })?;
+                                Ok(crate::boundary::IncludedServiceReference { uuid, occurrence })
+                            })
+                            .collect::<Result<Vec<_>, DesktopError>>()
+                    })
+                    .transpose()?;
                 core.register_path(
                     &peer_key,
                     &service.uuid,
@@ -4343,6 +4818,15 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     lease,
                 )
                 .map_err(|error| unregistrable(&mut core, &peer_key, error))?;
+                service_notes.push((
+                    service_uuid,
+                    service_occurrence,
+                    ServiceGraphFacts {
+                        access: service.access,
+                        primary: service.primary,
+                        included_services,
+                    },
+                ));
                 report.paths_registered += 1;
                 let mut char_counts: HashMap<&str, u64> = HashMap::new();
                 for characteristic in &service.characteristics {
@@ -4383,6 +4867,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 }
             }
             lock_std(&self.inner.gatt_observation_failures).remove(peer_id);
+            let mut notes = lock_std(&self.inner.service_access);
+            notes.retain(|(peer, _, _), _| peer != peer_id);
+            for (uuid, occurrence, access) in service_notes {
+                notes.insert((peer_id.to_owned(), uuid, occurrence), access);
+            }
         }
         Ok((report, identity))
     }
@@ -4402,6 +4891,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         self.gatt_peer_observation_admission(peer_id, "discovery.snapshot")?;
         let stored = core.snapshot_paths(&peer_key).map_err(DesktopError::from)?;
         let access = lock_std(&self.inner.access);
+        let service_access = lock_std(&self.inner.service_access);
         Ok(stored
             .iter()
             .map(|path| DiscoveredPath {
@@ -4417,6 +4907,45 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                         .get(&instance_key(peer_id, path, characteristic))
                         .copied()
                 }),
+                service_access: path
+                    .characteristic_uuid()
+                    .is_none()
+                    .then(|| {
+                        service_access
+                            .get(&(
+                                peer_id.to_owned(),
+                                path.service_uuid().to_owned(),
+                                path.service_occurrence(),
+                            ))
+                            .map(|facts| facts.access)
+                    })
+                    .flatten(),
+                service_primary: path
+                    .characteristic_uuid()
+                    .is_none()
+                    .then(|| {
+                        service_access
+                            .get(&(
+                                peer_id.to_owned(),
+                                path.service_uuid().to_owned(),
+                                path.service_occurrence(),
+                            ))
+                            .and_then(|facts| facts.primary)
+                    })
+                    .flatten(),
+                included_services: path
+                    .characteristic_uuid()
+                    .is_none()
+                    .then(|| {
+                        service_access
+                            .get(&(
+                                peer_id.to_owned(),
+                                path.service_uuid().to_owned(),
+                                path.service_occurrence(),
+                            ))
+                            .and_then(|facts| facts.included_services.clone())
+                    })
+                    .flatten(),
             })
             .collect())
     }
@@ -4574,6 +5103,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "gatt.read")?;
         let window = ctl.budget.window(LIVENESS_OP);
+        self.validate_gatt_prerequisite(peer_id, selector, &ctl, "gatt.read", false)
+            .await?;
+        let _gatt_admission = self
+            .wait_gatt_admission(peer_id, &ctl, "gatt.read", window)
+            .await?;
         let peer_key = self.known_peer_key(peer_id).await?;
         let (operation, key) = {
             let mut core = self.inner.core.lock().await;
@@ -4604,9 +5138,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             "gatt.read",
             &ctl.ticket,
             window,
-            self.inner
-                .boundary
-                .read_characteristic(peer_id, &key.1, key.2, &key.3, key.4),
+            _gatt_admission.dispatch(
+                self.inner
+                    .boundary
+                    .read_characteristic(peer_id, &key.1, key.2, &key.3, key.4),
+            ),
         )
         .await
         {
@@ -4702,6 +5238,98 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .map_err(DesktopError::from)
     }
 
+    async fn wait_write_ready(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        ctl: &OpControl,
+        window: Window,
+        admission: &crate::GattAdmission,
+    ) -> Result<(), DesktopError> {
+        const OP: &str = "gatt.write-when-ready";
+        let peer_key = self.known_peer_key(peer_id).await?;
+        let generations = {
+            let core = self.inner.core.lock().await;
+            // Use the same runtime boundary as write_readiness. Mobile
+            // owners do not register desktop capability rows; their native
+            // boundary answers unsupported when this API is unavailable.
+            Generations::of(&core, &peer_key)
+        };
+        let mut wakes = self.native_wakes();
+        let waiting = async {
+            loop {
+                self.readiness_source_admission(peer_id, OP)?;
+                admission.assert_current()?;
+                {
+                    let core = self.inner.core.lock().await;
+                    let current = Generations::of(&core, &peer_key);
+                    if current.connection != generations.connection
+                        || current.database != generations.database
+                    {
+                        return Err(contract_error(
+                            BleErrorCode::GattStaleHandle,
+                            BleErrorDomain::Gatt,
+                            OP,
+                        ));
+                    }
+                }
+                self.validate_gatt_prerequisite(peer_id, selector, ctl, OP, false)
+                    .await?;
+                let ready = tokio::select! {
+                    biased;
+                    ready = self.inner.boundary.write_without_response_ready(peer_id) => ready?,
+                    wake = wakes.recv() => {
+                        if matches!(wake, Err(broadcast::error::RecvError::Closed)) {
+                            return Err(contract_error(BleErrorCode::PlatformFailure, BleErrorDomain::Platform, OP)
+                                .with_detail("the native readiness observation source closed"));
+                        }
+                        continue;
+                    }
+                };
+                {
+                    let core = self.inner.core.lock().await;
+                    let current = Generations::of(&core, &peer_key);
+                    if current.connection != generations.connection
+                        || current.database != generations.database
+                    {
+                        return Err(contract_error(
+                            BleErrorCode::GattStaleHandle,
+                            BleErrorDomain::Gatt,
+                            OP,
+                        ));
+                    }
+                }
+                self.readiness_source_admission(peer_id, OP)?;
+                admission.assert_current()?;
+                if ready {
+                    return Ok(());
+                }
+                if matches!(wakes.recv().await, Err(broadcast::error::RecvError::Closed)) {
+                    return Err(contract_error(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Platform,
+                        OP,
+                    )
+                    .with_detail("the native readiness observation source closed"));
+                }
+            }
+        };
+        let result = match drive_link(&self.inner, peer_id, OP, &ctl.ticket, window, waiting).await
+        {
+            Wait::Done(result) => result,
+            Wait::Expired => Err(timed_out(OP, window)),
+            Wait::Cancelled => Err(ctl.ticket.interruption(OP)),
+        };
+        self.name_link_end(
+            &peer_key,
+            result.map_err(|error| {
+                let retryability = error.retryability();
+                error.with_outcome(Some(CommitState::NotDispatched), retryability)
+            }),
+        )
+        .await
+    }
+
     /// GATT write. `"long-write"` is rejected up front: prepared-write
     /// transactions have no btleplug radio path (see `PARITY_GAPS.md`),
     /// and a long value must never silently degrade to a single ATT write.
@@ -4714,6 +5342,32 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         selector: &PathSelector,
         value: Vec<u8>,
         mode: &str,
+        ctl: OpControl,
+    ) -> Result<(), DesktopError> {
+        self.write_admitted(peer_id, selector, value, mode, false, ctl)
+            .await
+    }
+
+    /// Write without response after native readiness, in the original queue
+    /// position and budget. The owned payload never waits in JavaScript.
+    pub async fn write_when_ready(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        value: Vec<u8>,
+        ctl: OpControl,
+    ) -> Result<(), DesktopError> {
+        self.write_admitted(peer_id, selector, value, "without-response", true, ctl)
+            .await
+    }
+
+    async fn write_admitted(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        value: Vec<u8>,
+        mode: &str,
+        wait_ready: bool,
         ctl: OpControl,
     ) -> Result<(), DesktopError> {
         let _settle = SettleOnDrop(&ctl.ticket);
@@ -4731,6 +5385,34 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let window = ctl.budget.window(LIVENESS_OP);
         self.validate_gatt_prerequisite(peer_id, selector, &ctl, "gatt.write", false)
             .await?;
+        let _admission = self
+            .wait_gatt_admission(
+                peer_id,
+                &ctl,
+                if wait_ready {
+                    "gatt.write-when-ready"
+                } else {
+                    "gatt.write"
+                },
+                window,
+            )
+            .await
+            .map_err(|error| classify(error, OpKind::Write, false))?;
+        self.validate_gatt_prerequisite(peer_id, selector, &ctl, "gatt.write", false)
+            .await?;
+        {
+            let peer_key = self.known_peer_key(peer_id).await?;
+            let core = self.inner.core.lock().await;
+            let (_, scope, _) =
+                self.resolve_instance(&core, &peer_key, peer_id, selector, "gatt.write", false)?;
+            self.inner
+                .acquired
+                .assert_available(&scope, crate::acquired_gatt::AcquisitionKind::Write)?;
+        }
+        if wait_ready {
+            self.wait_write_ready(peer_id, selector, &ctl, window, &_admission)
+                .await?;
+        }
         let measured_limit = self
             .measured_write_limit(peer_id, with_response, &ctl.ticket, window, "gatt.write")
             .await?;
@@ -4765,7 +5447,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             "gatt.write",
             &ctl.ticket,
             window,
-            self.inner.boundary.write_characteristic(
+            _admission.dispatch(self.inner.boundary.write_characteristic(
                 peer_id,
                 &key.1,
                 key.2,
@@ -4773,7 +5455,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 key.4,
                 value,
                 with_response,
-            ),
+            )),
         )
         .await
         {
@@ -4812,6 +5494,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "gatt.read-descriptor")?;
         let window = ctl.budget.window(LIVENESS_OP);
+        self.validate_gatt_prerequisite(peer_id, selector, &ctl, "gatt.read-descriptor", true)
+            .await?;
+        let _gatt_admission = self
+            .wait_gatt_admission(peer_id, &ctl, "gatt.read-descriptor", window)
+            .await?;
         let peer_key = self.known_peer_key(peer_id).await?;
         let (operation, key, descriptor, descriptor_occurrence) = {
             let mut core = self.inner.core.lock().await;
@@ -4851,7 +5538,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             "gatt.read-descriptor",
             &ctl.ticket,
             window,
-            self.inner.boundary.read_descriptor(
+            _gatt_admission.dispatch(self.inner.boundary.read_descriptor(
                 peer_id,
                 &key.1,
                 key.2,
@@ -4859,7 +5546,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 key.4,
                 &descriptor,
                 descriptor_occurrence,
-            ),
+            )),
         )
         .await
         {
@@ -4905,6 +5592,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         self.precheck(&ctl, "gatt.write-descriptor")?;
         let value_len = value.len() as u64;
         let window = ctl.budget.window(LIVENESS_OP);
+        self.validate_gatt_prerequisite(peer_id, selector, &ctl, "gatt.write-descriptor", true)
+            .await?;
+        let _gatt_admission = self
+            .wait_gatt_admission(peer_id, &ctl, "gatt.write-descriptor", window)
+            .await
+            .map_err(|error| classify(error, OpKind::Write, false))?;
         // Descriptor writes are always ATT write requests (with response).
         self.validate_gatt_prerequisite(peer_id, selector, &ctl, "gatt.write-descriptor", true)
             .await?;
@@ -4953,7 +5646,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             "gatt.write-descriptor",
             &ctl.ticket,
             window,
-            self.inner.boundary.write_descriptor(
+            _gatt_admission.dispatch(self.inner.boundary.write_descriptor(
                 peer_id,
                 &key.1,
                 key.2,
@@ -4962,7 +5655,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 &descriptor,
                 descriptor_occurrence,
                 value,
-            ),
+            )),
         )
         .await
         {
@@ -5111,6 +5804,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let _settle = SettleOnDrop(&ctl.ticket);
         self.precheck(&ctl, "gatt.subscribe")?;
         let window = ctl.budget.window(LIVENESS_OP);
+        self.validate_gatt_prerequisite(peer_id, selector, &ctl, "gatt.subscribe", false)
+            .await?;
+        let _gatt_admission = self
+            .wait_gatt_admission(peer_id, &ctl, "gatt.subscribe", window)
+            .await?;
         let peer_key = self.known_peer_key(peer_id).await?;
         // Resolve the instance first (pure read, no side effects) so the
         // scoped retirement gate covers admission through routing insertion,
@@ -5156,6 +5854,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             )?;
             core.validate_gatt_admission(ctl.gatt_path(index), "gatt.subscribe")
                 .map_err(DesktopError::from)?;
+            self.inner
+                .acquired
+                .assert_available(&key, crate::acquired_gatt::AcquisitionKind::Notify)?;
             key
         };
         // L7 resubscribe semantics: a pending failed disable fails the
@@ -5200,6 +5901,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 false,
             )?;
             debug_assert_eq!(key, resolved);
+            if let Some(failure) = lock_std(&self.inner.notification_failures).get(&index) {
+                return Err(failure.error.clone());
+            }
             // The physical enable is driven exactly once, by the caller
             // whose subscribe staged the core's explicit enable effect
             // (F11). A ready CCCD shares without an effect, a pending
@@ -5275,7 +5979,29 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // quarantine in the hub instead of dropping on the floor. The
         // routing carries the epoch the forwarder is about to capture, so
         // a value queued under a dead generation never matches (F10).
-        let epoch = self.routing_epoch(peer_id).await;
+        let epoch = if drive_enable {
+            let peer_epoch = self.routing_epoch(peer_id).await;
+            let mut activations = lock_std(&self.inner.notification_activation_epochs);
+            let next = activations.get(&key).map_or(peer_epoch, |previous| {
+                previous.saturating_add(1).max(peer_epoch)
+            });
+            activations.insert(key.clone(), next);
+            next
+        } else {
+            self.inner
+                .subscriptions
+                .lock()
+                .await
+                .get(&key)
+                .map(|(_, epoch)| *epoch)
+                .ok_or_else(|| {
+                    contract_error(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Gatt,
+                        "gatt.subscribe.routing",
+                    )
+                })?
+        };
         // A new enable owns this instance's CCCD from here on (its failure
         // paths disable it), superseding any enablement a service change
         // orphaned (finding 40).
@@ -5287,6 +6013,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .insert(key.clone(), (path_index, epoch));
         drop(admission);
         if !drive_enable {
+            _gatt_admission.mark_dispatched();
             // Joiners never touch the radio (F11): an immediate-success share
             // on an enabled hub is already terminal and releases now; a
             // pending join stays live for the enabler to settle and sweep.
@@ -5305,9 +6032,17 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             "gatt.subscribe",
             &ctl.ticket,
             window,
-            self.inner
-                .boundary
-                .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, true, epoch, delivery),
+            _gatt_admission.dispatch(self.inner.boundary.set_notifications_with_preference(
+                peer_id,
+                &key.1,
+                key.2,
+                &key.3,
+                key.4,
+                true,
+                epoch,
+                delivery,
+                ctl.delivery_preference(),
+            )),
         )
         .await
         {
@@ -5526,6 +6261,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
         self.precheck(&ctl, "gatt.unsubscribe")?;
         let window = ctl.budget.window(LIVENESS_CLEANUP);
+        let _gatt_admission = self
+            .wait_gatt_admission(peer_id, &ctl, "gatt.unsubscribe", window)
+            .await?;
         let peer_key = self.known_peer_key(peer_id).await?;
         let (disable_physical, path_index, key) = {
             let mut core = self.inner.core.lock().await;
@@ -5602,16 +6340,17 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             recycle_observations(&mut core);
             return Ok(false);
         }
-        self.drive_disable(
-            peer_id,
-            &key,
-            path_index,
-            &ctl.ticket,
-            window,
-            consumer,
-            drain,
-        )
-        .await
+        _gatt_admission
+            .dispatch(self.drive_disable(
+                peer_id,
+                &key,
+                path_index,
+                &ctl.ticket,
+                window,
+                consumer,
+                drain,
+            ))
+            .await
     }
 
     /// Drive one physical disable (first attempt or a retry of a failed
@@ -5699,6 +6438,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 self.inner.subscriptions.lock().await.remove(key);
                 self.inner.failed_disables.lock().await.remove(key);
                 lock_std(&self.inner.deliveries).remove(key);
+                lock_std(&self.inner.notification_failures).remove(&path_index);
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
                 drain_consumer_before_retirement(&mut core, path_index, consumer, drain);
@@ -5763,9 +6503,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     ) -> Result<NotificationPoll, DesktopError> {
         // Reading an already admitted consumer's FIFO acquires no radio work.
         // It must remain drainable even while physical shutdown is pending.
-        if !self.inner.shut_down.load(Ordering::SeqCst) {
-            self.admit("gatt.take-notification")?;
-        }
+        // No new-radio admission check: shutdown may change while this owned
+        // drain awaits a lock. The consumer ownership check below remains authoritative.
         let peer_key = self.known_peer_key(peer_id).await?;
         let mut core = self.inner.core.lock().await;
         if self.inner.shut_down.load(Ordering::SeqCst)
@@ -5811,6 +6550,14 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
         if let Some(terminal) = core.take_terminal(index, consumer) {
             return Ok(NotificationPoll::Terminal(terminal));
+        }
+        if core.consumer_path(&peer_key, selector, consumer).is_some()
+            && let Some(failure) = lock_std(&self.inner.notification_failures).get_mut(&index)
+        {
+            if failure.terminal_seen.insert(consumer.to_owned()) {
+                return Err(failure.error.clone());
+            }
+            return Ok(NotificationPoll::Closed);
         }
         match core.consumer_state(index, consumer) {
             Some(
@@ -5930,6 +6677,16 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // F14: admission closes before any cleanup starts, so a racing
         // starter cannot slip work in behind the scan stop.
         self.inner.shut_down.store(true, Ordering::SeqCst);
+        self.inner.gatt_admission.seal();
+        self.inner.acquired.retire(
+            None,
+            None,
+            contract_error(
+                BleErrorCode::OperationCancelledByDestroy,
+                BleErrorDomain::Core,
+                "gatt.acquired",
+            ),
+        );
         // R14c: cancel scan ops still starting by id before the slot stop.
         // A starter admitted before admission closed may still be awaiting
         // its radio start: its kernel op goes terminal (and released,
@@ -6017,7 +6774,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 })
             })
             .collect();
-        let transport_close_failures =
+        let mut transport_close_failures =
             match tokio::time::timeout(Duration::from_secs(5), self.inner.boundary.finish_close())
                 .await
             {
@@ -6040,6 +6797,22 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     link_cleanup_failures
                 }
             };
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            self.inner.acquired.release_scope(None, None),
+        )
+        .await
+        {
+            Ok(failures) => transport_close_failures.extend(failures),
+            Err(_) => transport_close_failures.push(
+                contract_error(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Cleanup,
+                    "gatt.acquired.close",
+                )
+                .with_detail("acquired child cleanup remains owned"),
+            ),
+        }
         let radio_close_failures = self.inner.boundary.take_close_failures();
         // F15: the final record is taken only after every destroy pass
         // executed, every dispatched remainder was answered, and every
@@ -6122,6 +6895,20 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 )
             };
             if !live {
+                match tokio::time::timeout(
+                    DISCONNECT_COMPLETION_TIMEOUT,
+                    self.inner.boundary.release_terminal_resources(&peer_id),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => cleanup_failures.push(error),
+                    Err(_) => cleanup_failures.push(DesktopError::new(
+                        BleErrorCode::OperationTimedOut,
+                        BleErrorDomain::Cleanup,
+                        "connection.retired-native-cleanup",
+                    )),
+                }
                 continue;
             }
             let outcome = tokio::time::timeout(
@@ -6414,6 +7201,8 @@ async fn clear_peer_routing_scoped<B>(
         None
     };
     lock_std(&inner.retained_enablements).retain(|key| key.0 != peer_id);
+    lock_std(&inner.service_access).retain(|(peer, _, _), _| peer != peer_id);
+    lock_std(&inner.notification_failures).retain(|_, failure| failure.peer_id != peer_id);
     subscriptions.retain(|key, _| key.0 != peer_id);
     failed.retain(|key| key.0 != peer_id);
     lock_std(&inner.deliveries).retain(|key, _| key.0 != peer_id);
@@ -6498,8 +7287,29 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                     Some(RadioEvent::WriteReadiness { peer_id, ready }) => {
                         parity::publish_write_readiness(&inner, &peer_id, ready).await;
                     }
+                    Some(RadioEvent::ConnectionParameters {
+                        peer_id,
+                        interval_us,
+                        latency,
+                        supervision_timeout_us,
+                    }) => {
+                        parity::publish_connection_parameters(
+                            &inner,
+                            &peer_id,
+                            interval_us,
+                            latency,
+                            supervision_timeout_us,
+                        )
+                        .await;
+                    }
                     Some(RadioEvent::Advertisement(snapshot)) => {
                         ingest_advertisement(&inner, snapshot).await;
+                    }
+                    Some(RadioEvent::ConnectionParameterSourceFailed { peer_id, error }) => {
+                        parity::publish_connection_parameter_source(&inner, &peer_id, Some(error), 0).await;
+                    }
+                    Some(RadioEvent::ConnectionParameterGap { peer_id, missed }) => {
+                        parity::publish_connection_parameter_source(&inner, &peer_id, None, missed).await;
                     }
                     Some(RadioEvent::Connected(peer_id)) => {
                         reconcile_connected(&inner, &peer_id).await;
@@ -6590,6 +7400,14 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                     Some(RadioEvent::AdapterRestored) => {
                         lock_std(&inner.adapter_facts).removed = false;
                         wake_state_waiters(&inner);
+                    }
+                    Some(RadioEvent::NotificationSourceFailed {
+                        peer_id, service_uuid, service_occurrence,
+                        characteristic_uuid, characteristic_occurrence, epoch, error,
+                    }) => {
+                        notification_source_failed(&inner,
+                            (peer_id, service_uuid, service_occurrence, characteristic_uuid, characteristic_occurrence),
+                            epoch, error).await;
                     }
                     Some(RadioEvent::NotificationsLost {
                         peer_id,
@@ -6791,6 +7609,15 @@ async fn adapter_reset<B: RadioBoundary>(
     power: Option<AdapterPowerState>,
     adapter_sequence: Option<u64>,
 ) {
+    inner.acquired.retire(
+        None,
+        None,
+        contract_error(
+            BleErrorCode::OperationReset,
+            BleErrorDomain::Core,
+            "gatt.acquired",
+        ),
+    );
     let scan = inner.scan_slot().take();
     let peers: Vec<(String, String)> = inner
         .peers
@@ -7194,8 +8021,21 @@ async fn reconcile_disconnected_scoped<B: RadioBoundary>(
     drop(failed);
     drop(subscriptions);
     if let Some(event) = event {
+        lock_std(&inner.parameter_source_failures).remove(peer_id);
         // Only a transition of a live link ends its operations; a stale
         // event for an older generation publishes nothing and ends nothing.
+        inner
+            .gatt_admission
+            .invalidate_peer(peer_id, BleErrorCode::ConnectionLost);
+        inner.acquired.retire(
+            Some(peer_id),
+            None,
+            contract_error(
+                BleErrorCode::ConnectionLost,
+                BleErrorDomain::Connection,
+                "gatt.acquired",
+            ),
+        );
         note_link_end(inner, peer_id);
         inner.signal(CentralSignal::Lifecycle(event));
     }
@@ -7221,6 +8061,12 @@ async fn deliver<B: RadioBoundary>(
     if epoch != routing_epoch {
         return;
     }
+    if lock_std(&inner.notification_failures)
+        .get(&path_index)
+        .is_some_and(|failure| failure.epoch == epoch)
+    {
+        return;
+    }
     let delivered = {
         let mut core = inner.core.lock().await;
         core.deliver_notification_value(path_index, &value).is_ok()
@@ -7231,6 +8077,30 @@ async fn deliver<B: RadioBoundary>(
             inner.signal(CentralSignal::Value { scope, value });
         }
     }
+}
+
+async fn notification_source_failed<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    scope: InstanceKey,
+    epoch: u64,
+    error: DesktopError,
+) {
+    let routed = inner.subscriptions.lock().await.get(&scope).copied();
+    let Some((path_index, routing_epoch)) = routed else {
+        return;
+    };
+    if epoch != routing_epoch {
+        return;
+    }
+    lock_std(&inner.notification_failures)
+        .entry(path_index)
+        .or_insert_with(|| NotificationSourceFailure {
+            peer_id: scope.0,
+            epoch,
+            error,
+            terminal_seen: HashSet::new(),
+        });
+    let _ = inner.native_wake.send(());
 }
 
 /// Account notifications the OS broadcast lost for one subscription
@@ -7316,6 +8186,7 @@ async fn gatt_observation_failed<B: RadioBoundary>(
     lock_std(&inner.gatt_observation_failures)
         .entry(peer_id.to_owned())
         .or_insert_with(|| error.clone());
+    inner.acquired.retire(Some(peer_id), None, error.clone());
     inner.note_compensation_failure();
     eprintln!(
         "{}: peer GATT observation failed: {error}; {:?}",
@@ -7335,9 +8206,11 @@ async fn gatt_observation_failed<B: RadioBoundary>(
         );
     }
     *snapshot = DiscoverySnapshot::default();
+    let _ = inner.native_wake.send(());
 }
 
 async fn gatt_watch_failed<B: RadioBoundary>(inner: &Arc<Inner<B>>, detail: &DesktopError) {
+    inner.acquired.retire(None, None, detail.clone());
     {
         let mut retained = lock_std(&inner.gatt_watch_failure);
         if retained.is_none() {
@@ -7377,6 +8250,7 @@ async fn gatt_watch_failed<B: RadioBoundary>(inner: &Arc<Inner<B>>, detail: &Des
         }
         *snapshot = DiscoverySnapshot::default();
     }
+    let _ = inner.native_wake.send(());
 }
 
 async fn services_changed_scoped_invalidated<B: RadioBoundary>(
@@ -7414,6 +8288,18 @@ async fn services_changed_scoped_invalidated<B: RadioBoundary>(
 }
 
 async fn services_changed_invalidated<B: RadioBoundary>(inner: &Arc<Inner<B>>, peer_id: &str) {
+    inner
+        .gatt_admission
+        .invalidate_peer(peer_id, BleErrorCode::GattStaleHandle);
+    inner.acquired.retire(
+        Some(peer_id),
+        None,
+        contract_error(
+            BleErrorCode::GattStaleHandle,
+            BleErrorDomain::Gatt,
+            "gatt.acquired",
+        ),
+    );
     let peer_key = inner.peers.lock().await.get(peer_id).cloned();
     let Some(peer_key) = peer_key else {
         return;
@@ -7449,6 +8335,7 @@ async fn retire_database_routing<B>(inner: &Arc<Inner<B>>, peer_id: &str) {
     let mut subscriptions = inner.subscriptions.lock().await;
     let mut failed = inner.failed_disables.lock().await;
     let mut epochs = inner.epochs.lock().await;
+    lock_std(&inner.service_access).retain(|(peer, _, _), _| peer != peer_id);
     // Acquire every asynchronous guard before changing ownership: deadline
     // or cancellation while waiting cannot discard a partially copied debt.
     let mut retained = lock_std(&inner.retained_enablements);
@@ -7752,8 +8639,11 @@ mod adapter_tests {
         PropertyFlags, RadioEvent, ServiceSnapshot,
     };
 
-    use super::DesktopCentral;
+    use super::{CentralProfile, DesktopCentral, services_changed_invalidated};
+    use crate::errors::DesktopError;
     use crate::op_control::OpControl;
+    use ubm_core::central::Central;
+    use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
 
     /// Stop whatever scan the central owns (the pre-PR210-09 test shape):
     /// `NotActive` when none is owned.
@@ -7796,6 +8686,8 @@ mod adapter_tests {
 
     fn hrm_service() -> ServiceSnapshot {
         ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: HRM_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: vec![CharacteristicSnapshot {
@@ -7807,6 +8699,14 @@ mod adapter_tests {
                     occurrence: 0,
                 }],
             }],
+            access: std::default::Default::default(),
+        }
+    }
+
+    fn second_hrm_service() -> ServiceSnapshot {
+        ServiceSnapshot {
+            occurrence: 1,
+            ..hrm_service()
         }
     }
 
@@ -7814,6 +8714,8 @@ mod adapter_tests {
     /// chest strap): occurrence is the only instance identity.
     fn duplicate_hrm_service() -> ServiceSnapshot {
         ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: HRM_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: vec![
@@ -7830,11 +8732,14 @@ mod adapter_tests {
                     descriptors: Vec::new(),
                 },
             ],
+            access: std::default::Default::default(),
         }
     }
 
     fn battery_service() -> ServiceSnapshot {
         ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: BATTERY_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: vec![CharacteristicSnapshot {
@@ -7843,6 +8748,7 @@ mod adapter_tests {
                 properties: rw_props(),
                 descriptors: Vec::new(),
             }],
+            access: std::default::Default::default(),
         }
     }
 
@@ -9742,6 +10648,106 @@ mod adapter_tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn native_notification_failure_drains_fifo_then_reports_exact_cause_once() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        central
+            .discover("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central
+            .subscribe_buffered(
+                "peer",
+                &hrm_selector(0),
+                "consumer-a",
+                None,
+                ubm_core::streams::OverflowPolicy::Error,
+                (64, 8192),
+                OpControl::unbounded().with_connection_lease("a".to_owned()),
+            )
+            .await
+            .unwrap();
+        let key = central.peer_key_for("peer").await.unwrap();
+        let scope = super::instance_key(
+            "peer",
+            &central
+                .with_core(|core| {
+                    let index = core.resolve_path(&key, &hrm_selector(0)).unwrap();
+                    core.stored_path(index).unwrap().clone()
+                })
+                .await,
+            "00002a37-0000-1000-8000-00805f9b34fb",
+        );
+        let epoch = central.routing_epoch("peer").await;
+        super::deliver(&central.inner, scope.clone(), epoch, vec![42]).await;
+        let failure = super::contract_error(
+            ubm_core::contracts::BleErrorCode::PlatformFailure,
+            ubm_core::contracts::BleErrorDomain::Gatt,
+            "gatt.notification",
+        )
+        .with_platform(
+            crate::errors::PlatformDetail::new("winrt", "hresult").with_metadata(
+                "hresult",
+                crate::errors::PlatformValue::Text("0x80070005".to_owned()),
+            ),
+        );
+        super::notification_source_failed(&central.inner, scope.clone(), epoch, failure.clone())
+            .await;
+        super::deliver(&central.inner, scope.clone(), epoch, vec![99]).await;
+        assert!(
+            matches!(central.poll_notification("peer", &hrm_selector(0), "consumer-a").await.unwrap(),
+            super::NotificationPoll::Value(value) if value == [42])
+        );
+        let observed = central
+            .poll_notification("peer", &hrm_selector(0), "consumer-a")
+            .await
+            .unwrap_err();
+        assert_eq!(observed.platform(), failure.platform());
+        assert!(matches!(
+            central
+                .poll_notification("peer", &hrm_selector(0), "consumer-a")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Closed
+        ));
+        central
+            .unsubscribe(
+                "peer",
+                &hrm_selector(0),
+                "consumer-a",
+                OpControl::unbounded().with_connection_lease("a".to_owned()),
+            )
+            .await
+            .unwrap();
+        central
+            .subscribe_buffered(
+                "peer",
+                &hrm_selector(0),
+                "consumer-new",
+                None,
+                ubm_core::streams::OverflowPolicy::Error,
+                (64, 8192),
+                OpControl::unbounded().with_connection_lease("a".to_owned()),
+            )
+            .await
+            .unwrap();
+        super::notification_source_failed(&central.inner, scope, epoch.saturating_sub(1), failure)
+            .await;
+        assert!(matches!(
+            central
+                .poll_notification("peer", &hrm_selector(0), "consumer-new")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Empty
+        ));
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn shared_lease_release_keeps_overflowed_child_cleanup_after_consumer_record_retirement()
     {
         let central = open().await;
@@ -9818,7 +10824,7 @@ mod adapter_tests {
         }
         central
             .boundary()
-            .set_services("peer", vec![hrm_service(), hrm_service()]);
+            .set_services("peer", vec![hrm_service(), second_hrm_service()]);
         central
             .discover("peer", "a", OpControl::unbounded())
             .await
@@ -9888,7 +10894,7 @@ mod adapter_tests {
         }
         central
             .boundary()
-            .set_services("peer", vec![hrm_service(), hrm_service()]);
+            .set_services("peer", vec![hrm_service(), second_hrm_service()]);
         central
             .discover("peer", "a", OpControl::unbounded())
             .await
@@ -11086,6 +12092,21 @@ mod adapter_tests {
     }
 
     #[tokio::test]
+    async fn discovery_refuses_duplicate_native_service_identity() {
+        let central = open().await;
+        central
+            .with_core(|core| {
+                let error =
+                    super::admit_snapshot(core, &[hrm_service(), hrm_service()]).unwrap_err();
+                assert_eq!(error.code_str(), "protocol.violation");
+                assert_eq!(error.operation(), "discovery.snapshot.service-identity");
+                super::admit_snapshot(core, &[hrm_service(), second_hrm_service()]).unwrap();
+            })
+            .await;
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn discovery_registers_duplicate_uuids_by_occurrence() {
         let central = open().await;
         central.boundary().push_event(advertisement("peer-3"));
@@ -11095,7 +12116,7 @@ mod adapter_tests {
             .expect("connect");
         central
             .boundary()
-            .set_services("peer-3", vec![hrm_service(), hrm_service()]);
+            .set_services("peer-3", vec![hrm_service(), second_hrm_service()]);
         let report = central
             .discover("peer-3", "lease-a", OpControl::unbounded())
             .await
@@ -11434,6 +12455,125 @@ mod adapter_tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_lease_retains_native_cleanup_refusal_and_retries_same_owner() {
+        let central = open().await;
+        ready_peer(&central, "native-debt", vec![hrm_service()]).await;
+        central.remote_peer_loss("native-debt").await.unwrap();
+        central
+            .boundary()
+            .fail_next(FaultOp::TerminalCleanup, "discovery still pending");
+        let error = central
+            .release_connection_lease("native-debt", "lease-a", OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert!(error.detail().unwrap().contains("discovery still pending"));
+        assert!(
+            central
+                .release_connection_lease("native-debt", "lease-a", OpControl::unbounded())
+                .await
+                .is_ok()
+        );
+        assert!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| call.as_str() == "release_terminal_resources")
+                .count()
+                >= 2
+        );
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn phy_read_preserves_distinct_directions_and_exact_lease() {
+        use crate::boundary::{BlePhy, ObservedConnectionPhy};
+        let central = open().await;
+        ready_peer(&central, "phy-peer", vec![hrm_service()]).await;
+        let measured = ObservedConnectionPhy {
+            tx_phy: BlePhy::Le2M,
+            rx_phy: BlePhy::LeCoded,
+        };
+        central.boundary().set_connection_phy("phy-peer", measured);
+        assert_eq!(
+            central
+                .read_phy("phy-peer", "lease-a", OpControl::unbounded())
+                .await
+                .unwrap(),
+            measured
+        );
+        assert_eq!(
+            central
+                .read_phy("phy-peer", "foreign", OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .code_str(),
+            "ownership.denied"
+        );
+        central.remote_peer_loss("phy-peer").await.unwrap();
+        assert!(
+            central
+                .read_phy("phy-peer", "lease-a", OpControl::unbounded())
+                .await
+                .is_err()
+        );
+        assert!(central.shutdown().await.is_released());
+    }
+
+    #[tokio::test]
+    async fn owned_notification_poll_crosses_shutdown_admission_barrier() {
+        use std::future::Future;
+        use std::task::Poll;
+        let central = open().await;
+        ready_peer(&central, "poll-barrier", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        central
+            .subscribe(
+                "poll-barrier",
+                &selector,
+                "consumer",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        let key = central.peer_key_for("poll-barrier").await.unwrap();
+        central
+            .with_core_mut(|core| {
+                let index = core.consumer_path(&key, &selector, "consumer").unwrap();
+                core.deliver_notification_value(index, &[41]).unwrap();
+            })
+            .await;
+        // Hold the first async lookup: polling has started while admission is open,
+        // and resumes only after shutdown has closed new radio-work admission.
+        let peers = central.inner.peers.lock().await;
+        let polling = central.poll_notification("poll-barrier", &selector, "consumer");
+        tokio::pin!(polling);
+        std::future::poll_fn(|cx| {
+            assert!(polling.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        central
+            .inner
+            .shut_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(peers);
+        assert!(
+            matches!(polling.await.unwrap(), super::NotificationPoll::Value(value) if value == [41])
+        );
+        assert_eq!(
+            central
+                .poll_notification("poll-barrier", &selector, "foreign")
+                .await
+                .unwrap_err()
+                .code_str(),
+            "ownership.denied"
+        );
+        assert!(central.shutdown().await.is_released());
     }
 
     #[tokio::test]
@@ -11891,6 +13031,180 @@ mod adapter_tests {
     }
 
     #[tokio::test]
+    async fn instantiated_parameter_api_overrides_the_compiled_profile_and_preserves_probe_errors()
+    {
+        fn windows_capabilities(
+            core: &mut ubm_core::central::Central,
+        ) -> Result<(), ubm_core::contracts::CoreError> {
+            crate::capabilities::register_desktop_capabilities_for(
+                core,
+                Some(crate::capabilities::DesktopOs::Windows),
+                false,
+            )
+        }
+        let radio = FakeRadio::new();
+        radio.set_connection_parameters_capability_limitation(Ok(Some("runtime-api-absent")));
+        let mut profile = super::CentralProfile::desktop("parameter-capability-test");
+        profile.register_capabilities = windows_capabilities;
+        let central = DesktopCentral::open_with(radio, profile).await.unwrap();
+        let states = central
+            .with_core(|core| core.registered_capability_states())
+            .await;
+        assert_eq!(
+            states
+                .iter()
+                .find(|(id, _)| id == "connection:parameters")
+                .unwrap()
+                .1,
+            ubm_core::central::CapabilityState::Unavailable
+        );
+        central.shutdown().await;
+
+        let radio = FakeRadio::new();
+        let failure = DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Platform,
+            "test.api-information",
+        );
+        radio.set_connection_parameters_capability_limitation(Err(failure));
+        let failure = match DesktopCentral::open(radio, "parameter-probe-error").await {
+            Ok(_) => panic!("a failed runtime probe must not become an unavailable descriptor"),
+            Err(error) => error,
+        };
+        assert_eq!(failure.code(), BleErrorCode::PlatformFailure);
+        assert_eq!(failure.operation(), "test.api-information");
+    }
+
+    #[tokio::test]
+    async fn runtime_priority_absence_and_probe_failure_are_not_advertised_as_supported() {
+        let radio = FakeRadio::new();
+        radio.set_priority_capability_limitation(Ok(Some("runtime-preferred-api-absent")));
+        let central = DesktopCentral::open(radio, "priority-api-absent")
+            .await
+            .unwrap();
+        let states = central
+            .with_core(|core| core.registered_capability_states())
+            .await;
+        assert_eq!(
+            states
+                .iter()
+                .find(|(id, _)| id == "connection:priority")
+                .unwrap()
+                .1,
+            ubm_core::central::CapabilityState::Unavailable
+        );
+        central.shutdown().await;
+        let radio = FakeRadio::new();
+        radio.set_priority_capability_limitation(Err(DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Platform,
+            "priority-api-probe",
+        )));
+        let failure = match DesktopCentral::open(radio, "priority-api-error").await {
+            Ok(_) => panic!("probe error must propagate"),
+            Err(error) => error,
+        };
+        assert_eq!(failure.operation(), "priority-api-probe");
+    }
+
+    #[tokio::test]
+    async fn preferred_requests_are_lease_bound_and_cancel_deadline_cannot_publish_late_acceptance()
+    {
+        use crate::boundary::ConnectionPriority;
+        use std::future::Future;
+        fn windows_capabilities(
+            core: &mut ubm_core::central::Central,
+        ) -> Result<(), ubm_core::contracts::CoreError> {
+            crate::capabilities::register_desktop_capabilities_for(
+                core,
+                Some(crate::capabilities::DesktopOs::Windows),
+                false,
+            )
+        }
+        let mut profile = super::CentralProfile::desktop("preferred-request-controls");
+        profile.register_capabilities = windows_capabilities;
+        let central = DesktopCentral::open_with(FakeRadio::new(), profile)
+            .await
+            .unwrap();
+        central
+            .connect("peer", "owner", OpControl::unbounded())
+            .await
+            .unwrap();
+        let foreign = central
+            .request_priority(
+                "peer",
+                "foreign",
+                ConnectionPriority::Balanced,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(foreign.code(), BleErrorCode::OwnershipDenied);
+        assert!(central.boundary().priority_requests().is_empty());
+        central.boundary().block_op(FaultOp::RequestPriority);
+        let control = OpControl::unbounded();
+        let ticket = control.ticket.clone();
+        let pending =
+            central.request_priority("peer", "owner", ConnectionPriority::HighThroughput, control);
+        tokio::pin!(pending);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(pending.as_mut().poll(&mut context).is_pending());
+        ticket.request_cancel();
+        assert_eq!(
+            pending.await.unwrap_err().code(),
+            BleErrorCode::OperationAborted
+        );
+        assert!(central.boundary().priority_requests().is_empty());
+        assert_eq!(
+            central
+                .request_priority(
+                    "peer",
+                    "owner",
+                    ConnectionPriority::LowPower,
+                    OpControl::budget_ms(10)
+                )
+                .await
+                .unwrap_err()
+                .code(),
+            BleErrorCode::OperationTimedOut
+        );
+        central.boundary().unblock_all(FaultOp::RequestPriority);
+        assert!(central.boundary().priority_requests().is_empty());
+        assert!(
+            central
+                .request_priority(
+                    "peer",
+                    "owner",
+                    ConnectionPriority::Balanced,
+                    OpControl::unbounded()
+                )
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            central.boundary().priority_requests(),
+            vec![("peer".to_owned(), ConnectionPriority::Balanced)]
+        );
+        central
+            .disconnect("peer", "owner", OpControl::unbounded())
+            .await
+            .unwrap();
+        assert!(
+            central
+                .request_priority(
+                    "peer",
+                    "owner",
+                    ConnectionPriority::Balanced,
+                    OpControl::unbounded()
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(central.boundary().priority_requests().len(), 1);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn m4_open_projects_desktop_capabilities() {
         use ubm_core::central::CapabilityAdmission;
         use ubm_core::contracts::BleErrorCode;
@@ -11908,11 +13222,15 @@ mod adapter_tests {
             ),
             "resolve-reference projects as provided-with-limitation"
         );
-        // ...while open adapter work stays closed on every OS...
+        // System directories now have native adapters on the three desktop OSes.
         let connected_directory = central
             .with_core(|core| core.check_capability("peer:system-connected", "desktop.probe"))
             .await;
-        if cfg!(target_os = "macos") {
+        if cfg!(any(
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "windows"
+        )) {
             assert!(matches!(
                 connected_directory,
                 Ok(CapabilityAdmission::ProceedWithLimitation)
@@ -12373,6 +13691,8 @@ mod adapter_tests {
                 descriptors: Vec::new(),
             };
         ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: HRM_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: vec![
@@ -12381,6 +13701,7 @@ mod adapter_tests {
                 characteristic(BODY_SENSOR_LOCATION, false, true),
                 characteristic(HEART_RATE_CONTROL_POINT, true, true),
             ],
+            access: std::default::Default::default(),
         }
     }
 
@@ -12394,6 +13715,536 @@ mod adapter_tests {
             None,
         )
         .expect("selector")
+    }
+
+    async fn ready_write_central() -> DesktopCentral<FakeRadio> {
+        fn apple_capabilities(
+            core: &mut ubm_core::central::Central,
+        ) -> Result<(), ubm_core::contracts::CoreError> {
+            crate::capabilities::register_desktop_capabilities_for(
+                core,
+                Some(crate::capabilities::DesktopOs::MacOs),
+                false,
+            )
+        }
+        let mut profile = super::CentralProfile::desktop("ready-write-admission");
+        profile.register_capabilities = apple_capabilities;
+        let central = DesktopCentral::open_with(FakeRadio::new(), profile)
+            .await
+            .unwrap();
+        ready_peer(&central, "ready-peer", vec![write_matrix_service()]).await;
+        central.boundary().set_mtu("ready-peer", 23);
+        central.boundary().set_write_limits(
+            "ready-peer",
+            crate::boundary::WriteLimits {
+                with_response: 20,
+                without_response: 20,
+            },
+        );
+        central.boundary().set_write_readiness("ready-peer", false);
+        central
+    }
+
+    #[tokio::test]
+    async fn runtime_directory_subset_refuses_before_inventory_access_and_preserves_probe_failure()
+    {
+        fn windows_capabilities(core: &mut Central) -> Result<(), ubm_core::contracts::CoreError> {
+            crate::capabilities::register_desktop_capabilities_for(
+                core,
+                Some(crate::capabilities::DesktopOs::Windows),
+                false,
+            )
+        }
+        let radio = FakeRadio::new();
+        radio.set_directory_capability_limitations(Ok((
+            Some("selected-adapter-unavailable"),
+            Some("connected-selector-unavailable"),
+        )));
+        let mut profile = super::CentralProfile::desktop("runtime-directory-test");
+        profile.register_capabilities = windows_capabilities;
+        let central = DesktopCentral::open_with(radio, profile.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            central
+                .known_directory_peers(OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .code(),
+            BleErrorCode::CapabilityUnavailable
+        );
+        assert_eq!(
+            central
+                .connected_peers(&[], OpControl::unbounded())
+                .await
+                .unwrap_err()
+                .code(),
+            BleErrorCode::CapabilityUnavailable
+        );
+        assert!(
+            !central
+                .boundary()
+                .calls()
+                .iter()
+                .any(|call| call == "known_directory_peers" || call == "connected_peers")
+        );
+        central.shutdown().await;
+        let radio = FakeRadio::new();
+        radio.set_directory_capability_limitations(Err(DesktopError::new(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Platform,
+            "directory.probe",
+        )
+        .with_detail("native getter failure")));
+        let error = DesktopCentral::open_with(radio, profile)
+            .await
+            .err()
+            .expect("original probe failure");
+        assert_eq!(error.operation(), "directory.probe");
+        assert_eq!(error.detail(), Some("native getter failure"));
+    }
+
+    #[tokio::test]
+    async fn ready_write_keeps_native_admission_even_when_the_later_worker_runs_first() {
+        use futures_util::FutureExt;
+        let central = ready_write_central().await;
+        let first = OpControl::budget_ms(5000)
+            .with_connection_lease("lease-a".into())
+            .with_gatt_admission(central.admit_gatt("ready-peer").unwrap());
+        let second = OpControl::budget_ms(5000)
+            .with_connection_lease("lease-a".into())
+            .with_gatt_admission(central.admit_gatt("ready-peer").unwrap());
+        let first_selector = write_matrix_selector(BODY_SENSOR_LOCATION);
+        let second_selector = write_matrix_selector(HEART_RATE_CONTROL_POINT);
+        let earlier = central.write_when_ready("ready-peer", &first_selector, vec![1], first);
+        let later = central.write(
+            "ready-peer",
+            &second_selector,
+            vec![2],
+            "without-response",
+            second,
+        );
+        tokio::pin!(earlier, later);
+        assert!(
+            later.as_mut().now_or_never().is_none(),
+            "worker scheduling cannot change admission order"
+        );
+        assert!(central.boundary().writes().is_empty());
+        assert!(earlier.as_mut().now_or_never().is_none());
+        assert!(
+            central.boundary().writes().is_empty(),
+            "readiness has not admitted a native write"
+        );
+        central.boundary().set_write_readiness("ready-peer", true);
+        central.boundary().push_event(RadioEvent::WriteReadiness {
+            peer_id: "ready-peer".into(),
+            ready: true,
+        });
+        earlier.await.unwrap();
+        later.await.unwrap();
+        let writes = central.boundary().writes();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].0.3, BODY_SENSOR_LOCATION);
+        assert_eq!(writes[1].0.3, HEART_RATE_CONTROL_POINT);
+        assert_eq!(central.inner.gatt_admission.active_slots(), 0);
+        central.shutdown().await;
+    }
+
+    async fn acquired_test_central() -> DesktopCentral<FakeRadio> {
+        fn capabilities(core: &mut Central) -> Result<(), ubm_core::contracts::CoreError> {
+            crate::capabilities::register_desktop_capabilities_for(
+                core,
+                Some(crate::capabilities::DesktopOs::Linux),
+                false,
+            )
+        }
+        let mut profile = CentralProfile::desktop("acquired-native-owner");
+        profile.register_capabilities = capabilities;
+        let central = DesktopCentral::open_with(FakeRadio::new(), profile)
+            .await
+            .unwrap();
+        ready_peer(&central, "fd-peer", vec![write_matrix_service()]).await;
+        central
+            .boundary()
+            .acquired_gatt()
+            .configure(
+                "fd-peer",
+                crate::acquired_gatt::synthetic::SyntheticAcquisition {
+                    write: true,
+                    notify: true,
+                    mtu: 23,
+                },
+            )
+            .unwrap();
+        central
+    }
+
+    #[tokio::test]
+    async fn acquired_write_owns_payload_and_cancelled_backpressure_has_no_effect() {
+        use futures_util::FutureExt;
+        let central = acquired_test_central().await;
+        let selector = write_matrix_selector(BODY_SENSOR_LOCATION);
+        let handle = central
+            .acquire_gatt(
+                "fd-peer",
+                &selector,
+                crate::acquired_gatt::AcquisitionKind::Write,
+                OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(handle.mtu, 23);
+        assert_eq!(
+            central.resource_counters().await.acquired_gatt_transports,
+            1
+        );
+        central.boundary().acquired_gatt().block(true);
+        let ctl = OpControl::budget_ms(5000).with_connection_lease("lease-a".into());
+        let ticket = ctl.ticket.clone();
+        let pending = central.acquired_write(&handle.handle, vec![42], ctl);
+        tokio::pin!(pending);
+        assert!(pending.as_mut().now_or_never().is_none());
+        ticket.request_cancel();
+        assert_eq!(
+            pending.await.unwrap_err().code(),
+            BleErrorCode::OperationAborted
+        );
+        assert!(central.boundary().acquired_gatt().writes().is_empty());
+        central.boundary().acquired_gatt().block(false);
+        central
+            .acquired_write(
+                &handle.handle,
+                vec![2],
+                OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(central.boundary().acquired_gatt().writes(), vec![vec![2]]);
+        central
+            .close_acquired(
+                &handle.handle,
+                OpControl::unbounded().with_connection_lease("lease-a".into()),
+            )
+            .await
+            .unwrap();
+        central
+            .close_acquired(
+                &handle.handle,
+                OpControl::unbounded().with_connection_lease("lease-a".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            central.resource_counters().await.acquired_gatt_transports,
+            0
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn explicit_rediscovery_ends_a_waiting_ready_write_without_a_readiness_event() {
+        use futures_util::FutureExt;
+        let central = ready_write_central().await;
+        let selector = write_matrix_selector(BODY_SENSOR_LOCATION);
+        let waiting = central.write_when_ready(
+            "ready-peer",
+            &selector,
+            vec![1],
+            OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+        );
+        tokio::pin!(waiting);
+        assert!(waiting.as_mut().now_or_never().is_none());
+        let rediscovery = central.discover("ready-peer", "lease-a", OpControl::budget_ms(5000));
+        tokio::pin!(rediscovery);
+        assert!(rediscovery.as_mut().now_or_never().is_none());
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), waiting)
+                .await
+                .unwrap()
+                .unwrap_err()
+                .code(),
+            BleErrorCode::GattStaleHandle
+        );
+        rediscovery.await.unwrap();
+        assert!(central.boundary().writes().is_empty());
+        central.boundary().set_write_readiness("ready-peer", true);
+        central
+            .write_when_ready(
+                "ready-peer",
+                &selector,
+                vec![2],
+                OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(central.boundary().write_values(), vec![vec![2]]);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn acquired_invalidation_settles_backpressure_and_parent_release_drops_the_fd() {
+        use futures_util::FutureExt;
+        let central = acquired_test_central().await;
+        let selector = write_matrix_selector(BODY_SENSOR_LOCATION);
+        let handle = central
+            .acquire_gatt(
+                "fd-peer",
+                &selector,
+                crate::acquired_gatt::AcquisitionKind::Write,
+                OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+            )
+            .await
+            .unwrap();
+        central.boundary().acquired_gatt().block(true);
+        let pending = central.acquired_write(
+            &handle.handle,
+            vec![1],
+            OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+        );
+        tokio::pin!(pending);
+        assert!(pending.as_mut().now_or_never().is_none());
+        services_changed_invalidated(&central.inner, "fd-peer").await;
+        assert_eq!(
+            pending.await.unwrap_err().code(),
+            BleErrorCode::GattStaleHandle
+        );
+        central
+            .release_connection_lease_report("fd-peer", "lease-a", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        assert_eq!(
+            central.resource_counters().await.acquired_gatt_transports,
+            0
+        );
+        assert_eq!(central.boundary().acquired_gatt().active(), 0);
+        assert!(central.boundary().acquired_gatt().writes().is_empty());
+        central
+            .close_acquired(
+                &handle.handle,
+                OpControl::unbounded().with_connection_lease("lease-a".into()),
+            )
+            .await
+            .unwrap();
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn explicit_native_disconnect_closes_acquired_children_before_the_radio() {
+        let central = acquired_test_central().await;
+        let selector = write_matrix_selector(BODY_SENSOR_LOCATION);
+        let handle = central
+            .acquire_gatt(
+                "fd-peer",
+                &selector,
+                crate::acquired_gatt::AcquisitionKind::Write,
+                OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+            )
+            .await
+            .unwrap();
+        central
+            .disconnect("fd-peer", "lease-a", OpControl::budget_ms(5000))
+            .await
+            .unwrap();
+        assert_eq!(central.boundary().acquired_gatt().active(), 0);
+        assert_eq!(
+            central.resource_counters().await.acquired_gatt_transports,
+            0
+        );
+        central
+            .close_acquired(
+                &handle.handle,
+                OpControl::unbounded().with_connection_lease("lease-a".into()),
+            )
+            .await
+            .unwrap();
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn ready_write_queued_time_consumes_its_original_deadline_and_releases_its_position() {
+        let central = ready_write_central().await;
+        let earlier = central.admit_gatt("ready-peer").unwrap();
+        let control = OpControl::budget_ms(10)
+            .with_connection_lease("lease-a".into())
+            .with_gatt_admission(central.admit_gatt("ready-peer").unwrap());
+        let selector = write_matrix_selector(BODY_SENSOR_LOCATION);
+        let failure = central
+            .write_when_ready("ready-peer", &selector, vec![1], control)
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code(), BleErrorCode::OperationTimedOut);
+        assert_eq!(
+            failure.commit(),
+            Some(ubm_core::contracts::CommitState::NotDispatched)
+        );
+        assert!(central.boundary().writes().is_empty());
+        drop(earlier);
+        central.boundary().set_write_readiness("ready-peer", true);
+        central
+            .write_when_ready(
+                "ready-peer",
+                &selector,
+                vec![2],
+                OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(central.inner.gatt_admission.active_slots(), 0);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn ready_write_invalidation_interrupts_a_held_probe_without_another_readiness_event() {
+        use futures_util::FutureExt;
+        let central = ready_write_central().await;
+        central.boundary().block_op(FaultOp::WriteReadiness);
+        let selector = write_matrix_selector(BODY_SENSOR_LOCATION);
+        let control = OpControl::budget_ms(5000).with_connection_lease("lease-a".into());
+        let waiting = central.write_when_ready("ready-peer", &selector, vec![1], control);
+        tokio::pin!(waiting);
+        assert!(waiting.as_mut().now_or_never().is_none());
+        central
+            .boundary()
+            .push_event(RadioEvent::ServicesChanged("ready-peer".into()));
+        let failure = tokio::time::timeout(Duration::from_millis(1000), waiting)
+            .await
+            .expect("database invalidation must settle the held readiness probe")
+            .unwrap_err();
+        assert_eq!(failure.code(), BleErrorCode::GattStaleHandle);
+        assert_eq!(
+            failure.commit(),
+            Some(ubm_core::contracts::CommitState::NotDispatched)
+        );
+        central.boundary().unblock_all(FaultOp::WriteReadiness);
+        assert!(central.boundary().writes().is_empty());
+        assert_eq!(central.inner.gatt_admission.active_slots(), 0);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_delayed_worker_cannot_adopt_a_database_rediscovered_after_its_admission() {
+        let central = ready_write_central().await;
+        let stale = OpControl::budget_ms(5000)
+            .with_connection_lease("lease-a".into())
+            .with_gatt_admission(central.admit_gatt("ready-peer").unwrap());
+        let mut events = central.lifecycle_events();
+        central
+            .boundary()
+            .push_event(RadioEvent::ServicesChanged("ready-peer".into()));
+        tokio::time::timeout(Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let selector = write_matrix_selector(BODY_SENSOR_LOCATION);
+        // The old slot is invalidated immediately, even while it remains owned.
+        let failure = central
+            .write("ready-peer", &selector, vec![1], "without-response", stale)
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code(), BleErrorCode::GattStaleHandle);
+        central
+            .discover("ready-peer", "lease-a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_write_readiness("ready-peer", true);
+        central
+            .write_when_ready(
+                "ready-peer",
+                &selector,
+                vec![2],
+                OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(central.boundary().write_values(), vec![vec![2]]);
+        assert_eq!(central.resource_counters().await.native_gatt_admissions, 0);
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn readiness_wait_ends_on_link_loss_and_original_gatt_source_failure() {
+        use futures_util::FutureExt;
+        for source_failure in [false, true] {
+            let central = ready_write_central().await;
+            let selector = write_matrix_selector(BODY_SENSOR_LOCATION);
+            let waiting = central.write_when_ready(
+                "ready-peer",
+                &selector,
+                vec![1],
+                OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+            );
+            tokio::pin!(waiting);
+            assert!(waiting.as_mut().now_or_never().is_none());
+            if source_failure {
+                central.boundary().push_event(RadioEvent::GattWatchFailed(
+                    DesktopError::new(
+                        BleErrorCode::AdapterPoweredOff,
+                        BleErrorDomain::Adapter,
+                        "test.readiness.source",
+                    )
+                    .with_detail("original source fault"),
+                ));
+            } else {
+                central
+                    .boundary()
+                    .push_event(RadioEvent::Disconnected("ready-peer".into()));
+            }
+            let failure = tokio::time::timeout(Duration::from_secs(1), waiting)
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(
+                failure.code(),
+                if source_failure {
+                    BleErrorCode::AdapterPoweredOff
+                } else {
+                    BleErrorCode::ConnectionLost
+                }
+            );
+            if source_failure {
+                assert_eq!(failure.operation(), "test.readiness.source");
+            }
+            assert!(central.boundary().write_values().is_empty());
+            assert_eq!(central.resource_counters().await.native_gatt_admissions, 0);
+            central.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn ready_write_cancel_and_probe_failure_keep_zero_write_effects_and_retire_admission() {
+        use futures_util::FutureExt;
+        let central = ready_write_central().await;
+        let selector = write_matrix_selector(BODY_SENSOR_LOCATION);
+        let control = OpControl::budget_ms(5000).with_connection_lease("lease-a".into());
+        let ticket = control.ticket.clone();
+        let waiting = central.write_when_ready("ready-peer", &selector, vec![1], control);
+        tokio::pin!(waiting);
+        assert!(waiting.as_mut().now_or_never().is_none());
+        ticket.request_cancel();
+        let failure = waiting.await.unwrap_err();
+        assert_eq!(failure.code(), BleErrorCode::OperationAborted);
+        assert_eq!(
+            failure.commit(),
+            Some(ubm_core::contracts::CommitState::NotDispatched)
+        );
+        central
+            .boundary()
+            .fail_next(FaultOp::WriteReadiness, "readiness getter refused");
+        let failure = central
+            .write_when_ready(
+                "ready-peer",
+                &selector,
+                vec![2],
+                OpControl::budget_ms(5000).with_connection_lease("lease-a".into()),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code(), BleErrorCode::PlatformFailure);
+        assert_eq!(failure.operation(), "gatt.write-readiness");
+        assert_eq!(failure.detail(), Some("readiness getter refused"));
+        assert!(central.boundary().writes().is_empty());
+        assert_eq!(central.inner.gatt_admission.active_slots(), 0);
+        central.shutdown().await;
     }
 
     #[tokio::test]
@@ -12498,6 +14349,8 @@ mod adapter_tests {
     fn second_instance_service_pair() -> Vec<ServiceSnapshot> {
         vec![
             ServiceSnapshot {
+                primary: None,
+                included_services: None,
                 uuid: HRM_SERVICE.to_owned(),
                 occurrence: 0,
                 characteristics: vec![CharacteristicSnapshot {
@@ -12512,8 +14365,12 @@ mod adapter_tests {
                     },
                     descriptors: Vec::new(),
                 }],
+
+                access: std::default::Default::default(),
             },
             ServiceSnapshot {
+                primary: None,
+                included_services: None,
                 uuid: HRM_SERVICE.to_owned(),
                 occurrence: 1,
                 characteristics: vec![CharacteristicSnapshot {
@@ -12531,6 +14388,8 @@ mod adapter_tests {
                         occurrence: 0,
                     }],
                 }],
+
+                access: std::default::Default::default(),
             },
         ]
     }
@@ -13576,9 +15435,13 @@ mod adapter_tests {
             )
             .await
             .expect("resubscribe after terminal");
+        let epoch = central
+            .routing_epoch_for_instance("peer-f17", HRM_SERVICE, 0, HRM_MEASUREMENT, 0)
+            .await;
+        assert_ne!(epoch, 0, "resubscription must retire the previous epoch");
         central
             .boundary()
-            .push_event(notification("peer-f17", 0, vec![0x09]));
+            .push_event(notification_epoch("peer-f17", 0, vec![0x09], epoch));
         let mut redelivered = None;
         for _ in 0..200 {
             match central

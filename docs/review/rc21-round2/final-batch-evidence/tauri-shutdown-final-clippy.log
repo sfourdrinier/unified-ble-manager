@@ -1,0 +1,259 @@
+   Compiling quote v1.0.47
+    Checking serde_core v1.0.229
+    Checking stable_deref_trait v1.2.1
+   Compiling getrandom v0.2.17
+   Compiling siphasher v0.3.11
+   Compiling getrandom v0.1.16
+   Compiling camino v1.2.6
+   Compiling phf_shared v0.11.3
+    Checking new_debug_unreachable v1.0.6
+    Checking precomputed-hash v0.1.1
+   Compiling rand_core v0.6.4
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling string_cache_codegen v0.6.1
+   Compiling rand_core v0.5.1
+   Compiling syn v1.0.109
+   Compiling phf_shared v0.8.0
+   Compiling phf_shared v0.10.0
+   Compiling rand_chacha v0.3.1
+   Compiling rand_pcg v0.2.1
+   Compiling rand_chacha v0.2.2
+    Checking mac v0.1.1
+    Checking futf v0.1.5
+    Checking parking_lot v0.12.5
+    Checking dtoa v1.0.11
+   Compiling rand v0.7.3
+   Compiling rand v0.8.8
+   Compiling web_atoms v0.2.6
+    Checking utf-8 v0.7.6
+    Checking dtoa-short v0.3.5
+    Checking phf v0.11.3
+    Checking tendril v0.4.3
+    Checking nodrop v0.1.14
+    Checking byteorder v1.5.0
+    Checking matches v0.1.10
+    Checking servo_arc v0.2.0
+    Checking phf v0.8.0
+    Checking fxhash v0.2.1
+    Checking bitflags v1.3.2
+    Checking unicode-ident v1.0.26
+    Checking base64 v0.21.7
+   Compiling phf_generator v0.11.3
+   Compiling phf_generator v0.10.0
+   Compiling phf_generator v0.8.0
+   Compiling string_cache_codegen v0.5.4
+   Compiling phf_codegen v0.11.3
+    Checking proc-macro2 v1.0.107
+   Compiling phf_codegen v0.8.0
+   Compiling selectors v0.24.0
+   Compiling markup5ever v0.14.1
+    Checking bitflags v2.13.2
+    Checking serde_json v1.0.151
+    Checking uuid v1.27.0
+    Checking toml_datetime v1.1.1+spec-1.1.0
+    Checking objc2-core-foundation v0.3.2
+    Checking erased-serde v0.4.10
+    Checking cfb v0.14.0
+    Checking serde_spanned v1.1.1
+    Checking semver v1.0.28
+    Checking toml v1.1.6+spec-1.1.0
+    Checking serde-untagged v0.1.9
+    Checking objc2-foundation v0.2.2
+    Checking infer v0.22.0
+    Checking png v0.18.1
+    Checking rusqlite v0.40.2
+    Checking objc2-foundation v0.3.2
+   Compiling serde_derive_internals v0.29.1
+    Checking objc2-core-bluetooth v0.2.2
+   Compiling synstructure v0.14.0
+   Compiling darling_core v0.24.1
+   Compiling phf_macros v0.10.0
+   Compiling cssparser v0.29.6
+   Compiling phf_macros v0.13.1
+   Compiling schemars_derive v0.8.22
+   Compiling derive_more-impl v2.1.1
+   Compiling cssparser-macros v0.6.1
+    Checking phf v0.10.1
+   Compiling derive_more v0.99.20
+   Compiling match_token v0.1.0
+   Compiling serde_derive v1.0.229
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling thiserror-impl v2.0.21
+   Compiling phf v0.13.1
+   Compiling cssparser-macros v0.7.1
+   Compiling derive_more v2.1.1
+   Compiling zerofrom v0.1.8
+   Compiling cssparser v0.37.0
+   Compiling markup5ever v0.39.0
+   Compiling yoke v0.8.3
+   Compiling thiserror v2.0.21
+   Compiling html5ever v0.39.0
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+    Checking objc2-quartz-core v0.3.2
+   Compiling selectors v0.38.0
+   Compiling darling_macro v0.24.1
+   Compiling tokio-macros v2.7.2
+   Compiling futures-macro v0.3.34
+    Checking objc2-app-kit v0.3.2
+   Compiling darling v0.24.1
+    Checking tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling serde v1.0.229
+   Compiling serde_with_macros v3.24.0
+    Checking icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling dom_query v0.28.0
+    Checking tokio v1.53.2
+    Checking futures-util v0.3.34
+    Checking string_cache v0.8.9
+    Checking cargo-platform v0.1.9
+   Compiling swift-rs v1.0.8
+   Compiling jsonptr v0.7.1
+   Compiling indexmap v1.9.3
+   Compiling icu_provider v2.3.1
+   Compiling serde_with v3.24.0
+   Compiling cargo_metadata v0.19.2
+   Compiling json-patch v4.2.0
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling plist v1.10.1
+   Compiling cargo_toml v1.0.1
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+    Checking html5ever v0.29.1
+   Compiling url v2.5.8
+    Checking futures-executor v0.3.34
+    Checking dpi v0.1.2
+   Compiling urlpattern v0.6.0
+   Compiling schemars v0.8.22
+    Checking tokio-util v0.7.19
+    Checking kuchikiki v0.8.8-speedreader
+    Checking tokio-stream v0.1.19
+    Checking futures v0.3.34
+    Checking keyboard-types v0.8.3
+   Compiling async-trait v0.1.92
+   Compiling serialize-to-javascript-impl v0.1.2
+   Compiling serde_repr v0.1.21
+    Checking objc2-web-kit v0.3.2
+    Checking window-vibrancy v0.8.1
+   Compiling tauri-utils v2.10.1
+    Checking serialize-to-javascript v0.1.2
+    Checking muda v0.20.0
+    Checking btleplug v0.12.0 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/vendor/btleplug)
+    Checking ubm-desktop v0.1.0 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/crates/ubm-desktop)
+    Checking tauri-runtime v2.12.1
+   Compiling tauri-build v2.7.1
+   Compiling tauri-plugin v2.7.1
+   Compiling tauri-codegen v2.7.1
+   Compiling tauri v2.12.1
+   Compiling tauri-macros v2.7.1
+   Compiling tauri-plugin-unified-ble-manager v5.0.0-rc.21 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/native/tauri)
+error: items after a test module
+   --> src/peer_directory.rs:16:1
+    |
+ 16 |   mod reference_tests {
+    |   ^^^^^^^^^^^^^^^^^^^
+...
+ 45 |   fn native_identifier(value: &str, backend: &str, op: &str) -> Result<String, DispatchError> {
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 91 |   fn malformed(operation: &str) -> DispatchError {
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 95 |   fn unsupported(operation: &str) -> DispatchError {
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+100 |   fn admit(ctl: &OpControl, operation: &str) -> Result<(), DispatchError> {
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+120 | / fn keys(
+121 | |     value: &BTreeMap<String, IpcValue>,
+122 | |     allowed: &[&str],
+123 | |     op: &str,
+124 | | ) -> Result<(), DispatchError> {
+    | |______________________________^
+...
+131 |   fn uuid(value: &str, op: &str) -> Result<String, DispatchError> {
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+140 |   fn reference(value: &IpcValue, expected_backend: &str) -> Result<String, DispatchError> {
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+154 |   fn decode_reference(value: &IpcValue, expected_backend: &str) -> Result<String, DispatchError> {
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+179 |   fn strings(value: Option<&IpcValue>, op: &str) -> Result<Option<Vec<String>>, DispatchError> {
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+194 | / fn record(
+195 | |     peer: ubm_desktop::DirectoryPeer,
+196 | |     source: &str,
+197 | |     backend: &str,
+198 | | ) -> Result<IpcValue, DispatchError> {
+    | |____________________________________^
+...
+238 |   impl BtleplugDispatcher {
+    |   ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#items_after_test_module
+    = note: `-D clippy::items-after-test-module` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::items_after_test_module)]`
+    = help: move the items to before the test module was defined
+
+error: unnecessary use of `get("restriction").is_none()`
+    --> src/btleplug_dispatcher.rs:7642:24
+     |
+7642 |         assert!(fields.get("restriction").is_none());
+     |                 -------^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |                 |
+     |                 help: replace it with: `!fields.contains_key("restriction")`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#unnecessary_get_then_check
+     = note: `-D clippy::unnecessary-get-then-check` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::unnecessary_get_then_check)]`
+
+error: very complex type used. Consider factoring parts into `type` definitions
+    --> src/dispatcher_packet_b_tests.rs:1349:16
+     |
+1349 |       let cases: [(
+     |  ________________^
+1350 | |         ubm_desktop::DesktopOs,
+1351 | |         &str,
+1352 | |         &str,
+1353 | |         fn(&mut ubm_core::central::Central) -> Result<(), ubm_core::contracts::CoreError>,
+1354 | |     ); 2] = [
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+     = note: `-D clippy::type-complexity` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: items after a test module
+   --> src/desktop_core.rs:861:1
+    |
+861 | mod tests {
+    | ^^^^^^^^^
+...
+985 | fn acquired_unsupported() -> DesktopError {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#items_after_test_module
+    = help: move the items to before the test module was defined
+
+error: items after a test module
+  --> src/security_scope.rs:18:1
+   |
+18 | mod tests {
+   | ^^^^^^^^^
+...
+82 | impl SecurityPermission {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#items_after_test_module
+
+error: could not compile `tauri-plugin-unified-ble-manager` (lib test) due to 5 previous errors

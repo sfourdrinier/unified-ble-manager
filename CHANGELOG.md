@@ -2,6 +2,314 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.0-rc.21] - 2026-10-05
+
+- Fence desktop control-watch opening and gap recovery with accepted-observation
+  revisions, preventing delayed probes from overwriting newer state. Bound
+  React Native pairing-cancellation acknowledgement and result waiting by the
+  caller deadline and signal while retaining the original pairing owner.
+
+- Cancel parameter, write-readiness and IPC security watch admission when their
+  iterator closes, while releasing late resources and retaining cleanup retry.
+
+- Retain malformed native acquired-GATT handles for owned cleanup retry while
+  preserving the metadata protocol failure and any compensating cleanup debt.
+
+- Preserve structured scan source and evidence failures for discovery-event
+  consumers, including late subscribers, and reject fractional or unsafe
+  connection-parameter measurements on snapshot and event boundaries.
+
+- Preserve validated effectful control responses across cancellation during
+  cleanup, and report uncertain commitment for dispatched MTU, priority, PHY
+  and subrate requests whose outcome is not yet known. Pre-dispatch cancellation
+  and observation-only controls retain noncommitting semantics.
+
+- Order merged scan facts by comparable capture clocks and ingress ordinals,
+  preventing late older packets from replacing newer values or borrowing future
+  evidence. Receipt clocks continue to govern expiry; unknown clocks retain
+  receipt ordering.
+
+- Scope Electron admission rollback to the resources acquired by that operation,
+  retain refused cleanup for retry, and preserve accepted Windows priority
+  outcomes after the caller deadline. Electron and Tauri expose the instantiated
+  backend's priority capability.
+- Retain exact WinRT discovery owners after physical loss until native retirement
+  succeeds. Owned notification polling continues through shutdown; native
+  CoreBluetooth and WinRT callback failures drain accepted values and then report
+  their original structured failure on the affected subscription.
+- Fence readiness and parameter reconciliation against newer observations,
+  discard stale pre-gap values while retaining source failures, and allow fresh
+  security/parameter watches to recover from transient source faults.
+- Keep Classic pairing outside BlueZ LE ownership, parse native GATT handles after
+  their exact object prefix, and expose observed Windows TX/RX PHY independently
+  through Node, Bun, Electron and Tauri. PHY selection remains unsupported.
+- Preserve Android advertising names separately from cached friendly names and
+  carry native capture timestamps with their clock provenance. Raw advertisement
+  opt-in exposes owned captured bytes with stream byte accounting. Public
+  capture timestamps use structural values compatible across installed package
+  copies.
+
+- Treat Web Bluetooth included-service NotFoundError as an observed empty inclusion list while preserving other discovery failures.
+
+- Recover Android security receiver registration after confirmed absent failed admission, while retaining uncertain cleanup ownership.
+
+- Report runtime encryption evidence in Android already-paired results, matching the security-state projection.
+- Discard retained N-API parameter/readiness events before reconciling a control-stream gap, while preserving subsequent events.
+- Preserve specific scan-evidence quota and pump errors on public scan terminal observations.
+- Retire Apple discovery reservations for invalidated service objects so missing child callbacks cannot block rediscovery; preserve unaffected reservations and ignore late old-object callbacks. Validate IPC observation fields without type assertions.
+
+- Discard retained pre-gap Tauri parameter events before opening reconciliation,
+  preserving reports that arrive during the fresh read and the caller budget.
+  Reject non-finite or negative IPC control timestamps and ordinals that are not
+  positive safe integers, terminalizing malformed watches with owned cleanup.
+  Values rejected during transport serialization also terminalize owned streams
+  and preserve the protocol failure rather than escaping the event callback.
+  Event-source death permits only owned cleanup routes while the renderer lease
+  remains active; it does not permit new operations or admission.
+
+- Keep Tauri parameter-watch opening probes and reconciliation inside the
+  original caller deadline and cancellation scope, using separate child tickets.
+
+- Retain interrupted Windows native service, characteristic, inclusion and
+  descriptor queries until Windows reports natural completion. Public cancellation
+  stops waiting without calling native Cancel, whose terminal status does not
+  establish internal GATT quiescence. Pending work prevents service close and
+  stays owned for cleanup retry. Connection admission retains
+  the native owner before awaiting discovery. A cleanup refusal does not invent
+  a lost connection.
+
+- Scope reference-only known-peer and service-filtered connected-peer capability
+  restrictions to CoreBluetooth. Linux and Windows independent native inventories
+  no longer report those unrelated restrictions. Verification and live scope are recorded in the rc.21 remediation ledger.
+
+- Include Windows' native connected inventory in known-peer retrieval so a
+  connected, unpaired peer returned by the system directory can resolve on a
+  fresh manager. Retrieval starts no unpaired discovery scan and acquires no
+  connection lease.
+
+- Report the documented `operation.reset` when adapter-loss teardown settles
+  pending operations. Native ownership remains retained until
+  acknowledgment; dispatched writes retain uncertain commit state and are never
+  automatically retryable.
+
+- Reject deferred acquired-FD publication with `backend.reset` when the
+  captured BlueZ daemon owner is replaced or disappears. Retain the original
+  D-Bus failure or observed owner identities and close the dedicated sender and
+  descriptor.
+
+- Advance the private mobile wire to `ubm-mobile-wire/2` and desktop IPC to
+  version 6 for required resource/graph values and owned operation routes.
+  Older peers fail negotiation before session, renderer-lease or radio admission.
+  Package rc.21 is retained; previous receipts remain bound to their old source
+  and wire identity.
+
+- Draft rc.21 remediation: desktop and Tauri known/system-connected directories
+  now use independent native inventories; RN has an owned system-connected query
+  using Android GATT inventory and Apple service-scoped CoreBluetooth retrieval.
+  Native/public controls and collected package gates pass.
+
+- Represent unavailable GATT primary and inclusion metadata as `null`, distinct
+  from observed secondary status and an observed empty inclusion list. Public
+  and IPC codecs preserve unknown facts; desktop/mobile native graphs carry
+  inclusion occurrence identity. CoreBluetooth retains callback ownership after
+  cancellation or discovery failure, and Web traversal rejects oversized graphs.
+
+  This prerelease API correction requires regenerating the API reports.
+
+- Keep WinRT public and random address peers distinct in the native peripheral
+  map and event identities, with immutable address-qualified opaque peer IDs.
+  Typed direct-address lookup returns the same identity used by scanning.
+
+- Add typed Windows active/passive/None scan modes and extended-advertisement
+  opt-in through the desktop public provider and native watcher. Versioned APIs
+  and default-adapter support are checked; absent options restore active,
+  nonextended scanning. Scan cleanup retains failed handler-removal ownership.
+  Electron/Tauri preserve these controls. Runtime controls and Windows VM qualification are recorded in the remediation ledger.
+
+- Wire Windows preferred connection presets through the lease-owned Rust,
+  NAPI/provider and Electron/Tauri IPC routes. Runtime API absence is explicit;
+  native requests stay owned until replacement or disconnect, and failed close
+  retains retryable cleanup debt. Acceptance does not assert changed link
+  parameters.
+
+### Added
+
+- Add eligible BlueZ acquired-write and acquired-notification sessions through
+  Node/Bun, Electron and Tauri. Sessions preserve the native MTU and own their
+  FD, dedicated D-Bus sender, cancellation, packet backpressure and HUP terminal.
+  Closing a notification iterator closes its native session; failed cleanup
+  remains retryable, and unresolved CCCD cleanup prevents conflicting acquisition.
+  Windows, Apple and ineligible BlueZ characteristics retain explicit unsupported
+  results.
+
+- Carry Android report delay and nonlegacy PHY scan settings into the native
+  builder and process native batch callbacks without borrowing caller payloads.
+  Late callbacks from a retired scan cannot publish into its replacement.
+
+- Preserve original parameter getter/source failures, reconcile native queue
+  gaps and fence retired source registrations. Initial watch events retain
+  their native order instead of publishing a delayed probe afterward. A failed
+  observation source requires fresh native evidence or a new generation to
+  recover; a snapshot alone does not reopen it. Collected provider/native controls and Windows VM parameter observations pass.
+
+- Add distinct read-only desktop OS-known and system-connected peer directory
+  routes, preserving unbonded cached records and foreign connection observations
+  without acquiring leases. Linux requires positive LE bearer evidence for a
+  connected record; Windows selectors are limited to the default adapter and
+  retain failed transient-object cleanup. Mobile and IPC routes use their
+  native inventories; native/public inventory controls pass.
+
+- Buffer the latest Apple RN readiness state while its initial probe is pending,
+  then publish the probe before that newer state. Readiness watches retain their
+  branded connection identities without type assertions.
+
+- Move RN and desktop readiness writes into one bounded native FIFO operation,
+  owning bytes before waiting and retaining the original budget. Database and
+  link loss interrupt readiness waits, and Electron/Tauri forward the helper
+  through the host-owned GATT route.
+
+- Windows parameter snapshots and callbacks classify the native all-zero
+  disconnected getter answer as `connection.lost`, retaining its raw fields.
+  Zero peripheral latency remains valid and malformed generic samples remain
+  fail-closed.
+
+- Android security observes API 36 LE encryption changes and SDK 36.1 public
+  snapshots independently of bonding. Source errors retain controller status
+  through the wire and reconciliation. Peer broadcasts are never cached as a
+  replacement link snapshot, and ambiguous null snapshots remain unknown.
+  Authentication and Secure Connections are not inferred. Physical
+  qualification remains pending.
+- Android subrate requests are wired through the native owned queue and public
+  connection controls on runtime SDK 36.1 hosts with the public integer-status
+  API. The app supplies Bluetooth permission and companion association or
+  privileged permission. Status-code refusals preserve their numeric platform
+  identity; acceptance leaves the measured observation null. Physical
+  qualification remains pending and no backend evidence label is promoted.
+
+- Qualify Bun 1.4.2 as a desktop host for the shared Node-API addon. The sealed
+  prebuild loads, and the synthetic central opens, reports its capability
+  states, and closes. `bun scripts/ci/bun-desktop-host-smoke.js` is that gate.
+  On glibc Linux x64, `--list-adapters` returned both host adapters (`hci0`
+  and `hci1`) with no error. Bun's `process.report` supplies the glibc version,
+  so the existing prebuild loader needs no Bun-specific path.
+- `scripts/ci/bun-desktop-h10-session.js` is an opt-in session against a stock
+  Polar H10 simulator whose local name is exactly `SIM Polar H10 0001`. Other
+  advertisements are recorded and left unconnected. It is not a CI gate.
+  On macOS Apple Silicon, Bun 1.4.2 and the sealed CoreBluetooth prebuild
+  scanned, connected, read battery level 90 and manufacturer Polar Electro Oy,
+  wrote the PMD get-settings command and received its success indication,
+  took one 72 bpm heart-rate notification, ran `setEventWaker` (19 wakes, no
+  wake failures), disconnected, and closed. On glibc Linux x64 the same BlueZ
+  session on `hci0` completed that GATT exchange and ran `setEventWaker` (3
+  wakes, no wake failures). Against the installed `5.87-ubm.4` daemon,
+  disconnect after discovery returned
+  `lease-released-protected`, close reported `release-failed`, and the link
+  stayed up. Node 22 on the same addon does that too. A Bun connect that never
+  discovers services does release the link. No platform evidence label changes.
+
+### Fixed
+
+- At reviewed head `b80542f3`, Linux `bun-desktop-packed` passes under Node and Bun 1.4.2 through the CJS and ESM entries. It runs six public scenarios through the deterministic testing factory and separately loads the sealed native synthetic central, verifies build identity and requires its event waker to fire. That passing gate does not exercise the joined public desktop factory/provider/native route, qualify macOS or Windows Bun execution, or provide physical-radio evidence. The rc.21 remediation tracks those remaining qualification requirements.
+- Source daemon `5.87-ubm.10` does not disconnect a link another application brought up. Release uses the recorded arrival, not the controller initiator bit. A rejected Connect, Pair, StartNotify, or Acquire rolls back only that pending admission. A Connect, StartNotify, or AcquireNotify that fails after it was committed drops only that attempt, including a StartNotify accepted while GATT was down whose later registration fails. When the last in-flight operation ends after the owner's bus connection has died, that generation is reconciled with no further request. Explicit pairing on the same attachment resumes ATT security retry. The remediation changes the authority contract to `(1, 3, 1)`; protected release ACK transfers generation cleanup to the daemon and frees the logical token. Prior producer/compiler receipts do not verify this new batch. This daemon is installed and qualified on lx5090 with real USB controllers and a simulated RF peripheral. Live held Pair success, refusal, cancellation, sender death and pre-first-lease protection pass; no physical H10 qualification is inferred. The same-attachment pair-then-access case has not been run on a radio.
+- Apple and macOS `connection:effective-mtu` no longer publishes `maximumWriteValueLength(.withResponse) + 3` as a measured ATT MTU. That length can include a long write. The route stays `limited` with `corebluetooth-att-mtu-not-observed`, and `effectiveMtu()` reports `state: 'unavailable'` with a null ATT MTU. Per-mode write capacity stays on `maximumWriteLength`. Windows `GattSession.MaxPduSize` and the BlueZ characteristic MTU stay measured. A withheld BlueZ MTU stays `capability.unavailable`. This is not a physical-radio receipt.
+- Apple `connection:when-available` on the React Native Rust route is a pending CoreBluetooth connect for a known peer. The capability is `limited` with `corebluetooth-pending-connect`. The caller deadline and cancellation still apply. It is not Android `autoConnect`, and it does not reconnect after the link drops.
+- Source daemon `5.87-ubm.6` no longer treats another process's finished GATT
+  read or write as a link holder. A hold remains only while that read or write
+  is in flight, or until the sender's bus connection dies after an explicit
+  Connect, Pair, StartNotify, or Acquire. Replacing the installed
+  `5.87-ubm.4` daemon with `5.87-ubm.6` and repeating the glibc Linux H10
+  session changed disconnect from `lease-released-protected` to
+  `lease-released-indeterminate`. The GATT exchange still completed and the
+  link stayed up. Profile probing arms auto-connect, and that bookkeeping
+  called admit with no sender, which set an unknown holder on an exclusive
+  link.
+- Source daemon `5.87-ubm.7` does not treat that auto-connect bookkeeping as
+  another application's hold on an exclusive link this process created. When
+  that exclusive release disconnects the link, an untrusted device also stops
+  kernel auto-connect, the same gate `Device1.Disconnect` uses. Installing
+  that daemon and repeating the glibc Linux H10 session returned
+  `lease-released-protected` and left the link up. The lease had no
+  application interest. The controller had already initiated the bonded link
+  and armed auto-connect, so the lease adopted it as borrowed.
+- Source daemon `5.87-ubm.8` releases that locally initiated link when no
+  other lease or application hold remains. A link this controller did not
+  initiate stays protected. An unknown holder stays indeterminate. An
+  in-flight read or write, StartNotify, Acquire, or another sender's Connect
+  or Pair still protects the link. The authority contract stays `(1, 2, 1)`.
+  Installing `5.87-ubm.8` and repeating that H10 session reported disconnect
+  `released` and close `released`, and the link was down. No platform evidence
+  label changes.
+- Source daemon `5.87-ubm.9` does not raise link security when an unbonded LE
+  attribute returns Insufficient Encryption or Insufficient Authentication.
+  That ATT operation fails and the ACL stays up. A paired link still retries
+  so an existing key can encrypt it, and explicit Pair still raises security
+  itself. The experimental ranging client reads an encrypted feature and, on
+  the previous daemon, that error started pairing with no agent and dropped
+  the unbonded H10 link before the battery read. Installing `5.87-ubm.9` and
+  repeating the unbonded glibc Linux session on source digest `0b31ce8e`
+  read battery 90 and manufacturer Polar Electro Oy, completed the PMD
+  indication and one 72 bpm notification (flags `0x10`), ran `setEventWaker`
+  with no wake failures, reported disconnect `released` and close `released`,
+  and left the link down. The peer was not paired and the capture had no
+  pairing request. The same digest's macOS Apple Silicon session and two
+  back-to-back Windows x64 sessions, without restarting the Bluetooth service
+  between them, completed that exchange and left the link down. No platform
+  evidence label changes.
+- WinRT discovery leaves the services Windows keeps for itself (HID, LE Audio,
+  Microphone Control, Ranging) out before `GetCharacteristics`. Descriptor
+  discovery calls `GetDescriptorsWithCacheModeAsync(Uncached)`. Success
+  returns the list Windows returned. Any other status is an error, and
+  dropping the query cancels it. The call does not pair and does not read
+  descriptor values. An ordinary `AccessDenied` with no ATT byte stays in
+  the table as a restricted service. A protocol error, or an access denial
+  that still carries an ATT byte, fails discovery. Subscribe writes the
+  selected Client Characteristic Configuration mode once, through the
+  result-returning WinRT API, and keeps the protocol byte. This WinRT path
+  has not been compiled on macOS and has not been run on a Windows radio.
+  The OS advertisement service-UUID filter stays empty, and the
+  software filter still admits Heart Rate. Two back-to-back Bun 1.4.2 sessions
+  on the passed-through TP-Link adapter each connected only to local name
+  `SIM Polar H10 0001`, read battery 90 and manufacturer Polar Electro Oy,
+  completed the PMD get-settings indication and one 72 bpm notification
+  (flags `0x10`), ran `setEventWaker` with no wake failures, reported disconnect
+  `released` and close `released`, and left the link down. No platform evidence
+  label changes.
+- Tauri forwards a hard delivery requirement to the core on every host.
+  CoreBluetooth and BlueZ still refuse `require-indication` with
+  `capability.limited` when the characteristic also notifies, before any
+  radio effect. WinRT still receives the requirement and can write that mode.
+- Bun, Node, and Electron forward the same hard requirement on BlueZ and
+  CoreBluetooth. A preference is still not a requirement. A radio report
+  that does not prove the required mode is `capability.limited`, and the
+  enable is undone. A `require-*` subscription does not join a preference
+  or automatic physical enable; the core accepts or refuses that join
+  without disabling the first CCCD.
+- The mobile host pump admits one journaled notification per value turn
+  before a queued security or lifecycle signal. Each record is its own
+  SQLite commit, so writing the whole queued scope first held the other
+  peer's control events for the entire backlog. On the Windows CI runner
+  that drain took 13.6s and the recording setup, whose deadline is 20s,
+  timed out. A scope with several consumers rotates the route that filled
+  the budget, so one consumer's backlog cannot keep the others unpolled.
+  Values that arrived before a lifecycle transition are still drained
+  completely, ahead of the transition. The sustained two-peer test again
+  waits for those control drains before acknowledging setup. The desktop
+  Node-API digest is unchanged.
+- The packed TV consumer staged outside the checkout keeps the repository
+  `packageManager` pin (`pnpm@10.14.0`). Without that pin, Corepack selected
+  pnpm 12.9.1. Its one-day release-age check rejected fifteen Expo packages
+  published the same day, and it ignored the staged manifest's
+  `pnpm.overrides`, so the Expo Android TV ARM32 compile stopped during
+  install.
+- The opt-in Bun H10 session keeps a `close()` report of `release-failed`
+  and its failures. That method resolves with the report instead of
+  rejecting, so a failed session's cleanup used to print no retained
+  release debt.
+- The opt-in Bun H10 session disarms its 90-second deadline before failure
+  cleanup, and a deadline that already fired waits for that same cleanup.
+  It used to call `process.exit` as soon as the timer saw a cleanup in
+  progress, which cut off unsubscribe, disconnect, or close.
+
 ## [5.0.0-rc.20] - 2026-10-05
 
 ### Corrected

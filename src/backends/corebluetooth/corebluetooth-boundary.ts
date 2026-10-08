@@ -90,6 +90,8 @@ export interface CoreBluetoothDescriptorRecord {
 export interface CoreBluetoothServiceRecord {
   readonly uuid: string
   readonly occurrence: number
+  readonly primary?: boolean | null
+  readonly includedServices?: readonly CoreBluetoothDescriptorRecord[] | null
   readonly characteristics: readonly CoreBluetoothCharacteristicRecord[]
 }
 

@@ -1,6 +1,7 @@
 import { contractError } from '../backend-contract/errors'
 import type { ScanPlatformOptions } from '../public/ble-manager'
 import { assertPublicScanOptions } from '../public/ble-manager'
+import { decodeWinRtScanPlatformOptions } from '../backend-contract/advertisement'
 
 /** Fail-closed decoder for the same platform options accepted by public scan(). */
 export function decodeIpcScanPlatform(value: unknown): ScanPlatformOptions | undefined {
@@ -9,7 +10,10 @@ export function decodeIpcScanPlatform(value: unknown): ScanPlatformOptions | und
     throw contractError('argument.invalid', 'scan', 'ipc.scan.platform')
   const input = Object.fromEntries(Object.entries(value))
   const kind = input.kind
-  if (kind === 'corebluetooth' || kind === 'winrt' || kind === 'web' || kind === 'electron' || kind === 'tauri') {
+  if (kind === 'winrt') {
+    return decodeWinRtScanPlatformOptions(input, 'ipc.scan.platform-values')
+  }
+  if (kind === 'corebluetooth' || kind === 'web' || kind === 'electron' || kind === 'tauri') {
     if (Object.keys(input).length !== 1) throw contractError('argument.invalid', 'scan', 'ipc.scan.platform-fields')
     return { kind }
   }

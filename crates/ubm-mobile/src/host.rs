@@ -116,6 +116,15 @@ pub(crate) struct PeerInfo {
 /// Why a consumer's stream ended: (reason, dropped items, dropped bytes).
 pub(crate) type StreamEnd = (&'static str, u64, u64);
 
+/// Result of draining one notification route for a bounded pump turn.
+enum RouteDrain {
+    /// The route is still installed. `pending` means the budget stopped the
+    /// drain while the core still holds values.
+    Live { taken: usize, pending: bool },
+    /// The route reached a terminal answer after `taken` admitted values.
+    Ended { taken: usize, terminal: StreamEnd },
+}
+
 enum HostSignal {
     Advertisements,
     /// At least one value scope is dirty; the scopes themselves wait in the
@@ -130,6 +139,10 @@ enum HostSignal {
     ScanFailed(String),
     ScanDeadlines,
     Security(String, SecurityState),
+    SecurityFailed(Option<String>, DesktopError),
+    /// Latest write-without-response readiness for one peer. The generation
+    /// is the connection generation current when the report arrived.
+    WriteReadiness(String, Option<String>, bool),
     Restored(Vec<RestoredPeer>),
     IngressDrop(IngressClass, u64),
 }
@@ -146,6 +159,12 @@ const SIGNALS_CAP: usize = 1024;
 /// cannot starve lifecycle and current-state signals; leftovers requeue
 /// the marker for another turn.
 const VALUE_SCOPE_BATCH: usize = 32;
+
+/// Journaled records one scope may admit during that same turn. Each record
+/// is its own committed SQLite transaction on the pump, so an unbounded
+/// drain holds every already-queued security and lifecycle signal until the
+/// whole backlog has been written.
+const VALUE_RECORD_BATCH: usize = 1;
 
 /// One advertisement turn must yield to queued lifecycle/deadline markers.
 const ADVERTISEMENT_BATCH: usize = 32;
@@ -182,10 +201,11 @@ const fn ingress_index(class: IngressClass) -> usize {
 #[derive(Default)]
 struct SignalState {
     queue: VecDeque<HostSignal>,
-    /// Every value scope with unflushed core values. Entries are small
-    /// (one tuple per scope); the queue holds at most one marker for all
-    /// of them, so the queue — not this set — is the bounded channel.
-    dirty: HashSet<InstanceKey>,
+    /// Dirty value scopes in round-robin order. The queue holds at most
+    /// one marker for all of them, so the queue — not this list — is the
+    /// bounded channel. `dirty_members` keeps `push_value` idempotent.
+    dirty: VecDeque<InstanceKey>,
+    dirty_members: HashSet<InstanceKey>,
     /// A `Values` marker already waits in the queue.
     value_marker_queued: bool,
     advertisements_pending: bool,
@@ -302,6 +322,29 @@ impl Signals {
                         Self::push_bounded(&mut state, HostSignal::Security(peer_id, observed));
                     }
                 }
+                HostSignal::WriteReadiness(peer_id, generation, ready) => {
+                    let mut merged = false;
+                    for queued in state.queue.iter_mut() {
+                        if let HostSignal::WriteReadiness(
+                            existing,
+                            current_generation,
+                            current_ready,
+                        ) = queued
+                            && *existing == peer_id
+                        {
+                            *current_generation = generation.clone();
+                            *current_ready = ready;
+                            merged = true;
+                            break;
+                        }
+                    }
+                    if !merged {
+                        Self::push_bounded(
+                            &mut state,
+                            HostSignal::WriteReadiness(peer_id, generation, ready),
+                        );
+                    }
+                }
                 HostSignal::Restored(peers) => {
                     let mut merged = false;
                     for queued in state.queue.iter_mut() {
@@ -329,6 +372,9 @@ impl Signals {
                     if !merged {
                         Self::push_countable(&mut state, class, count);
                     }
+                }
+                HostSignal::SecurityFailed(peer, error) => {
+                    Self::push_bounded(&mut state, HostSignal::SecurityFailed(peer, error));
                 }
                 HostSignal::Lifecycle(event) => {
                     if state.queue.len() >= SIGNALS_CAP {
@@ -377,7 +423,9 @@ impl Signals {
             if state.closed {
                 return;
             }
-            state.dirty.insert(scope);
+            if state.dirty_members.insert(scope.clone()) {
+                state.dirty.push_back(scope);
+            }
             Self::ensure_value_marker(&mut state);
         }
         self.notify.notify_one();
@@ -392,16 +440,19 @@ impl Signals {
         }
     }
 
-    /// Take up to `max` dirty value scopes for one bounded pump batch.
-    /// Scopes leave the dirty set here, so each drains exactly once per
-    /// marker cycle; leftovers requeue the marker below. Order across
-    /// scopes is unspecified — values within a scope stay ordered by the
-    /// core queue the pump polls — so callers must not depend on it.
+    /// Take up to `max` dirty value scopes from the front of the FIFO.
+    /// A caller that still has values pushes that scope back, behind the
+    /// scopes that have not had this cycle's turn. Values within a scope
+    /// stay ordered by the core queue the pump polls.
     fn take_value_batch(&self, max: usize) -> Vec<InstanceKey> {
         let mut state = lock(&self.state);
-        let batch: Vec<InstanceKey> = state.dirty.iter().take(max).cloned().collect();
-        for scope in &batch {
-            state.dirty.remove(scope);
+        let mut batch = Vec::with_capacity(max.min(state.dirty.len()));
+        while batch.len() < max {
+            let Some(scope) = state.dirty.pop_front() else {
+                break;
+            };
+            state.dirty_members.remove(&scope);
+            batch.push(scope);
         }
         batch
     }
@@ -491,6 +542,10 @@ pub(crate) struct HostInner {
     next_session: AtomicU64,
     #[cfg(test)]
     before_session_admission: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Consumers `drain_route` polled, in order. Debug tests read it.
+    /// Release builds omit it.
+    #[cfg(debug_assertions)]
+    route_turns: Mutex<Vec<String>>,
     pub scan: tokio::sync::Mutex<ScanShare>,
     pub scan_members: Mutex<BTreeMap<u64, ScanMember>>,
     pub routes: Mutex<HashMap<InstanceKey, Vec<Route>>>,
@@ -502,6 +557,8 @@ pub(crate) struct HostInner {
     /// adopts the same peer again. Lock after `restored`.
     pub restoration_claims: Mutex<BTreeMap<String, u64>>,
     pub security: Mutex<HashMap<String, SecurityState>>,
+    pub security_failures: Mutex<BTreeMap<Option<String>, (u64, DesktopError)>>,
+    pub security_failure_revision: AtomicU64,
     pub adapter: Mutex<Option<(AdapterSnapshot, u64)>>,
     /// Live background leases per scope. A lease leaves only when the
     /// platform confirmed its release; a failed release stays for a retry.
@@ -561,6 +618,9 @@ fn canonical_advertisement(advertisement: Advertisement) -> Option<PeerSnapshot>
         }
     };
     let extras = ubm_desktop::AdvertisementExtras {
+        capture_timestamp_ms: advertisement.capture_timestamp_ms,
+        cached_name: advertisement.cached_name,
+        address_type: None,
         solicited_service_uuids: canonical_list(advertisement.solicited_service_uuids)?,
         overflow_service_uuids: canonical_list(advertisement.overflow_service_uuids)?,
         connectable: advertisement.connectable,
@@ -689,6 +749,13 @@ pub(crate) fn advertisement_record(
                 .map_or(Value::Null, |bytes| Value::from(wire::encode_base64(bytes))),
         ),
         ("observedAtMs", Value::from(observed_at_ms)),
+        (
+            "sourceTimestampMs",
+            snapshot
+                .extras
+                .capture_timestamp_ms
+                .map_or(Value::Null, Value::from),
+        ),
     ])
 }
 
@@ -924,7 +991,9 @@ impl HostInner {
                 // leftovers requeue the marker for another turn.
                 let batch = self.signals.take_value_batch(VALUE_SCOPE_BATCH);
                 for scope in &batch {
-                    self.flush_scope(scope).await;
+                    if self.flush_scope(scope, VALUE_RECORD_BATCH).await {
+                        self.signals.push_value(scope.clone());
+                    }
                 }
                 self.signals.requeue_values_if_dirty();
             }
@@ -945,6 +1014,22 @@ impl HostInner {
                     ("t", Value::from("security")),
                     ("peerId", Value::from(peer_id.as_str())),
                     ("state", security_value(&state)),
+                ]);
+                self.broadcast(&record);
+            }
+            HostSignal::SecurityFailed(peer_id, error) => {
+                self.broadcast(&object(vec![
+                    ("t", Value::from("security-failed")),
+                    ("peerId", opt_text(peer_id.as_deref())),
+                    ("error", Value::Object(wire::error_object(&error))),
+                ]));
+            }
+            HostSignal::WriteReadiness(peer_id, generation, ready) => {
+                let record = object(vec![
+                    ("t", Value::from("readiness")),
+                    ("peerId", Value::from(peer_id.as_str())),
+                    ("connectionGeneration", opt_text(generation.as_deref())),
+                    ("ready", Value::from(ready)),
                 ]);
                 self.broadcast(&record);
             }
@@ -989,6 +1074,8 @@ impl HostInner {
             });
             if snapshot.local_name.is_some() {
                 entry.name.clone_from(&snapshot.local_name);
+            } else if snapshot.extras.cached_name.is_some() {
+                entry.name.clone_from(&snapshot.extras.cached_name);
             }
             entry.rssi = snapshot.rssi.or(entry.rssi);
             entry.last_seen_ms = Some(now);
@@ -1057,15 +1144,56 @@ impl HostInner {
         })
     }
 
-    /// Move every value the core holds for `scope` into the owning
+    /// Move up to `limit` values the core holds for `scope` into the owning
     /// sessions' outboxes, ending streams on terminal answers.
-    async fn flush_scope(&self, scope: &InstanceKey) {
+    ///
+    /// Returns whether the core still holds values for a live route, or a
+    /// later route was not visited because the budget was spent. The caller
+    /// requeues the scope so a queued control signal can run first.
+    async fn flush_scope(&self, scope: &InstanceKey, limit: usize) -> bool {
+        let mut remaining = limit;
         for route in self.live_routes(scope) {
-            if let Some(terminal) = self.drain_route(&route).await {
-                self.mark_ended(scope, &route, terminal);
-                self.end_route(&route, terminal);
+            if remaining == 0 {
+                return true;
+            }
+            match self.drain_route(&route, remaining).await {
+                // A full budget must not pin the next turn to this same
+                // route. Later consumers of the scope would never be polled
+                // while this one still has a backlog, and their core queues
+                // can overflow. The busy route goes to the back; the scope
+                // is requeued so a security or lifecycle signal runs first.
+                RouteDrain::Live { pending: true, .. } => {
+                    self.rotate_route_to_end(scope, &route);
+                    return true;
+                }
+                RouteDrain::Live {
+                    taken,
+                    pending: false,
+                } => remaining = remaining.saturating_sub(taken),
+                RouteDrain::Ended { taken, terminal } => {
+                    remaining = remaining.saturating_sub(taken);
+                    self.mark_ended(scope, &route, terminal);
+                    self.end_route(&route, terminal);
+                }
             }
         }
+        false
+    }
+
+    /// Move `route` behind the other routes of `scope`. The next bounded
+    /// flush then starts at a consumer this turn did not finish.
+    fn rotate_route_to_end(&self, scope: &InstanceKey, route: &Route) {
+        let mut routes = lock(&self.routes);
+        let Some(entries) = routes.get_mut(scope) else {
+            return;
+        };
+        let Some(index) = entries.iter().position(|entry| {
+            entry.session_id == route.session_id && entry.consumer == route.consumer
+        }) else {
+            return;
+        };
+        let deferred = entries.remove(index);
+        entries.push(deferred);
     }
 
     fn live_routes(&self, scope: &InstanceKey) -> Vec<Route> {
@@ -1081,16 +1209,33 @@ impl HostInner {
             .unwrap_or_default()
     }
 
-    /// Move every value the core holds for one consumer into its session's
-    /// outbox; answer the terminal that ended the stream, if any, without
-    /// emitting it (the caller orders it against lifecycle records).
-    async fn drain_route(&self, route: &Route) -> Option<StreamEnd> {
+    /// Move up to `limit` values the core holds for one consumer into its
+    /// session's outbox. A full budget returns with work still pending and
+    /// does not poll another value. A terminal answer is returned and not
+    /// emitted; the caller orders it against lifecycle records. Lifecycle
+    /// passes `usize::MAX` so values that arrived before the transition
+    /// all land first.
+    async fn drain_route(&self, route: &Route, limit: usize) -> RouteDrain {
+        #[cfg(debug_assertions)]
+        {
+            let mut turns = lock(&self.route_turns);
+            if turns.len() < 1024 {
+                turns.push(route.consumer.clone());
+            }
+        }
+        let mut taken = 0usize;
         loop {
+            if taken == limit {
+                return RouteDrain::Live {
+                    taken,
+                    pending: true,
+                };
+            }
             let poll = self
                 .central
                 .poll_notification(&route.peer_id, &route.selector, &route.core_consumer)
                 .await;
-            return match poll {
+            match poll {
                 Ok(NotificationPoll::Value(bytes)) => {
                     let Some(session) = self.session(route.session_id) else {
                         continue;
@@ -1102,31 +1247,66 @@ impl HostInner {
                         ("delivery", Value::from(route.delivery)),
                     ]);
                     match session.outbox.push_data(record) {
-                        Ok(()) => continue,
+                        Ok(()) => taken += 1,
                         Err(ubm_desktop::continuation_outbox::DataIngressFailure::Stopped {
                             ..
-                        }) => None,
+                        }) => {
+                            return RouteDrain::Live {
+                                taken,
+                                pending: false,
+                            };
+                        }
                         Err(ubm_desktop::continuation_outbox::DataIngressFailure::Overflow {
                             bytes,
-                        }) => Some(("overflow", 1, bytes as u64)),
+                        }) => {
+                            return RouteDrain::Ended {
+                                taken,
+                                terminal: ("overflow", 1, bytes as u64),
+                            };
+                        }
                         // The session's journal failure retains the precise
                         // storage cause; closed is the frozen wire lifecycle
                         // name, never a fabricated queue overflow.
                         Err(ubm_desktop::continuation_outbox::DataIngressFailure::Storage {
                             bytes,
                             ..
-                        }) => Some(("closed", 1, bytes as u64)),
+                        }) => {
+                            return RouteDrain::Ended {
+                                taken,
+                                terminal: ("closed", 1, bytes as u64),
+                            };
+                        }
                     }
                 }
-                Ok(NotificationPoll::Empty) => None,
-                Ok(NotificationPoll::Terminal(terminal)) => Some((
-                    "overflow",
-                    terminal.dropped_items(),
-                    terminal.dropped_bytes(),
-                )),
-                Ok(NotificationPoll::Invalidated(_)) => Some(("invalidated", 0, 0)),
-                Ok(NotificationPoll::Closed) | Err(_) => Some(("closed", 0, 0)),
-            };
+                Ok(NotificationPoll::Empty) => {
+                    return RouteDrain::Live {
+                        taken,
+                        pending: false,
+                    };
+                }
+                Ok(NotificationPoll::Terminal(terminal)) => {
+                    return RouteDrain::Ended {
+                        taken,
+                        terminal: (
+                            "overflow",
+                            terminal.dropped_items(),
+                            terminal.dropped_bytes(),
+                        ),
+                    };
+                }
+                Ok(NotificationPoll::Invalidated(_)) => {
+                    return RouteDrain::Ended {
+                        taken,
+                        terminal: ("invalidated", 0, 0),
+                    };
+                }
+                Ok(NotificationPoll::Closed) | Err(_) => {
+                    return RouteDrain::Ended {
+                        taken,
+                        terminal: ("closed", 0, 0),
+                    };
+                }
+            }
         }
     }
 
@@ -1198,7 +1378,9 @@ impl HostInner {
         let mut ended = Vec::new();
         for scope in &scopes {
             for route in self.live_routes(scope) {
-                if let Some(terminal) = self.drain_route(&route).await {
+                if let RouteDrain::Ended { terminal, .. } =
+                    self.drain_route(&route, usize::MAX).await
+                {
                     self.mark_ended(scope, &route, terminal);
                     ended.push((route, terminal));
                 }
@@ -1217,7 +1399,7 @@ impl HostInner {
         }
         // Hubs the core invalidated after the first pass end here.
         for scope in &scopes {
-            self.flush_scope(scope).await;
+            let _ = self.flush_scope(scope, usize::MAX).await;
         }
     }
 
@@ -1935,21 +2117,27 @@ impl MobileHost {
                     event.ended_scan.is_some(),
                 ));
             }
-            // The platform delivers these facts to the host directly as
-            // ingress (`SecurityChanged` → `security` record, `ScanFailed` →
-            // `scan-end`) and never hands them to the central as radio
-            // events, so the central has none to signal here; the mobile
-            // radio reports no write readiness (Apple readiness is read per
-            // write through `ReadWriteLimits`/the adapter).
+            // Security, scan-terminal, and connection-parameter facts are
+            // not a mobile readiness stream. Apple write readiness is:
+            // the radio probes `canSendWriteWithoutResponse` and ingests
+            // `peripheralIsReady(toSendWriteWithoutResponse:)`.
+            CentralSignal::WriteReadiness(event) => {
+                observer_signals.push(HostSignal::WriteReadiness(
+                    event.peer_id,
+                    event.connection_generation,
+                    event.ready,
+                ));
+            }
             CentralSignal::Security(_)
-            | CentralSignal::WriteReadiness(_)
-            | CentralSignal::ScanTerminal(_) => {}
+            | CentralSignal::ScanTerminal(_)
+            | CentralSignal::ConnectionParameters(_) => {}
         });
         let drop_signals = Arc::clone(&signals);
         radio.set_drop_hook(Arc::new(move |class| {
             drop_signals.push(HostSignal::IngressDrop(class, 1));
         }));
         let profile = CentralProfile {
+            directory_os: ubm_desktop::DesktopOs::MacOs,
             identity: Arc::new(MobileIdentity::new(options.platform)),
             register_capabilities: register_mobile_capabilities,
             observer: Some(observer),
@@ -1968,6 +2156,8 @@ impl MobileHost {
             next_session: AtomicU64::new(1),
             #[cfg(test)]
             before_session_admission: Mutex::new(None),
+            #[cfg(debug_assertions)]
+            route_turns: Mutex::new(Vec::new()),
             scan: tokio::sync::Mutex::new(ScanShare::default()),
             scan_members: Mutex::new(BTreeMap::new()),
             routes: Mutex::new(HashMap::new()),
@@ -1975,6 +2165,8 @@ impl MobileHost {
             restored: Mutex::new(BTreeMap::new()),
             restoration_claims: Mutex::new(BTreeMap::new()),
             security: Mutex::new(HashMap::new()),
+            security_failures: Mutex::new(BTreeMap::new()),
+            security_failure_revision: AtomicU64::new(0),
             adapter: Mutex::new(None),
             background: Mutex::new(BTreeMap::new()),
             link_ends: Mutex::new(BTreeMap::new()),
@@ -2072,16 +2264,38 @@ impl MobileHost {
                 peer_id,
                 connected,
                 status,
-            } => inner.radio.push_event(if connected {
-                RadioEvent::Connected(peer_id)
-            } else if status.is_some_and(|status| status != 0) {
-                // Android reports a non-zero GATT status, CoreBluetooth an
-                // `NSError`, when the link ended for a reason other than
-                // this app's release: a loss even if a release was pending.
-                RadioEvent::Lost(peer_id)
-            } else {
-                RadioEvent::Disconnected(peer_id)
-            }),
+            } => {
+                if !connected {
+                    let mut security = lock(&inner.security);
+                    if let Some(state) = security.get_mut(&peer_id) {
+                        if state.encryption != crate::radio::EncryptionState::Unsupported {
+                            state.encryption = crate::radio::EncryptionState::Unknown;
+                        }
+                        if state.authentication != crate::radio::AuthenticationState::Unsupported {
+                            state.authentication = crate::radio::AuthenticationState::Unknown;
+                        }
+                        if state.secure_connections
+                            != crate::radio::SecureConnectionsState::Unsupported
+                        {
+                            state.secure_connections =
+                                crate::radio::SecureConnectionsState::Unknown;
+                        }
+                        inner
+                            .signals
+                            .push(HostSignal::Security(peer_id.clone(), state.clone()));
+                    }
+                }
+                inner.radio.push_event(if connected {
+                    RadioEvent::Connected(peer_id)
+                } else if status.is_some_and(|status| status != 0) {
+                    // Android reports a non-zero GATT status, CoreBluetooth an
+                    // `NSError`, when the link ended for a reason other than
+                    // this app's release: a loss even if a release was pending.
+                    RadioEvent::Lost(peer_id)
+                } else {
+                    RadioEvent::Disconnected(peer_id)
+                })
+            }
             RadioIngress::ServicesChanged { peer_id } => {
                 inner.radio.push_event(RadioEvent::ServicesChanged(peer_id))
             }
@@ -2128,10 +2342,32 @@ impl MobileHost {
                 Ok(())
             }
             RadioIngress::SecurityChanged { peer_id, state } => {
+                lock(&inner.security_failures).remove(&Some(peer_id.clone()));
+                lock(&inner.security_failures).remove(&None);
                 lock(&inner.security).insert(peer_id.clone(), state.clone());
                 inner.signals.push(HostSignal::Security(peer_id, state));
                 Ok(())
             }
+            RadioIngress::SecurityFailed { peer_id, failure } => {
+                let error =
+                    failure.to_error(crate::radio::RequestKind::SecurityState, inner.platform);
+                if let Some(peer) = &peer_id {
+                    lock(&inner.security).remove(peer);
+                } else {
+                    lock(&inner.security).clear();
+                }
+                let revision = inner
+                    .security_failure_revision
+                    .fetch_add(1, Ordering::SeqCst);
+                lock(&inner.security_failures).insert(peer_id.clone(), (revision, error.clone()));
+                inner
+                    .signals
+                    .push(HostSignal::SecurityFailed(peer_id, error));
+                Ok(())
+            }
+            RadioIngress::WriteReadiness { peer_id, ready } => inner
+                .radio
+                .push_event(RadioEvent::WriteReadiness { peer_id, ready }),
             RadioIngress::Restored { peers } => {
                 {
                     let mut restored = lock(&inner.restored);
@@ -2155,6 +2391,12 @@ impl MobileHost {
 
     /// Open one session lease (one RN manager) that is its own background
     /// scope: `session.dispose` releases its background leases.
+    /// Consumers polled by the pump, in order. Debug tests use it.
+    #[cfg(debug_assertions)]
+    pub fn route_turns(&self) -> Vec<String> {
+        lock(&self.inner.route_turns).clone()
+    }
+
     pub fn open_session(&self, owner: &str) -> Result<MobileSession, DesktopError> {
         self.open_session_in(owner, None, Arc::clone(&self.inner.wake))
     }
@@ -2777,5 +3019,67 @@ mod signal_tests {
         );
         let (lost, drops) = signals.take_overflow();
         assert_eq!((lost, drops), (0, [0, 0, 0]));
+    }
+
+    /// A batch that stays busy is pushed behind the scopes still waiting.
+    /// Hash-set iteration used to poll the same 32 and never reach the rest.
+    #[test]
+    fn busy_scopes_past_one_batch_each_get_a_turn() {
+        let signals = Signals::default();
+        let count = VALUE_SCOPE_BATCH + 8;
+        let scopes: Vec<_> = (0..count)
+            .map(|index| scope(&format!("peer-{index:05}")))
+            .collect();
+        for scope_key in &scopes {
+            signals.push_value(scope_key.clone());
+        }
+        // Deadline and security sit behind the first value batch. They must
+        // run before the requeued marker, while some scopes are still unseen.
+        signals.push(HostSignal::ScanDeadlines);
+        signals.push(security("peer-security", BondState::Bonded));
+        let mut seen = HashSet::new();
+        let mut saw_deadline = false;
+        let mut saw_security = false;
+        for _ in 0..(count + 2) {
+            let signal = signals.pop().expect("queued signal");
+            match signal {
+                HostSignal::Values => {
+                    let batch = signals.take_value_batch(VALUE_SCOPE_BATCH);
+                    assert!(!batch.is_empty() && batch.len() <= VALUE_SCOPE_BATCH);
+                    for scope_key in batch {
+                        seen.insert(scope_key.clone());
+                        signals.push_value(scope_key);
+                    }
+                    signals.requeue_values_if_dirty();
+                }
+                HostSignal::ScanDeadlines => {
+                    assert!(
+                        seen.len() < count,
+                        "the deadline waited until every scope had a turn"
+                    );
+                    saw_deadline = true;
+                }
+                HostSignal::Security(_, state) => {
+                    assert_eq!(state.bond, BondState::Bonded);
+                    assert!(
+                        seen.len() < count,
+                        "security waited until every scope had a turn"
+                    );
+                    saw_security = true;
+                }
+                _ => panic!("unexpected signal while rotating busy scopes"),
+            }
+            if seen.len() == count && saw_deadline && saw_security {
+                break;
+            }
+        }
+        assert!(saw_deadline, "scan deadline never ran");
+        assert!(saw_security, "security never ran");
+        assert_eq!(
+            seen.len(),
+            count,
+            "a busy first batch kept {count} scopes from all being polled; saw {}",
+            seen.len()
+        );
     }
 }

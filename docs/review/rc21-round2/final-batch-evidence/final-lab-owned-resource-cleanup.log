@@ -1,0 +1,4 @@
+Stopped exact owned qualification HTTP server 3756618
+{ path=/opt/unified-ble-manager/bluez/5.87-ubm.10-30c195c3c53f/libexec/bluetoothd ; argv[]=/opt/unified-ble-manager/bluez/5.87-ubm.10-30c195c3c53f/libexec/bluetoothd --experimental ; ignore_errors=no ; start_time=[Wed 2026-10-07 14:58:43 PDT] ; stop_time=[n/a] ; pid=4180512 ; code=(null) ; status=0/0 }
+shut off
+

@@ -1,0 +1,3 @@
+Traceback (most recent call last):
+  File "<stdin>", line 3, in <module>
+AssertionError: Owned test peer is not connected

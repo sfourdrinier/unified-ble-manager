@@ -263,7 +263,7 @@ describe('PR8 documentation contract', () => {
   })
 
   test('Expo API report prose matches the current host environment contract', () => {
-    const report = read('etc/api/expo.api.md')
+    const report = read('etc/api/expo.api.md').replace(/\s+/gu, ' ').replace(/\(\s+/gu, '(').replace(/\s+\)/gu, ')')
 
     expect(report).toContain(
       'export function createExpoBleManagerWithEnvironment(environment: ExpoBleManagerEnvironment): Promise<ExpoBleManager>'

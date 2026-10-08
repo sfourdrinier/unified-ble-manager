@@ -1,4 +1,8 @@
 import {
+  assertConnectionParameterValues,
+  isConnectionParameterValues
+} from '../backend-contract/connection-parameter-validation'
+import {
   BackendContractError,
   BLE_COMMIT_UNCERTAINTIES,
   BLE_ERROR_CODES,
@@ -184,6 +188,7 @@ export interface IpcProvisionalAdmissionAccounting {
   readonly unresolvedEventSubscriptionCount: number
   readonly unresolvedGattSubscriptionCount: number
   readonly unresolvedDatabaseCount: number
+  readonly unresolvedAcquiredWriterCount: number
 }
 
 export function inspectIpcProvisionalAdmissionForTests(manager: IpcBleManager): IpcProvisionalAdmissionAccounting {
@@ -203,7 +208,7 @@ interface ProvisionalConnectIdentity {
 }
 
 interface UnresolvedProvisional {
-  readonly kind: 'connection' | 'connection-events' | 'gatt-subscription' | 'gatt-database'
+  readonly kind: 'connection' | 'connection-events' | 'gatt-subscription' | 'gatt-database' | 'acquired-gatt-writer'
   readonly connectionHandle?: string
   retry: () => Promise<CleanupRecord>
   error: unknown | null
@@ -299,11 +304,12 @@ export interface IpcCharacteristicRecord extends SerializableRecord {
   readonly properties: readonly string[]
 }
 
-export interface IpcServiceRecord extends SerializableRecord {
+export interface IpcServiceRecord {
   readonly uuid: string
   readonly occurrence: string
-  readonly primary: boolean
-  readonly includedServices: readonly { readonly uuid: string; readonly occurrence: string }[]
+  readonly primary: boolean | null
+  readonly includedServices: readonly { readonly uuid: string; readonly occurrence: string }[] | null
+  readonly restriction?: import('../backend-contract/gatt').GattServiceRestriction
 }
 
 export interface IpcDescriptorRecord extends SerializableRecord {
@@ -345,6 +351,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private aggregatePendingTerminals = 0
   private readonly eventPump: Promise<void>
   private nextConnectionEventHandle = 1
+  private nextWriteReadinessHandle = 1
+  private nextParameterEventsHandle = 1
   private lifecycle: 'active' | 'releasing' | 'released' = 'active'
   private leaseReleased = false
   private shutdownRequested = false
@@ -486,6 +494,29 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     )
     session = new IpcScanSession(this, handle, observations, plan)
     return session
+  }
+
+  /**
+   * The host already admitted this route. A later validation or registration
+   * failure must unsubscribe, and a failed unsubscribe stays retryable debt
+   * instead of leaving an ownerless watch until the lease dies.
+   */
+  async compensateAdmittedRoute(
+    release: () => Promise<CleanupRecord>,
+    admissionError: unknown,
+    message: string
+  ): Promise<never> {
+    let cleanup: CleanupRecord
+    try {
+      cleanup = await release()
+    } catch (error) {
+      this.retainOwnerCleanupFailure(release, 'lease-owned', error)
+      throw new AggregateError([admissionError, error], message)
+    }
+    if (cleanup.state === 'released') throw admissionError
+    const cleanupError = new BleCleanupError(cleanup)
+    this.retainOwnerCleanupFailure(release, 'lease-owned', cleanupError)
+    throw new AggregateError([admissionError, cleanupError], message)
   }
 
   /** An acquired scan without a required public plan still owns a native scan until stop or lease release confirms it. */
@@ -642,7 +673,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     if (this.shutdownRequested && !this.isCleanupRoute(command)) {
       throw contractError('lifecycle.destroyed', 'ipc', 'ipc-manager.released')
     }
-    if (this.lifecycle !== 'active' || this.pumpDead) this.assertActive()
+    if (this.lifecycle !== 'active' || (this.pumpDead && !this.isCleanupRoute(command))) this.assertActive()
     if (signal?.aborted === true) {
       throw contractError('operation.aborted', 'ipc', `ipc-manager.${command}`)
     }
@@ -849,6 +880,14 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       this.failRegisteredStream(handle, sink, error)
     }
     return source
+  }
+
+  mintWriteReadinessHandle(): string {
+    return `write-readiness-ipc-${this.nextWriteReadinessHandle++}`
+  }
+
+  mintParameterEventsHandle(): string {
+    return `parameter-events-ipc-${this.nextParameterEventsHandle++}`
   }
 
   subscribeConnectionEvents(
@@ -1403,7 +1442,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       command === 'scan.stop' ||
       command === 'connection.disconnect' ||
       command === 'connection.events.unsubscribe' ||
+      command === 'connection.parameters.unsubscribe' ||
+      command === 'connection.write-readiness.unsubscribe' ||
       command === 'gatt.unsubscribe' ||
+      command === 'gatt.acquired-write.close' ||
       command === 'security.watch.unsubscribe' ||
       command === 'gatt.database.release'
     )
@@ -1426,18 +1468,21 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     let unresolvedEventSubscriptionCount = 0
     let unresolvedGattSubscriptionCount = 0
     let unresolvedDatabaseCount = 0
+    let unresolvedAcquiredWriterCount = 0
     for (const entry of this.unresolvedProvisionals) {
       if (entry.error === null) continue
       if (entry.kind === 'connection') unresolvedConnectionCount += 1
       else if (entry.kind === 'connection-events') unresolvedEventSubscriptionCount += 1
       else if (entry.kind === 'gatt-subscription') unresolvedGattSubscriptionCount += 1
+      else if (entry.kind === 'acquired-gatt-writer') unresolvedAcquiredWriterCount += 1
       else unresolvedDatabaseCount += 1
     }
     return {
       unresolvedConnectionCount,
       unresolvedEventSubscriptionCount,
       unresolvedGattSubscriptionCount,
-      unresolvedDatabaseCount
+      unresolvedDatabaseCount,
+      unresolvedAcquiredWriterCount
     }
   }
 
@@ -1476,9 +1521,9 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   }
 
   async compensateFailedGattAdmission(
-    kind: 'gatt-subscription' | 'gatt-database',
+    kind: 'gatt-subscription' | 'gatt-database' | 'acquired-gatt-writer',
     handle: string | null,
-    command: 'gatt.unsubscribe' | 'gatt.database.release',
+    command: 'gatt.unsubscribe' | 'gatt.database.release' | 'gatt.acquired-write.close',
     payload: SerializableRecord,
     admissionError: unknown,
     isParentReleased: () => boolean = () => false
@@ -1579,11 +1624,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 
 const REMOTE_RENDERER_UNSUPPORTED_CAPABILITY_IDS = new Set<string>([
   BUILT_IN_FEATURE_IDS.connectionRequestMtu,
-  BUILT_IN_FEATURE_IDS.connectionPriority,
-  BUILT_IN_FEATURE_IDS.connectionPhy,
-  BUILT_IN_FEATURE_IDS.connectionParameters,
-  BUILT_IN_FEATURE_IDS.connectionSubrate,
-  BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness
+  BUILT_IN_FEATURE_IDS.connectionSubrate
 ])
 
 export function projectRemoteCapabilities(snapshot: IpcCapabilitySnapshotV2): IpcCapabilitySnapshotV2 {
@@ -1867,6 +1908,31 @@ export class IpcConnection {
     return this.discover({ ...options, reason })
   }
 
+  async requestPriority(
+    priority: 'balanced' | 'low-power' | 'high-throughput',
+    options: IpcManagerOperationOptions = {}
+  ): Promise<boolean> {
+    this.assertAdmissionOpen()
+    if (priority !== 'balanced' && priority !== 'low-power' && priority !== 'high-throughput')
+      throw contractError('argument.invalid', 'connection', 'ipc-manager.request-priority')
+    const payload = await this.manager.route(
+      'connection.request-priority',
+      Object.freeze({ ...this.identityPayload(), priority, deadline: operationDeadline(options) }),
+      null,
+      options.signal
+    )
+    const operation = 'ipc-manager.request-priority'
+    if (
+      requiredString(payload, 'connectionId', operation) !== this.connectionId ||
+      requiredString(payload, 'connectionGeneration', operation) !== this.connectionGeneration ||
+      typeof payload.accepted !== 'boolean'
+    ) {
+      throw contractError('protocol.violation', 'connection', operation)
+    }
+    this.assertAdmissionOpen()
+    return payload.accepted
+  }
+
   async readRssi(options: IpcManagerOperationOptions = {}): Promise<number> {
     this.assertAdmissionOpen()
     const payload = await this.manager.route(
@@ -1878,7 +1944,7 @@ export class IpcConnection {
     return requiredNumber(payload, 'rssi', 'ipc-manager.connection-rssi')
   }
 
-  async effectiveMtu(options: IpcManagerOperationOptions = {}): Promise<number> {
+  async effectiveMtu(options: IpcManagerOperationOptions = {}): Promise<number | null> {
     this.assertAdmissionOpen()
     const payload = await this.manager.route(
       'connection.effective-mtu',
@@ -1886,7 +1952,220 @@ export class IpcConnection {
       null,
       options.signal
     )
+    if (payload.mtu === null) return null
     return requiredNumber(payload, 'mtu', 'ipc-manager.connection-effective-mtu')
+  }
+
+  async readPhy(options: IpcManagerOperationOptions = {}) {
+    this.assertAdmissionOpen()
+    const payload = await this.manager.route(
+      'connection.phy',
+      Object.freeze({ ...this.identityPayload(), deadline: operationDeadline(options) }),
+      null,
+      options.signal
+    )
+    const operation = 'ipc-manager.connection-phy'
+    if (
+      requiredString(payload, 'connectionId', operation) !== this.connectionId ||
+      requiredString(payload, 'connectionGeneration', operation) !== this.connectionGeneration
+    ) {
+      throw contractError('protocol.violation', 'connection', operation)
+    }
+    const tx = requiredPhy(payload.txPhy, operation)
+    const rx = requiredPhy(payload.rxPhy, operation)
+    const observedAtMonotonicMs = requiredNumber(payload, 'observedAtMonotonicMs', operation)
+    if (!Number.isFinite(observedAtMonotonicMs) || observedAtMonotonicMs < 0) {
+      throw contractError('protocol.violation', 'connection', operation)
+    }
+    this.assertAdmissionOpen()
+    return Object.freeze({
+      tx,
+      rx,
+      observedAtMonotonicMs,
+      source: 'platform' as const,
+      authority: 'desktop-native',
+      limitations: Object.freeze([])
+    })
+  }
+
+  async parameters(options: IpcManagerOperationOptions = {}): Promise<{
+    readonly intervalUs: number
+    readonly latency: number
+    readonly supervisionTimeoutUs: number
+  }> {
+    this.assertAdmissionOpen()
+    const payload = await this.manager.route(
+      'connection.parameters',
+      Object.freeze({ ...this.identityPayload(), deadline: operationDeadline(options) }),
+      null,
+      options.signal
+    )
+    const operation = 'ipc-manager.connection-parameters'
+    const connectionId = requiredString(payload, 'connectionId', operation)
+    const connectionGeneration = requiredString(payload, 'connectionGeneration', operation)
+    if (connectionId !== this.connectionId || connectionGeneration !== this.connectionGeneration) {
+      throw contractError('protocol.violation', 'connection', operation)
+    }
+    this.assertAdmissionOpen()
+    const measured = {
+      intervalUs: requiredNumber(payload, 'intervalUs', operation),
+      latency: requiredNumber(payload, 'latency', operation),
+      supervisionTimeoutUs: requiredNumber(payload, 'supervisionTimeoutUs', operation)
+    }
+    assertConnectionParameterValues(measured, operation)
+    return Object.freeze(measured)
+  }
+
+  async parameterEvents(options: IpcManagerOperationOptions = {}): Promise<{
+    readonly events: BoundedAsyncStream<{
+      readonly connectionId: string
+      readonly connectionGeneration: string
+      readonly intervalUs: number
+      readonly latency: number
+      readonly supervisionTimeoutUs: number
+      readonly observedAtMonotonicMs: number
+      readonly ordinal: number
+    }>
+    close(): Promise<CleanupRecord>
+  }> {
+    this.assertAdmissionOpen()
+    const handle = this.manager.mintParameterEventsHandle()
+    let subscribed = false
+    try {
+      const payload = await this.manager.route(
+        'connection.parameters.subscribe',
+        Object.freeze({
+          ...this.identityPayload(),
+          parameterEventsHandle: handle,
+          deadline: operationDeadline(options)
+        }),
+        null,
+        options.signal
+      )
+      subscribed = true
+      if (payload.handle !== handle) {
+        throw contractError('protocol.malformed', 'ipc', 'ipc-manager.connection-parameters-handle')
+      }
+      let closeResult: Promise<CleanupRecord> | null = null
+      const close = (): Promise<CleanupRecord> => {
+        if (closeResult !== null) return closeResult
+        const result = this.manager
+          .route('connection.parameters.unsubscribe', Object.freeze({ parameterEventsHandle: handle }))
+          .then(cleanupPayload => cleanupRecord(cleanupPayload))
+          .then(cleanup => {
+            if (cleanup.state === 'released') this.manager.closeStream(handle)
+            else closeResult = null
+            return cleanup
+          })
+          .catch(error => {
+            closeResult = null
+            throw error
+          })
+        closeResult = result
+        return result
+      }
+      const events = this.manager.registerStream(
+        handle,
+        isConnectionParametersObservation,
+        undefined,
+        'drop-oldest',
+        reason => (reason === 'overflow' || reason === 'source-failed' ? close() : undefined),
+        'lease-owned'
+      )
+      return Object.freeze({ events, close })
+    } catch (error) {
+      if (subscribed) {
+        const release = async (): Promise<CleanupRecord> => {
+          const cleanup = cleanupRecord(
+            await this.manager.route(
+              'connection.parameters.unsubscribe',
+              Object.freeze({ parameterEventsHandle: handle })
+            )
+          )
+          if (cleanup.state === 'released') this.manager.closeStream(handle)
+          return cleanup
+        }
+        await this.manager.compensateAdmittedRoute(
+          release,
+          error,
+          'IPC connection-parameter watch admission cleanup failed'
+        )
+      }
+      throw error
+    }
+  }
+
+  async writeReadiness(options: IpcManagerOperationOptions = {}): Promise<{
+    readonly events: BoundedAsyncStream<{
+      readonly connectionId: string
+      readonly connectionGeneration: string
+      readonly ready: boolean
+      readonly observedAtMonotonicMs: number
+      readonly ordinal: number
+    }>
+    close(): Promise<CleanupRecord>
+  }> {
+    this.assertAdmissionOpen()
+    const handle = this.manager.mintWriteReadinessHandle()
+    let subscribed = false
+    try {
+      const payload = await this.manager.route(
+        'connection.write-readiness.subscribe',
+        Object.freeze({
+          ...this.identityPayload(),
+          writeReadinessHandle: handle,
+          deadline: operationDeadline(options)
+        }),
+        null,
+        options.signal
+      )
+      subscribed = true
+      if (payload.handle !== handle) {
+        throw contractError('protocol.malformed', 'ipc', 'ipc-manager.write-readiness-handle')
+      }
+      let closeResult: Promise<CleanupRecord> | null = null
+      const close = (): Promise<CleanupRecord> => {
+        if (closeResult !== null) return closeResult
+        const result = this.manager
+          .route('connection.write-readiness.unsubscribe', Object.freeze({ writeReadinessHandle: handle }))
+          .then(cleanupPayload => cleanupRecord(cleanupPayload))
+          .then(cleanup => {
+            if (cleanup.state === 'released') this.manager.closeStream(handle)
+            else closeResult = null
+            return cleanup
+          })
+          .catch(error => {
+            closeResult = null
+            throw error
+          })
+        closeResult = result
+        return result
+      }
+      const events = this.manager.registerStream(
+        handle,
+        isWriteReadinessObservation,
+        undefined,
+        'drop-oldest',
+        reason => (reason === 'overflow' || reason === 'source-failed' ? close() : undefined),
+        'lease-owned'
+      )
+      return Object.freeze({ events, close })
+    } catch (error) {
+      if (subscribed) {
+        const release = async (): Promise<CleanupRecord> => {
+          const cleanup = cleanupRecord(
+            await this.manager.route(
+              'connection.write-readiness.unsubscribe',
+              Object.freeze({ writeReadinessHandle: handle })
+            )
+          )
+          if (cleanup.state === 'released') this.manager.closeStream(handle)
+          return cleanup
+        }
+        await this.manager.compensateAdmittedRoute(release, error, 'IPC write-readiness watch admission cleanup failed')
+      }
+      throw error
+    }
   }
 
   async maximumWriteLength(mode: 'with-response' | 'without-response' = 'with-response'): Promise<number> {
@@ -2166,7 +2445,7 @@ export class IpcGattDatabase {
   private valid = true
   private invalidation: Promise<CleanupRecord> | null = null
   private readonly changedStream = new CoreBoundedStream<GattDatabaseChangedEvent>(REMOTE_STREAM_LIMITS, 'drop-oldest')
-  private readonly subscriptions = new Set<IpcSubscription>()
+  private readonly subscriptions = new Set<IpcSubscription | IpcAcquiredWriter>()
 
   private constructor(
     readonly manager: IpcBleManager,
@@ -2221,7 +2500,7 @@ export class IpcGattDatabase {
     binaryPayload: Uint8Array | null,
     signal?: AbortSignal
   ): Promise<SerializableRecord> {
-    if (command !== 'gatt.unsubscribe') this.assertCurrent()
+    if (command !== 'gatt.unsubscribe' && command !== 'gatt.acquired-write.close') this.assertCurrent()
     return this.manager
       .route(
         command,
@@ -2332,6 +2611,10 @@ export class IpcGattDatabase {
     return this.manager.hasRegisteredStream(handle)
   }
 
+  hasRegisteredGattChild(handle: string): boolean {
+    return this.hasRegisteredStream(handle) || [...this.subscriptions].some(child => child.handle === handle)
+  }
+
   closeStream(
     handle: string,
     reason: 'owner-released' | 'source-failed' | 'connection-lost' | 'service-changed' = 'owner-released'
@@ -2339,12 +2622,12 @@ export class IpcGattDatabase {
     this.manager.closeStream(handle, reason)
   }
 
-  registerSubscription(subscription: IpcSubscription): void {
+  registerSubscription(subscription: IpcSubscription | IpcAcquiredWriter): void {
     this.assertCurrent()
     this.subscriptions.add(subscription)
   }
 
-  forgetSubscription(subscription: IpcSubscription): void {
+  forgetSubscription(subscription: IpcSubscription | IpcAcquiredWriter): void {
     this.subscriptions.delete(subscription)
   }
 
@@ -2389,7 +2672,11 @@ export class IpcGattDatabase {
         serviceOccurrence: service.occurrence
       }),
       primary: service.primary,
-      includedServices: Object.freeze(service.includedServices.map(reference => Object.freeze({ ...reference })))
+      includedServices:
+        service.includedServices === null
+          ? null
+          : Object.freeze(service.includedServices.map(reference => Object.freeze({ ...reference }))),
+      ...(service.restriction === undefined ? {} : { restriction: service.restriction })
     }))
 
     return Object.freeze({
@@ -2447,6 +2734,31 @@ export class IpcGattDatabase {
       mode
     })
     return requiredWriteReceipt(payload, mode, bytes.byteLength)
+  }
+
+  async writeWhenReady(
+    path: PortableCurrentCharacteristicPath,
+    bytes: Readonly<Uint8Array>,
+    options: PortableWritePolicy
+  ): Promise<IpcWriteReceipt> {
+    if (options.mode !== 'without-response') {
+      throw contractError('argument.invalid', 'gatt', 'ipc-manager.write-when-ready.mode')
+    }
+    const payload = await this.characteristicForPath(path).writeWhenReady(bytes, toIpcOptions(options))
+    return requiredWriteReceipt(payload, 'without-response', bytes.byteLength)
+  }
+
+  async acquireWrite(
+    path: PortableCurrentCharacteristicPath,
+    options: PortableOperationOptions
+  ): Promise<IpcAcquiredWriter> {
+    return this.characteristicForPath(path).acquireWrite(toIpcOptions(options))
+  }
+
+  async acquireNotifications(path: PortableCurrentCharacteristicPath, options: PortableSubscriptionOptions) {
+    const subscription = await this.characteristicForPath(path).subscribe(toIpcOptions(options), true)
+    subscription.path = path
+    return subscription
   }
 
   async subscribe(
@@ -2588,9 +2900,61 @@ export class IpcCharacteristic {
     )
   }
 
-  async subscribe(options: IpcManagerOperationOptions = {}): Promise<IpcSubscription> {
+  async writeWhenReady(
+    bytes: Readonly<Uint8Array>,
+    options: IpcManagerOperationOptions = {}
+  ): Promise<SerializableRecord> {
+    const owned = ownBytes(bytes, byteLimit(bytes.byteLength))
+    return this.database.route(
+      'gatt.write-when-ready',
+      Object.freeze({
+        characteristicHandle: this.handle,
+        mode: 'without-response',
+        deadline: operationDeadline(options)
+      }),
+      owned,
+      options.signal
+    )
+  }
+
+  async acquireWrite(options: IpcManagerOperationOptions = {}): Promise<IpcAcquiredWriter> {
     const payload = await this.database.route(
-      'gatt.subscribe',
+      'gatt.acquire-write',
+      Object.freeze({
+        characteristicHandle: this.handle,
+        deadline: operationDeadline(options)
+      }),
+      null,
+      options.signal
+    )
+    const handle = optionalResourceHandle(payload, 'handle')
+    if (handle !== null && this.database.hasRegisteredGattChild(handle))
+      throw contractError('protocol.violation', 'ipc', 'ipc.acquired-write.duplicate-handle')
+    try {
+      if (handle === null) throw contractError('protocol.malformed', 'gatt', 'ipc.acquired-write.handle')
+      const mtuBytes = acquiredMtu(payload)
+      this.database.assertCurrent()
+      const writer = new IpcAcquiredWriter(this.database, handle, mtuBytes)
+      this.database.registerSubscription(writer)
+      return writer
+    } catch (error) {
+      return this.database.manager.compensateFailedGattAdmission(
+        'acquired-gatt-writer',
+        handle,
+        'gatt.acquired-write.close',
+        Object.freeze({
+          ...this.database.connectionIdentityPayload(),
+          ...(handle === null ? {} : { acquiredHandle: handle })
+        }),
+        error,
+        () => this.database.connection.hasConfirmedRelease()
+      )
+    }
+  }
+
+  async subscribe(options: IpcManagerOperationOptions = {}, acquired = false): Promise<IpcSubscription> {
+    const payload = await this.database.route(
+      acquired ? 'gatt.acquire-notifications' : 'gatt.subscribe',
       Object.freeze({
         characteristicHandle: this.handle,
         deadline: operationDeadline(options),
@@ -2657,6 +3021,7 @@ export class IpcCharacteristic {
         return result
       }
       const observedDelivery = requiredObservedDelivery(payload)
+      const mtuBytes = acquired ? acquiredMtu(payload) : null
       this.database.registerStream<IpcNotificationValue>(
         handle,
         isIpcNotificationValue,
@@ -2675,7 +3040,8 @@ export class IpcCharacteristic {
             observedDelivery,
             stream,
             remove,
-            confirmParentRelease
+            confirmParentRelease,
+            mtuBytes
           )
           this.database.registerSubscription(subscription)
           ownership.subscription = subscription
@@ -2735,6 +3101,79 @@ export class IpcDescriptor {
   }
 }
 
+function acquiredMtu(payload: SerializableRecord): number {
+  const mtuBytes = requiredNumber(payload, 'mtuBytes', 'ipc.acquired-gatt.mtu')
+  if (!Number.isSafeInteger(mtuBytes) || mtuBytes < 23 || mtuBytes > 517)
+    throw contractError('protocol.violation', 'gatt', 'ipc.acquired-gatt.mtu')
+  return mtuBytes
+}
+
+export class IpcAcquiredWriter {
+  private parentReleased = false
+  private released = false
+  private cleanup: Promise<CleanupRecord> | null = null
+  private resolveParentRelease: (() => void) | undefined
+  private readonly parentRelease = new Promise<void>(resolve => {
+    this.resolveParentRelease = resolve
+  })
+  constructor(
+    private readonly database: IpcGattDatabase,
+    readonly handle: string,
+    readonly mtuBytes: number
+  ) {}
+
+  async write(value: Readonly<Uint8Array>, options: PortableOperationOptions): Promise<IpcWriteReceipt> {
+    if (this.released || this.parentReleased)
+      throw contractError('gatt.stale-handle', 'gatt', 'ipc.acquired-write.closed')
+    const owned = ownBytes(value, byteLimit(value.byteLength))
+    const controls = toIpcOptions(options)
+    const payload = await this.database.route(
+      'gatt.acquired-write',
+      Object.freeze({
+        acquiredHandle: this.handle,
+        deadline: operationDeadline(controls)
+      }),
+      owned,
+      controls.signal
+    )
+    return requiredWriteReceipt(payload, 'without-response', owned.byteLength)
+  }
+
+  close(): Promise<CleanupRecord> {
+    if (this.parentReleased || this.released) return Promise.resolve({ state: 'released', failures: [] })
+    if (this.cleanup !== null) return this.cleanup
+    const nativeCleanup = this.database
+      .route('gatt.acquired-write.close', Object.freeze({ acquiredHandle: this.handle }), null)
+      .then(cleanupRecord)
+    const parentCleanup = this.parentRelease.then((): CleanupRecord => ({ state: 'released', failures: [] }))
+    const result = Promise.race([nativeCleanup, parentCleanup]).then(
+      cleanup => {
+        if (cleanup.state === 'released') {
+          this.released = true
+          this.database.forgetSubscription(this)
+        } else this.cleanup = null
+        return cleanup
+      },
+      error => {
+        this.cleanup = null
+        throw error
+      }
+    )
+    this.cleanup = result
+    return result
+  }
+
+  confirmParentRelease(): void {
+    this.parentReleased = true
+    this.resolveParentRelease?.()
+    this.database.forgetSubscription(this)
+  }
+
+  closeFromDatabase(_reason: 'connection-lost' | 'service-changed'): Promise<CleanupRecord> {
+    return this.close()
+  }
+}
+
 export class IpcSubscription {
   path: PortableCurrentCharacteristicPath | null = null
 
@@ -2744,7 +3183,8 @@ export class IpcSubscription {
     readonly observedDelivery: 'notification' | 'indication' | 'unknown',
     readonly values: BoundedAsyncStream<IpcNotificationValue>,
     private readonly removeOwned: () => Promise<CleanupRecord>,
-    private readonly confirmNativeRelease: () => void
+    private readonly confirmNativeRelease: () => void,
+    readonly mtuBytes: number | null = null
   ) {}
 
   get subscriptionId(): string {
@@ -2943,6 +3383,72 @@ function requiredOverflowPolicy(value: SerializableValue | undefined, operation:
     return value
   }
   throw contractError('protocol.malformed', 'ipc', operation)
+}
+
+function isConnectionParametersObservation(value: unknown): value is {
+  readonly connectionId: string
+  readonly connectionGeneration: string
+  readonly intervalUs: number
+  readonly latency: number
+  readonly supervisionTimeoutUs: number
+  readonly observedAtMonotonicMs: number
+  readonly ordinal: number
+} {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('connectionId' in value) ||
+    !('connectionGeneration' in value) ||
+    !('intervalUs' in value) ||
+    !('latency' in value) ||
+    !('supervisionTimeoutUs' in value) ||
+    !('observedAtMonotonicMs' in value) ||
+    !('ordinal' in value)
+  )
+    return false
+  const record = value
+  return (
+    typeof record.connectionId === 'string' &&
+    typeof record.connectionGeneration === 'string' &&
+    isConnectionParameterValues(record) &&
+    typeof record.observedAtMonotonicMs === 'number' &&
+    Number.isFinite(record.observedAtMonotonicMs) &&
+    record.observedAtMonotonicMs >= 0 &&
+    typeof record.ordinal === 'number' &&
+    Number.isSafeInteger(record.ordinal) &&
+    record.ordinal > 0
+  )
+}
+
+function isWriteReadinessObservation(value: unknown): value is {
+  readonly connectionId: string
+  readonly connectionGeneration: string
+  readonly ready: boolean
+  readonly observedAtMonotonicMs: number
+  readonly ordinal: number
+} {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('connectionId' in value) ||
+    !('connectionGeneration' in value) ||
+    !('ready' in value) ||
+    !('observedAtMonotonicMs' in value) ||
+    !('ordinal' in value)
+  )
+    return false
+  const record = value
+  return (
+    typeof record.connectionId === 'string' &&
+    typeof record.connectionGeneration === 'string' &&
+    typeof record.ready === 'boolean' &&
+    typeof record.observedAtMonotonicMs === 'number' &&
+    Number.isFinite(record.observedAtMonotonicMs) &&
+    record.observedAtMonotonicMs >= 0 &&
+    typeof record.ordinal === 'number' &&
+    Number.isSafeInteger(record.ordinal) &&
+    record.ordinal > 0
+  )
 }
 
 function requiredTerminalReason(
@@ -3167,6 +3673,11 @@ function requiredString(record: SerializableRecord, key: string, operation: stri
   const value = record[key]
   if (typeof value !== 'string' || value.length === 0) throw contractError('protocol.malformed', 'ipc', operation)
   return value
+}
+
+function requiredPhy(value: unknown, operation: string) {
+  if (value === 'le-1m' || value === 'le-2m' || value === 'le-coded') return value
+  throw contractError('protocol.violation', 'connection', operation)
 }
 
 function requiredNumber(record: SerializableRecord, key: string, operation: string): number {
@@ -3514,19 +4025,20 @@ function isIpcServiceRecord(value: unknown): value is IpcServiceRecord {
     uuid.length > 0 &&
     typeof occurrence === 'string' &&
     occurrence.length > 0 &&
-    typeof primary === 'boolean' &&
-    Array.isArray(includedServices) &&
-    includedServices.every(reference => {
-      if (typeof reference !== 'object' || reference === null || Array.isArray(reference)) return false
-      const referenceUuid: unknown = Reflect.get(reference, 'uuid')
-      const referenceOccurrence: unknown = Reflect.get(reference, 'occurrence')
-      return (
-        typeof referenceUuid === 'string' &&
-        referenceUuid.length > 0 &&
-        typeof referenceOccurrence === 'string' &&
-        referenceOccurrence.length > 0
-      )
-    })
+    (primary === null || typeof primary === 'boolean') &&
+    (includedServices === null ||
+      (Array.isArray(includedServices) &&
+        includedServices.every(reference => {
+          if (typeof reference !== 'object' || reference === null || Array.isArray(reference)) return false
+          const referenceUuid: unknown = Reflect.get(reference, 'uuid')
+          const referenceOccurrence: unknown = Reflect.get(reference, 'occurrence')
+          return (
+            typeof referenceUuid === 'string' &&
+            referenceUuid.length > 0 &&
+            typeof referenceOccurrence === 'string' &&
+            referenceOccurrence.length > 0
+          )
+        })))
   )
 }
 
@@ -3537,30 +4049,59 @@ function requiredServiceRecords(records: readonly SerializableRecord[]): readonl
       throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-service-record')
     }
     const includedServicesValue = Reflect.get(record, 'includedServices')
-    if (!Array.isArray(includedServicesValue)) {
+    if (includedServicesValue !== null && !Array.isArray(includedServicesValue)) {
       throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-service-included-services')
     }
-    const includedServices = includedServicesValue.map(reference => {
-      if (typeof reference !== 'object' || reference === null || Array.isArray(reference)) {
-        throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-service-reference')
-      }
-      const uuid = Reflect.get(reference, 'uuid')
-      const occurrence = Reflect.get(reference, 'occurrence')
-      if (typeof uuid !== 'string' || typeof occurrence !== 'string') {
-        throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-service-reference')
-      }
-      return Object.freeze({ uuid, occurrence })
-    })
+    const includedServices =
+      includedServicesValue === null
+        ? null
+        : includedServicesValue.map(reference => {
+            if (typeof reference !== 'object' || reference === null || Array.isArray(reference)) {
+              throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-service-reference')
+            }
+            const uuid = Reflect.get(reference, 'uuid')
+            const occurrence = Reflect.get(reference, 'occurrence')
+            if (typeof uuid !== 'string' || typeof occurrence !== 'string') {
+              throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-service-reference')
+            }
+            return Object.freeze({ uuid, occurrence })
+          })
+    const restriction = ipcServiceRestriction(record)
     services.push(
       Object.freeze({
         uuid: record.uuid,
         occurrence: record.occurrence,
         primary: record.primary,
-        includedServices: Object.freeze(includedServices)
+        includedServices: includedServices === null ? null : Object.freeze(includedServices),
+        ...(restriction === undefined ? {} : { restriction })
       })
     )
   }
   return Object.freeze(services)
+}
+
+function ipcServiceRestriction(
+  record: SerializableRecord
+): import('../backend-contract/gatt').GattServiceRestriction | undefined {
+  const value: unknown = Reflect.get(record, 'restriction')
+  if (value === undefined) return undefined
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-service-restriction')
+  }
+  const state: unknown = Reflect.get(value, 'state')
+  const reason: unknown = Reflect.get(value, 'reason')
+  const gattStatus: unknown = Reflect.get(value, 'gattStatus')
+  const attError: unknown = Reflect.get(value, 'attError')
+  if (state !== 'restricted' || attError !== null) {
+    throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-service-restriction')
+  }
+  if (reason === 'os-reserved' && gattStatus === null) {
+    return Object.freeze({ state: 'restricted', reason, gattStatus, attError: null })
+  }
+  if (reason === 'access-denied' && gattStatus === 'access-denied') {
+    return Object.freeze({ state: 'restricted', reason, gattStatus, attError: null })
+  }
+  throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-service-restriction')
 }
 
 function isIpcDescriptorRecord(value: unknown): value is IpcDescriptorRecord {

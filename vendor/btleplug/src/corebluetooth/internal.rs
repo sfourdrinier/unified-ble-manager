@@ -319,6 +319,8 @@ pub enum CoreBluetoothReply {
 pub enum PeripheralEventInternal {
     Disconnected,
     Notification(AttrKey, AttrKey, Vec<u8>),
+    NotificationFailed(AttrKey, AttrKey, crate::PlatformError),
+    NotificationSourceRetired(AttrKey, AttrKey, tokio::sync::oneshot::Sender<()>),
     ManufacturerData(u16, Vec<u8>, i16),
     ServiceData(HashMap<Uuid, Vec<u8>>, i16),
     Services(Vec<Uuid>, i16),
@@ -360,6 +362,7 @@ struct ServiceInternal {
     cbservice: Retained<CBService>,
     characteristics: HashMap<AttrKey, CharacteristicInternal>,
     pub discovered: bool,
+    included_services: Option<Vec<AttrKey>>,
 }
 
 impl ServiceInternal {
@@ -395,7 +398,16 @@ fn api_services(services: &HashMap<AttrKey, ServiceInternal>) -> BTreeSet<Servic
         .map(|(&service_key, service)| Service {
             uuid: service_key.uuid,
             instance: service_key.instance,
-            primary: unsafe { service.cbservice.isPrimary() },
+            primary: Some(unsafe { service.cbservice.isPrimary() }),
+            included_services: service.included_services.as_ref().map(|references| {
+                references
+                    .iter()
+                    .map(|reference| crate::api::IncludedService {
+                        uuid: reference.uuid,
+                        instance: reference.instance,
+                    })
+                    .collect()
+            }),
             characteristics: service
                 .characteristics
                 .iter()
@@ -433,6 +445,7 @@ struct PeripheralInternal {
     pub disconnected_future_state: Option<CoreBluetoothReplyStateShared>,
     pub connected_future_state: Option<CoreBluetoothReplyStateShared>,
     pub services_discovered_future_state: Option<CoreBluetoothReplyStateShared>,
+    discovery_busy: bool,
     pub read_rssi_future_state: VecDeque<CoreBluetoothReplyStateShared>,
     pub write_without_response_queue: VecDeque<PendingWriteWithoutResponse>,
     /// UBM patch (UBM_PATCHES.md #17, finding 205): the last advertised
@@ -477,6 +490,7 @@ impl PeripheralInternal {
             connected_future_state: None,
             disconnected_future_state: None,
             services_discovered_future_state: None,
+            discovery_busy: false,
             read_rssi_future_state: VecDeque::with_capacity(4),
             write_without_response_queue: VecDeque::new(),
             advertised_name: None,
@@ -546,9 +560,13 @@ impl PeripheralInternal {
         // service map. Once that's done, we're filled out enough and can send
         // back a ServicesDiscovered reply to the waiting future with all of
         // the characteristic info in it.
-        if !self.services.values().any(|service| !service.discovered) {
+        if !self
+            .services
+            .values()
+            .any(|service| !service.discovered || service.included_services.is_none())
+        {
             if self.services_discovered_future_state.is_none() {
-                panic!("We should still have a future at this point!");
+                return;
             }
             let services = api_services(&self.services);
             self.services_discovered_future_state
@@ -587,6 +605,7 @@ impl PeripheralInternal {
         if let Some(future) = self.connected_future_state.take() {
             future.lock().unwrap().set_reply(error.clone());
         }
+        self.discovery_busy = false;
         if let Some(future) = self.services_discovered_future_state.take() {
             future.lock().unwrap().set_reply(error.clone());
         }
@@ -947,12 +966,51 @@ impl CoreBluetoothInternal {
                             cbservice,
                             characteristics: HashMap::new(),
                             discovered: false,
+                            included_services: None,
                         },
                     )
                 })
                 .collect();
             p.services = services;
+            p.check_discovered();
         }
+    }
+
+    fn on_discovered_included_services(
+        &mut self,
+        peer: Uuid,
+        service_key: AttrKey,
+        added: HashMap<AttrKey, Retained<CBService>>,
+        result: Result<Vec<AttrKey>, crate::PlatformError>,
+    ) {
+        let Some(peripheral) = self.peripherals.get_mut(&peer) else {
+            return;
+        };
+        if peripheral.services_discovered_future_state.is_none() {
+            return;
+        }
+        let references = match result {
+            Ok(references) => references,
+            Err(error) => {
+                if let Some(future) = peripheral.services_discovered_future_state.take() {
+                    fail(future, error);
+                }
+                return;
+            }
+        };
+        for (key, cbservice) in added {
+            peripheral.services.entry(key).or_insert(ServiceInternal {
+                cbservice,
+                characteristics: HashMap::new(),
+                discovered: false,
+                included_services: None,
+            });
+        }
+        let Some(service) = peripheral.services.get_mut(&service_key) else {
+            return;
+        };
+        service.included_services = Some(references);
+        peripheral.check_discovered();
     }
 
     fn on_discovered_characteristics(
@@ -1089,9 +1147,9 @@ impl CoreBluetoothInternal {
 
     /// UBM patch (UBM_PATCHES.md #14/#15): an attribute callback carried an
     /// `NSError`: the oldest waiter of that stage gets it as the platform's
-    /// answer. A value-update error with no pending read is a failed
-    /// notification, which the legacy addon ignored too.
-    fn on_attribute_failed(
+    /// answer. A value-update error with no pending read reaches the exact
+    /// notification attribute owner instead of disappearing.
+    async fn on_attribute_failed(
         &mut self,
         peripheral_uuid: Uuid,
         service_uuid: AttrKey,
@@ -1127,6 +1185,14 @@ impl CoreBluetoothInternal {
         };
         if let Some(waiter) = waiter {
             fail(waiter, error);
+        } else if descriptor_uuid.is_none() && matches!(stage, AttributeStage::Value) {
+            if let Some(peripheral) = self.peripherals.get_mut(&peripheral_uuid) {
+                if let Err(failure) = peripheral.event_sender.send(PeripheralEventInternal::NotificationFailed(
+                    characteristic_uuid, service_uuid, error,
+                )).await {
+                    error!("Error sending notification source failure: {}", failure);
+                }
+            }
         }
     }
 
@@ -1172,12 +1238,26 @@ impl CoreBluetoothInternal {
         }
     }
 
-    fn on_characteristic_unsubscribed(
+    async fn on_characteristic_unsubscribed(
         &mut self,
         peripheral_uuid: Uuid,
         service_uuid: AttrKey,
         characteristic_uuid: AttrKey,
     ) {
+        // Retire retained terminals in the same ordered event lane before
+        // acknowledging disable; a fresh enable cannot race queued callbacks.
+        if let Some(peripheral) = self.peripherals.get(&peripheral_uuid) {
+            let (ack, completed) = tokio::sync::oneshot::channel();
+            let sent = peripheral.event_sender.clone().send(PeripheralEventInternal::NotificationSourceRetired(
+                characteristic_uuid, service_uuid, ack)).await;
+            if sent.is_err() || completed.await.is_err() {
+                if let Some(characteristic) = self.get_characteristic(peripheral_uuid, service_uuid, characteristic_uuid) {
+                    characteristic.fail_notification_state(crate::PlatformError::new("corebluetooth",
+                        "notification-retirement-failed", "Native notification terminal retirement was not acknowledged"));
+                }
+                return;
+            }
+        }
         if let Some(characteristic) =
             self.get_characteristic(peripheral_uuid, service_uuid, characteristic_uuid)
         {
@@ -1804,6 +1884,22 @@ impl CoreBluetoothInternal {
     fn discover_services(&mut self, peripheral_uuid: Uuid, fut: CoreBluetoothReplyStateShared) {
         if let Some(p) = self.peripherals.get_mut(&peripheral_uuid) {
             trace!("Discovering services!");
+            if p.discovery_busy {
+                fail(
+                    fut,
+                    crate::PlatformError::new(
+                        "corebluetooth",
+                        "discovery-in-progress",
+                        "The previous discovery still owns native callbacks",
+                    ),
+                );
+                return;
+            }
+            if let Err(error) = self.delegate.begin_discovery(peripheral_uuid) {
+                fail(fut, error);
+                return;
+            }
+            p.discovery_busy = true;
             p.services_discovered_future_state = Some(fut);
             // This will trigger the delegate_peripheral_diddiscoverservices in central_delegate.rs
             unsafe { p.peripheral.discoverServices(None) };
@@ -1838,6 +1934,19 @@ impl CoreBluetoothInternal {
                     CentralDelegateEvent::DiscoveredServices{peripheral_uuid, services} => {
                         self.on_discovered_services(peripheral_uuid, services)
                     }
+                    CentralDelegateEvent::DiscoveryDrained { peripheral_uuid } => {
+                        if let Some(peripheral) = self.peripherals.get_mut(&peripheral_uuid) {
+                            peripheral.discovery_busy = false;
+                        }
+                    }
+                    CentralDelegateEvent::DiscoveryFailed { peripheral_uuid, error } => {
+                        if let Some(peripheral) = self.peripherals.get_mut(&peripheral_uuid) {
+                            if let Some(future) = peripheral.services_discovered_future_state.take() { fail(future, error); }
+                        }
+                    }
+                    CentralDelegateEvent::DiscoveredIncludedServices { peripheral_uuid, service_uuid, added, result } => {
+                        self.on_discovered_included_services(peripheral_uuid, service_uuid, added, result)
+                    }
                     CentralDelegateEvent::DiscoveredCharacteristics{peripheral_uuid, service_uuid, characteristics} => {
                         self.on_discovered_characteristics(peripheral_uuid, service_uuid, characteristics)
                     }
@@ -1862,7 +1971,7 @@ impl CoreBluetoothInternal {
                         peripheral_uuid,
                         service_uuid,
                         characteristic_uuid,
-                     } => self.on_characteristic_unsubscribed(peripheral_uuid, service_uuid,characteristic_uuid),
+                     } => self.on_characteristic_unsubscribed(peripheral_uuid, service_uuid,characteristic_uuid).await,
                     CentralDelegateEvent::CharacteristicNotified{
                         peripheral_uuid,
                         service_uuid,
@@ -1947,7 +2056,7 @@ impl CoreBluetoothInternal {
                         descriptor_uuid,
                         stage,
                         error,
-                    } => self.on_attribute_failed(peripheral_uuid, service_uuid, characteristic_uuid, descriptor_uuid, stage, error),
+                    } => self.on_attribute_failed(peripheral_uuid, service_uuid, characteristic_uuid, descriptor_uuid, stage, error).await,
                 };
             }
             adapter_msg = self.message_receiver.select_next_some() => {
@@ -2256,11 +2365,35 @@ mod ubm_instance_tests {
                     cbservice,
                     characteristics: HashMap::new(),
                     discovered: true,
+                    included_services: Some(Vec::new()),
                 };
                 service.merge_characteristics(characteristics);
                 (key, service)
             })
             .collect()
+    }
+
+    #[test]
+    fn inclusion_metadata_preserves_same_uuid_target_and_unknowns() {
+        let mut table = discovered();
+        let mut keys: Vec<_> = table.keys().copied().collect();
+        keys.sort();
+        table.get_mut(&keys[0]).unwrap().included_services = Some(vec![keys[1]]);
+        let graph: Vec<_> = api_services(&table).into_iter().collect();
+        assert_eq!(
+            graph[0].included_services.as_ref().unwrap()[0].instance,
+            graph[1].instance
+        );
+        assert_eq!(graph[1].included_services, Some(Vec::new()));
+        table.get_mut(&keys[0]).unwrap().included_services = None;
+        assert_eq!(
+            api_services(&table)
+                .into_iter()
+                .next()
+                .unwrap()
+                .included_services,
+            None
+        );
     }
 
     /// UBM patch #19 (finding 130): at a disconnect every attribute waiter

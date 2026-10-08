@@ -15,7 +15,7 @@ use crate::{
         self, BDAddr, CentralEvent, CharPropFlags, Characteristic, Descriptor,
         PeripheralProperties, Service, ValueNotification, WriteType,
     },
-    common::{adapter_manager::AdapterManager, util::notifications_stream_from_broadcast_receiver},
+    common::{adapter_manager::AdapterManager, util::{retained_notifications, NotificationEnvelope, NotificationFaults}},
 };
 use async_trait::async_trait;
 use futures::channel::mpsc::{Receiver, SendError, Sender};
@@ -80,7 +80,8 @@ pub struct Peripheral {
 }
 
 struct Shared {
-    notifications_channel: broadcast::Sender<ValueNotification>,
+    notifications_channel: broadcast::Sender<NotificationEnvelope>,
+    notification_faults: Arc<NotificationFaults>,
     manager: Weak<AdapterManager<Peripheral>>,
     uuid: Uuid,
     services: Mutex<BTreeSet<Service>>,
@@ -188,10 +189,9 @@ impl Peripheral {
 
     /// UBM patch (UBM_PATCHES.md #1): the largest single write CoreBluetooth
     /// accepts on this connection, `(with response, without response)`,
-    /// from `-[CBPeripheral maximumWriteValueLengthForType:]`. Also moves
-    /// [`api::Peripheral::mtu`] to the measured ATT MTU (the
-    /// without-response length plus the 3-byte ATT header), which upstream
-    /// never updates from its initial 23.
+    /// from `-[CBPeripheral maximumWriteValueLengthForType:]`. Those lengths
+    /// are write capacities. They are not stored as an ATT MTU: a
+    /// with-response length can include a long write.
     pub async fn maximum_write_value_lengths(&self) -> Result<(u16, u16)> {
         let fut = CoreBluetoothReplyFuture::default();
         self.shared
@@ -209,10 +209,6 @@ impl Peripheral {
             } => {
                 let with_response = u16::try_from(with_response).unwrap_or(u16::MAX);
                 let without_response = u16::try_from(without_response).unwrap_or(u16::MAX);
-                self.shared.mtu.store(
-                    without_response.saturating_add(3),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
                 Ok((with_response, without_response))
             }
             CoreBluetoothReply::Err(msg) => Err(Error::RuntimeError(msg)),
@@ -253,6 +249,7 @@ impl Peripheral {
             manager,
             services: Mutex::new(BTreeSet::new()),
             notifications_channel,
+            notification_faults: Arc::new(NotificationFaults::new(crate::ubm::EVENT_CAPACITY)),
             uuid,
             message_sender,
             mtu: AtomicU16::new(crate::api::DEFAULT_MTU_SIZE),
@@ -273,12 +270,20 @@ impl Peripheral {
                             service_uuid: service.uuid,
                             service_instance: service.instance,
                             value: data,
+                            source_failure: None,
                             lost_before: 0,
                         };
 
                         // Note: we ignore send errors here which may happen while there are no
                         // receivers...
-                        let _ = shared.notifications_channel.send(notification);
+                        shared.notification_faults.publish(&shared.notifications_channel, notification);
+                    }
+                    Some(PeripheralEventInternal::NotificationFailed(characteristic, service, error)) => {
+                        shared.notification_faults.publish(&shared.notifications_channel, ValueNotification {
+                            uuid: characteristic.uuid, instance: characteristic.instance,
+                            service_uuid: service.uuid, service_instance: service.instance,
+                            value: Vec::new(), source_failure: Some(error), lost_before: 0,
+                        });
                     }
                     Some(PeripheralEventInternal::ManufacturerData(
                         manufacturer_id,
@@ -337,7 +342,12 @@ impl Peripheral {
                             rssi,
                         });
                     }
-                    Some(PeripheralEventInternal::Disconnected) => (),
+                    Some(PeripheralEventInternal::NotificationSourceRetired(characteristic, service, ack)) => {
+                        shared.notification_faults.clear_key((service.uuid, service.instance,
+                            characteristic.uuid, characteristic.instance));
+                        let _ = ack.send(());
+                    }
+                    Some(PeripheralEventInternal::Disconnected) => shared.notification_faults.clear_all(),
                     None => {
                         info!("Event receiver died, breaking out of corebluetooth device loop.");
                         break;
@@ -553,6 +563,7 @@ impl api::Peripheral for Peripheral {
             .await?;
         match fut.await {
             CoreBluetoothReply::Ok => {
+                self.shared.notification_faults.clear_all();
                 self.shared
                     .emit_event(CentralEvent::DeviceDisconnected(self.shared.uuid.into()));
                 trace!("Device disconnected!");
@@ -688,12 +699,13 @@ impl api::Peripheral for Peripheral {
             CoreBluetoothReply::Failed(error) => return Err(Error::Platform(error)),
             _ => panic!("Didn't unsubscribe!"),
         }
+        self.shared.notification_faults.clear(characteristic);
         Ok(())
     }
 
     async fn notifications(&self) -> Result<Pin<Box<dyn Stream<Item = ValueNotification> + Send>>> {
         let receiver = self.shared.notifications_channel.subscribe();
-        Ok(notifications_stream_from_broadcast_receiver(receiver))
+        Ok(retained_notifications(receiver, self.shared.notification_faults.clone()))
     }
 
     async fn write_descriptor(&self, descriptor: &Descriptor, data: &[u8]) -> Result<()> {

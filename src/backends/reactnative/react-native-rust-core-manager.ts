@@ -50,6 +50,10 @@ import type {
   ConnectionPhyRequest,
   ConnectionPriority,
   ConnectionPriorityRequest,
+  ConnectionSubrateRequest,
+  ConnectionSubrateMode,
+  ConnectionParametersMeasurement,
+  ConnectionParametersWatch,
   ConnectionWriteReadinessWatch,
   EffectiveMtuMeasurement,
   MtuNegotiation,
@@ -257,10 +261,13 @@ export const BRIDGE_SHAPES: Record<string, BridgeShape> = {
       'requestMtu',
       'effectiveMtu',
       'requestPriority',
+      'requestSubrate',
       'readPhy',
       'requestPhy',
       'maximumWriteLength',
-      'writeWithoutResponseReadiness'
+      'writeWithoutResponseReadiness',
+      'parameters',
+      'parameterEvents'
     ],
     properties: ['peerId', 'connectionId', 'ownerLeaseId', 'connectionGeneration', 'events']
   },
@@ -274,6 +281,8 @@ export const BRIDGE_SHAPES: Record<string, BridgeShape> = {
       'readReceipt',
       'write',
       'writeWhenReady',
+      'acquireWrite',
+      'acquireNotifications',
       'maximumWriteLength',
       'writeLong',
       'readDescriptor',
@@ -1144,6 +1153,18 @@ class NativeConnection {
     )
   }
 
+  async requestSubrate(
+    mode: ConnectionSubrateMode,
+    options: PortableOperationOptions
+  ): Promise<ConnectionSubrateRequest<string, string>> {
+    if (mode !== 'default' && mode !== 'low-latency' && mode !== 'low-power' && mode !== 'high-throughput') {
+      throw contractError('argument.invalid', 'connection', 'rust-core-manager.connection.request-subrate')
+    }
+    return this.control(BUILT_IN_FEATURE_IDS.connectionSubrate, options, 'request-subrate', (connections, operation) =>
+      requireControl(connections.requestSubrate, 'request-subrate')(this.resource, { operation, mode })
+    )
+  }
+
   async readPhy(options: PortableOperationOptions): Promise<ConnectionPhyObservation<string, string>> {
     return this.control(BUILT_IN_FEATURE_IDS.connectionPhy, options, 'read-phy', (connections, operation) =>
       requireControl(connections.readPhy, 'read-phy')(this.resource, { operation })
@@ -1186,16 +1207,58 @@ class NativeConnection {
   }
 
   async writeWithoutResponseReadiness(
-    _options?: PortableOperationOptions
+    options?: PortableOperationOptions
   ): Promise<ConnectionWriteReadinessWatch<string>> {
-    throw contractError('capability.unsupported', 'connection', 'rust-core-manager.connection.write-readiness')
+    const operationName = 'rust-core-manager.connection.write-readiness'
+    const state = this.manager.featureState(BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness)
+    if (state !== 'supported' && state !== 'limited') {
+      throw contractError(
+        state === 'unavailable' ? 'capability.unavailable' : 'capability.unsupported',
+        'connection',
+        operationName
+      )
+    }
+    this.assertCurrent()
+    const publicOptions = toPublicOperationOptions(options ?? { signal: null, deadline: null })
+    if (publicOptions.signal?.aborted === true) {
+      throw contractError('operation.aborted', 'connection', operationName)
+    }
+    const open = this.manager.backendConnections.writeWithoutResponseReadiness
+    if (open === undefined) {
+      throw contractError('capability.unsupported', 'connection', operationName)
+    }
+    return open(this.resource, publicOptions)
   }
 
-  /**
-   * One connection control through the backend: refused before any native
-   * call when the backend does not register the capability, the connection
-   * is no longer current, or the caller already aborted or expired.
-   */
+  async parameters(options?: PortableOperationOptions): Promise<ConnectionParametersMeasurement<string, string>> {
+    return this.control(
+      BUILT_IN_FEATURE_IDS.connectionParameters,
+      options ?? { signal: null, deadline: null },
+      'parameters',
+      (connections, operation) => requireControl(connections.parameters, 'parameters')(this.resource, { operation })
+    )
+  }
+
+  async parameterEvents(options?: PortableOperationOptions): Promise<ConnectionParametersWatch<string>> {
+    const operation = 'rust-core-manager.connection.parameter-events'
+    const state = this.manager.featureState(BUILT_IN_FEATURE_IDS.connectionParameters)
+    if (state !== 'supported' && state !== 'limited') {
+      throw contractError(
+        state === 'unavailable' ? 'capability.unavailable' : 'capability.unsupported',
+        'connection',
+        operation
+      )
+    }
+    this.assertCurrent()
+    const publicOptions = toPublicOperationOptions(options ?? { signal: null, deadline: null })
+    if (publicOptions.signal?.aborted === true) throw contractError('operation.aborted', 'connection', operation)
+    const open = this.manager.backendConnections.parameterEvents
+    if (open === undefined) throw contractError('capability.unsupported', 'connection', operation)
+    return open(this.resource, publicOptions)
+  }
+
+  /** One connection control through the backend, with capability and owned
+   * connection admission checked before native dispatch. */
   private async control<Result extends { readonly terminal: unknown }>(
     featureId: FeatureId,
     options: PortableOperationOptions,
@@ -1479,20 +1542,47 @@ class NativeGattDatabase {
   }
 
   async writeWhenReady(
-    _path: CurrentCharacteristicPath,
-    _bytes: Readonly<Uint8Array>,
+    path: CurrentCharacteristicPath,
+    bytes: Readonly<Uint8Array>,
     options: WritePolicy
   ): Promise<WriteReceipt<string, string>> {
+    const operation = 'rust-core-manager.write-when-ready'
     if (options.mode !== 'without-response') {
-      throw contractError('argument.invalid', 'gatt', 'rust-core-manager.write-when-ready.mode')
+      throw contractError('argument.invalid', 'gatt', `${operation}.mode`)
     }
     const registration = this.manager.features.registrations.find(
       candidate => candidate.id === BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness
     )
     if (registration?.state === 'unavailable') {
-      throw contractError('capability.unavailable', 'connection', 'rust-core-manager.write-when-ready')
+      throw contractError('capability.unavailable', 'connection', operation)
     }
-    throw contractError('capability.unsupported', 'connection', 'rust-core-manager.write-when-ready')
+    if (
+      registration === undefined ||
+      registration.state === 'unsupported' ||
+      this.connection.writeWithoutResponseReadiness === undefined
+    ) {
+      throw contractError('capability.unsupported', 'connection', operation)
+    }
+    this.assertPath(path)
+    this.assertOperationAdmission(options, 'write-when-ready')
+    const owned = ownBytes(bytes, this.options.maximumValueBytes)
+    const writeWhenReady = this.backendDatabase.writeWhenReady
+    if (writeWhenReady === undefined) {
+      throw contractError('capability.unsupported', 'connection', operation)
+    }
+    return writeWhenReady(path, owned, options)
+  }
+
+  async acquireWrite(path: CurrentCharacteristicPath, options: PublicOperationOptions): Promise<never> {
+    this.assertPath(path)
+    this.assertOperationAdmission(options, 'acquire-write')
+    throw contractError('capability.unsupported', 'gatt', 'gatt.acquire-write')
+  }
+
+  async acquireNotifications(path: CurrentCharacteristicPath, options: SubscriptionOptions): Promise<never> {
+    this.assertPath(path)
+    this.assertOperationAdmission(options, 'acquire-notify')
+    throw contractError('capability.unsupported', 'gatt', 'gatt.acquire-notify')
   }
 
   async maximumWriteLength(
@@ -1761,6 +1851,17 @@ class NativeDiscoveredGattDatabase {
     options: PortableWritePolicy
   ): Promise<WriteReceipt<string, string>> {
     return this.database.writeWhenReady(this.resolveCharacteristicPath(path), bytes, toPublicWritePolicy(options))
+  }
+
+  async acquireWrite(path: PortableCurrentCharacteristicPath, options: PortableOperationOptions) {
+    return this.database.acquireWrite(this.resolveCharacteristicPath(path), toPublicOperationOptions(options))
+  }
+
+  async acquireNotifications(path: PortableCurrentCharacteristicPath, options: PortableSubscriptionOptions) {
+    return this.database.acquireNotifications(
+      this.resolveCharacteristicPath(path),
+      toPublicSubscriptionOptions(options)
+    )
   }
 
   async maximumWriteLength(

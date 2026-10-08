@@ -378,6 +378,13 @@ impl<C: LeaseClient> Ledger<C> {
             match receipt.scope {
                 Scope::Physical if receipt.generation != 0 => {}
                 Scope::Reservation if receipt.generation == 0 && token.generation.is_none() => {}
+                // The daemon retains a generation-scoped cleanup obligation
+                // when this logical token is ACKed. This reports no ACL end.
+                Scope::Protected
+                    if receipt.generation != 0
+                        && token.generation == Some(receipt.generation)
+                        && receipt.disconnect_reason.is_none() =>
+                {}
                 _ => return Err(failed("daemon did not confirm physical or uneffected reservation release; lease remains owned")
                     .with_platform(PlatformDetail::new("bluez-le-lease", receipt.scope.native_name())
                         .with_metadata("token", PlatformValue::Text(receipt.token.to_string()))
@@ -405,6 +412,11 @@ impl<C: LeaseClient> Ledger<C> {
             .lock()
             .expect("lease maintenance")
             .insert(entry.reservation, Arc::clone(&acknowledgment));
+        if reason.physical_generation.is_none() {
+            // A protected logical release transfers reconciliation to the
+            // daemon; it is not a retained observation of physical loss.
+            entry.physical_generation.store(0, Ordering::Release);
+        }
         self.retire(peer, entry);
         let reservation = entry.reservation;
         drop(self.start_acknowledgment(reservation, &acknowledgment));
@@ -1170,6 +1182,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn matching_protected_release_retires_only_this_lease() {
+        let owner_a = Ledger::default();
+        let owner_b = Ledger::default();
+        let client_a = Client::new();
+        let mut client_b = Client::new();
+        client_b.token = 42;
+        client_a.reserve.add_permits(1);
+        client_a.connect.add_permits(1);
+        client_b.reserve.add_permits(1);
+        client_b.connect.add_permits(1);
+        owner_a
+            .clone()
+            .connect("peer".into(), client_a.clone())
+            .await
+            .unwrap();
+        owner_b
+            .clone()
+            .connect("peer".into(), client_b.clone())
+            .await
+            .unwrap();
+        client_a.receipts.lock().unwrap().push_back(Ok(Receipt {
+            token: 41,
+            generation: 73,
+            scope: Scope::Protected,
+            disconnect_reason: None,
+        }));
+        assert_eq!(
+            owner_a
+                .clone()
+                .release_with_observation("peer")
+                .await
+                .unwrap(),
+            ReleaseObservation::default()
+        );
+        assert_eq!(owner_a.len(), 0);
+        assert_eq!(owner_a.terminal_facts_len(), 0);
+        assert!(owner_a.retry_maintenance().await.is_empty());
+        assert_eq!(owner_a.maintenance_len(), 0);
+        assert_eq!(*client_a.acknowledgments.lock().unwrap(), vec![41]);
+        assert_eq!(owner_b.len(), 1);
+        assert!(!owner_a.physical_lost("peer", 73).await);
+        client_b.receipts.lock().unwrap().push_back(Ok(Receipt {
+            token: 42,
+            generation: 73,
+            scope: Scope::Physical,
+            disconnect_reason: None,
+        }));
+        assert_eq!(
+            owner_b
+                .clone()
+                .release_with_observation("peer")
+                .await
+                .unwrap()
+                .physical_generation,
+            Some(73)
+        );
+        assert!(!owner_a.physical_lost("peer", 73).await);
+        assert!(owner_b.physical_lost("peer", 73).await);
+    }
+
+    #[tokio::test]
+    async fn protected_release_ack_failure_remains_owned_without_repeating_link_release() {
+        let ledger = Ledger::default();
+        let client = Client::new();
+        client.reserve.add_permits(1);
+        client.connect.add_permits(1);
+        client
+            .acknowledgment_failures
+            .lock()
+            .unwrap()
+            .push_back(failed("protected ACK refused"));
+        ledger
+            .clone()
+            .connect("peer".into(), client.clone())
+            .await
+            .unwrap();
+        client.receipts.lock().unwrap().push_back(Ok(Receipt {
+            token: 41,
+            generation: 73,
+            scope: Scope::Protected,
+            disconnect_reason: None,
+        }));
+        assert_eq!(
+            ledger
+                .clone()
+                .release_with_observation("peer")
+                .await
+                .unwrap(),
+            ReleaseObservation::default()
+        );
+        settled().await;
+        assert_eq!(ledger.len(), 0);
+        assert_eq!(ledger.terminal_facts_len(), 0);
+        assert_eq!(ledger.maintenance_len(), 1);
+        assert!(ledger.retry_maintenance().await.is_empty());
+        assert_eq!(ledger.maintenance_len(), 0);
+        assert_eq!(*client.acknowledgments.lock().unwrap(), vec![41, 41]);
+        assert_eq!(client.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn protected_indeterminate_and_wrong_generation_remain_retryable() {
         let ledger = Ledger::default();
         let client = Client::new();
@@ -1180,13 +1293,37 @@ mod tests {
             .connect("peer".into(), client.clone())
             .await
             .unwrap();
-        for scope in [Scope::Protected, Scope::Indeterminate, Scope::Reservation] {
+        for scope in [Scope::Indeterminate, Scope::Reservation] {
             client.receipts.lock().unwrap().push_back(Ok(Receipt {
                 token: 41,
                 generation: 73,
                 scope,
                 disconnect_reason: None,
             }));
+            assert!(ledger.clone().release("peer").await.is_err());
+            assert_eq!(ledger.len(), 1);
+        }
+        for receipt in [
+            Receipt {
+                token: 41,
+                generation: 0,
+                scope: Scope::Protected,
+                disconnect_reason: None,
+            },
+            Receipt {
+                token: 41,
+                generation: 73,
+                scope: Scope::Protected,
+                disconnect_reason: Some(2),
+            },
+            Receipt {
+                token: 99,
+                generation: 73,
+                scope: Scope::Protected,
+                disconnect_reason: None,
+            },
+        ] {
+            client.receipts.lock().unwrap().push_back(Ok(receipt));
             assert!(ledger.clone().release("peer").await.is_err());
             assert_eq!(ledger.len(), 1);
         }

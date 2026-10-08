@@ -39,7 +39,7 @@ impl LeLeaseReleaseReceipt {
         expected_token: u64,
         expected_physical_generation: Option<u64>,
     ) -> Result<Self, LeLeaseProtocolError> {
-        if version != 2
+        if version != 3
             || token == 0
             || token != expected_token
             || expected_physical_generation.is_some_and(|expected| physical_generation != expected)
@@ -281,7 +281,7 @@ mod tests {
         }
         fn packet(present: Box<dyn RefArg>, reason: Box<dyn RefArg>) -> VecDeque<Box<dyn RefArg>> {
             VecDeque::from([
-                boxed(2_u32),
+                boxed(3_u32),
                 boxed(7_u64),
                 boxed(9_u64),
                 boxed("physical-released".to_owned()),
@@ -315,9 +315,12 @@ mod tests {
     }
 
     #[test]
-    fn old_scope_only_release_version_is_refused() {
+    fn old_scope_only_and_non_reconciling_release_versions_are_refused() {
         assert!(
             LeLeaseReleaseReceipt::parse(1, 7, 9, "physical-released", None, 7, Some(9)).is_err()
+        );
+        assert!(
+            LeLeaseReleaseReceipt::parse(2, 7, 9, "physical-released", None, 7, Some(9)).is_err()
         );
     }
 
@@ -334,7 +337,7 @@ mod tests {
                 LeLeaseReleaseScope::LeaseReleasedIndeterminate,
             ),
         ] {
-            let receipt = LeLeaseReleaseReceipt::parse(2, 7, 9, wire, None, 7, Some(9)).unwrap();
+            let receipt = LeLeaseReleaseReceipt::parse(3, 7, 9, wire, None, 7, Some(9)).unwrap();
             assert_eq!(receipt.scope, expected);
             assert_eq!(receipt.token, 7);
             assert_eq!(receipt.physical_generation, 9);
@@ -345,11 +348,11 @@ mod tests {
     fn release_receipt_refuses_unknown_or_mismatched_identity() {
         for (version, token, physical_generation, scope) in [
             (1, 7, 9, "physical-released"),
-            (2, 0, 9, "physical-released"),
-            (2, 8, 9, "physical-released"),
-            (2, 7, 10, "physical-released"),
-            (2, 7, 9, "released"),
-            (2, 7, 9, ""),
+            (3, 0, 9, "physical-released"),
+            (3, 8, 9, "physical-released"),
+            (3, 7, 10, "physical-released"),
+            (3, 7, 9, "released"),
+            (3, 7, 9, ""),
         ] {
             assert!(
                 LeLeaseReleaseReceipt::parse(
@@ -380,27 +383,27 @@ mod tests {
     #[test]
     fn failed_acquisition_cleanup_learns_physical_generation_only_from_its_exact_token() {
         let receipt =
-            LeLeaseReleaseReceipt::parse(2, 7, 9, "physical-released", Some(2), 7, None).unwrap();
+            LeLeaseReleaseReceipt::parse(3, 7, 9, "physical-released", Some(2), 7, None).unwrap();
         assert_eq!(receipt.physical_generation, 9);
         assert_eq!(receipt.disconnect_reason, Some(2));
         assert!(
-            LeLeaseReleaseReceipt::parse(2, 8, 9, "physical-released", Some(2), 7, None).is_err()
+            LeLeaseReleaseReceipt::parse(3, 8, 9, "physical-released", Some(2), 7, None).is_err()
         );
     }
 
     #[test]
     fn physical_release_never_claims_an_unobserved_generation_ended() {
         assert!(
-            LeLeaseReleaseReceipt::parse(2, 7, 0, "physical-released", Some(2), 7, None).is_err()
+            LeLeaseReleaseReceipt::parse(3, 7, 0, "physical-released", Some(2), 7, None).is_err()
         );
         let reservation =
-            LeLeaseReleaseReceipt::parse(2, 7, 0, "reservation-released", None, 7, None).unwrap();
+            LeLeaseReleaseReceipt::parse(3, 7, 0, "reservation-released", None, 7, None).unwrap();
         assert_eq!(reservation.scope, LeLeaseReleaseScope::ReservationReleased);
         assert!(
-            LeLeaseReleaseReceipt::parse(2, 7, 9, "reservation-released", None, 7, None).is_err()
+            LeLeaseReleaseReceipt::parse(3, 7, 9, "reservation-released", None, 7, None).is_err()
         );
         assert!(
-            LeLeaseReleaseReceipt::parse(2, 7, 0, "reservation-released", None, 7, Some(9))
+            LeLeaseReleaseReceipt::parse(3, 7, 0, "reservation-released", None, 7, Some(9))
                 .is_err()
         );
         for scope in [
@@ -408,7 +411,7 @@ mod tests {
             "lease-released-protected",
             "lease-released-indeterminate",
         ] {
-            assert!(LeLeaseReleaseReceipt::parse(2, 7, 0, scope, Some(2), 7, None).is_err());
+            assert!(LeLeaseReleaseReceipt::parse(3, 7, 0, scope, Some(2), 7, None).is_err());
         }
     }
 
@@ -443,7 +446,7 @@ mod tests {
                         .send(
                             message
                                 .method_return()
-                                .append2(2_u32, 7_u64)
+                                .append2(3_u32, 7_u64)
                                 .append2(0_u64, "reservation-released")
                                 .append2(false, 0_u8),
                         )
@@ -567,7 +570,7 @@ mod tests {
                         let has_reason = scope == "physical-released";
                         message
                             .method_return()
-                            .append3(2_u32, 7_u64, 9_u64)
+                            .append3(3_u32, 7_u64, 9_u64)
                             .append1(scope)
                             .append2(has_reason, if has_reason { 2_u8 } else { 0_u8 })
                     }

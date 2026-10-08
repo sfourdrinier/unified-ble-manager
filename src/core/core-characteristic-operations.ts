@@ -150,14 +150,20 @@ export async function writeCoreCharacteristicWhenReady<
     options,
     mayCommit: true,
     retainedPayloadBytes: owned.byteLength,
-    admission: () => createWriteReadinessAdmission(database, path, options),
+    ...(backend.gatt.writeWhenReady === undefined
+      ? { admission: () => createWriteReadinessAdmission(database, path, options) }
+      : {}),
     dispatch: correlation => {
       database.assertPath(path)
-      const dispatch = backend.gatt.write(path, {
+      const request = {
         operation: { ...options, correlation },
         bytes: owned,
-        mode: 'without-response'
-      })
+        mode: 'without-response' as const
+      }
+      const dispatch =
+        backend.gatt.writeWhenReady === undefined
+          ? backend.gatt.write(path, request)
+          : backend.gatt.writeWhenReady(path, request)
       return coreDispatch(dispatch, correlation, value => value.terminal)
     }
   })

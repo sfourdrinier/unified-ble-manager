@@ -25,6 +25,18 @@ import type {
 } from './operations'
 import type { BoundedAsyncStream } from './streams'
 
+/** An explicit acquired transport; ordinary writes are never its fallback. */
+export interface AcquiredGattWriter<Attachment extends string> {
+  readonly mtuBytes: number
+  write(value: BorrowedBytes, options: PublicOperationOptions): Promise<WriteReceipt<Attachment, string>>
+  close(): Promise<CleanupRecord>
+}
+export interface AcquiredGattNotifications {
+  readonly mtuBytes: number
+  readonly values: BoundedAsyncStream<NotificationValue>
+  close(): Promise<CleanupRecord>
+}
+
 export type PathValidity = 'current' | 'stale'
 export interface GattDatabaseChangedEvent {
   readonly previousGeneration: string
@@ -79,6 +91,30 @@ export interface DescriptorPath<
   readonly descriptorUuid: Uuid
   readonly descriptorOccurrence: GenerationId<'descriptor-occurrence', DescriptorScope>
 }
+/** A discovered service whose characteristics could not be listed. */
+export interface GattServiceRestriction {
+  readonly state: 'restricted'
+  readonly reason: 'os-reserved' | 'access-denied'
+  readonly gattStatus: 'access-denied' | null
+  readonly attError: null
+}
+
+/** Map a native service-access label onto the public restriction. */
+export function serviceAccessRestriction(access: string | null | undefined): GattServiceRestriction | undefined {
+  if (access === 'os-reserved') {
+    return Object.freeze({ state: 'restricted', reason: 'os-reserved', gattStatus: null, attError: null })
+  }
+  if (access === 'access-denied') {
+    return Object.freeze({
+      state: 'restricted',
+      reason: 'access-denied',
+      gattStatus: 'access-denied',
+      attError: null
+    })
+  }
+  return undefined
+}
+
 export interface Service<
   Attachment extends string,
   Connection extends string,
@@ -86,8 +122,11 @@ export interface Service<
   Occurrence extends string
 > {
   readonly path: ServicePath<Attachment, Connection, Database, Occurrence>
-  readonly primary: boolean
-  readonly includedServices: readonly GattServiceReference[]
+  /** null means the platform did not provide primary/secondary status. */
+  readonly primary: boolean | null
+  /** null means inclusion discovery was unavailable; [] is an observed empty list. */
+  readonly includedServices: readonly GattServiceReference[] | null
+  readonly restriction?: GattServiceRestriction
 }
 export interface Characteristic<
   Attachment extends string,
@@ -230,12 +269,26 @@ export interface GattDatabaseSnapshot<Attachment extends string, Connection exte
 export interface GattDatabase<Attachment extends string, Connection extends string, Database extends string> {
   readonly path: DatabasePath<Attachment, Connection, Database>
   snapshot(): Promise<GattDatabaseSnapshot<Attachment, Connection, Database>>
+  acquireWrite?<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
+    path: CharacteristicPath<Attachment, Connection, Database, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
+    options: PublicOperationOptions
+  ): Promise<AcquiredGattWriter<Attachment>>
+  acquireNotifications?<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
+    path: CharacteristicPath<Attachment, Connection, Database, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
+    options: SubscriptionOptions
+  ): Promise<AcquiredGattNotifications>
   /** Reads one characteristic; the answer carries the platform's own provenance. */
   read<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
     path: CharacteristicPath<Attachment, Connection, Database, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
     options: PublicOperationOptions
   ): Promise<CharacteristicRead>
   write<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
+    path: CharacteristicPath<Attachment, Connection, Database, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
+    value: BorrowedBytes,
+    options: WritePolicy
+  ): Promise<WriteReceipt<Attachment, string>>
+  /** Native-owned FIFO readiness wait using the original write admission. */
+  writeWhenReady?<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
     path: CharacteristicPath<Attachment, Connection, Database, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
     value: BorrowedBytes,
     options: WritePolicy

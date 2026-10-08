@@ -30,6 +30,10 @@ import type {
   ConnectionPhyObservation,
   ConnectionPhyRequest,
   ConnectionPriorityRequest,
+  ConnectionSubrateRequest,
+  ConnectionParametersMeasurement,
+  ConnectionParametersRequest,
+  ConnectionParametersWatch,
   ConnectionWriteReadinessWatch,
   EffectiveMtuMeasurement,
   EffectiveMtuRequest,
@@ -38,6 +42,7 @@ import type {
   ReadPhyRequest,
   RequestPhyRequest,
   RequestPriorityRequest,
+  RequestSubrateRequest,
   RequestMtuRequest,
   RssiMeasurement
 } from './connection-controls'
@@ -230,6 +235,10 @@ export interface ConnectionBackend<Attachment extends string> {
     connection: BackendConnection<Attachment, string>,
     request: RequestPriorityRequest<Attachment, Operation>
   ): BackendOperationDispatch<Attachment, ConnectionPriorityRequest<Attachment, Operation>>
+  requestSubrate?<Operation extends string>(
+    connection: BackendConnection<Attachment, string>,
+    request: RequestSubrateRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, ConnectionSubrateRequest<Attachment, Operation>>
   readPhy?<Operation extends string>(
     connection: BackendConnection<Attachment, string>,
     request: ReadPhyRequest<Attachment, Operation>
@@ -242,6 +251,14 @@ export interface ConnectionBackend<Attachment extends string> {
     connection: BackendConnection<Attachment, string>,
     options?: PublicOperationOptions
   ): Promise<ConnectionWriteReadinessWatch<Attachment>>
+  parameters?<Operation extends string>(
+    connection: BackendConnection<Attachment, string>,
+    request: ConnectionParametersRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, ConnectionParametersMeasurement<Attachment, Operation>>
+  parameterEvents?(
+    connection: BackendConnection<Attachment, string>,
+    options?: PublicOperationOptions
+  ): Promise<ConnectionParametersWatch<Attachment>>
   maximumWriteLength?<Operation extends string>(
     connection: BackendConnection<Attachment, string>,
     request: ConnectionMaximumWriteLengthRequest<Attachment, Operation>
@@ -263,6 +280,17 @@ export interface GattBackend<Attachment extends string> {
     request: ReadRequest<Attachment, Operation>
   ): BackendOperationDispatch<Attachment, CharacteristicReadResult<Attachment, Operation>>
   write<
+    Connection extends string,
+    Database extends string,
+    Service extends string,
+    Characteristic extends string,
+    Operation extends string
+  >(
+    path: CharacteristicPath<Attachment, Connection, Database, Service, Characteristic, 'current'>,
+    request: WriteRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, WriteResult<Attachment, Operation>>
+  /** Native-owned readiness admission when this host exposes it. */
+  writeWhenReady?<
     Connection extends string,
     Database extends string,
     Service extends string,

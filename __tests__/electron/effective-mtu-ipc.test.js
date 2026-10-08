@@ -12,7 +12,7 @@ const { monotonicTimestamp, opaqueId, version, versionRange } = require('../../s
 const { BUILT_IN_FEATURE_CATALOG } = require('../../src/backend-contract/capabilities')
 
 function negotiated(axis) {
-  const selected = version(axis, axis === 'ipc-protocol' ? 5 : 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 6 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }

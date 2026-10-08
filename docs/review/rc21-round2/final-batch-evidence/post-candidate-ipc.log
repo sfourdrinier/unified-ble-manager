@@ -1,0 +1,9 @@
+PASS __tests__/ipc/connection-cleanup.test.js
+PASS __tests__/ipc/event-pump-termination.test.js
+PASS __tests__/ipc/public-manager-controls.test.js
+
+Test Suites: 3 passed, 3 total
+Tests:       111 passed, 111 total
+Snapshots:   0 total
+Time:        2.527 s
+Ran all test suites matching /__tests__\/ipc\/connection-cleanup.test.js|__tests__\/ipc\/public-manager-controls.test.js|__tests__\/ipc\/event-pump-termination.test.js/i.

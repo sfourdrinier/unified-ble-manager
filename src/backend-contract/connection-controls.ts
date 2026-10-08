@@ -13,6 +13,9 @@ export const MAXIMUM_REQUESTED_ATT_MTU = 517
 /** Android's supported caller-directed connection link-priority requests. */
 export type ConnectionPriority = 'low-power' | 'balanced' | 'high-throughput'
 
+/** Portable presets: Android balanced/off/low/high; acceptance is not an observation. */
+export type ConnectionSubrateMode = 'default' | 'low-latency' | 'low-power' | 'high-throughput'
+
 export type BlePhy = 'le-1m' | 'le-2m' | 'le-coded'
 export type PhyPreference = Readonly<{ readonly tx?: BlePhy; readonly rx?: BlePhy }>
 
@@ -60,6 +63,14 @@ export interface ConnectionPriorityRequest<Attachment extends string, _Operation
   readonly terminal: OperationTerminalRecord<Attachment, string>
 }
 
+/** Backend result for a subrate request; it does not assert observed link parameters. */
+export interface ConnectionSubrateRequest<Attachment extends string, _Operation extends string> {
+  readonly requested: ConnectionSubrateMode
+  readonly accepted: boolean
+  readonly observedAtMonotonicMs: number
+  readonly terminal: OperationTerminalRecord<Attachment, string>
+}
+
 export interface ConnectionPhyObservation<Attachment extends string, _Operation extends string> {
   readonly txPhy: BlePhy
   readonly rxPhy: BlePhy
@@ -88,6 +99,33 @@ export interface ConnectionWriteReadinessWatch<Attachment extends string> {
   close(): Promise<CleanupRecord>
 }
 
+/** Backend observation of the link's current connection parameters.
+ * Interval and supervision timeout are microseconds. */
+export interface ConnectionParametersMeasurement<Attachment extends string, _Operation extends string> {
+  readonly connectionId: ConnectionId<Attachment, string>
+  readonly connectionGeneration: GenerationId<'connection-generation', string>
+  readonly intervalUs: number
+  readonly latency: number
+  readonly supervisionTimeoutUs: number
+  readonly observedAtMonotonicMs: number
+  readonly terminal: OperationTerminalRecord<Attachment, string>
+}
+
+export interface ConnectionParametersStreamObservation<Attachment extends string> {
+  readonly connectionId: ConnectionId<Attachment, string>
+  readonly connectionGeneration: GenerationId<'connection-generation', string>
+  readonly intervalUs: number
+  readonly latency: number
+  readonly supervisionTimeoutUs: number
+  readonly observedAtMonotonicMs: number
+  readonly ordinal: number
+}
+
+export interface ConnectionParametersWatch<Attachment extends string> {
+  readonly events: BoundedAsyncStream<ConnectionParametersStreamObservation<Attachment>>
+  close(): Promise<CleanupRecord>
+}
+
 /** Backend result for the connection-level write-length boundary. */
 export interface ConnectionMaximumWriteLengthMeasurement<Attachment extends string, _Operation extends string> {
   readonly connectionId: ConnectionId<Attachment, string>
@@ -96,6 +134,10 @@ export interface ConnectionMaximumWriteLengthMeasurement<Attachment extends stri
   readonly maximumWriteLength: number
   readonly observedAtMonotonicMs: number
   readonly terminal: OperationTerminalRecord<Attachment, string>
+}
+
+export interface ConnectionParametersRequest<Attachment extends string, Operation extends string> {
+  readonly operation: OperationOptions<Attachment, Operation>
 }
 
 export interface ReadRssiRequest<Attachment extends string, Operation extends string> {
@@ -114,6 +156,11 @@ export interface EffectiveMtuRequest<Attachment extends string, Operation extend
 export interface RequestPriorityRequest<Attachment extends string, Operation extends string> {
   readonly operation: OperationOptions<Attachment, Operation>
   readonly priority: ConnectionPriority
+}
+
+export interface RequestSubrateRequest<Attachment extends string, Operation extends string> {
+  readonly operation: OperationOptions<Attachment, Operation>
+  readonly mode: ConnectionSubrateMode
 }
 
 export interface ReadPhyRequest<Attachment extends string, Operation extends string> {

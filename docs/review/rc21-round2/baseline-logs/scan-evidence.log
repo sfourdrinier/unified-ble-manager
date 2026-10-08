@@ -1,0 +1,36 @@
+{
+  "reviewHead": "b80542f39144949738b04dc7d19b4a7ee52cc8c6",
+  "positiveControl": "simple name+service split works",
+  "findings": [
+    {
+      "case": "expired-name-carried-forward",
+      "windowMs": 10000,
+      "nameAgeMs": 20000,
+      "actual": "matched with name only observed at t=0",
+      "expected": "no match after name evidence expires"
+    },
+    {
+      "case": "nonempty-service-lists-not-unioned",
+      "actual": "no match for services.all [180D,180F]",
+      "expected": "merge the two in-window packet lists and match"
+    },
+    {
+      "case": "address-type-collision",
+      "actual": "random-peer falsely matches using public-peer name",
+      "expected": "never merge distinct peer identities"
+    },
+    {
+      "case": "inactive-peer-retention",
+      "inactivePeers": 10000,
+      "ageMs": 60000,
+      "retainedEntries": 10001,
+      "expected": "bounded retention with eviction independent of future packets from that identity"
+    },
+    {
+      "case": "ipc-shape",
+      "expiry": "same defect",
+      "listUnion": "same defect",
+      "identity": "same defect"
+    }
+  ]
+}

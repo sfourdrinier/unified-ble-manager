@@ -1,0 +1,18 @@
+[1mpreflight[0m FETCH_HEAD (9916500f)
+  workspace: /home/sfourdrinier/.cache/ubm-preflight/tree-9916500f
+  cargo target (shared): /home/sfourdrinier/.cache/ubm-preflight/cargo-target
+
+[1m▶ install (frozen lockfile)[0m
+  ✓ 6s
+[1m▶ cargo cache (locked, all targets)[0m
+[1m▶ package + tauri-plugin (parallel)[0m
+
+[1m── summary ──[0m
+[32m  ✓ package          566s[0m
+[32m  ✓ tauri-plugin     566s[0m
+[33m  – android          skipped (--fast; includes Expo reference typecheck)[0m
+  total 572s
+
+Not covered: windows/macos legs, the apple job, CoreBluetooth and WinRT
+boundaries, the Node matrix, and the runner OS. Push for those.
+workspace kept: /home/sfourdrinier/.cache/ubm-preflight/tree-9916500f

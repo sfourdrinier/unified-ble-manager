@@ -1,0 +1,41 @@
+bun test v1.4.2 (744846f84)
+
+../ubm-pr251-review-b80542f3/unified-ble-manager-pr251-review-b80542f3/reproductions/mobile-readiness-repro.test.ts:
+MUTATION REPRO {
+  submitted: [ 42 ],
+  nativeReceived: [ 99 ],
+}
+(pass) REPRO: public Apple writeWhenReady retains mutable caller bytes while awaiting readiness [19.84ms]
+FIFO REPRO {
+  submitted: [
+    [ 1 ], [ 2 ]
+  ],
+  nativeOrder: [
+    [ 2 ], [ 1 ]
+  ],
+}
+(pass) REPRO: a later ordinary write passes an earlier public writeWhenReady [2.24ms]
+INVALIDATION REPRO {
+  readAfterInvalidation: "gatt.stale-handle",
+  pendingWrite: "pending",
+}
+(pass) REPRO: database invalidation leaves public writeWhenReady pending until an unrelated ready edge [2.88ms]
+DRAIN FAILURE REPRO {
+  sourceFailure: "injected native drain failure",
+  publicNext: {
+    done: true,
+    value: undefined,
+  },
+}
+(pass) REPRO: native drain failure becomes normal public readiness completion [2.01ms]
+FAILED CLEANUP REPRO {
+  sourceFailed: true,
+  disconnectFailed: true,
+  publicNext: "pending",
+}
+(pass) REPRO: native drain failure leaves readiness pending if connection cleanup also fails [1.54ms]
+
+ 5 pass
+ 0 fail
+ 13 expect() calls
+Ran 5 tests across 1 file. [76.00ms]

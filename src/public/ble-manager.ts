@@ -1,6 +1,8 @@
 // src/public/ble-manager.ts — non-generic application façade (PR1 skeleton)
 
-import type { AdvertisementObservation } from '../backend-contract/advertisement'
+import type { AdvertisementField, AdvertisementObservation } from '../backend-contract/advertisement'
+import { decodeWinRtScanPlatformOptions } from '../backend-contract/advertisement'
+import { assertConnectionParameterValues } from '../backend-contract/connection-parameter-validation'
 import type { ScanOptions as InternalScanOptions } from '../backend-contract/advertisement'
 import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../backend-contract/connection-lifecycle'
 import {
@@ -70,6 +72,7 @@ import {
   type NormalizedScanObservation,
   type ScanQuery
 } from './scan-query'
+import { ScanEvidenceSession } from '../backend-contract/scan-evidence'
 import { bindScanSourceTerminal, createScanState, projectScanDeliveryTerminal } from './scan-state'
 import type { BlePeerDirectory, BlePeerState, PeerSource } from './peer-directory'
 import { createPublicPeerDirectory } from './peer-directory'
@@ -85,6 +88,9 @@ import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
   type ConnectionPriority,
+  type ConnectionSubrateMode,
+  type ConnectionParametersStreamObservation,
+  type ConnectionParametersWatch,
   type ConnectionWriteReadinessObservation,
   type ConnectionWriteReadinessWatch
 } from '../backend-contract/connection-controls'
@@ -175,7 +181,7 @@ export type PhyPreference = Readonly<{
   readonly tx?: BlePhy
   readonly rx?: BlePhy
 }>
-export type SubrateMode = 'default' | 'low-latency' | 'low-power'
+export type SubrateMode = ConnectionSubrateMode
 export type WriteMode = 'with-response' | 'without-response'
 
 export interface MaximumWriteLengthObservation extends BleControlObservationMetadata {
@@ -249,6 +255,8 @@ export type {
   GattDatabaseSnapshot,
   GattService,
   GattCharacteristic,
+  GattAcquiredWriter,
+  GattAcquiredNotifications,
   GattDescriptor,
   GattSubscription,
   GattValueEvent,
@@ -362,9 +370,21 @@ export interface BleConnection {
 // Public scan session — bounded stream, no generic.
 // Union embraces both native AdvertisementObservation and Tauri IpcAdvertisement
 // until PR4 scan semantics unify; covariance lets each backend stream satisfy the union without casts.
+/** Source clock provenance with structural public values, independent of backend identity brands. */
+export interface PublicSourceTimestamp {
+  readonly monotonicMs: number
+  readonly origin: 'platform' | 'backend'
+  /** Comparable only within this clock epoch. */
+  readonly clockScope?: string
+}
+
 export interface PublicScanObservation extends NormalizedScanObservation {
   readonly peer: BlePeer
   readonly observedAtMonotonicMs: number | null
+  /** Source clock remains platform/backend-scoped; never compare directly with JS receipt time. */
+  readonly sourceTimestamp?: AdvertisementField<PublicSourceTimestamp>
+  /** Opt-in owned combined platform scan record, not separately captured advertising/scan-response PDUs. */
+  readonly rawAdvertisement?: AdvertisementField<Readonly<Uint8Array>>
 }
 
 export type DiscoveryEvent =
@@ -393,14 +413,19 @@ export interface AndroidScanPlatformOptions {
   readonly kind: 'android'
   readonly mode?: AndroidScanMode
   readonly callbackType?: AndroidScanCallbackType
+  /** Android API 21+ report delay in milliseconds. Zero delivers immediately;
+   * positive delays request batching, whose actual delivery timing is OS-owned. */
   readonly reportDelayMs?: number
   readonly legacy?: boolean
+  /** Android API 26+ scan PHY. Requires legacy:false; coded also requires
+   * adapter support. The backend reports the OS refusal rather than ignoring it. */
   readonly phy?: AndroidScanPhy
 }
+export type WinRtScanPlatformOptions = import('../backend-contract/advertisement').WinRtScanPlatformOptions
 export type ScanPlatformOptions =
   | AndroidScanPlatformOptions
   | { readonly kind: 'corebluetooth' }
-  | { readonly kind: 'winrt' }
+  | WinRtScanPlatformOptions
   | { readonly kind: 'web' }
   | { readonly kind: 'electron' }
   | { readonly kind: 'tauri' }
@@ -599,6 +624,7 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
   private terminal: {
     readonly mode: 'close' | 'finish'
     readonly reason: PublicScanEventTerminalReason
+    readonly error?: NormalizedBleError | null
   } | null = null
 
   constructor(
@@ -612,16 +638,27 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
       this.subscribers.add(stream)
       this.startPump()
     } else if (this.terminal.mode === 'finish') {
-      stream.finishWithReason(this.terminal.reason)
+      stream.finishWithReason(this.terminal.reason, this.terminal.error ?? null)
     } else {
-      stream.closeWithReason(this.terminal.reason)
+      stream.closeWithReason(this.terminal.reason, this.terminal.error ?? null)
     }
     const iterator = stream[Symbol.asyncIterator]()
     const delivery = this.delivery
+    let returned = false
+    let failed = false
+    const sourceFailure = () =>
+      rehydratePublicError(
+        this.terminal?.error == null
+          ? contractError('platform.failure', 'stream', 'public-scan.events')
+          : new BackendContractError(this.terminal.error)
+      )
     return {
       next: async () => {
+        if (returned) return { done: true, value: undefined }
+        if (failed) throw sourceFailure()
         while (true) {
           const item = await iterator.next()
+          if (returned) return { done: true, value: undefined }
           if (item.done) return { done: true, value: undefined }
           if (item.value.kind === 'value') return { done: false, value: item.value.value }
           if (item.value.kind === 'overflow') {
@@ -645,10 +682,15 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
               )
             )
           }
+          if (item.value.reason === 'source-failed') {
+            failed = true
+            throw sourceFailure()
+          }
           return { done: true, value: undefined }
         }
       },
       return: async () => {
+        returned = true
         this.subscribers.delete(stream)
         await iterator.return()
         return { done: true, value: undefined }
@@ -671,20 +713,20 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
     return terminated
   }
 
-  finish(reason: PublicScanEventTerminalReason): void {
+  finish(reason: PublicScanEventTerminalReason, error?: NormalizedBleError | null): void {
     if (this.terminal !== null) return
-    this.terminal = { mode: 'finish', reason }
+    this.terminal = { mode: 'finish', reason, error }
     for (const subscriber of this.subscribers) {
-      subscriber.finishWithReason(reason)
+      subscriber.finishWithReason(reason, error ?? null)
       this.subscribers.delete(subscriber)
     }
   }
 
-  close(reason: PublicScanEventTerminalReason): void {
+  close(reason: PublicScanEventTerminalReason, error?: NormalizedBleError | null): void {
     if (this.terminal !== null) return
-    this.terminal = { mode: 'close', reason }
+    this.terminal = { mode: 'close', reason, error }
     for (const subscriber of this.subscribers) {
-      subscriber.closeWithReason(reason)
+      subscriber.closeWithReason(reason, error ?? null)
       this.subscribers.delete(subscriber)
     }
   }
@@ -730,7 +772,17 @@ class PublicScanObservationBroadcast {
   emit(observation: PublicScanObservation, byteLength: number): boolean {
     let terminated = false
     for (const subscriber of [...this.subscribers]) {
-      if (subscriber.emit(observation, byteLength).terminated) {
+      const owned =
+        observation.rawAdvertisement?.state === 'present'
+          ? Object.freeze({
+              ...observation,
+              rawAdvertisement: Object.freeze({
+                ...observation.rawAdvertisement,
+                value: new Uint8Array(observation.rawAdvertisement.value)
+              })
+            })
+          : observation
+      if (subscriber.emit(owned, byteLength).terminated) {
         terminated = true
         this.subscribers.delete(subscriber)
       }
@@ -776,6 +828,7 @@ class PublicScanSessionController<Attachment extends string> {
     null
   private pumpStarted = false
   private closed = false
+  private readonly evidence = new ScanEvidenceSession()
 
   constructor(
     private readonly source: BoundedAsyncStream<AdvertisementObservation<Attachment> | IpcAdvertisement>,
@@ -785,6 +838,7 @@ class PublicScanSessionController<Attachment extends string> {
     private readonly now: () => number,
     private readonly scheduleDeadline: InternalScanScheduler,
     private readonly reportLostAfterMs: number | undefined,
+    private readonly includeRawAdvertisement: boolean,
     private readonly requestStop: (reason: PublicScanEventTerminalReason) => void,
     private readonly onDeliveryEnded: (reason: StreamTerminalNotice['reason']) => void
   ) {
@@ -809,6 +863,7 @@ class PublicScanSessionController<Attachment extends string> {
 
   async closeView(reason: PublicScanEventTerminalReason = 'owner-released'): Promise<BackendCleanupRecord> {
     this.closed = true
+    this.evidence.clear()
     this.cancelPresenceTimers()
     this.observationBroadcast.closeWithReason(reason)
     this.eventBroadcast.close(reason)
@@ -851,14 +906,24 @@ class PublicScanSessionController<Attachment extends string> {
         }
         this.accept(item.value.value)
       }
-    } catch {
-      this.finish('source-failed')
+    } catch (error) {
+      const failure =
+        error instanceof BackendContractError
+          ? error.normalized
+          : contractError('platform.failure', 'scan', 'public-scan.pump', {
+              domain: 'javascript',
+              code: error instanceof Error ? error.name : 'unknown',
+              safeMessage: error instanceof Error ? error.message : 'Unknown scan pump failure',
+              metadata: {}
+            }).normalized
+      this.finish('source-failed', failure)
     }
   }
 
   private accept(raw: AdvertisementObservation<Attachment> | IpcAdvertisement): void {
-    const observation = projectPublicScanObservation(raw)
-    if (!observationMatchesScanQuery(this.query, observation)) return
+    const matched = this.matchSplitAdvertisement(raw)
+    if (matched === null) return
+    const observation = projectPublicScanObservation(matched, this.includeRawAdvertisement)
 
     this.observePresence(observation)
     if (this.duplicates === 'coalesced') {
@@ -876,6 +941,17 @@ class PublicScanSessionController<Attachment extends string> {
       estimatePublicDiscoveryEventBytes({ kind: 'observed', peer: observation.peer })
     )
     if (observationTerminated || eventTerminated) this.terminateFromOverflow()
+  }
+
+  private matchSplitAdvertisement(
+    raw: AdvertisementObservation<Attachment> | IpcAdvertisement
+  ): AdvertisementObservation<Attachment> | IpcAdvertisement | null {
+    const matches = (candidate: AdvertisementObservation<Attachment> | IpcAdvertisement): boolean =>
+      observationMatchesScanQuery(this.query, normalizeScanObservation(candidate))
+    if ('device' in raw) {
+      return this.evidence.matchAdvertisement(raw, matches)
+    }
+    return this.evidence.matchIpc(raw, this.now(), 'public-scan', matches)
   }
 
   private observePresence(observation: PublicScanObservation): void {
@@ -1033,10 +1109,10 @@ class PublicScanSessionController<Attachment extends string> {
             : 'closed'
     if (observationMode === 'close') {
       this.observationBroadcast.closeWithReason(reason, error)
-      this.eventBroadcast.close(eventReason)
+      this.eventBroadcast.close(eventReason, error)
     } else {
       this.observationBroadcast.finishWithReason(reason, error)
-      this.eventBroadcast.finish(eventReason)
+      this.eventBroadcast.finish(eventReason, error)
     }
     this.onDeliveryEnded(reason)
   }
@@ -1055,7 +1131,18 @@ interface OptionalInternalControlConnection<Attachment extends string> {
     readonly platformPduBytes: number | null
     readonly observedAtMonotonicMs?: number
   }>
-  readonly writeWithoutResponseReadiness?: () => Promise<ConnectionWriteReadinessWatch<Attachment>>
+  readonly writeWithoutResponseReadiness?: (
+    options?: PublicOperationOptions
+  ) => Promise<ConnectionWriteReadinessWatch<Attachment>>
+  readonly parameters?: () => Promise<{
+    readonly connectionId: string
+    readonly connectionGeneration: string
+    readonly intervalUs: number
+    readonly latency: number
+    readonly supervisionTimeoutUs: number
+    readonly observedAtMonotonicMs: number
+  }>
+  readonly parameterEvents?: (options?: PublicOperationOptions) => Promise<ConnectionParametersWatch<Attachment>>
 }
 
 type PublicControlConnection<
@@ -1160,6 +1247,168 @@ function unsupportedControlStream<Value>(
   return new UnsupportedControlStream(operation, code, descriptor)
 }
 
+function publicParameterObservation(
+  generation: string,
+  observedAtMonotonicMs: number,
+  descriptor: CapabilityDescriptor | null,
+  measured: { readonly intervalUs: number; readonly latency: number; readonly supervisionTimeoutUs: number }
+): ConnectionParametersObservation {
+  assertConnectionParameterValues(measured, 'public-connection.controls.parameters.result')
+  return Object.freeze({
+    ...controlMetadata(generation, observedAtMonotonicMs, descriptor, 'backend-observation'),
+    state: 'measured',
+    intervalMs: measured.intervalUs / 1000,
+    peripheralLatency: measured.latency,
+    supervisionTimeoutMs: measured.supervisionTimeoutUs / 1000,
+    subrateFactor: null,
+    connectionEventLengthMs: null
+  })
+}
+
+function publicParameterStream<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  connection: PublicControlConnection<Attachment, Identity>,
+  generation: string,
+  descriptor: ReturnType<PublicInternalManager<Attachment, Identity>['capability']>
+): AsyncIterable<ConnectionParametersObservation> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<ConnectionParametersObservation> {
+      let watch: ConnectionParametersWatch<Attachment> | null = null
+      let iterator: BoundedAsyncStreamIterator<ConnectionParametersStreamObservation<Attachment>> | null = null
+      const acquisition = new AbortController()
+      let returned = false
+      let closed = false
+      let iteratorDone = false
+      let opening: Promise<void> | null = null
+      let closing: Promise<void> | null = null
+      const operation = 'public-connection.controls.parameter-events'
+      const open = (): Promise<void> => {
+        if (opening === null) {
+          opening = Promise.resolve().then(async () => {
+            if (acquisition.signal.aborted) {
+              throw contractError('operation.aborted', 'connection', 'public-connection.controls.watch-open')
+            }
+            if (connection.parameterEvents === undefined) {
+              throw contractError('capability.unsupported', 'connection', operation)
+            }
+            watch = await connection.parameterEvents({ signal: acquisition.signal, deadline: null })
+          })
+        }
+        return opening
+      }
+      const close = (): Promise<void> => {
+        acquisition.abort()
+        if (closing !== null) return closing
+        const releasing = Promise.resolve().then(async () => {
+          if (opening !== null) {
+            const acquired = await opening.then(
+              () => true,
+              () => false
+            )
+            if (!acquired) return
+          }
+          if (watch === null) return
+          if (iterator === null) {
+            const cleanup = await watch.close()
+            if (cleanup.state === 'release-failed') throw new BleCleanupError(cleanup)
+            return
+          }
+          const ownedWatch = watch
+          await closePublicOwnedWatch(iterator, () => ownedWatch.close(), iteratorDone, 'connection parameter watch')
+        })
+        closing = releasing.catch(error => {
+          closing = null
+          throw error
+        })
+        return closing
+      }
+      return {
+        async next(): Promise<IteratorResult<ConnectionParametersObservation, undefined>> {
+          if (closed) return { done: true, value: undefined }
+          let teardownAttempted = false
+          try {
+            await open()
+            if (closed) {
+              teardownAttempted = true
+              await close()
+              return { done: true, value: undefined }
+            }
+            if (watch === null) throw contractError('lifecycle.invariant-violation', 'connection', operation)
+            if (iterator === null) iterator = watch.events[Symbol.asyncIterator]()
+            const item = await iterator.next()
+            if (closed) {
+              teardownAttempted = true
+              await close()
+              return { done: true, value: undefined }
+            }
+            if (item.done) {
+              iteratorDone = true
+              closed = true
+              teardownAttempted = true
+              await close()
+              return { done: true, value: undefined }
+            }
+            const streamItem = item.value
+            if (streamItem.kind === 'value') {
+              assertPublicConnectionIdentity(connection, streamItem.value, `${operation}.identity`)
+              return {
+                done: false,
+                value: publicParameterObservation(
+                  generation,
+                  streamItem.value.observedAtMonotonicMs,
+                  descriptor,
+                  streamItem.value
+                )
+              }
+            }
+            if (streamItem.kind === 'overflow') throw contractError('stream.overflow', 'connection', operation)
+            if (streamItem.reason === 'source-failed') {
+              throw streamItem.error == null
+                ? contractError('platform.failure', 'stream', operation)
+                : new BackendContractError(streamItem.error)
+            }
+            closed = true
+            teardownAttempted = true
+            await close()
+            return { done: true, value: undefined }
+          } catch (error) {
+            if (
+              returned &&
+              acquisition.signal.aborted &&
+              error instanceof BackendContractError &&
+              error.normalized.code === 'operation.aborted'
+            ) {
+              await close()
+              return { done: true, value: undefined }
+            }
+            const sourceError = rehydratePublicError(error)
+            if (teardownAttempted) throw sourceError
+            closed = true
+            try {
+              await close()
+            } catch (cleanupError) {
+              throw new AggregateError(
+                [sourceError, rehydratePublicError(cleanupError)],
+                'BLE connection-parameter watch operation and cleanup both failed'
+              )
+            }
+            throw sourceError
+          }
+        },
+        async return(): Promise<IteratorResult<ConnectionParametersObservation, undefined>> {
+          returned = true
+          closed = true
+          try {
+            await close()
+            return { done: true, value: undefined }
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
+        }
+      }
+    }
+  }
+}
+
 function publicWriteReadinessStream<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
   connection: PublicControlConnection<Attachment, Identity>,
   generation: string,
@@ -1169,6 +1418,8 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
     [Symbol.asyncIterator](): AsyncIterator<WriteReadinessEvent> {
       let watch: ConnectionWriteReadinessWatch<Attachment> | null = null
       let iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<Attachment>> | null = null
+      const acquisition = new AbortController()
+      let returned = false
       let closed = false
       let iteratorDone = false
       let opening: Promise<void> | null = null
@@ -1177,16 +1428,20 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
       const open = (): Promise<void> => {
         if (opening === null) {
           opening = Promise.resolve().then(async () => {
+            if (acquisition.signal.aborted) {
+              throw contractError('operation.aborted', 'connection', 'public-connection.controls.watch-open')
+            }
             if (connection.writeWithoutResponseReadiness === undefined) {
               throw contractError('capability.unsupported', 'connection', 'public-connection.controls.write-readiness')
             }
-            watch = await connection.writeWithoutResponseReadiness()
+            watch = await connection.writeWithoutResponseReadiness({ signal: acquisition.signal, deadline: null })
           })
         }
         return opening
       }
 
       const close = (): Promise<void> => {
+        acquisition.abort()
         if (closing !== null) return closing
         const operation = Promise.resolve().then(async () => {
           if (opening !== null) {
@@ -1280,6 +1535,15 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
             await close()
             return { done: true, value: undefined }
           } catch (error) {
+            if (
+              returned &&
+              acquisition.signal.aborted &&
+              error instanceof BackendContractError &&
+              error.normalized.code === 'operation.aborted'
+            ) {
+              await close()
+              return { done: true, value: undefined }
+            }
             const sourceError = rehydratePublicError(error)
             if (teardownAttempted) throw sourceError
             closed = true
@@ -1295,6 +1559,7 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
           }
         },
         async return(): Promise<IteratorResult<WriteReadinessEvent, undefined>> {
+          returned = true
           closed = true
           try {
             await close()
@@ -1308,10 +1573,19 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
   }
 }
 
-async function closePublicReadinessWatch<Attachment extends string>(
+function closePublicReadinessWatch<Attachment extends string>(
   iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<Attachment>>,
   close: () => Promise<BackendCleanupRecord>,
   iteratorDone: boolean
+): Promise<void> {
+  return closePublicOwnedWatch(iterator, close, iteratorDone, 'readiness watch')
+}
+
+async function closePublicOwnedWatch<Observation>(
+  iterator: BoundedAsyncStreamIterator<Observation>,
+  close: () => Promise<BackendCleanupRecord>,
+  iteratorDone: boolean,
+  watchName: string
 ): Promise<void> {
   let iteratorError: unknown
   if (!iteratorDone) {
@@ -1326,7 +1600,7 @@ async function closePublicReadinessWatch<Attachment extends string>(
   try {
     const cleanup = await close()
     if (cleanup.state === 'release-failed') {
-      closeError = new BleCleanupError(cleanup, 'BLE readiness watch cleanup failed')
+      closeError = new BleCleanupError(cleanup, `BLE ${watchName} cleanup failed`)
     }
   } catch (error) {
     closeError = error
@@ -1335,7 +1609,7 @@ async function closePublicReadinessWatch<Attachment extends string>(
   if (iteratorError !== undefined && closeError !== undefined) {
     throw new AggregateError(
       [rehydratePublicError(iteratorError), rehydratePublicError(closeError)],
-      'BLE readiness watch teardown failed'
+      `BLE ${watchName} teardown failed`
     )
   }
   if (iteratorError !== undefined) throw rehydratePublicError(iteratorError)
@@ -1577,10 +1851,27 @@ function createPublicConnectionControls<Attachment extends string, Identity exte
       })
     })
 
-  const unsupportedPromise = <Value>(id: `${string}:${string}`, operation: string): Promise<Value> =>
+  const requestSubrate = (mode: SubrateMode, options: OperationOptions = {}): Promise<SubrateResult> =>
     runPublicControl(async () => {
-      requireControlCapability(internal, id, operation)
-      throw contractError('capability.unsupported', 'connection', operation)
+      if (mode !== 'default' && mode !== 'low-latency' && mode !== 'low-power' && mode !== 'high-throughput') {
+        throw contractError('argument.invalid', 'connection', 'public-connection.controls.request-subrate')
+      }
+      const descriptor = requireControlCapability(
+        internal,
+        'connection:subrate',
+        'public-connection.controls.request-subrate'
+      )
+      const normalized = normalizeOperationOptions(options, now)
+      const result = await connection.requestSubrate(mode, { signal: normalized.signal, deadline: normalized.deadline })
+      if (result.requested !== mode || typeof result.accepted !== 'boolean') {
+        throw contractError('protocol.violation', 'connection', 'public-connection.controls.request-subrate.result')
+      }
+      return Object.freeze({
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
+        state: result.accepted ? ('accepted' as const) : ('rejected' as const),
+        requested: mode,
+        observation: null
+      })
     })
 
   return Object.freeze({
@@ -1592,20 +1883,38 @@ function createPublicConnectionControls<Attachment extends string, Identity exte
     readPhy,
     requestPhy,
     parameters: () =>
-      unsupportedPromise<ConnectionParametersObservation>(
-        'connection:parameters',
-        'public-connection.controls.parameters'
-      ),
+      runPublicControl(async () => {
+        const descriptor = requireControlCapability(
+          internal,
+          'connection:parameters',
+          'public-connection.controls.parameters'
+        )
+        if (connection.parameters === undefined) {
+          throw contractError('capability.unsupported', 'connection', 'public-connection.controls.parameters')
+        }
+        const measured = await connection.parameters()
+        assertPublicConnectionIdentity(connection, measured, 'public-connection.controls.parameters.identity')
+        return publicParameterObservation(generation, measured.observedAtMonotonicMs, descriptor, measured)
+      }),
     parameterEvents: () => {
       const descriptor = internal.capability('connection:parameters')
-      return unsupportedControlStream<ConnectionParametersObservation>(
-        'public-connection.controls.parameter-events',
-        descriptor?.state === 'unavailable' ? 'capability.unavailable' : 'capability.unsupported',
-        descriptor
-      )
+      if (descriptor === null || descriptor.state === 'unsupported' || connection.parameterEvents === undefined) {
+        return unsupportedControlStream<ConnectionParametersObservation>(
+          'public-connection.controls.parameter-events',
+          'capability.unsupported',
+          descriptor
+        )
+      }
+      if (descriptor.state === 'unavailable') {
+        return unsupportedControlStream<ConnectionParametersObservation>(
+          'public-connection.controls.parameter-events',
+          'capability.unavailable',
+          descriptor
+        )
+      }
+      return publicParameterStream(connection, generation, descriptor)
     },
-    requestSubrate: (_mode: SubrateMode, _options: OperationOptions = {}) =>
-      unsupportedPromise<SubrateResult>('connection:subrate', 'public-connection.controls.request-subrate'),
+    requestSubrate,
     writeReadiness: (mode: 'without-response') => {
       if (mode !== 'without-response') {
         throw contractError('argument.invalid', 'connection', 'public-connection.controls.write-readiness.mode')
@@ -1715,9 +2024,6 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         )
       }
       const reportLostAfterMs = options.observation?.reportLostAfterMs
-      if (options.observation?.includeRawAdvertisement === true) {
-        throw contractError('capability.unsupported', 'scan', 'public-ble-manager.scan.raw-advertisement')
-      }
       if (options.platform !== undefined && !this.internal.supports('scan:platform-options')) {
         throw contractError('capability.unsupported', 'scan', 'public-ble-manager.scan.platform-options')
       }
@@ -1784,6 +2090,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         this.now,
         (deadlineAt, action) => scheduleInternalScanDeadline(this.internal, deadlineAt, action),
         reportLostAfterMs,
+        options.observation?.includeRawAdvertisement === true,
         reason => {
           stopScan(reason).catch(error => {
             // This automatic attempt has already reported its failure. A
@@ -2591,7 +2898,8 @@ function snapshotPublicAdapterState<Attachment extends string>(
 export function filterScanObservations(
   source: BoundedAsyncStream<AdvertisementObservation<string> | IpcAdvertisement>,
   query: ReturnType<typeof normalizeScanQuery>,
-  duplicates: 'coalesced' | 'all' = 'all'
+  duplicates: 'coalesced' | 'all' = 'all',
+  now: () => number = () => globalThis.performance.now()
 ): BoundedAsyncStream<PublicScanObservation> {
   return {
     limits: source.limits,
@@ -2599,18 +2907,28 @@ export function filterScanObservations(
     [Symbol.asyncIterator](): BoundedAsyncStreamIterator<PublicScanObservation> {
       const iterator = source[Symbol.asyncIterator]()
       const lastObservations = new Map<string, string>()
+      const evidence = new ScanEvidenceSession()
+      const matches = (candidate: AdvertisementObservation<string> | IpcAdvertisement): boolean =>
+        observationMatchesScanQuery(query, normalizeScanObservation(candidate))
       return {
         async next() {
           while (true) {
             const item = await iterator.next()
             if (item.done) {
               lastObservations.clear()
+              evidence.clear()
               return item
             }
             if (item.value.kind === 'overflow' || item.value.kind === 'terminal') {
               return { done: false, value: item.value }
             }
-            const observation = projectPublicScanObservation(item.value.value)
+            const raw = item.value.value
+            const matched =
+              'device' in raw
+                ? evidence.matchAdvertisement(raw, matches)
+                : evidence.matchIpc(raw, now(), 'filtered-scan', matches)
+            if (matched === null) continue
+            const observation = projectPublicScanObservation(matched)
             if (observationMatchesScanQuery(query, observation)) {
               if (duplicates === 'coalesced') {
                 const fingerprint = publicObservationFingerprint(observation)
@@ -2627,6 +2945,7 @@ export function filterScanObservations(
         },
         return: async () => {
           lastObservations.clear()
+          evidence.clear()
           await iterator.return()
           return { done: true, value: undefined }
         },
@@ -2651,7 +2970,11 @@ function publicObservationFingerprint(observation: PublicScanObservation): strin
     serviceUuids: observation.serviceUuids,
     manufacturerData:
       observation.manufacturerData?.map(entry => ({ companyId: entry.companyId, data: bytes(entry.data) })) ?? null,
-    serviceData: observation.serviceData?.map(entry => ({ service: entry.service, data: bytes(entry.data) })) ?? null
+    serviceData: observation.serviceData?.map(entry => ({ service: entry.service, data: bytes(entry.data) })) ?? null,
+    rawAdvertisement:
+      observation.rawAdvertisement?.state === 'present'
+        ? bytes(observation.rawAdvertisement.value)
+        : (observation.rawAdvertisement ?? null)
   })
 }
 
@@ -2659,6 +2982,7 @@ function estimatePublicScanObservationBytes(observation: PublicScanObservation):
   let bytes = 128
   for (const entry of observation.manufacturerData ?? []) bytes += entry.data.byteLength
   for (const entry of observation.serviceData ?? []) bytes += entry.data.byteLength
+  if (observation.rawAdvertisement?.state === 'present') bytes += observation.rawAdvertisement.value.byteLength
   return bytes
 }
 
@@ -2873,7 +3197,8 @@ export function peerFromPublicObservation(
 }
 
 function projectPublicScanObservation<Attachment extends string>(
-  observation: AdvertisementObservation<Attachment> | IpcAdvertisement
+  observation: AdvertisementObservation<Attachment> | IpcAdvertisement,
+  includeRawAdvertisement = false
 ): PublicScanObservation {
   const normalized = normalizeScanObservation(observation)
   const isCompact = 'peerId' in observation
@@ -2893,7 +3218,40 @@ function projectPublicScanObservation<Attachment extends string>(
     lastAdvertisement: normalized
   })
   const observedAtMonotonicMs = isCompact ? null : Number(observation.receivedAtMonotonicMs)
-  return Object.freeze({ ...normalized, peer, observedAtMonotonicMs })
+  const rawAdvertisement =
+    'rawRecord' in observation
+      ? observation.rawRecord.state === 'present'
+        ? Object.freeze({
+            state: 'present' as const,
+            provenance: observation.rawRecord.provenance,
+            value: new Uint8Array(observation.rawRecord.value)
+          })
+        : Object.freeze({ ...observation.rawRecord })
+      : Object.freeze({
+          state: 'absent' as const,
+          provenance: 'not-provided' as const,
+          reason: 'Combined raw scan records are not reported by this source'
+        })
+  return Object.freeze({
+    ...normalized,
+    peer,
+    observedAtMonotonicMs,
+    ...('sourceTimestamp' in observation
+      ? {
+          sourceTimestamp:
+            observation.sourceTimestamp.state === 'present'
+              ? Object.freeze({
+                  ...observation.sourceTimestamp,
+                  value: Object.freeze({
+                    ...observation.sourceTimestamp.value,
+                    monotonicMs: Number(observation.sourceTimestamp.value.monotonicMs)
+                  })
+                })
+              : Object.freeze({ ...observation.sourceTimestamp })
+        }
+      : {}),
+    ...(includeRawAdvertisement ? { rawAdvertisement } : {})
+  })
 }
 
 function assertAddressTargetingCapability(
@@ -3018,9 +3376,12 @@ function assertPublicScanPlatformOptions(options: ScanPlatformOptions | undefine
     }
     return
   }
+  if (options.kind === 'winrt') {
+    decodeWinRtScanPlatformOptions(options, 'public-ble-manager.scan.platform-options')
+    return
+  }
   if (
     options.kind !== 'corebluetooth' &&
-    options.kind !== 'winrt' &&
     options.kind !== 'web' &&
     options.kind !== 'electron' &&
     options.kind !== 'tauri'

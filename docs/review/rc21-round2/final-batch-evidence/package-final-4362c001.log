@@ -1,0 +1,1143 @@
+
+> unified-ble-manager@5.0.0-rc.21 pretest:package /home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b
+> pnpm prepack && node scripts/ci/build-napi-addon.js
+
+
+> unified-ble-manager@5.0.0-rc.21 prepack /home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b
+> node scripts/ci/build-package.js
+
+
+> unified-ble-manager@5.0.0-rc.21 clean:plugin /home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b
+> del-cli plugin/build
+
+
+> unified-ble-manager@5.0.0-rc.21 native-protocol:check /home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b
+> node scripts/native-protocol/generate-native-protocol.js --check
+
+
+> unified-ble-manager@5.0.0-rc.21 validate:evidence /home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b
+> node scripts/evidence/validate-current-evidence.js
+
+Evidence manifest validation passed for 3 file(s).
+native-build-identity: current (src/generated/native-build-identity.ts)
+
+> unified-ble-manager@5.0.0-rc.21 build:plugin /home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b
+> tsc --build plugin
+
+ℹ [commonjs] Cleaning up previous build at lib/commonjs
+ℹ [module] Cleaning up previous build at lib/module
+ℹ [typescript] Cleaning up previous build at lib/typescript
+ℹ [typescript] Generating type definitions with tsc
+ℹ [commonjs] Compiling 331 files in src with babel
+ℹ [module] Compiling 331 files in src with babel
+✔ [module] Wrote files to lib/module
+✔ [commonjs] Wrote files to lib/commonjs
+✔ [typescript] Wrote definition files to lib/typescript
+build-fingerprint: sealed 1086 inputs -> lib/ubm-build-fingerprint.json (a99bb7bc6bb4)
+
+> unified-ble-manager@5.0.0-rc.21 docs:check /home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b
+> node scripts/docs/generate-backend-sdk-reference.js --check && node scripts/docs/generate-platform-support.js --check && node scripts/docs/check-api-reports.js && node scripts/docs/check-generated-html.js && node scripts/docs/check-docs-index.js && prettier --check CHANGELOG.md AGENTS.md docs/NODE.md
+
+API reports checked: 24 TypeScript entrypoints; excluded metadata/config: ./app.plugin.js, ./package.json
+../../../../../tmp/unified-ble-manager-docs-p59fVK/docs/index.html 97ms
+../../../../../tmp/unified-ble-manager-docs-p59fVK/docs/assets/anchor.js 37ms
+../../../../../tmp/unified-ble-manager-docs-p59fVK/docs/assets/site.js 7ms
+Generated HTML checked: byte-identical, root-public-safe and code examples present
+Documentation index, llms.txt, and README agent pointers are consistent.
+Checking formatting...
+All matched files use Prettier code style!
+package artifacts verified: 308 published source files; 23 exact internal runtime sources; 0 exact internal declaration-only sources; 2653 source-derived runtime, map, and declaration artifacts; 11 config-plugin source files; 22 config-plugin artifacts; 125 current entrypoint targets
+build-napi-addon: platform=linux arch=x64 toolchain=1.98.1 profile=debug target=host sourceDigest=ce72233b89fadcf56ba59b44c46d4bff48a204d8b931554a620f717855c88f97
+    Blocking waiting for file lock on build directory
+   Compiling btleplug v0.12.0 (/home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b/vendor/btleplug)
+   Compiling ubm-core v0.1.0 (/home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b/crates/ubm-core)
+   Compiling ubm-desktop v0.1.0 (/home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b/crates/ubm-desktop)
+   Compiling ubm5_napi_echo v0.1.0 (/home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b/bindings/napi)
+   Compiling bluez-async v0.8.2 (/home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b/vendor/bluez-async)
+   Compiling ubm-fake-radio v0.1.0 (/home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b/crates/ubm-fake-radio)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.65s
+build-napi-addon: OK /home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b/bindings/napi/ubm_echo.linux-x64.node (445336912 bytes) identity={"schema":"ubm-native-build-identity/1","binding":"napi","contractRevision":"C-UBM.0.1.2-DRAFT","sourceDigest":"ce72233b89fadcf56ba59b44c46d4bff48a204d8b931554a620f717855c88f97","bindingSchema":"85e35476b3baeffc7678cd83ec25aa77f3c7a17293559bfc91fb684e93b866b3","target":"x86_64-unknown-linux-gnu","profile":"debug","features":[],"rustc":"rustc 1.98.1 (48a229cea 2026-09-01)"}
+
+> unified-ble-manager@5.0.0-rc.21 test:package /home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b
+> jest --config jest.package.config.js
+
+PASS __tests__/native-protocol/AppleNativeProtocolV2.test.js
+PASS __tests__/Docs.consumer.test.js
+PASS __tests__/core/operation-coordinator.test.js
+PASS __tests__/NativeBuildIdentity.test.js
+PASS __tests__/web/web-bluetooth-availability.test.js
+PASS __tests__/EvidenceManifest.test.js
+PASS __tests__/react.test.js
+PASS __tests__/web/web-bluetooth-lifecycle-hardening.test.js
+PASS __tests__/ipc/provisional-admission.test.js
+PASS __tests__/backends/corebluetooth/corebluetooth-lifecycle-quarantine.test.js
+PASS __tests__/TauriTransport.test.js
+PASS __tests__/public-link-controls.test.js
+PASS __tests__/web/web-bluetooth-backend.test.js
+PASS __tests__/backends/bluez/bluez-security.test.js
+PASS __tests__/ipc/pending-stream-bounds.test.js
+PASS __tests__/public-adapter-watch.test.js
+PASS __tests__/manager/ble-manager.slice.test.js
+PASS __tests__/public-stream-runtime.test.js
+PASS __tests__/public-connection-supervisor.test.js
+PASS __tests__/backends/winrt/winrt-operation-dispatcher.test.js
+PASS __tests__/ipc/event-pump-termination.test.js
+PASS __tests__/native-protocol/AndroidSecurityProtocolBoundary.test.js
+PASS __tests__/backends/corebluetooth/corebluetooth-vertical-slice.test.js
+PASS __tests__/ipc/public-manager-controls.test.js
+PASS __tests__/public-stream-followup.test.js
+PASS __tests__/backends/bluez/bluez-vertical-slice.test.js
+PASS __tests__/backends/corebluetooth/corebluetooth-capabilities-and-database.test.js
+PASS __tests__/native-protocol/AndroidDescriptorProtocolBoundary.test.js
+PASS __tests__/backends/bluez/bluez-lifecycle-regressions.test.js
+PASS __tests__/ReactNativeRustCoreProvider.test.js
+PASS __tests__/manager/long-write.slice.test.js
+PASS __tests__/backends/winrt/winrt-vertical-slice.test.js
+PASS __tests__/backends/same-peer-join.test.js
+PASS __tests__/backends/bluez/bluez-address-targeting.test.js
+PASS __tests__/public-gatt-object-model.test.js
+PASS __tests__/scenarios/production-boundary-scenarios.test.js
+PASS __tests__/expo.test.js
+PASS __tests__/ElectronPublicManager.test.js
+PASS __tests__/TauriManager.test.js
+PASS __tests__/backends/winrt/winrt-security.test.js
+FAIL __tests__/ipc/connection-cleanup.test.js
+  ● parameterEvents private control metadata › terminalizes timestamp NaN and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2017:12)
+      at close (src/ipc/manager.ts:2036:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● parameterEvents private control metadata › terminalizes timestamp infinity and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2017:12)
+      at close (src/ipc/manager.ts:2036:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● parameterEvents private control metadata › terminalizes ordinal NaN and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2017:12)
+      at close (src/ipc/manager.ts:2036:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● parameterEvents private control metadata › terminalizes ordinal infinity and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2017:12)
+      at close (src/ipc/manager.ts:2036:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● writeReadiness private control metadata › terminalizes timestamp NaN and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2094:12)
+      at close (src/ipc/manager.ts:2113:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● writeReadiness private control metadata › terminalizes timestamp infinity and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2094:12)
+      at close (src/ipc/manager.ts:2113:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● writeReadiness private control metadata › terminalizes ordinal NaN and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2094:12)
+      at close (src/ipc/manager.ts:2113:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● writeReadiness private control metadata › terminalizes ordinal infinity and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2094:12)
+      at close (src/ipc/manager.ts:2113:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+PASS __tests__/expo-rust-host-services.test.js
+PASS __tests__/backends/bluez/dbus-next-bluez-boundary.test.js
+PASS __tests__/tck/ubm5-race-bounds-cleanup.test.js
+PASS __tests__/ConnectDeadlineVocabulary.test.js
+PASS __tests__/backends/reactnative/react-native-android-vertical-slice.test.js
+PASS __tests__/backends/scan-overflow-native-release.test.js
+PASS __tests__/native-protocol/NativeProtocolV2Contract.test.js
+PASS __tests__/backends/reactnative/rust-core-provider.test.js
+PASS __tests__/backend-contract/ElectronArbiterSecurity.test.js
+PASS __tests__/backends/reactnative/rust-core-legacy-parity.test.js
+PASS __tests__/native-continuation-radio-script.test.js
+PASS __tests__/StableReleaseGate.test.js
+PASS __tests__/tauri-gatt-database.test.js
+PASS __tests__/backends/reactnative/background-continuation-claim-path.test.js
+PASS __tests__/ElectronIpcHardening.test.js
+PASS __tests__/electron/effective-mtu-ipc.test.js
+PASS __tests__/ElectronIpcBoundary.test.js
+PASS __tests__/AndroidModernization.js
+PASS __tests__/BuildFingerprint.test.js
+PASS __tests__/backends/reactnative/rust-core-drain-no-lost-wake.test.js
+PASS __tests__/backends/desktop/native-continuation-controller.test.js
+PASS __tests__/core/unified-lifecycle-hardening.test.js
+PASS __tests__/backends/desktop/desktop-factories.test.js
+PASS __tests__/backend-contract/AdapterAuthorization.test.js
+PASS __tests__/backends/reactnative/rust-core-binding.test.js
+PASS __tests__/public-security.test.js
+PASS __tests__/backend-contract/scan-planning.test.js
+PASS __tests__/backends/reactnative/react-native-restoration.test.js
+match-all=scan-query-v1:1820a704cc811a0a
+compound-exclusion-wins=scan-query-v1:90c526130e59a330
+masked-bytes-match=scan-query-v1:ce5efa70f733c264
+masked-bytes-missing-fields-do-not-match=scan-query-v1:ce5efa70f733c264
+canonical-order-digest=scan-query-v1:5945951ada5b525a
+PASS __tests__/manager/public-helpers.test.js
+PASS __tests__/public-scan-query.test.js
+PASS __tests__/core/scan-connect-late-cleanup.test.js
+PASS __tests__/tck/deterministic-r12-limits-conformance.test.js
+PASS __tests__/backends/bluez/bluez-public-gatt-occurrence.test.js
+PASS __tests__/manager/manager-security.test.js
+PASS __tests__/Docs.host-guidance.test.js
+PASS __tests__/tck/production-tck.test.js
+PASS __tests__/backends/reactnative/rust-core-scan-batch-delivery.test.js
+PASS __tests__/backends/reactnative/rust-core-write-readiness.test.js
+PASS __tests__/Docs.pr8.test.js
+PASS __tests__/public-adapter-readiness-cancellation.test.js
+PASS __tests__/backends/adapter-event-stream-unregister.test.js
+PASS __tests__/public-errors.test.js
+PASS __tests__/ipc/public-scan-session-state.test.js
+PASS __tests__/core/adapter-state-watch-cleanup.test.js
+PASS __tests__/backends/desktop/desktop-peer-directory.test.js
+PASS __tests__/ExampleLibraryStaleness.test.js
+  ● Console
+
+    console.log
+      prepare-example-ios: copied RustCore needs refresh: stale RustCore
+
+      at log (examples-shared/dev/prepare-example-ios.js:22:15)
+
+PASS __tests__/backends/security-watch-unregister.test.js
+PASS __tests__/G6APackedConsumerProof.test.js
+PASS __tests__/core/bounded-stream.test.js
+PASS __tests__/electron/electron-adapter-recovery.test.js
+PASS __tests__/backends/reactnative/r01-native-manager.test.js
+PASS __tests__/backends/reactnative/rust-core-diagnostic-surfacing.test.js
+PASS __tests__/core/write-when-ready.test.js
+PASS __tests__/backends/desktop/desktop-diagnostic-surfacing.test.js
+PASS __tests__/backends/bluez/bluez-connection-controls.test.js
+PASS __tests__/NativeStatus.test.js
+PASS __tests__/cli-distribution.test.js
+PASS __tests__/core/connect-deadline-cancels-backend.test.js
+PASS __tests__/tck/ubm5-watermark-and-fault-guard.test.js
+PASS __tests__/AndroidPrebuilds.test.js
+PASS __tests__/public-effective-mtu.test.js
+PASS __tests__/electron/public-transport-health.test.js
+PASS __tests__/electron/electron-link-loss-reconnect.test.js
+PASS __tests__/backends/reactnative/continuation-setup.test.js
+PASS __tests__/backends/desktop/desktop-process-host.test.js
+PASS __tests__/CiRelease.canonicalPackage.test.js
+PASS __tests__/backends/desktop/desktop-duplicate-uuid-occurrences.test.js
+PASS __tests__/PackageModernization.js
+PASS __tests__/profiles/public-profiles.test.js
+PASS __tests__/TvBuildPythonFallback.test.js
+PASS __tests__/backends/desktop/desktop-public-acquired-gatt.test.js
+PASS __tests__/TauriRustPlugin.test.js
+PASS __tests__/backends/reactnative/rust-core-scan-terminal-stop.test.js
+PASS __tests__/backends/desktop/desktop-peer-directory-provider.test.js
+PASS __tests__/tck/ipc-transport-event-sink-scenario.test.js
+PASS __tests__/ipc/connection-release-lifecycle.test.js
+PASS __tests__/expo-readiness-actions.test.js
+PASS __tests__/electron/main-binding-release-retry.test.js
+PASS __tests__/OwnedCore.structure.test.js
+PASS __tests__/public-discovered-connection-errors.test.js
+PASS __tests__/backends/reactnative/rust-core-ask-authorized.test.js
+PASS __tests__/Package.contents.test.js
+PASS __tests__/AndroidArm32Consumer.test.js
+PASS __tests__/NativePrebuiltTarballChecks.test.js
+PASS __tests__/backends/desktop/desktop-legacy-identity.test.js
+PASS __tests__/backends/desktop/desktop-scan-freshness.test.js
+PASS __tests__/backends/desktop/desktop-recording-store-loader.test.js
+PASS __tests__/expo-permission-request.test.js
+PASS __tests__/backends/reactnative/rust-core-wire.test.js (5.386 s)
+PASS __tests__/backends/desktop/desktop-event-reconcile.test.js
+PASS __tests__/tck/first-party-tck-registration.test.js
+PASS __tests__/tck/first-party-backends.tck.test.js
+PASS __tests__/native-protocol/AndroidScanPlatformOptions.test.js
+PASS __tests__/core/deterministic-lifecycle-hardening.test.js
+PASS __tests__/backends/reactnative/rust-core-wire.golden.test.js
+PASS __tests__/tck/ubm5-factory-seam.test.js
+PASS __tests__/TauriBootstrapContract.test.js
+PASS __tests__/public-peer-directory-admission.test.js
+PASS __tests__/backends/desktop/desktop-rust-core-provider.test.js (5.557 s)
+PASS __tests__/public-address-targeting.test.js
+PASS __tests__/web/web-bluetooth-descriptor-absence.test.js
+PASS __tests__/AndroidRustPackaging.test.js
+PASS __tests__/backends/bluez/bluez-scan-planner.test.js
+PASS __tests__/backends/desktop/parameter-watch-ordering.test.js
+PASS __tests__/AndroidTvEmu.test.js
+PASS __tests__/backends/reactnative/background-continuation-declaration.test.js
+PASS __tests__/backends/bluez/bluez-pairing-generation.test.js
+PASS __tests__/IosVerifyRustCore.test.js
+PASS __tests__/backends/deterministic/deterministic-security.test.js
+PASS __tests__/expo-legacy-error-codes.test.js
+PASS __tests__/backends/desktop/desktop-public-shared-release.test.js
+PASS __tests__/driver/accessory-chooser-sample.test.js
+PASS __tests__/License.packaging.test.js
+PASS __tests__/Docs.bluez-le-gatt.test.js
+PASS __tests__/NativeRefresh.test.js
+PASS __tests__/backends/reactnative/r01-poison.test.js
+PASS __tests__/profiles/profile-codecs.test.js
+PASS __tests__/ExampleBleService.parity.test.js
+PASS __tests__/native-protocol/AppleNativeEventIngress.test.js
+PASS __tests__/backend-contract/recovery.test.js
+PASS __tests__/public-capabilities.test.js
+PASS __tests__/ReleaseRetrySafety.test.js
+PASS __tests__/License.policy.test.js
+PASS __tests__/backends/reactnative/rust-core-control-reconcile.test.js
+PASS __tests__/backends/corebluetooth/corebluetooth-operation-dispatcher.test.js
+PASS __tests__/NativePrebuildDistribution.test.js
+PASS __tests__/backends/reactnative/d2v-entrypoint-ownership.test.js
+PASS __tests__/native-protocol/AndroidScanAddressFilter.test.js
+PASS __tests__/expo-readiness.test.js
+PASS __tests__/backends/reactnative/chooser-selection-mode.test.js
+PASS __tests__/backends/reactnative/background-continuation-capabilities.test.js
+PASS __tests__/backends/reactnative/rust-core-public-link-controls.test.js
+PASS __tests__/core/trace-recorder.test.js
+PASS __tests__/AndroidRustCToolchain.test.js
+PASS __tests__/node-host-adapter-selection.test.js
+PASS __tests__/public-peer-reference.test.js
+PASS __tests__/tck/pr8-closure.test.js
+PASS __tests__/profiles/standard-commands.test.js
+PASS __tests__/backends/reactnative/rust-core-encryption.test.js
+PASS __tests__/ExampleExpoRegression.test.js
+PASS __tests__/Web4.0Example.test.js
+PASS __tests__/backends/desktop/desktop-public-release-observation.test.js
+PASS __tests__/tck/deterministic/deterministic-tck-binding.test.js
+PASS __tests__/ParallelPublisherProduction.test.js
+PASS __tests__/backends/reactnative/background-continuation-backlog.test.js
+PASS __tests__/LegacyArchitectureAbsence.test.js
+PASS __tests__/CoreBluetoothLiveEvidence.test.js
+PASS __tests__/backends/reactnative/rust-core-scan-lease.test.js
+PASS __tests__/h10-acc-radio-script.test.js
+PASS __tests__/backends/winrt/winrt-scan-planner.test.js
+PASS __tests__/ShippedGraphExcludesLegacy.test.js
+PASS __tests__/DriverTestWorkflow.test.js
+PASS __tests__/tck/pr9-planner-differential.test.js
+PASS __tests__/driver/link-loss-outage.test.js
+PASS __tests__/IosRustCoreSelection.test.js
+PASS __tests__/backends/reactnative/rust-core-manager-f2b-fixes.test.js
+PASS __tests__/core/delivery-requirement-subscription-key.test.js
+PASS __tests__/ParallelPublisherDraft.test.js
+PASS __tests__/PackedHostConsumerCheck.test.js
+PASS __tests__/backends/bluez/bluez-operation-dispatcher.test.js
+PASS __tests__/Package.identity.test.js
+PASS __tests__/NativeConsumerGuards.test.js
+PASS __tests__/public-write-when-ready.test.js
+PASS __tests__/backends/reactnative/rust-core-adapter-recovery.test.js
+PASS __tests__/ipc-address-targeting-capability.test.js
+PASS __tests__/backends/corebluetooth/corebluetooth-scan-planner.test.js
+PASS __tests__/native-protocol/AndroidPhyRuntimeCapability.test.js
+PASS __tests__/TvPackedConsumer.test.js
+PASS __tests__/ipc/without-response-write-receipt.test.js
+PASS __tests__/ElectronProcessFailureEnvelope.test.js
+PASS __tests__/recording-retirement-acceptance.test.js
+PASS __tests__/backend-contract/SecurityCancelPairingVocabulary.test.js
+PASS __tests__/backends/reactnative/background-continuation-claim-dispose.test.js
+PASS __tests__/backends/reactnative/continuation-recording.test.js
+PASS __tests__/core/deterministic-subscription-cleanup.test.js
+PASS __tests__/manager/consumer-handles.test.js
+PASS __tests__/ipc/capability-bootstrap.test.js
+PASS __tests__/IpcPeerDirectory.test.js
+PASS __tests__/ipc/error-contract.test.js
+PASS __tests__/ConnectRadioFailureRetryability.test.js
+PASS __tests__/backends/reactnative/rust-core-restored-peer-name.test.js
+PASS __tests__/TauriScanQueryDigestCorpus.test.js
+PASS __tests__/advanced-public-manager-facade.test.js
+PASS __tests__/IosLegacyBridgeBoundary.test.js
+PASS __tests__/Docs.recipes.test.js
+PASS __tests__/backends/winrt/winrt-provider-boundary-failure.test.js
+PASS __tests__/backends/reactnative/accessory-manager.test.js
+PASS __tests__/AppleContinuationBootstrap.test.js
+PASS __tests__/electron/packed-fixture-ipc-version.test.js
+PASS __tests__/backends/reactnative/rust-core-connect-supersede.test.js
+PASS __tests__/backends/desktop/desktop-public-parameters.test.js
+PASS __tests__/backends/reactnative/react-native-apple-rust-authority.test.js
+PASS __tests__/ReleaseVersionPolicy.test.js
+PASS __tests__/backends/reactnative/accessory-chooser.test.js
+PASS __tests__/backends/reactnative/background-continuation.test.js
+PASS __tests__/core/bounded-stream-close-after-finish.test.js
+PASS __tests__/backends/desktop/bluez-connection-policy.test.js
+PASS __tests__/BluezPrivateBusCi.test.js
+PASS __tests__/backends/desktop/desktop-connect-acquisition-supersede.test.js
+PASS __tests__/MetroPortGuard.test.js
+PASS __tests__/backends/bluez/bluez-backend.test.js
+PASS __tests__/IosModernization.js
+PASS __tests__/backends/reactnative/rust-core-legacy-error-identity.test.js
+PASS __tests__/TauriScanPlanBoundary.test.js
+PASS __tests__/PackedBunDesktopAcceptance.test.js
+PASS __tests__/backends/desktop/desktop-instance-capabilities.test.js
+PASS __tests__/backends/reactnative/r01-factory-flip.test.js
+PASS __tests__/BuildNapiAddonInstall.test.js
+PASS __tests__/PackFixtureProcess.test.js
+PASS __tests__/tck/occurrence-indexing.test.js
+PASS __tests__/backends/desktop/desktop-core-loader.test.js
+PASS __tests__/backends/corebluetooth/singleton-service-scan-planner.test.js
+PASS __tests__/backends/deterministic/deterministic-scan-planner.test.js
+PASS __tests__/serializable-record-clone.test.js
+PASS __tests__/native-protocol/AppleReadNotifyProvenance.test.js
+PASS __tests__/backends/desktop/desktop-adapter-recovery.test.js
+PASS __tests__/RetiredDesktopProducers.test.js
+PASS __tests__/core-scan-platform-gate.test.js
+PASS __tests__/native-protocol/NativeProtocolCiGates.test.js
+PASS __tests__/expo-readiness-pending-adapter.test.js
+PASS __tests__/rc41-audit-closure.test.js
+PASS __tests__/backends/winrt/winrt-adapter-watch-atomicity.test.js
+PASS __tests__/ipc-scan-platform-capability.test.js
+PASS __tests__/backends/reactnative/rust-core-android-resource-id.test.js
+PASS __tests__/backend-contract/CancellationContractReachable.test.js
+PASS __tests__/Docs.semantic.test.js
+PASS __tests__/backends/desktop/desktop-process-host-initialization.test.js
+PASS __tests__/backends/reactnative/rust-core-effective-mtu-options.test.js
+PASS __tests__/backends/desktop/desktop-production-entrypoints-exclude-test-seams.test.js
+PASS __tests__/core/core-capabilities.test.js
+PASS __tests__/backends/desktop/desktop-public-service-graph.test.js
+PASS __tests__/backends/desktop/desktop-dispatch-radio-forwarding.test.js
+PASS __tests__/DeterministicWaits.test.js
+PASS __tests__/tck/ubm5-draft-corrections.test.js
+PASS __tests__/public-scan-provenance.test.js
+PASS __tests__/native-continuation-mobile-status.test.js
+PASS __tests__/U9MigrationRehearsal.test.js
+PASS __tests__/PublishWorkflowHeadless.test.js
+PASS __tests__/backends/bluez/bluez-object-store.test.js
+PASS __tests__/public-contract-reset.test.js
+PASS __tests__/backends/desktop/electron-process-controls.test.js
+PASS __tests__/ReleaseArtifactsRust.test.js
+PASS __tests__/public-find-deadline-delivery.test.js
+PASS __tests__/expo-native-runtime.test.js
+PASS __tests__/Docs.agents-5x.test.js
+PASS __tests__/backends/reactnative/r16-non-node-boundary.test.js
+PASS __tests__/backends/desktop/desktop-public-write-readiness.test.js
+PASS __tests__/backends/reactnative/rust-core-exact-cancel.test.js
+PASS __tests__/h10-sim-ci.test.js
+PASS __tests__/manager/public-helper-stream-teardown.test.js
+PASS __tests__/tck/web-unsupported-capabilities-scenario.test.js
+PASS __tests__/NativeBuildRsIdentity.test.js
+PASS __tests__/ElectronSmokeLauncher.test.js
+PASS __tests__/core/public-connection-event-broadcast.test.js
+PASS __tests__/backends/reactnative/rust-core-subrate.test.js
+PASS __tests__/backends/corebluetooth/corebluetooth-adapter-watch-atomicity.test.js
+PASS __tests__/backends/bluez/bluez-adapter-watch-atomicity.test.js
+PASS __tests__/backends/reactnative/continuation-wake-stage.test.js
+PASS __tests__/backends/reactnative/rust-core-configured-restoration.test.js
+PASS __tests__/backends/reactnative/rn-production-graph.test.js
+PASS __tests__/native-protocol/NativeProtocolV2Migration.test.js
+PASS __tests__/backends/bluez/bluez-package-surface.test.js
+PASS __tests__/native-protocol/AndroidScanAndReceiverOwnershipSourceGuard.test.js
+PASS __tests__/NativePrebuildSafety.test.js
+PASS __tests__/react-native-native-entropy.test.js
+PASS __tests__/backends/bluez/dbus-next-alias.test.js
+PASS __tests__/public-parameter-validation.test.js
+PASS __tests__/backends/reactnative/companion-chooser.test.js
+PASS __tests__/backends/reactnative/rust-core-bridge-shape.test.js
+PASS __tests__/UniffiGeneratedWhitespace.test.js
+PASS __tests__/host-identity-random-source.test.js
+PASS __tests__/scenarios/manager-scenarios.test.js
+PASS __tests__/CargoCacheWarmup.test.js
+PASS __tests__/TauriLifecycleCleanup.test.js
+PASS __tests__/backends/reactnative/rust-core-discovery-failure.test.js
+PASS __tests__/Docs.index.test.js
+PASS __tests__/compose-abort-signal.test.js
+PASS __tests__/ipc/advertisement-view-filter.test.js
+PASS __tests__/backend-contract/ContractV1Completion.test.js
+PASS __tests__/native-protocol/ControlSurfaceProtocolCompatibility.test.js
+PASS __tests__/backends/reactnative/android-phy-source.test.js
+PASS __tests__/backends/reactnative/rust-core-peer-clock.test.js
+PASS __tests__/ReactNativePackedArtifacts.test.js
+PASS __tests__/native-protocol/AndroidGattPrioritySchedulerSourceGuard.test.js
+PASS __tests__/ipc/security-terminal.test.js
+PASS __tests__/ipc/lifecycle-platform-detail.test.js
+PASS __tests__/backends/reactnative/rust-core-android-peer-id.test.js
+PASS __tests__/backends/reactnative/rust-core-presence-peer-id.test.js
+PASS __tests__/ThirdPartyBackendPackedFixture.test.js
+PASS __tests__/native-continuation-control-context.test.js
+PASS __tests__/backends/desktop/desktop-public-winrt-scan-options.test.js
+PASS __tests__/public-stream-cross-copy-portability.test.js
+PASS __tests__/AppleExpoRuntimeSwiftSelectors.test.js
+PASS __tests__/DesktopAcceptanceCache.test.js
+PASS __tests__/tck/deterministic/deterministic-resource-counters.test.js
+PASS __tests__/native-protocol/AndroidDescriptorProtocolContract.test.js
+PASS __tests__/BluezSourceAssetPolicy.test.js
+PASS __tests__/backends/reactnative/continuation-link-result.test.js
+PASS __tests__/IosExpoRestorationPreflight.test.js
+PASS __tests__/native-protocol/AndroidPhyProtocolContract.test.js
+PASS __tests__/AndroidPresenceManifest.test.js
+PASS __tests__/public-scan-state.test.js
+PASS __tests__/plugin-runtime-boundary.test.js
+PASS __tests__/backend-contract/ContractInvariants.test.js
+PASS __tests__/SuppliedPackedTarball.test.js
+PASS __tests__/public-manager-peer-id-authority.test.js
+PASS __tests__/pr12-stable-qualification.test.js
+PASS __tests__/tck/deterministic/deterministic-gatt-error-mapping.test.js
+PASS __tests__/TauriContractFoundation.test.js
+PASS __tests__/backends/desktop/desktop-staging-synthetic-only.test.js
+PASS __tests__/public-diagnostics-backend-authority.test.js
+PASS __tests__/Package.binding-exclusions.test.js
+PASS __tests__/ReactNativeRustCore.test.js
+PASS __tests__/backends/desktop/native-continuation-recording.test.js
+PASS __tests__/native-protocol/AndroidProtocolCompatibility.test.js
+PASS __tests__/backends/desktop/bluez-policy-factories.test.js
+PASS __tests__/backends/desktop/desktop-scan-arbitration.test.js
+PASS __tests__/backends/reactnative/rust-core-drain-control-loss.test.js
+PASS __tests__/backends/reactnative/react-native-adapter-watch-atomicity.test.js
+PASS __tests__/CheckHostExports.test.js
+PASS __tests__/performance/scan-path-harness.test.js
+PASS __tests__/backends/desktop/desktop-parity-blockers.test.js
+PASS __tests__/BrandIcon.test.js
+PASS __tests__/backends/reactnative/continuation-recording-host.test.js
+PASS __tests__/backends/reactnative/headless-known-peer.test.js
+PASS __tests__/backends/corebluetooth/corebluetooth-provider-preparation.test.js
+PASS __tests__/NpmProvenanceSource.test.js
+PASS __tests__/backends/desktop/desktop-adapter-watch-atomicity.test.js
+PASS __tests__/backend-contract/capability-catalog.test.js
+PASS __tests__/native-protocol/AndroidMtuProtocolContract.test.js
+PASS __tests__/public-scan-planner.integration.test.js
+PASS __tests__/AndroidBundleInputs.test.js
+PASS __tests__/native-protocol/AndroidGattCacheRecoverySourceGuard.test.js
+PASS __tests__/AndroidUnitTestScope.test.js
+PASS __tests__/Docs.pr10.test.js
+PASS __tests__/JestFixtureDiscovery.test.js
+PASS __tests__/backends/desktop/desktop-process-host-cleanup.test.js
+PASS __tests__/native-protocol/AndroidPhyProtocolBoundary.test.js
+PASS __tests__/ExampleExpoRestorationConfig.test.js
+PASS __tests__/CanonicalPackageAbsence.test.js
+PASS __tests__/backend-contract/own-bytes-type-check.test.js
+PASS __tests__/backends/reactnative/rust-core-double-schema.test.js
+PASS __tests__/native-protocol/AndroidSecurityCancellationSourceGuard.test.js
+PASS __tests__/Docs.changelog-departures.test.js
+PASS __tests__/web/navigator-default-environment.test.js
+PASS __tests__/native-protocol/AccessoryChooser.test.js
+PASS __tests__/PackageVersionParity.test.js
+PASS __tests__/core/virtual-clock-completion.test.js
+PASS __tests__/StrictTyping.no-silencing-assertions.test.js
+PASS __tests__/native-protocol/UniffiReproducibility.test.js
+PASS __tests__/backends/reactnative/android-mtu-source.test.js
+PASS __tests__/ExampleAndroidCrashLoop.test.js
+PASS __tests__/backends/desktop/desktop-process-host-entrypoint.test.js
+PASS __tests__/Docs.desktop-peer-mechanisms.test.js
+PASS __tests__/ExampleExpoInstallRouting.test.js
+PASS __tests__/native-protocol/AndroidBondedPeersSource.test.js
+PASS __tests__/public/service-access-restriction.test.js
+PASS __tests__/Docs.tv.test.js
+PASS __tests__/TauriExample.test.js
+PASS __tests__/GeneratedPlatformSupport.test.js
+PASS __tests__/ipc/windows-scan-options.test.js
+PASS __tests__/Package.no-dbus-next-peer.test.js
+PASS __tests__/native-protocol/AppleOfflineRecording.test.js
+PASS __tests__/native-protocol/AppleMtuProtocolBoundary.test.js
+PASS __tests__/Docs.node-version.test.js
+PASS __tests__/IpcProtocolVersion.test.js
+PASS __tests__/UuidInputNormalization.test.js
+PASS __tests__/TckPackagingProof.test.js
+PASS __tests__/public-root-boundary.test.js
+PASS __tests__/WorkflowJobTimeouts.test.js
+PASS __tests__/ReleaseSourceAssets.test.js
+PASS __tests__/public/scan-evidence.test.js (5.234 s)
+PASS __tests__/ReleaseArtifacts.test.js
+PASS __tests__/Package.clean-artifact-verifier.test.js
+PASS __tests__/TvReferenceList.test.js
+PASS __tests__/backends/desktop/desktop-ingress-loss.test.js
+PASS __tests__/ExampleIndependentInstall.test.js
+PASS __tests__/TypeScriptSmells.test.js
+PASS __tests__/PerformanceBenchmarks.test.js
+PASS __tests__/TauriFrontendRecipe.test.js
+PASS __tests__/backends/desktop/desktop-adapter-loss.test.js (7.295 s)
+PASS __tests__/backends/desktop/desktop-discovery-failure.test.js (7.747 s)
+PASS __tests__/core/mobile-recording-peer-scope.test.ts (9.224 s)
+PASS __tests__/event-vocabulary.test.js (18.583 s)
+PASS __tests__/PackageSurface4.test.js (21.101 s)
+PASS __tests__/backend-sdk/BackendSdkAndCli.test.js (21.197 s)
+PASS __tests__/acceptance/w6-reliability-acceptance.test.js (30.436 s)
+  ● Console
+
+    console.log
+      SKIP s2-concurrent-connect-intent-race [deterministic]: cross-intent race needs connection:when-available, which this leg refuses explicitly; the refusal is asserted and the race runs direct-vs-direct instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s3-disconnect-during-subscribe [react-native-android]: mid-CCCD-enable disconnect needs queue-operation-completion, which this leg does not register; running the settled-subscribe-then-disconnect variant instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s4-generation-fence [react-native-android]: delayed old-callback probe needs queue-operation-completion, which this leg does not register; proving the fence with live iterator and stale-path checks instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s5-slow-drain-bounded [react-native-android]: peer-loss promptness uses force-disconnect, which this leg does not register; measuring promptness on a requested disconnect instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s6-ownership-soak-200 [react-native-android]: cleanup-failure visibility needs inject-unsubscribe-failure, which this leg does not register; the happy-path soak above still proves the baseline return
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s3-disconnect-during-subscribe [react-native-apple]: mid-CCCD-enable disconnect needs queue-operation-completion, which this leg does not register; running the settled-subscribe-then-disconnect variant instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s4-generation-fence [react-native-apple]: delayed old-callback probe needs queue-operation-completion, which this leg does not register; proving the fence with live iterator and stale-path checks instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s5-slow-drain-bounded [react-native-apple]: peer-loss promptness uses force-disconnect, which this leg does not register; measuring promptness on a requested disconnect instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s6-ownership-soak-200 [react-native-apple]: cleanup-failure visibility needs inject-unsubscribe-failure, which this leg does not register; the happy-path soak above still proves the baseline return
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s3-disconnect-during-subscribe [desktop-corebluetooth]: mid-CCCD-enable disconnect needs queue-operation-completion, which this leg does not register; running the settled-subscribe-then-disconnect variant instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s4-generation-fence [desktop-corebluetooth]: delayed old-callback probe needs queue-operation-completion, which this leg does not register; proving the fence with live iterator and stale-path checks instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s6-ownership-soak-200 [desktop-corebluetooth]: cleanup-failure visibility needs inject-unsubscribe-failure, which this leg does not register; the happy-path soak above still proves the baseline return
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s3-disconnect-during-subscribe [desktop-bluez]: mid-CCCD-enable disconnect needs queue-operation-completion, which this leg does not register; running the settled-subscribe-then-disconnect variant instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s4-generation-fence [desktop-bluez]: delayed old-callback probe needs queue-operation-completion, which this leg does not register; proving the fence with live iterator and stale-path checks instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s5-slow-drain-bounded [desktop-bluez]: peer-loss promptness uses force-disconnect, which this leg does not register; measuring promptness on a requested disconnect instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s6-ownership-soak-200 [desktop-bluez]: cleanup-failure visibility needs inject-unsubscribe-failure, which this leg does not register; the happy-path soak above still proves the baseline return
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s3-disconnect-during-subscribe [desktop-winrt]: mid-CCCD-enable disconnect needs queue-operation-completion, which this leg does not register; running the settled-subscribe-then-disconnect variant instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s4-generation-fence [desktop-winrt]: delayed old-callback probe needs queue-operation-completion, which this leg does not register; proving the fence with live iterator and stale-path checks instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s5-slow-drain-bounded [desktop-winrt]: peer-loss promptness uses force-disconnect, which this leg does not register; measuring promptness on a requested disconnect instead
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s6-ownership-soak-200 [desktop-winrt]: cleanup-failure visibility needs inject-unsubscribe-failure, which this leg does not register; the happy-path soak above still proves the baseline return
+
+      at log (__tests__/acceptance/w6-reliability-acceptance.test.js:142:13)
+
+    console.log
+      SKIP s2-concurrent-connect-intent-race [tauri-transport-fake]: no fake IPC main serves ATT connect journeys in this repo; intent arbitration is proven on the backend legs above
+
+      at Object.log (__tests__/acceptance/w6-reliability-acceptance.test.js:1248:15)
+
+    console.log
+      SKIP s3-disconnect-during-subscribe [tauri-transport-fake]: no fake IPC main stages mid-CCCD-enable disconnects in this repo; fencing is proven on the backend legs above
+
+      at Object.log (__tests__/acceptance/w6-reliability-acceptance.test.js:1248:15)
+
+    console.log
+      SKIP s4-generation-fence [tauri-transport-fake]: no fake IPC main stages generation turnover in this repo; fencing is proven on the backend legs above
+
+      at Object.log (__tests__/acceptance/w6-reliability-acceptance.test.js:1248:15)
+
+    console.log
+      SKIP s5-slow-drain-bounded [tauri-transport-fake]: transport fanout is unbounded by design here; bounded-drain accounting is proven on the backend legs above
+
+      at Object.log (__tests__/acceptance/w6-reliability-acceptance.test.js:1248:15)
+
+    console.log
+      SKIP s6-ownership-soak-200 [tauri-transport-fake]: no fake IPC main serves 200 ATT cycles in this repo; ownership return is proven on the backend legs above
+
+      at Object.log (__tests__/acceptance/w6-reliability-acceptance.test.js:1248:15)
+
+    console.log
+      SKIP s7-cold-restoration [tauri-transport-fake]: cold-process restoration is covered natively by W2 PresenceColdStartTest, not by transport fakes
+
+      at Object.log (__tests__/acceptance/w6-reliability-acceptance.test.js:1248:15)
+
+PASS __tests__/TvBuildStage.test.js (31.328 s)
+PASS __tests__/ZeroDiagnosticGuard.test.js (134.996 s)
+
+Summary of all failing tests
+FAIL __tests__/ipc/connection-cleanup.test.js
+  ● parameterEvents private control metadata › terminalizes timestamp NaN and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2017:12)
+      at close (src/ipc/manager.ts:2036:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● parameterEvents private control metadata › terminalizes timestamp infinity and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2017:12)
+      at close (src/ipc/manager.ts:2036:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● parameterEvents private control metadata › terminalizes ordinal NaN and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2017:12)
+      at close (src/ipc/manager.ts:2036:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● parameterEvents private control metadata › terminalizes ordinal infinity and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2017:12)
+      at close (src/ipc/manager.ts:2036:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● writeReadiness private control metadata › terminalizes timestamp NaN and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2094:12)
+      at close (src/ipc/manager.ts:2113:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● writeReadiness private control metadata › terminalizes timestamp infinity and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2094:12)
+      at close (src/ipc/manager.ts:2113:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● writeReadiness private control metadata › terminalizes ordinal NaN and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2094:12)
+      at close (src/ipc/manager.ts:2113:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+  ● writeReadiness private control metadata › terminalizes ordinal infinity and releases the admitted host watch
+
+    BackendContractError: lifecycle.destroyed: ipc-manager.released
+
+      238 |     throw new Error('operation must be non-empty')
+      239 |   }
+    > 240 |   return new BackendContractError({
+          |          ^
+      241 |     code,
+      242 |     domain,
+      243 |     operation,
+
+      at contractError (src/backend-contract/errors.ts:240:10)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+      at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+      at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+      at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+      at route (src/ipc/manager.ts:2094:12)
+      at close (src/ipc/manager.ts:2113:74)
+      at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+      at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+      at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+      at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+      at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+      at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+      at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+
+
+Test Suites: 1 failed, 429 passed, 430 total
+Tests:       8 failed, 5425 passed, 5433 total
+Snapshots:   0 total
+Time:        139.568 s
+Ran all test suites.
+ ELIFECYCLE  Command failed with exit code 1.

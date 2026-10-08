@@ -70,7 +70,7 @@ describe('R02 Apple Rust authority', () => {
       registeredBackendId: REACT_NATIVE_APPLE_BACKEND_ID,
       registeredPlatformId: REACT_NATIVE_APPLE_PLATFORM_ID,
       runtime: {
-        diagnostics: { boundary: 'ubm-mobile-wire/1', transport: 'native-core-session', nativeBinding: 'uniffi' }
+        diagnostics: { boundary: 'ubm-mobile-wire/2', transport: 'native-core-session', nativeBinding: 'uniffi' }
       }
     })
     expect(native.opsInvoked('adapter.state')).toHaveLength(1)

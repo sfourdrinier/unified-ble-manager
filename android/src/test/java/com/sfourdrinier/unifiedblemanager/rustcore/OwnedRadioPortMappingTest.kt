@@ -10,6 +10,15 @@ import org.junit.Test
 
 class OwnedRadioPortMappingTest {
   @Test
+  fun encryptionObservationsNeverInferAuthenticationOrSecureConnections() {
+    listOf("encrypted", "not-encrypted", "unknown", "unsupported").forEach { encryption ->
+      val facts = OwnedRadioPort.securityFacts(OwnedAndroidSecurityState("bonded", true, encryption))
+      assertEquals(encryption, facts.encryption)
+      assertEquals("unsupported", facts.authentication)
+      assertEquals("unsupported", facts.secureConnections)
+    }
+  }
+  @Test
   fun bondStatesUseTheFrozenVocabularyAndUnanswerableFactsAreUnsupported() {
     assertEquals(
       SecurityFacts("not-bonded", "unsupported", "unsupported", "unsupported", true),

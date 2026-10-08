@@ -139,9 +139,9 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         proofBoundary: 'compile-config-loadability',
         cratePublished: false,
         compatibility: expect.objectContaining({
-          npmRange: '^5.0.0-rc.20',
-          crateRange: '^5.0.0-rc.20',
-          ipcProtocol: 5
+          npmRange: '^5.0.0-rc.21',
+          crateRange: '^5.0.0-rc.21',
+          ipcProtocol: 6
         })
       })
     )
@@ -162,7 +162,7 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         host: 'tauri',
         liveRadio: false,
         proofBoundary: 'compile-config-loadability',
-        ipcProtocol: 5
+        ipcProtocol: 6
       })
     )
   })
@@ -250,7 +250,7 @@ describe('PR11 Tauri crate and testkit contracts', () => {
       expect.objectContaining({
         npmRange: expect.stringMatching(currentCandidateRange),
         crateRange: expect.stringMatching(currentCandidateRange),
-        ipcProtocol: 5,
+        ipcProtocol: 6,
         contractRevision: require('../contracts/src/version').CONTRACT_REVISION
       })
     )

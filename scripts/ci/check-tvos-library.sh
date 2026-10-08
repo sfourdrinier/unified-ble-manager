@@ -58,6 +58,7 @@ SWIFT_FILES=(
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadioDescriptors.swift"
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadioCancellation.swift"
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadio.swift"
+  "$OWNED_DIR/OwnedCoreBluetoothProtocolRadioDiscovery.swift"
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadioOwner.swift"
 )
 

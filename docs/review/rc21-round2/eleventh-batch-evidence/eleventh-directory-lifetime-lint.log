@@ -1,0 +1,8 @@
+
+> unified-ble-manager@5.0.0-rc.21 lint /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> eslint "src/**/*.{ts,tsx}" "plugin/src/**/*.{ts,tsx}" --max-warnings 0 && pnpm typecheck
+
+
+> unified-ble-manager@5.0.0-rc.21 typecheck /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> tsc --noEmit -p tsconfig.build.json
+

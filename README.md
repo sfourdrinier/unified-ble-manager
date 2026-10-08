@@ -20,7 +20,7 @@ root import does not pick a radio. Package SemVer and backend support labels are
 independent: each radio backend keeps its evidence-derived label. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
-This source tree is versioned `5.0.0-rc.20`. Install the exact version shown in the npm
+This source tree is versioned `5.0.0-rc.21`. Install the exact version shown in the npm
 registry. During release preparation, the version in `package.json` can be ahead
 of npm until the matching tag-driven workflow publishes it; the registry and
 GitHub release remain authoritative.
@@ -41,7 +41,7 @@ GitHub release remain authoritative.
 | [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)                                                                                                                                     | Host chooser + first-hour React Native / Expo path                      |
 | [`docs/TUTORIALS.md`](docs/TUTORIALS.md)                                                                                                                                                 | Scan, connect, read, write, subscribe, tear down                        |
 | [`docs/HELPERS.md`](docs/HELPERS.md)                                                                                                                                                     | Public `find`, scoped connection, GATT, and notification recipes        |
-| [`MIGRATION_4.0.28.md`](MIGRATION_4.0.28.md) | Current migration from UBM 4.0.28 to 5.x |
+| [`MIGRATION_4.0.28.md`](MIGRATION_4.0.28.md)                                                                                                                                             | Current migration from UBM 4.0.28 to 5.x                                |
 | [`docs/WEB.md`](docs/WEB.md) · [`docs/ELECTRON.md`](docs/ELECTRON.md) · [`docs/NODE.md`](docs/NODE.md) · [`docs/TAURI.md`](docs/TAURI.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) | Host construction                                                       |
 | [`docs/PEERS.md`](docs/PEERS.md)                                                                                                                                                         | Scoped peer directories, persistence, and reconnect-by-reference        |
 | [`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md)                                                                                                                         | Heart Rate, Battery, DIS, and path helpers                              |
@@ -56,10 +56,10 @@ links in one fetch. Agents contributing to this repository start at
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.20
+pnpm add unified-ble-manager@5.0.0-rc.21
 ```
 
-Installable with npm, yarn, or Bun. This repository uses pnpm. Bun as a runtime is not a tested host.
+Installable with npm, yarn, or Bun. This repository uses pnpm. Bun 1.4.2 loads the same desktop Node-API addon as Node. `bun scripts/ci/bun-desktop-host-smoke.js` opens the synthetic central and closes it. `--list-adapters` lists the OS adapters; on glibc Linux x64 it returned both host adapters. `scripts/ci/bun-desktop-h10-session.js` is an opt-in session for a simulator named exactly `SIM Polar H10 0001`. On macOS Apple Silicon that session scanned, connected, read, wrote, notified, and disconnected. On glibc Linux x64 the same GATT session completed and `setEventWaker` ran. Against the installed `5.87-ubm.4` daemon, disconnect after discovery returned `lease-released-protected` and left the link up, as Node does on that stack. Source `5.87-ubm.6` ends a finished read or write hold when the call completes. That daemon was installed and the same H10 session then returned `lease-released-indeterminate` and left the link up, because profile-probe auto-connect bookkeeping was recorded as an unknown holder. Source `5.87-ubm.7` does not treat that bookkeeping as a hold on an exclusive link this process created, and that exclusive release stops kernel auto-connect for an untrusted device. Installing it changed the same H10 disconnect to `lease-released-protected` and left the link up: the controller had already initiated the bonded link, and the lease adopted it as borrowed. Source `5.87-ubm.8` releases a locally initiated link when no other application hold remains. Installing it, the same H10 session reported disconnect `released` and close `released`, and the link was down. Source `5.87-ubm.9` leaves an unbonded link up when an encrypted attribute returns Insufficient Encryption. Installing it, the unbonded Linux session, the macOS session, and two back-to-back Windows sessions on source digest `0b31ce8e` each completed the same exchange and left the link down. Neither the smoke nor those receipts is a platform evidence label.
 
 Node and Electron on macOS, Windows and Linux use the shared Rust core,
 shipped prebuilt in the package: macOS desktop support is Apple Silicon (`arm64`) only;
@@ -110,7 +110,7 @@ The root import selects no radio. Import the host you actually run.
 | `unified-ble-manager/node/winrt`         | Windows Node provider (shared Rust core over WinRT)                            |
 | `unified-ble-manager/node/bluez`         | Linux Node provider (shared Rust core over BlueZ)                              |
 | `unified-ble-manager/backend-sdk`        | Backend authoring contract                                                     |
-| `unified-ble-manager/advanced`           | Expert UUID/provider utilities; no radio or restoration identity forge |
+| `unified-ble-manager/advanced`           | Expert UUID/provider utilities; no radio or restoration identity forge         |
 | `unified-ble-manager/testing`            | Deterministic backend and TCK utilities                                        |
 | `unified-ble-manager/codecs`             | Byte/`DataView` helpers and IEEE-11073 numbers — not Base64                    |
 | `unified-ble-manager/cli`                | Node CLI                                                                       |
@@ -328,8 +328,12 @@ PHY read/request as `limited` / deterministic controls: effective MTU is
 unavailable before a successful `onMtuChanged` callback, and PHY request
 `accepted` plus its observation come from the native callback result. Direct
 CoreBluetooth Node/Electron-main readiness is also `limited` / deterministic
-when both native readiness hooks are bridged. `parameters`, `subrate`,
-`connection:parameters`, and `connection:subrate` remain unsupported.
+when both native readiness hooks are bridged. React Native Apple reports the
+same readiness as `limited` (`canSendWriteWithoutResponse` plus
+`peripheralIsReady(toSendWriteWithoutResponse:)`). Windows 11 build 22000
+desktop, Electron, and Tauri observe connection parameters (limited,
+`winrt-connection-parameters-22000`). BlueZ, CoreBluetooth, and older Windows
+do not. `subrate` and `connection:subrate` remain unsupported.
 `writeWhenReady` is available only when the instantiated backend advertises
 authoritative write-without-response readiness; otherwise it rejects
 `capability.unsupported` (or `capability.unavailable` when the registered
@@ -399,7 +403,7 @@ after disconnect, service change, or rediscovery.
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship the Node-API desktop-core prebuild for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
-`5.0.0-rc.20` publishes to npm `next`; bare installs still select the 4.0
+`5.0.0-rc.21` publishes to npm `next`; bare installs still select the 4.0
 `latest` line. Stable 5.x versions will publish to `latest`. Publication uses
 npm trusted publishing/OIDC with provenance.
 

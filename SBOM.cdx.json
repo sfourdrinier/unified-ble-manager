@@ -6,15 +6,15 @@
   "metadata": {
     "component": {
       "type": "library",
-      "bom-ref": "pkg:npm/unified-ble-manager@5.0.0-rc.20",
+      "bom-ref": "pkg:npm/unified-ble-manager@5.0.0-rc.21",
       "name": "unified-ble-manager",
-      "version": "5.0.0-rc.20",
+      "version": "5.0.0-rc.21",
       "licenses": [
         {
           "expression": "LicenseRef-UBM-Source-Available-1.0"
         }
       ],
-      "purl": "pkg:npm/unified-ble-manager@5.0.0-rc.20"
+      "purl": "pkg:npm/unified-ble-manager@5.0.0-rc.21"
     },
     "properties": [
       {
@@ -27,7 +27,7 @@
       },
       {
         "name": "unified-ble-manager:cargo-lock-sha256",
-        "value": "c60eea5a7d72b4d58fd65ee8388157fc4c95e78cad58718727221e59ee998fd2"
+        "value": "237ea61d22b8547a4690b5aef48944fa9599bd3726baf7ec14b61b7648f1340f"
       },
       {
         "name": "unified-ble-manager:rust-dependency-scope",
@@ -3961,7 +3961,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "6853424fdcdd86b0aa6e1f611dbbeaa8e0703f9a656f26a71af5d51d8df31954"
+          "content": "8235bc30ea71b213b30326afeb6c1b68511ec9a5ed3e95b77c8dc4a447602134"
         }
       ],
       "externalReferences": [
@@ -4002,7 +4002,7 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:npm/unified-ble-manager@5.0.0-rc.20",
+      "ref": "pkg:npm/unified-ble-manager@5.0.0-rc.21",
       "dependsOn": [
         "pkg:npm/%40babel/runtime@7.29.7"
       ]
@@ -5125,6 +5125,7 @@
         "pkg:cargo/futures-util@0.3.34",
         "pkg:cargo/futures@0.3.34",
         "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/log@0.4.34",
         "pkg:cargo/objc2-core-bluetooth@0.2.2",
         "pkg:cargo/objc2-foundation@0.2.2",
         "pkg:cargo/objc2@0.5.2",

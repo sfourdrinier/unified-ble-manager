@@ -208,6 +208,15 @@ final class ScriptedDriver: UnifiedBleRustRadioDriver {
     }
   }
 
+  var connectedInventory = [MobilePeerName(peerId: "FOREIGN", name: "other app link")]
+  var connectedQueries = [[String]]()
+  func resolveDirectoryPeer(peerIdentifier: String, completion: @escaping (MobilePeerName?, NSError?) -> Void) {
+    workQueue.async { completion(self.connectedInventory.first { $0.peerId == peerIdentifier }, nil) }
+  }
+  func connectedPeerSnapshots(services: [String], completion: @escaping ([MobilePeerName]?, NSError?) -> Void) {
+    workQueue.async { self.connectedQueries.append(services); completion(self.connectedInventory, nil) }
+  }
+
   func restoredPeerSnapshots(completion: @escaping ([NSDictionary]) -> Void) {
     workQueue.async { completion(self.restored) }
   }
@@ -485,6 +494,12 @@ final class Harness {
     check(admission["sessionId"] is NSNumber, "admission sessionId is not a JSON number")
     sessionId = String((admission["sessionId"] as! NSNumber).uint64Value)
     check(admission["wireRevision"] as? String == mobileWireRevision(), "admission wire revision")
+
+    let foreignPeers = ok("peers.connected", ["services": ["180d"], "operationId": "foreign-directory"]) as? [[String: Any]] ?? []
+    check(foreignPeers.count == 1 && foreignPeers[0]["peerId"] as? String == "FOREIGN", "system inventory must include a foreign link")
+    check(foreignPeers[0]["connection"] as? String == "connected", "native inventory connection fact")
+    check(foreignPeers[0]["source"] as? String == "system-connected", "native inventory source")
+    check(!(ok("peers.known", [:]) as? [[String: Any]] ?? []).contains { $0["peerId"] as? String == "FOREIGN" }, "directory read must not add owner cache state")
 
     // Adapter state is read from the platform, authorization included.
     let state = ok("adapter.state", [:]) as? [String: Any]
@@ -1252,6 +1267,75 @@ final class Harness {
       ["availability": "available", "authorization": "notDetermined", "power": "unknown", "safeReason": "not yet"]
     )
     check(snapshot.authorization == "not-determined", "authorization vocabulary: \(snapshot)")
+    // Native callback reservations survive cancellation until the exact
+    // objects finish; duplicate/foreign callbacks cannot retire another slot.
+    let discoveryService = CBMutableService(type: CBUUID(string: "180D"), primary: true)
+    let foreignService = CBMutableService(type: CBUUID(string: "180D"), primary: false)
+    var discovery = PendingDiscovery(operationIdentifier: "old-discovery", completion: { _, _ in })
+    discovery.awaitingServices = false
+    discovery.includeCallbacks.insert(ObjectIdentifier(discoveryService))
+    discovery.characteristicCallbacks.insert(ObjectIdentifier(discoveryService))
+    discovery.cancelled = true
+    check(!discovery.consumeIncludes(foreignService), "foreign inclusion callback has no admission")
+    check(discovery.consumeIncludes(discoveryService), "exact canceled inclusion callback retires")
+    check(!discovery.consumeIncludes(discoveryService), "duplicate callback cannot retire twice")
+    check(!discovery.isDrained, "characteristic callback still owns discovery")
+    check(discovery.consumeCharacteristics(discoveryService), "exact characteristic callback retires")
+    check(discovery.isDrained, "canceled discovery releases only after all callback owners finish")
+    // Invalidated child objects need not deliver another CoreBluetooth callback.
+    // Retire only their reservations; valid-service work still owns its slot.
+    let staleCharacteristic = CBMutableCharacteristic(type: CBUUID(string: "2A37"), properties: [.read], value: nil, permissions: [.readable])
+    var invalidated = PendingDiscovery(operationIdentifier: "invalidated-discovery", completion: { _, _ in })
+    invalidated.awaitingServices = false
+    invalidated.includeCallbacks.insert(ObjectIdentifier(discoveryService))
+    invalidated.characteristicCallbacks.insert(ObjectIdentifier(discoveryService))
+    invalidated.descriptorCallbacks[ObjectIdentifier(staleCharacteristic)] = ObjectIdentifier(discoveryService)
+    invalidated.characteristicCallbacks.insert(ObjectIdentifier(foreignService))
+    invalidated.retireInvalidatedServices([discoveryService])
+    check(!invalidated.consumeIncludes(discoveryService), "late invalidated inclusion has no reservation")
+    check(!invalidated.consumeCharacteristics(discoveryService), "late invalidated characteristics have no reservation")
+    check(!invalidated.consumeDescriptors(staleCharacteristic), "late invalidated descriptors have no reservation")
+    check(!invalidated.isDrained, "unaffected service callback remains owned")
+    check(invalidated.consumeCharacteristics(foreignService), "unaffected callback can drain")
+    check(invalidated.isDrained, "invalidation drains without missing child callbacks")
+    var replacement = PendingDiscovery(operationIdentifier: "replacement-discovery", completion: { _, _ in })
+    replacement.awaitingServices = false
+    replacement.characteristicCallbacks.insert(ObjectIdentifier(foreignService))
+    check(!replacement.consumeCharacteristics(discoveryService), "old same-UUID callback cannot consume replacement admission")
+    check(replacement.consumeCharacteristics(foreignService), "replacement exact object remains admitted")
+    let invalidationRadio = OwnedCoreBluetoothProtocolRadio(restoreIdentifierKey: nil)
+    var invalidationCompletions = 0
+    var pendingInvalidation = PendingDiscovery(operationIdentifier: "invalidation", completion: { value, failure in
+      check(value == nil && failure?.code == 1026, "invalidation reports original service-change failure")
+      invalidationCompletions += 1
+    })
+    pendingInvalidation.awaitingServices = false
+    pendingInvalidation.includeCallbacks.insert(ObjectIdentifier(discoveryService))
+    pendingInvalidation.characteristicCallbacks.insert(ObjectIdentifier(discoveryService))
+    pendingInvalidation.descriptorCallbacks[ObjectIdentifier(staleCharacteristic)] = ObjectIdentifier(discoveryService)
+    invalidationRadio.pendingDiscovery["invalidation-peer"] = pendingInvalidation
+    var cancellationDebt = PendingCancellationCleanup()
+    cancellationDebt.discoveryPeers.insert("invalidation-peer")
+    invalidationRadio.pendingCancellationCleanup["invalidation"] = cancellationDebt
+    invalidationRadio.invalidateDiscovery("invalidation-peer", services: [discoveryService])
+    check(invalidationCompletions == 1, "invalidation completion delivered once")
+    check(invalidationRadio.pendingDiscovery["invalidation-peer"] == nil, "invalidated callbacks cannot block rediscovery")
+    check(invalidationRadio.pendingCancellationCleanup["invalidation"] == nil, "invalidated callback cleanup debt retires")
+    invalidationRadio.invalidateDiscovery("invalidation-peer", services: [discoveryService])
+    check(invalidationCompletions == 1, "duplicate invalidation cannot complete twice")
+    let graph = UnifiedBleRustRadioAdapter.services(["services": [
+      ["uuid": hrService, "occurrence": 0, "primary": true,
+       "includedServices": [["uuid": hrService, "occurrence": 1]], "characteristics": []],
+      ["uuid": hrService, "occurrence": 1, "primary": false,
+       "includedServices": [], "characteristics": []],
+      ["uuid": "0000180f-0000-1000-8000-00805f9b34fb", "occurrence": 0,
+       "primary": NSNull(), "includedServices": NSNull(), "characteristics": []]
+    ]] as NSDictionary)
+    check(graph?.count == 3, "graph service occurrences")
+    check(graph?[0].primary == true, "primary service observed")
+    check(graph?[0].includedServices?.first?.occurrence == 1, "duplicate UUID inclusion identity")
+    check(graph?[1].primary == false && graph?[1].includedServices?.count == 0, "secondary and observed empty")
+    check(graph?[2].primary == nil && graph?[2].includedServices == nil, "unknown graph facts")
     func readinessKind(_ authorization: String, _ power: String, _ availability: String = "available") -> String? {
       let adapter = MobileAdapterSnapshot(availability: availability, authorization: authorization, power: power, safeReason: nil)
       guard case let .failed(kind, _, _, _, _, dispatched)? = UnifiedBleRustRadioAdapter.readinessFailure(adapter) else { return nil }

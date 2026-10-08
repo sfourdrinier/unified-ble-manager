@@ -69,6 +69,53 @@ async function connectAndDiscover(fixture, manager) {
 }
 
 describe('stable public GATT object model (PR3 TDD)', () => {
+  test('service graph preserves secondary status, duplicate occurrence edges and unknown metadata', async () => {
+    const { createPublicGattDatabase } = require('../src/public/gatt')
+    const { fixture, manager } = await createPublicFixture()
+    const { connection, database } = await connectAndDiscover(fixture, manager)
+    const original = database.snapshot()
+    const first = original.services[0]
+    const path = {
+      attachmentId: 'graph-attachment',
+      peerId: 'graph-peer',
+      connectionId: 'graph-connection',
+      ownerLeaseId: 'graph-lease',
+      connectionGeneration: 'graph-connection-generation',
+      databaseId: 'graph-database',
+      databaseGeneration: database.generation
+    }
+    const servicePath = { ...path, serviceUuid: first.uuid }
+    const graph = {
+      path,
+      characteristics: [],
+      descriptors: [],
+      services: [
+        {
+          path: { ...servicePath, serviceOccurrence: '0' },
+          primary: true,
+          includedServices: [{ uuid: first.uuid, occurrence: '1' }]
+        },
+        { path: { ...servicePath, serviceOccurrence: '1' }, primary: false, includedServices: [] },
+        { path: { ...servicePath, serviceOccurrence: '2' }, primary: null, includedServices: null }
+      ]
+    }
+    const publicGraph = await createPublicGattDatabase({ snapshot: async () => graph, assertCurrent: () => undefined })
+    expect(publicGraph.services[0].primary).toBe(true)
+    expect(publicGraph.services[0].includedServices).toEqual([{ uuid: first.uuid, occurrence: 1 }])
+    expect(publicGraph.services[1].primary).toBe(false)
+    expect(publicGraph.services[1].includedServices).toEqual([])
+    expect(publicGraph.services[2].primary).toBeNull()
+    expect(publicGraph.services[2].includedServices).toBeNull()
+    const unresolved = {
+      ...graph,
+      services: [{ ...graph.services[0], includedServices: [{ uuid: first.uuid, occurrence: '99' }] }]
+    }
+    await expect(createPublicGattDatabase({ snapshot: async () => unresolved })).rejects.toMatchObject({
+      code: 'protocol.violation'
+    })
+    await settle(fixture, connection.release())
+    await settle(fixture, manager.destroy())
+  })
   test('subscription receipt uses settled native delivery, including unknown, across shared consumers', async () => {
     const { fixture, manager } = await createPublicFixture('unknown')
     const { connection, database } = await connectAndDiscover(fixture, manager)

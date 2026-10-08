@@ -240,9 +240,65 @@ export class WebBluetoothGattRuntime {
 
   private async buildDatabase(
     record: WebConnectionRecord,
-    nativeServices: readonly WebBluetoothServiceBoundary[],
+    rootServices: readonly WebBluetoothServiceBoundary[],
     options: PublicOperationOptions
   ): Promise<WebGattDatabase> {
+    const maximumServices = 4096
+    const maximumInclusionEdges = 65536
+    if (rootServices.length > maximumServices) throw contractError('stream.quota', 'gatt', 'web-gatt.service-capacity')
+    let inclusionEdges = 0
+    const nativeServices = [...rootServices]
+    const known = new Set(rootServices)
+    if (known.size !== rootServices.length)
+      throw contractError('protocol.violation', 'gatt', 'web-gatt.duplicate-service-object')
+    const inclusions = new Map<WebBluetoothServiceBoundary, readonly WebBluetoothServiceBoundary[] | null>()
+    for (let index = 0; index < nativeServices.length; index += 1) {
+      const service = nativeServices[index]
+      if (service === undefined) throw contractError('protocol.malformed', 'gatt', 'web-gatt.discovery-service')
+      const included =
+        service.getIncludedServices === undefined
+          ? null
+          : await this.host.runAbortable(
+              record,
+              options,
+              async () => {
+                try {
+                  return (await service.getIncludedServices?.()) ?? null
+                } catch (error) {
+                  // GetGATTChildren rejects an empty result with NotFoundError.
+                  // Handle only that native absence, before generic normalization.
+                  if (typeof error === 'object' && error !== null && 'name' in error && error.name === 'NotFoundError')
+                    return []
+                  throw error
+                }
+              },
+              'platform.failure',
+              'gatt',
+              'web-gatt.discover-included-services'
+            )
+      inclusionEdges += included?.length ?? 0
+      if (inclusionEdges > maximumInclusionEdges)
+        throw contractError('stream.quota', 'gatt', 'web-gatt.inclusion-capacity')
+      inclusions.set(service, included)
+      for (const target of included ?? []) {
+        if (!known.has(target)) {
+          if (known.size >= maximumServices) throw contractError('stream.quota', 'gatt', 'web-gatt.service-capacity')
+          known.add(target)
+          nativeServices.push(target)
+        }
+      }
+    }
+    const sourceIdentities = new Map<
+      WebBluetoothServiceBoundary,
+      { readonly uuid: ReturnType<typeof canonicalUuid>; readonly occurrence: string }
+    >()
+    const sourceCounts = new Map<string, number>()
+    for (const service of nativeServices) {
+      const uuid = canonicalUuid(service.uuid)
+      const occurrence = sourceCounts.get(uuid) ?? 0
+      sourceCounts.set(uuid, occurrence + 1)
+      sourceIdentities.set(service, { uuid, occurrence: String(occurrence) })
+    }
     const databaseNumber = this.nextDatabase
     this.nextDatabase += 1
     const attachment = this.host.attachment
@@ -283,7 +339,25 @@ export class WebBluetoothGattRuntime {
           `${String(databasePath.databaseId)}:${String(serviceUuid)}`
         )
       }
-      services.push({ path: servicePath, primary: true, includedServices: Object.freeze([]) })
+      const included = inclusions.get(nativeService)
+      services.push({
+        path: servicePath,
+        primary: nativeService.primary ?? (rootServices.includes(nativeService) ? true : null),
+        includedServices:
+          included == null
+            ? null
+            : Object.freeze(
+                included.map(target => {
+                  const identity = sourceIdentities.get(target)
+                  if (identity === undefined)
+                    throw contractError('protocol.violation', 'gatt', 'web-gatt.included-service-unresolved')
+                  return Object.freeze({
+                    uuid: identity.uuid,
+                    occurrence: opaqueId(identity.occurrence, 'service-occurrence', String(databasePath.databaseId))
+                  })
+                })
+              )
+      })
       const nativeCharacteristics = await this.host.runAbortable(
         record,
         options,
@@ -486,8 +560,19 @@ export class WebBluetoothGattRuntime {
     correlation: OperationOptions<string, string>['correlation']
   ): Promise<WebManagedSubscription> {
     const characteristic = this.requireCharacteristic(database, path, 'web-gatt.subscribe')
-    if (!characteristic.properties.notify && !characteristic.properties.indicate) {
+    const notify = characteristic.properties.notify
+    const indicate = characteristic.properties.indicate
+    if (!notify && !indicate) {
       throw contractError('gatt.property-not-supported', 'gatt', 'web-gatt.subscribe')
+    }
+    const mode = options.deliveryMode
+    if ((mode === 'require-notification' && !notify) || (mode === 'require-indication' && !indicate)) {
+      throw contractError('gatt.property-not-supported', 'gatt', 'web-gatt.subscribe')
+    }
+    // startNotifications() writes the notification bit whenever notify is
+    // present. A hard indication requirement cannot be honored then.
+    if (mode === 'require-indication' && notify) {
+      throw contractError('capability.limited', 'gatt', 'web-gatt.subscribe')
     }
     const stream = new CoreBoundedStream<NotificationValue>(options.delivery, options.delivery.overflowPolicy)
     const subscriptionId = this.host.identifiers().subscriptionId(`web-subscription-${this.nextSubscription}`)

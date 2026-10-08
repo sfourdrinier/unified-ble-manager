@@ -1,7 +1,7 @@
 // test-support/react-native/deterministic-rust-core-native.js
 //
 // A deterministic `UnifiedBleRustCore` native module (src/NativeUnifiedBleRustCore.ts)
-// that speaks wire `ubm-mobile-wire/1` (docs/MOBILE_RUST_WIRE.md) over JSON
+// that speaks wire `ubm-mobile-wire/2` (docs/MOBILE_RUST_WIRE.md) over JSON
 // text exactly as the Rust mobile owner does: the argument key sets are the
 // owner's (`crates/ubm-mobile/src/session.rs`), every answer is envelope or
 // drain JSON text, and rejections carry the structured failure JSON. Tests pass
@@ -9,7 +9,8 @@
 // every byte crosses the production serializer.
 //
 // It is deterministic test infrastructure only (AGENTS.md): no radio, no
-// timers of its own. Wakes are emitted on a microtask, like a native event.
+// production radio. Admission budget timers model native deadlines; wakes
+// are emitted on a microtask, like a native event.
 
 const { Buffer: NodeBuffer } = require('node:buffer')
 /**
@@ -21,7 +22,17 @@ function sourceExpectedIdentity() {
   return require('../../src/generated/native-build-identity').EXPECTED_NATIVE_BUILD_IDENTITY
 }
 
-const WIRE_REVISION = 'ubm-mobile-wire/1'
+const EFFECTFUL_OPS = new Set([
+  'gatt.write',
+  'gatt.write-when-ready',
+  'gatt.write-descriptor',
+  'connection.request-mtu',
+  'connection.request-priority',
+  'connection.request-subrate',
+  'connection.request-phy'
+])
+
+const WIRE_REVISION = 'ubm-mobile-wire/2'
 const SERVICE_UUID = '0000180d-0000-1000-8000-00805f9b34fb'
 const CHARACTERISTIC_UUID = '00002a37-0000-1000-8000-00805f9b34fb'
 const CCCD_UUID = '00002902-0000-1000-8000-00805f9b34fb'
@@ -34,13 +45,13 @@ const ARG_SCHEMAS = Object.freeze({
   'adapter.state': [[], []],
   'counters.describe': [[], []],
   'peers.known': [[], []],
-  'peers.connected': [[], []],
+  'peers.connected': [['operationId', 'services'], ['budgetMs']],
   'peers.restored': [[], []],
   'peers.claim-restored': [['maxPeers'], []],
   'session.dispose': [[], []],
   'session.reconcile': [[], []],
   'peers.bonded': [['operationId'], ['budgetMs']],
-  'peers.resolve': [['reference'], []],
+  'peers.resolve': [['reference', 'operationId'], ['budgetMs']],
   'scan.start': [
     ['serviceUuids', 'duplicatePolicy', 'operationId'],
     ['deviceAddresses', 'platform', 'budgetMs', 'lifetimeMs']
@@ -57,6 +68,8 @@ const ARG_SCHEMAS = Object.freeze({
   'connection.effective-mtu': [['peerId', 'lease', 'operationId'], ['budgetMs']],
   'connection.request-mtu': [['peerId', 'lease', 'mtu', 'operationId'], ['budgetMs']],
   'connection.request-priority': [['peerId', 'lease', 'priority', 'operationId'], ['budgetMs']],
+  'connection.request-subrate': [['peerId', 'lease', 'mode', 'operationId'], ['budgetMs']],
+  'connection.control-capabilities': [[], []],
   'connection.request-phy': [
     ['peerId', 'lease', 'operationId'],
     ['tx', 'rx', 'budgetMs']
@@ -64,6 +77,7 @@ const ARG_SCHEMAS = Object.freeze({
   'connection.rssi': [['peerId', 'lease', 'operationId'], ['budgetMs']],
   'connection.read-phy': [['peerId', 'lease', 'operationId'], ['budgetMs']],
   'connection.maximum-write-length': [['peerId', 'lease', 'mode', 'operationId'], ['budgetMs']],
+  'connection.write-readiness': [['peerId', 'lease', 'operationId'], ['budgetMs']],
   'security.state': [['peerId'], ['budgetMs', 'operationId']],
   'security.cancel-pairing': [['peerId'], ['budgetMs', 'operationId']],
   'security.pair': [['peerId', 'transport', 'operationId'], ['budgetMs']],
@@ -71,6 +85,7 @@ const ARG_SCHEMAS = Object.freeze({
   'gatt.read': [['peerId', 'selector', 'operationId'], ['budgetMs']],
   'gatt.read-descriptor': [['peerId', 'selector', 'operationId'], ['budgetMs']],
   'gatt.write': [['peerId', 'selector', 'valueB64', 'mode', 'operationId'], ['budgetMs']],
+  'gatt.write-when-ready': [['peerId', 'selector', 'valueB64', 'mode', 'operationId'], ['budgetMs']],
   'gatt.write-descriptor': [['peerId', 'selector', 'valueB64', 'mode', 'operationId'], ['budgetMs']],
   'gatt.subscribe': [
     ['peerId', 'selector', 'consumer', 'operationId'],
@@ -97,12 +112,15 @@ const ARG_SCHEMAS = Object.freeze({
 /** crates/ubm-mobile `ADMISSION_WINDOW`. */
 const ADMISSION_WINDOW = 65536
 
-// `connection.effective-mtu` is answered on Apple (finding 217): the Swift
-// adapter reports `maximumWriteValueLength(.withResponse) + 3` per link.
-// `connection.request-mtu` stays refused: CoreBluetooth has no request API.
+// `connection.effective-mtu` is answered on Apple as unobserved: CoreBluetooth
+// does not expose an ATT MTU, and `maximumWriteValueLength` can include a
+// long write. `connection.request-mtu` stays refused: CoreBluetooth has no
+// request API. `connection.connect` with `when-available` is the ordinary
+// pending connect for a known peer, not an Android autoConnect flag.
 const APPLE_UNSUPPORTED = new Set([
   'connection.request-mtu',
   'connection.request-priority',
+  'connection.request-subrate',
   'connection.read-phy',
   'connection.request-phy',
   'companion.associate',
@@ -221,6 +239,8 @@ class DeterministicRustCoreNative {
     peripherals = [defaultPeripheral()],
     identity = null,
     expectedIdentity = null,
+    subrateAvailable = false,
+    connectedDirectory = [],
     drainResolution = 'microtask'
   } = {}) {
     /**
@@ -231,7 +251,9 @@ class DeterministicRustCoreNative {
     this.drainResolution = drainResolution
     const EXPECTED_NATIVE_BUILD_IDENTITY = expectedIdentity ?? sourceExpectedIdentity()
     this.expectedIdentity = EXPECTED_NATIVE_BUILD_IDENTITY
+    this.connectedDirectory = connectedDirectory.map(peer => ({ ...peer }))
     this.platform = platform
+    this.subrateAvailable = platform === 'android' && subrateAvailable
     this.calls = []
     this.nextSessionId = 1
     this.sessions = new Map()
@@ -245,6 +267,7 @@ class DeterministicRustCoreNative {
     this.linkEnds = new Map()
     this.databaseChanges = new Map()
     this.securityReports = new Map()
+    this.securityFailures = new Map()
     /** Set by `loseControl`: control records are counted, not queued. */
     this.controlLost = null
     /** Restored peer id → the session that claimed it; claims last for the process. */
@@ -253,6 +276,8 @@ class DeterministicRustCoreNative {
     this.connects = []
     /** Peer id → the ATT MTU the last `connection.request-mtu` negotiated on the current link. */
     this.negotiatedMtu = new Map()
+    /** Peer id → CoreBluetooth `canSendWriteWithoutResponse`. Empty means ready. */
+    this.writeReady = new Map()
     this.adapter = {
       availability: 'available',
       authorization: 'granted',
@@ -289,6 +314,9 @@ class DeterministicRustCoreNative {
     this.nextAssociation = 7
     this.holds = new Map()
     this.liveOps = new Map()
+    this.writeQueues = new Map()
+    this.writeWaiters = new Set()
+    this.completedWrites = []
     this.nextGeneration = 1
     this.nextBackground = 1
     this.pendingPair = null
@@ -400,6 +428,7 @@ class DeterministicRustCoreNative {
     }
     const operationId = typeof args.operationId === 'string' ? args.operationId : null
     const admission = args.admission
+    let writeAdmission = null
     delete args.admission
     try {
       if (!(op in ARG_SCHEMAS)) throw invalid('op')
@@ -443,6 +472,10 @@ class DeterministicRustCoreNative {
         )
       }
       if (op === 'op.cancel') args.admission = admission
+      if (op === 'gatt.write' || op === 'gatt.write-when-ready' || op === 'gatt.write-descriptor') {
+        writeAdmission = this.admitWrite(session, op, args, admission)
+        await writeAdmission.wait()
+      }
       const fault = this.takeFault(op)
       if (fault !== null) throw fault
       if (this.holds.has(op)) {
@@ -458,6 +491,79 @@ class DeterministicRustCoreNative {
     } catch (error) {
       if (error instanceof WireFault) return this.failure(op, error)
       throw error
+    } finally {
+      writeAdmission?.release()
+    }
+  }
+
+  admitWrite(session, op, args, admission) {
+    const lease = this.connectedLease(session, args.peerId)
+    const generation = lease.databaseGeneration
+    const predecessor = this.writeQueues.get(args.peerId) ?? Promise.resolve()
+    let releaseSlot
+    const slot = new Promise(resolve => {
+      releaseSlot = resolve
+    })
+    this.writeQueues.set(args.peerId, slot)
+    let interruption = null
+    let interrupt
+    const interrupted = new Promise(resolve => {
+      interrupt = resolve
+    })
+    const entry = {
+      operationId: args.operationId,
+      session,
+      admission,
+      op,
+      resolve: () => {
+        interruption = new WireFault('operation.aborted', 'gatt', op, null, 'not-dispatched')
+        interrupt()
+      }
+    }
+    this.liveOps.set(args.operationId, entry)
+    const timer =
+      args.budgetMs === undefined
+        ? null
+        : setTimeout(() => {
+            interruption = new WireFault('operation.timed-out', 'gatt', op, null, 'not-dispatched')
+            interrupt()
+          }, args.budgetMs)
+    const assertCurrent = () => {
+      if (interruption !== null) throw interruption
+      if (!lease.connected) throw new WireFault('connection.lost', 'connection', op, null, 'not-dispatched')
+      if (lease.databaseGeneration !== generation)
+        throw new WireFault('gatt.stale-handle', 'gatt', op, null, 'not-dispatched')
+    }
+    return {
+      wait: async () => {
+        await Promise.race([predecessor, interrupted])
+        assertCurrent()
+        if (op !== 'gatt.write-when-ready') return
+        if (this.platform !== 'apple')
+          throw new WireFault('capability.unsupported', 'capability', op, null, 'not-dispatched')
+        if (args.mode !== 'without-response') throw invalid('args.mode')
+        while (this.writeReady.get(args.peerId) === false) {
+          let wake
+          const changed = new Promise(resolve => {
+            wake = resolve
+          })
+          this.writeWaiters.add(wake)
+          try {
+            await Promise.race([changed, interrupted])
+          } finally {
+            this.writeWaiters.delete(wake)
+          }
+          assertCurrent()
+        }
+      },
+      release: () => {
+        if (timer !== null) clearTimeout(timer)
+        if (this.liveOps.get(args.operationId) === entry) this.liveOps.delete(args.operationId)
+        if (this.writeQueues.get(args.peerId) === slot) this.writeQueues.delete(args.peerId)
+        // A cancelled middle admission still waits for its predecessor before
+        // releasing the successor, so cancellation cannot reorder the queue.
+        predecessor.then(releaseSlot)
+      }
     }
   }
 
@@ -526,6 +632,28 @@ class DeterministicRustCoreNative {
     return this.calls.filter(call => call[0] === 'invoke' && call[2] === op).map(call => JSON.parse(call[3]))
   }
 
+  /**
+   * CoreBluetooth's queue flag. A connected session also receives
+   * `t=readiness` for that peer's live lease, as `peripheralIsReady` does
+   * when the queue becomes ready.
+   */
+  setWriteReady(peerId, ready) {
+    this.writeReady.set(peerId, ready)
+    for (const wake of [...this.writeWaiters]) wake()
+    for (const session of this.liveSessions()) {
+      for (const lease of session.leases.values()) {
+        if (lease.peerId === peerId && lease.connected) {
+          this.push(session, {
+            t: 'readiness',
+            peerId,
+            connectionGeneration: lease.generation,
+            ready
+          })
+        }
+      }
+    }
+  }
+
   emitAdvertisement(peerId = DEFAULT_PEER, overrides = {}) {
     const peripheral = this.peripherals.get(peerId)
     this.peerObservations.set(peerId, {
@@ -552,6 +680,7 @@ class DeterministicRustCoreNative {
           appearance: null,
           rawRecordB64: null,
           observedAtMs: 0,
+          sourceTimestampMs: null,
           ...overrides
         })
       }
@@ -649,8 +778,17 @@ class DeterministicRustCoreNative {
 
   /** The platform's security report for `peerId` (a `security` record to every session). */
   reportSecurity(peerId, state) {
+    this.securityFailures.delete(peerId)
+    this.securityFailures.delete(null)
     this.securityReports.set(peerId, state)
     for (const session of this.liveSessions()) this.push(session, { t: 'security', peerId, state })
+  }
+
+  reportSecurityFailure(peerId, error) {
+    if (peerId === null) this.securityReports.clear()
+    else this.securityReports.delete(peerId)
+    this.securityFailures.set(peerId, error)
+    for (const session of this.liveSessions()) this.push(session, { t: 'security-failed', peerId, error })
   }
 
   /**
@@ -722,9 +860,8 @@ class DeterministicRustCoreNative {
   }
 
   failure(op, fault) {
-    const write = op === 'gatt.write' || op === 'gatt.write-descriptor'
-    const commit = write ? (fault.commit ?? 'not-dispatched') : null
-    // As the owner: its own retryability on every failure envelope; a write
+    const commit = EFFECTFUL_OPS.has(op) ? (fault.commit ?? 'not-dispatched') : null
+    // As the owner: its own retryability on every failure envelope; an effect
     // that may have committed is never retryable.
     const retryability =
       commit === 'uncertain'
@@ -737,7 +874,11 @@ class DeterministicRustCoreNative {
   }
 
   commitFor(op, dispatched) {
-    return op === 'gatt.write' || op === 'gatt.write-descriptor' ? (dispatched ? 'uncertain' : 'not-dispatched') : null
+    return EFFECTFUL_OPS.has(op)
+      ? dispatched
+        ? 'uncertain'
+        : 'not-dispatched'
+      : null
   }
 
   takeFault(op) {
@@ -755,6 +896,7 @@ class DeterministicRustCoreNative {
   }
 
   push(session, record) {
+    for (const wake of [...this.writeWaiters]) wake()
     if (this.controlLost !== null && record.t !== 'adv' && record.t !== 'value') {
       this.controlLost += 1
       return
@@ -884,6 +1026,7 @@ class DeterministicRustCoreNative {
       links,
       subscriptions,
       security: [...this.securityReports].map(([peerId, state]) => ({ peerId, state })),
+      securityFailures: [...this.securityFailures].map(([peerId, error]) => ({ peerId, error })),
       restored: this.restored,
       scan: [...session.scans.keys()][0] ?? null
     }
@@ -958,6 +1101,9 @@ class DeterministicRustCoreNative {
         native: {
           pendingRadioRequests: owner.held,
           lateRadioCompletions: 0,
+          nativeGattAdmissions: 0,
+          acquiredGattTransports: 0,
+          pendingGattAcquisitions: 0,
           ingressDrops: { advertisement: 0, notification: 0, control: 0 },
           connectSections: 0,
           liveOps: owner.held
@@ -1000,10 +1146,19 @@ class DeterministicRustCoreNative {
       case 'peers.known':
         return [...this.peripherals.values()].map(peripheral => this.peerRecord(peripheral, 'scan-observed', false))
       case 'peers.connected': {
-        const connected = new Set(
-          [...session.leases.values()].filter(lease => lease.connected).map(lease => lease.peerId)
-        )
-        return [...connected].map(peerId => this.peerRecord(this.peripheral(peerId), 'system-connected', true))
+        if (!Array.isArray(args.services)) throw invalid('args.services')
+        if ((apple && args.services.length === 0) || (!apple && args.services.length > 0))
+          throw new WireFault('capability.unsupported', 'capability', op)
+        return this.connectedDirectory.map(peer => ({
+          peerId: peer.peerId,
+          name: peer.name ?? null,
+          rssi: null,
+          source: 'system-connected',
+          reachability: 'reachable',
+          connection: 'connected',
+          bond: 'unknown',
+          lastSeenAtMonotonicMs: null
+        }))
       }
       case 'peers.bonded':
         if (apple) throw new WireFault('capability.unsupported', 'capability', op)
@@ -1029,7 +1184,20 @@ class DeterministicRustCoreNative {
       case 'peers.resolve': {
         exact(args.reference, ['opaqueId'], ['version', 'backendId', 'scope'], 'args.reference')
         const peripheral = this.peripherals.get(args.reference.opaqueId)
-        return peripheral === undefined ? null : this.peerRecord(peripheral, 'app-reference', false)
+        if (peripheral !== undefined) return this.peerRecord(peripheral, 'app-reference', false)
+        const peer = this.connectedDirectory.find(peer => peer.peerId === args.reference.opaqueId)
+        return peer === undefined
+          ? null
+          : {
+              peerId: peer.peerId,
+              name: peer.name ?? null,
+              rssi: null,
+              source: 'app-reference',
+              reachability: 'unknown',
+              connection: 'unknown',
+              bond: 'unknown',
+              lastSeenAtMonotonicMs: null
+            }
       }
       case 'scan.start': {
         if (
@@ -1046,7 +1214,8 @@ class DeterministicRustCoreNative {
         if (apple && ((args.deviceAddresses ?? []).length > 0 || args.platform !== undefined)) {
           throw new WireFault('capability.unsupported', 'capability', op)
         }
-        if (args.platform !== undefined) exact(args.platform, [], ['mode', 'callbackType', 'legacy'], 'args.platform')
+        if (args.platform !== undefined)
+          exact(args.platform, [], ['mode', 'callbackType', 'legacy', 'reportDelayMs', 'phy'], 'args.platform')
         const membership = `s${session.id}-scan-${session.nextScan++}`
         session.scans.set(membership, args)
         return { operationId: membership }
@@ -1058,7 +1227,7 @@ class DeterministicRustCoreNative {
         return { state: 'released', failures: [] }
       case 'connection.connect': {
         const peripheral = this.peripheral(args.peerId)
-        if (args.intent === 'when-available' && apple) throw new WireFault('capability.unsupported', 'capability', op)
+        if (args.intent !== 'direct' && args.intent !== 'when-available') throw invalid('args.intent')
         const preferredPhy = [...new Set(args.preferredPhy ?? [])]
         if (preferredPhy.some(phy => !['le-1m', 'le-2m', 'le-coded'].includes(phy))) throw invalid('args.preferredPhy')
         if (preferredPhy.length > 0) {
@@ -1092,17 +1261,20 @@ class DeterministicRustCoreNative {
         return { rssi: -47 }
       case 'connection.effective-mtu':
         this.lease(session, args)
-        // Apple derives the ATT MTU per link as
-        // `maximumWriteValueLength(.withResponse) + 3` (frozen wire rule,
-        // ios/UnifiedBleRustRadioAdapter.swift); Android reports no MTU
-        // until `onMtuChanged` (native `readEffectiveMtu`).
-        if (apple) return { mtu: 512 + 3 }
+        // Apple does not observe an ATT MTU. Android reports no MTU until
+        // `onMtuChanged` (native `readEffectiveMtu`).
+        if (apple) return { mtu: null }
         return { mtu: this.negotiatedMtu.get(args.peerId) ?? null }
       case 'connection.request-mtu': {
         this.lease(session, args)
         const mtu = Math.min(args.mtu, 247)
         this.negotiatedMtu.set(args.peerId, mtu)
         return { mtu }
+      }
+      case 'connection.write-readiness': {
+        if (!apple) throw new WireFault('capability.unsupported', 'capability', op)
+        this.lease(session, args)
+        return { ready: this.writeReady.get(args.peerId) ?? true }
       }
       case 'connection.maximum-write-length': {
         this.lease(session, args)
@@ -1115,6 +1287,14 @@ class DeterministicRustCoreNative {
         const mtu = this.negotiatedMtu.get(args.peerId) ?? 23
         return { maximumWriteLength: args.mode === 'with-response' ? 512 : mtu - 3 }
       }
+      case 'connection.control-capabilities':
+        return { subrate: this.subrateAvailable }
+      case 'connection.request-subrate':
+        this.lease(session, args)
+        if (!['default', 'low-latency', 'low-power', 'high-throughput'].includes(args.mode)) throw invalid('args.mode')
+        if (!this.subrateAvailable)
+          throw new WireFault('capability.unsupported', 'capability', 'connection.request-subrate')
+        return { accepted: true }
       case 'connection.request-priority':
         this.lease(session, args)
         return { accepted: true }
@@ -1124,9 +1304,14 @@ class DeterministicRustCoreNative {
       case 'connection.request-phy':
         this.lease(session, args)
         return { accepted: true, observation: { tx: args.tx ?? 'le-1m', rx: args.rx ?? 'le-1m' } }
-      case 'security.state':
+      case 'security.state': {
         if (apple) throw new WireFault('capability.unsupported', 'capability', op)
-        return this.security(this.peripheral(args.peerId))
+        const state = this.security(this.peripheral(args.peerId))
+        this.securityFailures.delete(args.peerId)
+        this.securityFailures.delete(null)
+        this.securityReports.set(args.peerId, state)
+        return state
+      }
       case 'security.pair': {
         if (apple) throw new WireFault('capability.unsupported', 'capability', op)
         const peripheral = this.peripheral(args.peerId)
@@ -1160,6 +1345,8 @@ class DeterministicRustCoreNative {
           connectionGeneration: lease.generation,
           databaseGeneration: lease.databaseGeneration,
           services: peripheral.services.map(service => ({
+            primary: service.primary ?? null,
+            includedServices: service.includedServices ?? null,
             uuid: service.uuid,
             occurrence: service.occurrence,
             characteristics: service.characteristics.map(characteristic => ({
@@ -1186,6 +1373,7 @@ class DeterministicRustCoreNative {
         return { valueB64: b64(attribute.value) }
       }
       case 'gatt.write':
+      case 'gatt.write-when-ready':
       case 'gatt.write-descriptor': {
         const descriptor = op === 'gatt.write-descriptor'
         if (args.mode !== 'with-response' && args.mode !== 'without-response') throw invalid('args.mode')
@@ -1195,6 +1383,7 @@ class DeterministicRustCoreNative {
         this.connectedLease(session, args.peerId)
         const attribute = this.characteristic(args.peerId, args.selector, descriptor)
         attribute.value = unb64(args.valueB64)
+        this.completedWrites.push({ peerId: args.peerId, value: Uint8Array.from(attribute.value), mode: args.mode })
         return { commitState: args.mode === 'with-response' ? 'confirmed' : 'unknown' }
       }
       case 'gatt.subscribe': {

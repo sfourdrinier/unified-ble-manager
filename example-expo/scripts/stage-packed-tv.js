@@ -19,6 +19,14 @@ function stagePackedTv(stage, root, tarball) {
   validatePackedTvInput(stage, tarball)
   const manifestPath = path.join(stage, 'package.json')
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  // The stage is outside the checkout, so Corepack cannot see the repository
+  // pin. The newest pnpm otherwise rejects same-day Expo releases and ignores
+  // the manifest's pnpm.overrides.
+  const repository = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+  if (typeof repository.packageManager !== 'string' || repository.packageManager.length === 0) {
+    throw new Error('repository package.json must declare packageManager for the packed TV consumer')
+  }
+  manifest.packageManager = repository.packageManager
   manifest.dependencies['unified-ble-manager'] = `file:${tarball}`
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
   const shared = path.join(stage, '.ubm-reference-shared')

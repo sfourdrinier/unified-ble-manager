@@ -13,6 +13,11 @@
 /// btleplug's `BDAddr` display).
 #[must_use]
 pub fn address_of_peer(peer_id: &str) -> Option<u64> {
+    let peer_id = peer_id
+        .strip_prefix("public:")
+        .or_else(|| peer_id.strip_prefix("random:"))
+        .or_else(|| peer_id.strip_prefix("unknown:"))
+        .unwrap_or(peer_id);
     let octets: Vec<&str> = peer_id.split(':').collect();
     if octets.len() != 6 {
         return None;
@@ -267,6 +272,31 @@ impl AdapterPresence {
     }
 }
 
+#[cfg(any(test, all(feature = "btleplug", target_os = "windows")))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirectoryQuery {
+    Known,
+    Connected,
+    Bonded,
+}
+#[cfg(any(test, all(feature = "btleplug", target_os = "windows")))]
+impl DirectoryQuery {
+    pub(crate) fn scopes(self) -> &'static [Self] {
+        match self {
+            Self::Known => &[Self::Known, Self::Connected],
+            Self::Connected => &[Self::Connected],
+            Self::Bonded => &[Self::Bonded],
+        }
+    }
+    pub(crate) fn operation(self) -> &'static str {
+        match self {
+            Self::Known => "peers.known",
+            Self::Connected => "peers.connected",
+            Self::Bonded => "peers.bonded",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -309,6 +339,19 @@ mod tests {
 
     #[test]
     fn peer_ids_parse_to_48_bit_addresses() {
+        assert_eq!(
+            address_of_peer("public:AA:BB:CC:DD:EE:FF"),
+            Some(0xAABB_CCDD_EEFF)
+        );
+        assert_eq!(
+            address_of_peer("random:AA:BB:CC:DD:EE:FF"),
+            Some(0xAABB_CCDD_EEFF)
+        );
+        assert_eq!(
+            address_of_peer("unknown:AA:BB:CC:DD:EE:FF"),
+            Some(0xAABB_CCDD_EEFF)
+        );
+        assert_eq!(address_of_peer("invalid:AA:BB:CC:DD:EE:FF"), None);
         assert_eq!(address_of_peer("AA:BB:CC:DD:EE:FF"), Some(0xAABB_CCDD_EEFF));
         assert_eq!(address_of_peer("00:00:00:00:00:01"), Some(1));
         assert_eq!(address_of_peer("AA:BB:CC:DD:EE"), None);
@@ -507,5 +550,26 @@ mod tests {
             presence.observe(PresenceReport::Added("built-in".into())),
             Some(PresenceChange::Restored)
         );
+    }
+}
+
+#[cfg(test)]
+mod directory_inventory_tests {
+    use super::DirectoryQuery;
+
+    #[test]
+    fn known_inventory_includes_connected_unpaired_peers_without_starting_a_scan() {
+        assert_eq!(
+            DirectoryQuery::Known.scopes(),
+            &[DirectoryQuery::Known, DirectoryQuery::Connected]
+        );
+        assert_eq!(DirectoryQuery::Known.operation(), "peers.known");
+        assert_eq!(
+            DirectoryQuery::Connected.scopes(),
+            &[DirectoryQuery::Connected]
+        );
+        assert_eq!(DirectoryQuery::Connected.operation(), "peers.connected");
+        assert_eq!(DirectoryQuery::Bonded.scopes(), &[DirectoryQuery::Bonded]);
+        assert_eq!(DirectoryQuery::Bonded.operation(), "peers.bonded");
     }
 }

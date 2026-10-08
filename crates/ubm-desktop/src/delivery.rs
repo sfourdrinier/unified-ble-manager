@@ -26,11 +26,11 @@
 //!   `0x0001` when the characteristic has `BT_GATT_CHRC_PROP_NOTIFY`, else
 //!   `0x0002` for indicate (the path `Device1`/`GattCharacteristic1.StartNotify`
 //!   takes; btleplug 0.12 subscribes through `StartNotify`).
-//! - WinRT through btleplug 0.12: `winrtble/utils.rs` `to_descriptor_value`
-//!   writes `Indicate` whenever the characteristic can indicate. The
-//!   Windows adapter (`os::windows`) rewrites the CCCD afterwards, which is
-//!   what makes the mode selectable there (legacy WinRT preferred notify,
-//!   `src/backends/winrt/winrt-handles.ts` `notificationModeForPath`).
+//! - WinRT: the desktop adapter's first CCCD write is the selected mode
+//!   (vendored `winrt-cccd-mode`). A characteristic that offers both does
+//!   not receive an Indicate write followed by a Notify rewrite. Legacy
+//!   WinRT preferred notify (`src/backends/winrt/winrt-handles.ts`
+//!   `notificationModeForPath`).
 
 use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
 
@@ -43,8 +43,8 @@ use crate::errors::DesktopError;
 pub enum BothPropertiesRule {
     /// The platform always writes this mode and nothing here can change it.
     PlatformWrites(DeliveryMode),
-    /// The platform writes `platform_writes`, and the adapter can rewrite
-    /// the CCCD afterwards; without a requirement it selects `preferred`.
+    /// The platform would write `platform_writes`. The adapter's first CCCD
+    /// write is `preferred` (or the required mode); there is no second write.
     AdapterSelects {
         platform_writes: DeliveryMode,
         preferred: DeliveryMode,
@@ -54,13 +54,36 @@ pub enum BothPropertiesRule {
     Undocumented,
 }
 
+/// Apply a soft preference only where the adapter controls the CCCD mode.
+/// Single-property characteristics still use their supported mode; a hard
+/// requirement remains the independent input to `plan_delivery`.
+#[must_use]
+pub fn with_delivery_preference(
+    rule: BothPropertiesRule,
+    preference: Option<DeliveryMode>,
+) -> BothPropertiesRule {
+    match (rule, preference) {
+        (
+            BothPropertiesRule::AdapterSelects {
+                platform_writes, ..
+            },
+            Some(preferred),
+        ) => BothPropertiesRule::AdapterSelects {
+            platform_writes,
+            preferred,
+        },
+        _ => rule,
+    }
+}
+
 /// How one enable proceeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryPlan {
     /// Subscribe through the platform; it writes the mode reported here.
     Platform(ObservedDelivery),
-    /// Subscribe through the platform, then the adapter writes this mode.
-    /// The platform's own write stands until the rewrite succeeds.
+    /// The first CCCD write is `mode`. `platform_writes` is what an
+    /// unselected subscribe would have written; it is not observed and it
+    /// is not written afterwards.
     AdapterWrites {
         mode: DeliveryMode,
         platform_writes: DeliveryMode,
@@ -200,7 +223,38 @@ pub fn plan_delivery(
 mod tests {
     use super::{
         BothPropertiesRule, DeliveryPlan, plan_delivery, plan_delivery_for_os, platform_rule,
+        with_delivery_preference,
     };
+
+    #[test]
+    fn a_soft_preference_selects_supported_modes_without_becoming_a_requirement() {
+        let preferred = with_delivery_preference(WINDOWS, Some(DeliveryMode::Indication));
+        assert_eq!(
+            plan_delivery(props(true, true), None, preferred).expect("preferred indication"),
+            DeliveryPlan::Platform(ObservedDelivery::Indication)
+        );
+        assert_eq!(
+            plan_delivery(props(true, false), None, preferred)
+                .expect("fallback to only supported mode"),
+            DeliveryPlan::Platform(ObservedDelivery::Notification)
+        );
+        assert_eq!(
+            plan_delivery(
+                props(true, true),
+                Some(DeliveryMode::Notification),
+                preferred
+            )
+            .expect("hard requirement overrides preference"),
+            DeliveryPlan::AdapterWrites {
+                mode: DeliveryMode::Notification,
+                platform_writes: DeliveryMode::Indication
+            }
+        );
+        assert_eq!(
+            with_delivery_preference(NOTIFY_FIRST, Some(DeliveryMode::Indication)),
+            NOTIFY_FIRST
+        );
+    }
     use crate::boundary::{DeliveryMode, ObservedDelivery, PropertyFlags};
 
     fn props(notify: bool, indicate: bool) -> PropertyFlags {
@@ -290,6 +344,8 @@ mod tests {
     }
 
     #[test]
+    /// Windows still prefers notify. The selected mode is the first CCCD
+    /// write, not a later rewrite of an Indicate subscribe.
     fn windows_selects_by_rewriting_the_cccd_and_prefers_notify() {
         assert_eq!(
             plan_delivery(props(true, true), None, WINDOWS).expect("legacy notify preference"),

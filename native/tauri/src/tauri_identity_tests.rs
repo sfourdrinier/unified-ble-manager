@@ -109,6 +109,8 @@ async fn advertise(central: &DesktopCentral<FakeRadio>, peer_id: &str) {
     radio.set_services(
         peer_id,
         vec![ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: HRM_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: vec![CharacteristicSnapshot {
@@ -123,6 +125,7 @@ async fn advertise(central: &DesktopCentral<FakeRadio>, peer_id: &str) {
                 },
                 descriptors: Vec::new(),
             }],
+            access: std::default::Default::default(),
         }],
     );
     radio.push_event(RadioEvent::Advertisement(PeerSnapshot {

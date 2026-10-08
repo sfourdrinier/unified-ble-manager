@@ -1,0 +1,14 @@
+PASS __tests__/backends/reactnative/rust-core-encryption.test.js
+  ✓ an encryption event wins over an older delayed opening snapshot without inventing authentication (2 ms)
+  ✓ a typed source failure settles the watch and fences a held opening snapshot: peer (1 ms)
+  ✓ a typed source failure settles the watch and fences a held opening snapshot: null
+  ✓ typed encryption failure crosses the active factory/wire/provider route, including reconciliation: false (13 ms)
+  ✓ typed encryption failure crosses the active factory/wire/provider route, including reconciliation: true (5 ms)
+  ✓ fresh unchanged security evidence recovers an unattributed failure through reconciliation: false (5 ms)
+  ✓ fresh unchanged security evidence recovers an unattributed failure through reconciliation: true (4 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       7 passed, 7 total
+Snapshots:   0 total
+Time:        0.396 s, estimated 1 s
+Ran all test suites matching /__tests__\/backends\/reactnative\/rust-core-encryption.test.js/i.

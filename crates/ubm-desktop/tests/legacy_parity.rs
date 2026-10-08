@@ -526,6 +526,8 @@ fn every_legacy_feature_has_a_rust_surface() {
         }
     }
     let path = ubm_desktop::DiscoveredPath {
+        service_primary: None,
+        included_services: None,
         service_uuid: String::new(),
         service_occurrence: 0,
         characteristic_uuid: None,
@@ -534,6 +536,7 @@ fn every_legacy_feature_has_a_rust_surface() {
         descriptor_occurrence: None,
         properties: 0,
         access: None,
+        service_access: None,
     };
     assert!(path.access.is_none());
 }

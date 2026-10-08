@@ -406,10 +406,13 @@ internal data class OwnedRadioAdapterProtocolState(
 
 internal data class OwnedAndroidSecurityState(
   val bond: String,
-  val pairingPossible: Boolean?
+  val pairingPossible: Boolean?,
+  val encryption: String = "unsupported"
 )
 
 /** Immutable native-only projection of one system-bonded Android peer. */
+internal data class ConnectedPeerSnapshot(val nativePeerId: String, val displayName: String?)
+
 internal data class BondedPeerSnapshot(
   val nativePeerId: String,
   val displayName: String?
@@ -499,7 +502,9 @@ internal data class OwnedAndroidProtocolAdvertisement(
   val solicitedServiceUuids: List<String>?,
   val serviceData: List<OwnedAndroidProtocolServiceData>?,
   val manufacturerData: List<OwnedAndroidProtocolManufacturerData>?,
-  val rawRecord: ByteArray?
+  val rawRecord: ByteArray?,
+  val cachedName: String?,
+  val captureTimestampMs: Long?
 )
 
 /**
@@ -515,20 +520,29 @@ class OwnedAndroidGattRadio private constructor(
   private val context: Context,
   private val mainHandler: Handler?,
   private val post: ((() -> Unit) -> Boolean)?,
-  private val scheduleDelayed: ((Long, () -> Unit) -> Boolean)?
+  private val scheduleDelayed: ((Long, () -> Unit) -> Boolean)?,
+  private val securitySdkInt: Int,
+  private val securityFullSdkInt: Int,
+  private val scanSdkInt: Int
 ) {
   constructor(context: Context) : this(
     context,
     Handler(Looper.getMainLooper()),
     null,
-    null
+    null,
+    Build.VERSION.SDK_INT,
+    if (Build.VERSION.SDK_INT >= 36) Build.VERSION.SDK_INT_FULL else 0,
+    Build.VERSION.SDK_INT
   )
 
   internal constructor(
     context: Context,
     post: ((() -> Unit) -> Boolean),
-    scheduleDelayed: (Long, () -> Unit) -> Boolean
-  ) : this(context, null, post, scheduleDelayed)
+    scheduleDelayed: (Long, () -> Unit) -> Boolean,
+    securitySdkInt: Int = Build.VERSION.SDK_INT,
+    securityFullSdkInt: Int = if (Build.VERSION.SDK_INT >= 36) Build.VERSION.SDK_INT_FULL else 0,
+    scanSdkInt: Int = Build.VERSION.SDK_INT
+  ) : this(context, null, post, scheduleDelayed, securitySdkInt, securityFullSdkInt, scanSdkInt)
 
   private val bluetoothManager: BluetoothManager by lazy {
     context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
@@ -539,6 +553,12 @@ class OwnedAndroidGattRadio private constructor(
   private var scanCallback: ScanCallback? = null
   private var adapterStateReceiver: BroadcastReceiver? = null
   private var bondStateReceiver: BroadcastReceiver? = null
+  private var bondReceiverAdmissionFailed = false
+  private var securityReceiverActive = false
+  private val connectedEncryptionGenerations = ConcurrentHashMap<String, Long>()
+  private val encryptionApi by lazy {
+    AndroidEncryptionApi(securityFullSdkInt, BluetoothDevice::class.java)
+  }
   private val scanSeenDeviceIds = ConcurrentHashMap.newKeySet<String>()
 
   private val gatts = ConcurrentHashMap<String, BluetoothGatt>()
@@ -673,6 +693,7 @@ class OwnedAndroidGattRadio private constructor(
    * apps should re-run discoverServices (Android docs).
    */
   var onServicesChanged: ((deviceId: String) -> Unit)? = null
+  internal var onSecurityFailure: ((deviceId: String?, error: Throwable) -> Unit)? = null
   internal var onSecurityState: ((deviceId: String, state: OwnedAndroidSecurityState) -> Unit)? = null
   /** Runtime scan failures (permissions, internal errors) — not start exceptions. */
   var onScanFailed: ((errorCode: Int) -> Unit)? = null
@@ -727,6 +748,25 @@ class OwnedAndroidGattRadio private constructor(
         safeReason = "Android reported an unrecognized Bluetooth adapter state."
       )
     }
+  }
+
+  internal fun resolveDirectoryPeer(peerId: String): ConnectedPeerSnapshot? {
+    val address = peerId.uppercase(java.util.Locale.ROOT)
+    require(Regex("^[0-9A-F]{2}(:[0-9A-F]{2}){5}$").matches(address)) { "Invalid directory peer address" }
+    connectedPeerSnapshots().firstOrNull { it.nativePeerId == address }?.let { return it }
+    return bondedPeerSnapshots().firstOrNull { it.nativePeerId == address }?.let { ConnectedPeerSnapshot(it.nativePeerId, it.displayName) }
+  }
+
+  /** Current system GATT connections, including other applications' links. */
+  internal fun connectedPeerSnapshots(): List<ConnectedPeerSnapshot> {
+    bondedPeerAdapterReadiness(adapter != null, hasBluetoothConnectPermission(), adapter?.state ?: BluetoothAdapter.ERROR).getOrThrow()
+    val peers = bluetoothManager.getConnectedDevices(BluetoothProfile.GATT)
+    require(peers.size <= 4096) { "system-connected directory exceeds its bounded capacity" }
+    return peers.map { device ->
+      val address = device.address.uppercase(java.util.Locale.ROOT)
+      require(Regex("^[0-9A-F]{2}(:[0-9A-F]{2}){5}$").matches(address)) { "Android supplied an invalid peer address" }
+      ConnectedPeerSnapshot(address, device.name?.takeIf { it.isNotEmpty() })
+    }.distinctBy { it.nativePeerId }.sortedBy { it.nativePeerId }
   }
 
   /** Read the system bond table without acquiring or mutating any GATT ownership. */
@@ -826,19 +866,30 @@ class OwnedAndroidGattRadio private constructor(
     callbackType: Int = ScanSettings.CALLBACK_TYPE_ALL_MATCHES,
     legacyScan: Boolean = true,
     allowDuplicates: Boolean = true,
-    deviceAddresses: Array<out String> = emptyArray()
+    deviceAddresses: Array<out String> = emptyArray(),
+    reportDelayMs: Long = 0,
+    scanPhy: Int? = null
   ) {
     // ScanSettings.Builder.setLegacy exists only on API 26+; below that the
     // platform can only run a legacy scan, so accepting legacyScan=false would
     // silently ignore the caller's extended-advertising request. Fail closed
     // before any scan state is touched.
-    require(legacyScan || Build.VERSION.SDK_INT >= 26) {
+    require(legacyScan || scanSdkInt >= 26) {
       "legacyScan=false requires ScanSettings.Builder.setLegacy (API 26+); this device cannot honour it"
+    }
+    require(reportDelayMs >= 0) { "scan report delay must be nonnegative" }
+    require(scanPhy == null || (!legacyScan && scanSdkInt >= 26)) {
+      "scan PHY selection requires a nonlegacy scan on API 26+"
     }
     val normalizedServiceUuids = normalizeScanServiceUuids(serviceUuids?.toList() ?: emptyList())
     check(scanCallback == null) { "Android scan cleanup is still owned by a prior scan" }
     scanSeenDeviceIds.clear()
     val a = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
+    if (scanPhy == BluetoothDevice.PHY_LE_CODED) {
+      require(scanSdkInt >= 26 && a.isLeCodedPhySupported) {
+        "LE Coded scan PHY is unavailable on this Bluetooth adapter"
+      }
+    }
     scanner = a.bluetoothLeScanner ?: throw IllegalStateException("LE scanner unavailable")
     val builder = ScanSettings.Builder()
       .setScanMode(
@@ -851,9 +902,11 @@ class OwnedAndroidGattRadio private constructor(
         }
       )
       .setCallbackType(callbackType)
+      .setReportDelay(reportDelayMs)
     // setLegacy is API 26+; default true matches 3.x / legacyScan:true docs.
-    if (Build.VERSION.SDK_INT >= 26) {
+    if (scanSdkInt >= 26) {
       builder.setLegacy(legacyScan)
+      if (scanPhy != null) builder.setPhy(scanPhy)
     }
     val settings = builder.build()
     val filters = mutableListOf<ScanFilter>()
@@ -880,11 +933,21 @@ class OwnedAndroidGattRadio private constructor(
     }
     val cb = object : ScanCallback() {
       override fun onScanResult(callbackType: Int, result: AndroidScanResult) {
+        deliverResult(result)
+      }
+
+      override fun onBatchScanResults(results: MutableList<AndroidScanResult>) {
+        // Each packet follows the ordinary owned-payload ingress path. A batch
+        // changes delivery scheduling, not the duplicate or quota policy.
+        results.forEach { deliverResult(it) }
+      }
+
+      private fun deliverResult(result: AndroidScanResult) {
         if (scanCallback !== this) return
         val device = result.device ?: return
         val id = device.address
         if (!allowDuplicates && !scanSeenDeviceIds.add(id.uppercase())) return
-        val name = result.scanRecord?.deviceName ?: device.name
+        val name = result.scanRecord?.deviceName
         val advertisement = protocolAdvertisement(result, id, name)
         onScanResult?.invoke(
           advertisement.deviceId,
@@ -902,13 +965,13 @@ class OwnedAndroidGattRadio private constructor(
         onScanFailed?.invoke(errorCode)
       }
     }
+    scanCallback = cb
     try {
       if (filters.isEmpty()) {
         scanner?.startScan(null, settings, cb)
       } else {
         scanner?.startScan(filters, settings, cb)
       }
-      scanCallback = cb
     } catch (error: Throwable) {
       val cleanupFailure =
         try {
@@ -958,7 +1021,11 @@ class OwnedAndroidGattRadio private constructor(
         ?.sortedBy { entry -> entry.serviceUuid }
         ?.takeIf { it.isNotEmpty() },
       manufacturerData = manufacturerDataFrom(scanRecord),
-      rawRecord = scanRecord?.bytes?.copyOf()
+      rawRecord = scanRecord?.bytes?.copyOf(),
+      cachedName = if (scanSdkInt < Build.VERSION_CODES.S ||
+        context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+      ) result.device?.name else null,
+      captureTimestampMs = result.timestampNanos.takeIf { it >= 0 }?.div(1_000_000L)
     )
   }
 
@@ -1008,23 +1075,49 @@ class OwnedAndroidGattRadio private constructor(
 
   internal fun securityState(deviceId: String): OwnedAndroidSecurityState {
     val bluetoothAdapter = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
-    if (!hasBluetoothConnectPermission()) {
-      return OwnedAndroidSecurityState(bond = "unknown", pairingPossible = null)
-    }
-    val device = bluetoothAdapter.getRemoteDevice(deviceId.uppercase(Locale.ROOT))
-    return try {
-      OwnedAndroidSecurityState(
-        bond = when (device.bondState) {
-          BluetoothDevice.BOND_BONDED -> "bonded"
-          BluetoothDevice.BOND_BONDING -> "bonding"
-          BluetoothDevice.BOND_NONE -> "notBonded"
-          else -> "unknown"
-        },
-        pairingPossible = true
-      )
-    } catch (error: SecurityException) {
-      OwnedAndroidLog.e("securityState", error)
-      OwnedAndroidSecurityState(bond = "unknown", pairingPossible = null)
+    if (!hasBluetoothConnectPermission()) throw SecurityException("BLUETOOTH_CONNECT is not granted")
+    return securityStateOf(bluetoothAdapter.getRemoteDevice(deviceId.uppercase(Locale.ROOT)))
+  }
+
+  private fun securityStateOf(device: BluetoothDevice, observedBond: String? = null): OwnedAndroidSecurityState {
+    val key = device.address.uppercase(Locale.ROOT)
+    val encryption = if (encryptionApi.snapshotAvailable) {
+      val generation = connectedEncryptionGenerations[key]
+      val observed = encryptionApi.read(device)
+      if (connectedEncryptionGenerations[key] == generation) observed else "unknown"
+    } else if (securitySdkInt >= 36) {
+      // Peer broadcasts carry no GATT generation and cannot establish this link's snapshot.
+      "unknown"
+    } else "unsupported"
+    return OwnedAndroidSecurityState(
+      bond = observedBond ?: when (device.bondState) {
+        BluetoothDevice.BOND_BONDED -> "bonded"
+        BluetoothDevice.BOND_BONDING -> "bonding"
+        BluetoothDevice.BOND_NONE -> "notBonded"
+        else -> "unknown"
+      }, pairingPossible = true, encryption = encryption
+    )
+  }
+
+  internal fun receiveEncryptionChange(device: BluetoothDevice, transport: Int, status: Int, enabled: Boolean?) {
+    if (securitySdkInt < 36) return
+    if (transport != BluetoothDevice.TRANSPORT_LE) return
+    var admittedPeer: String? = null
+    try {
+      val key = device.address.uppercase(Locale.ROOT)
+      admittedPeer = key
+      if (gatts.containsKey(key) && !connectedEncryptionGenerations.containsKey(key)) return
+      val observed = AndroidEncryptionApi.event(status, enabled)
+      // The broadcast's own answer wins; querying the OS again cannot replace it.
+      val bond = when (device.bondState) {
+        BluetoothDevice.BOND_BONDED -> "bonded"
+        BluetoothDevice.BOND_BONDING -> "bonding"
+        BluetoothDevice.BOND_NONE -> "notBonded"
+        else -> "unknown"
+      }
+      onSecurityState?.invoke(key, OwnedAndroidSecurityState(bond, true, observed))
+    } catch (error: Exception) {
+      onSecurityFailure?.invoke(admittedPeer, error)
     }
   }
 
@@ -1036,8 +1129,9 @@ class OwnedAndroidGattRadio private constructor(
     val bluetoothAdapter = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
     val device = bluetoothAdapter.getRemoteDevice(deviceId.uppercase(Locale.ROOT))
     if (isAlreadyPaired(device.bondState, device.type, transport)) {
-      if (!postNow { callback("alreadyPaired", OwnedAndroidSecurityState("bonded", true)) }) {
-        callback("alreadyPaired", OwnedAndroidSecurityState("bonded", true))
+      val state = securityStateOf(device, "bonded")
+      if (!postNow { callback("alreadyPaired", state) }) {
+        callback("alreadyPaired", state)
       }
       return 0L
     }
@@ -1076,9 +1170,30 @@ class OwnedAndroidGattRadio private constructor(
   }
 
   internal fun registerBondStateReceiver() {
-    if (bondStateReceiver != null) return
+    if (bondStateReceiver != null) {
+      if (securityReceiverActive) return
+      unregisterBondStateReceiver()?.let { throw it.throwable }
+    }
     val receiver = object : BroadcastReceiver() {
       override fun onReceive(ctx: Context?, intent: Intent?) {
+        if (!securityReceiverActive || bondStateReceiver !== this) return
+        if (securitySdkInt >= 36 && intent?.action == BluetoothDevice.ACTION_ENCRYPTION_CHANGE) {
+          try {
+          val device = IntentCompat.getParcelableExtra(intent, BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+          if (device == null) {
+            onSecurityFailure?.invoke(null, IllegalArgumentException("Encryption Change omitted device"))
+            return
+          }
+          if (!intent.hasExtra(BluetoothDevice.EXTRA_TRANSPORT)) {
+            onSecurityFailure?.invoke(device.address, IllegalArgumentException("Encryption Change omitted transport"))
+            return
+          }
+          receiveEncryptionChange(device, intent.getIntExtra(BluetoothDevice.EXTRA_TRANSPORT, BluetoothDevice.TRANSPORT_AUTO),
+            intent.getIntExtra(BluetoothDevice.EXTRA_ENCRYPTION_STATUS, BluetoothDevice.ERROR),
+            if (intent.hasExtra(BluetoothDevice.EXTRA_ENCRYPTION_ENABLED)) intent.getBooleanExtra(BluetoothDevice.EXTRA_ENCRYPTION_ENABLED, false) else null)
+          } catch (error: Exception) { onSecurityFailure?.invoke(null, error) }
+          return
+        }
         try {
           if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
           val device = IntentCompat.getParcelableExtra(
@@ -1094,10 +1209,13 @@ class OwnedAndroidGattRadio private constructor(
           }
           val deviceId = device.address
           val pairingPossible = hasBluetoothConnectPermission()
-          onSecurityState?.invoke(
-            deviceId,
-            OwnedAndroidSecurityState(bond = state, pairingPossible = pairingPossible)
-          )
+          var observationFailure: Exception? = null
+          val observed = try { securityStateOf(device, state) } catch (error: Exception) {
+            observationFailure = error
+            OwnedAndroidSecurityState(state, pairingPossible, if (securitySdkInt >= 36) "unknown" else "unsupported")
+          }
+          onSecurityState?.invoke(deviceId, observed)
+          observationFailure?.let { onSecurityFailure?.invoke(deviceId, it) }
           val callback = pendingBondPairs[deviceId.uppercase()]
           if (callback != null && state != "bonding") {
             pendingBondPairs.remove(deviceId.uppercase(), callback)
@@ -1107,30 +1225,48 @@ class OwnedAndroidGattRadio private constructor(
                 "notBonded" -> "rejected"
                 else -> "unknown"
               },
-              OwnedAndroidSecurityState(state, pairingPossible)
+              observed
             )
           }
-        } catch (error: SecurityException) {
-          OwnedAndroidLog.e("bondStateReceiver", error)
+        } catch (error: Exception) {
+          onSecurityFailure?.invoke(null, error)
         }
       }
     }
     val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
-    if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
-    else {
-      @Suppress("UnspecifiedRegisterReceiverFlag")
-      context.registerReceiver(receiver, filter)
-    }
+    if (securitySdkInt >= 36) filter.addAction(BluetoothDevice.ACTION_ENCRYPTION_CHANGE)
     bondStateReceiver = receiver
+    bondReceiverAdmissionFailed = false
+    securityReceiverActive = true
+    try {
+      if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+      else {
+        @Suppress("UnspecifiedRegisterReceiverFlag")
+        context.registerReceiver(receiver, filter)
+      }
+    } catch (error: Exception) {
+      securityReceiverActive = false
+      bondReceiverAdmissionFailed = true
+      // Retain uncertain OS effects until release succeeds or Android confirms no registration.
+      throw error
+    }
   }
 
   internal fun unregisterBondStateReceiver(): OwnedRadioTeardownFailure? {
     val receiver = bondStateReceiver ?: return null
+    securityReceiverActive = false
     return try {
       context.unregisterReceiver(receiver)
       bondStateReceiver = null
+      bondReceiverAdmissionFailed = false
       null
     } catch (error: Exception) {
+      if (bondReceiverAdmissionFailed && error is IllegalArgumentException) {
+        // Context documents this exception when the receiver was never registered.
+        bondStateReceiver = null
+        bondReceiverAdmissionFailed = false
+        return null
+      }
       OwnedAndroidLog.e("unregisterBondStateReceiver", error)
       OwnedRadioTeardownFailure("unregisterBondStateReceiver", error)
     }
@@ -1236,6 +1372,7 @@ class OwnedAndroidGattRadio private constructor(
 
   private fun openGatt(deviceId: String, key: String, autoConnect: Boolean, phyMask: Int) {
     pendingReconnect.remove(key)
+    connectedEncryptionGenerations.remove(key)
     val a = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
     val device = try {
       // CDM MacAddress.toString() can be lowercase; key is the canonical adapter address.
@@ -2369,6 +2506,27 @@ class OwnedAndroidGattRadio private constructor(
     }
   }
 
+  private val subrateApi by lazy {
+    AndroidSubrateApi(securityFullSdkInt, BluetoothGatt::class.java)
+  }
+
+  fun subrateAvailable(): Boolean = subrateApi.available
+
+  /** A status is the request's own OS answer, never a measured subrate factor. */
+  fun requestSubrate(deviceId: String, mode: String, onResult: (Result<Int>) -> Unit): Long = enqueue(
+    deviceId,
+    onCancelled = { onResult(Result.failure(IllegalStateException("subrate request cancelled"))) },
+    onStartFailure = { error -> onResult(Result.failure(error)) }
+  ) { token, done ->
+    val result = runCatching {
+      val gatt = gatts[deviceId.uppercase()] ?: throw AndroidGattLinkLost("subrate request has no active GATT", null, false)
+      subrateApi.request(gatt, mode)
+    }
+    try {
+      if (token.markPubliclySettled()) onResult(result)
+    } finally { done() }
+  }
+
   /**
    * [BluetoothGatt.requestConnectionPriority] — returns false if not connected or call rejected.
    * Priority values match [BluetoothGatt.CONNECTION_PRIORITY_BALANCED]/HIGH/LOW_POWER (0/1/2).
@@ -2444,6 +2602,7 @@ class OwnedAndroidGattRadio private constructor(
       pending.clear()
       pendingMtu.clear()
       effectiveMtuByDevice.clear()
+      connectedEncryptionGenerations.clear()
       pendingRssi.clear()
       pendingPhyReads.clear()
       pendingPhyRequests.clear()
@@ -2970,6 +3129,7 @@ class OwnedAndroidGattRadio private constructor(
       val generation = gattGenerationByInstance[gatt] ?: return
       if (newState == BluetoothProfile.STATE_CONNECTED) {
         if (status == BluetoothGatt.GATT_SUCCESS) {
+          connectedEncryptionGenerations[key] = generation
           dispatchConnectionState(id, true, status)
         } else {
           // Non-success while "connected" is a failed connect — surface status and tear down.
@@ -2978,6 +3138,16 @@ class OwnedAndroidGattRadio private constructor(
           completeGattTeardown(key, gatt, generation)
         }
       } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+        connectedEncryptionGenerations.remove(key, generation)
+        try {
+          onSecurityState?.invoke(id, OwnedAndroidSecurityState(
+            when (gatt.device.bondState) {
+              BluetoothDevice.BOND_BONDED -> "bonded"
+              BluetoothDevice.BOND_BONDING -> "bonding"
+              BluetoothDevice.BOND_NONE -> "notBonded"
+              else -> "unknown"
+            }, hasBluetoothConnectPermission(), if (securitySdkInt >= 36) "unknown" else "unsupported"))
+        } catch (error: Exception) { onSecurityFailure?.invoke(id, error) }
         // Always pass gatt status: status 133 etc. means failed connect, not clean disconnect.
         // R3-F003: close() only after STATE_DISCONNECTED (not from disconnect()/connect prior).
         dispatchConnectionState(id, false, status)

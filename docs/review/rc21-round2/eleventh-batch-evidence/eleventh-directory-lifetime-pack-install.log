@@ -1,0 +1,31 @@
+pack-install-smoke temp: /var/folders/x6/fx6xhn0j7kqbv_kndmcl_4tc0000gn/T/ubm-pack-install-HjSZ3G
+canonical tarball: /var/folders/x6/fx6xhn0j7kqbv_kndmcl_4tc0000gn/T/ubm-pack-install-HjSZ3G/artifacts/unified-ble-manager-5.0.0-rc.21.tgz
+Error: /Users/sfourdrinier/.nvm/versions/node/v22.23.2/bin/node scripts/ci/verify-package-tarballs.js /var/folders/x6/fx6xhn0j7kqbv_kndmcl_4tc0000gn/T/ubm-pack-install-HjSZ3G/artifacts/unified-ble-manager-5.0.0-rc.21.tgz failed (1):
+/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/scripts/ci/verify-package-tarballs.js:326
+    throw new Error(
+    ^
+
+Error: Packed native prebuild set must be complete and exact. Missing: package/native/desktop-core/prebuilds/linux-arm64/ubm_desktop_core.node, package/native/desktop-core/prebuilds/linux-x64/ubm_desktop_core.node, package/native/desktop-core/prebuilds/win32-arm64/ubm_desktop_core.node, package/native/desktop-core/prebuilds/win32-x64/ubm_desktop_core.node. Unexpected: none.
+    at assertNativePrebuildSet (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/scripts/ci/verify-package-tarballs.js:326:11)
+    at verifyRootTarball (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/scripts/ci/verify-package-tarballs.js:623:40)
+    at main (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/scripts/ci/verify-package-tarballs.js:891:3)
+    at Object.<anonymous> (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/scripts/ci/verify-package-tarballs.js:895:3)
+    at Module._compile (node:internal/modules/cjs/loader:1781:14)
+    at Object..js (node:internal/modules/cjs/loader:1913:10)
+    at Module.load (node:internal/modules/cjs/loader:1505:32)
+    at Function._load (node:internal/modules/cjs/loader:1309:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:254:19)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)
+
+Node.js v22.23.2
+
+    at assertChildProcessResult (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/scripts/ci/pack-install-smoke.js:64:11)
+    at run (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/scripts/ci/pack-install-smoke.js:89:3)
+    at main (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/scripts/ci/pack-install-smoke.js:846:5)
+    at Object.<anonymous> (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/scripts/ci/pack-install-smoke.js:1143:5)
+    at Module._compile (node:internal/modules/cjs/loader:1781:14)
+    at Object..js (node:internal/modules/cjs/loader:1913:10)
+    at Module.load (node:internal/modules/cjs/loader:1505:32)
+    at Function._load (node:internal/modules/cjs/loader:1309:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:254:19)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)

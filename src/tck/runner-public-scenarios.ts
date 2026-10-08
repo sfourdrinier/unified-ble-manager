@@ -1,3 +1,4 @@
+import { isConnectionParameterValues } from '../backend-contract/connection-parameter-validation'
 // src/tck/runner-public-scenarios.ts
 
 import type { BleCentralBackend } from '../backend-contract/backend'
@@ -1475,8 +1476,8 @@ async function executeConnectionControlsScenario<
     const subrateState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionSubrate)
     const readinessState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness)
     const phy = await observePhyTruth(connection, fixture, phyState)
-    const parameters = await observeParametersTruth(parametersState)
-    const subrate = await observeSubrateTruth(subrateState)
+    const parameters = await observeParametersTruth(connection, fixture, parametersState)
+    const subrate = await observeSubrateTruth(connection, fixture, subrateState)
     const readiness = await observeReadinessTruth(connection, fixture, readinessState)
     const database = await fixture.controller.settle(connection.discover(operationOptions))
     const observationsBoundToGeneration =
@@ -1588,7 +1589,20 @@ async function observePhyTruth<
     }
   }
   const readMeasured =
-    read.errorCode === null && read.value !== null && isBlePhy(read.value.txPhy) && isBlePhy(read.value.rxPhy)
+    read.errorCode === null &&
+    read.value !== null &&
+    isBlePhy(read.value.txPhy) &&
+    isBlePhy(read.value.rxPhy) &&
+    Number.isFinite(read.value.observedAtMonotonicMs) &&
+    read.value.observedAtMonotonicMs >= 0 &&
+    read.value.terminal.outcome === 'succeeded'
+  const registration = fixture.backend.features.registrations.find(
+    candidate => candidate.id === BUILT_IN_FEATURE_IDS.connectionPhy
+  )
+  const observationOnly =
+    state === 'limited' &&
+    registration?.limitations.some(limitation => limitation.code === 'winrt-phy-observation-only') === true
+  const requestExplicitlyUnsupported = observationOnly && request.errorCode === 'capability.unsupported'
   const requestState = request.value === null ? null : request.value.accepted ? 'accepted' : 'rejected'
   const requestObservationPresent = request.value !== null && request.value.observation !== null
   const requestOutcomeIsCoherent =
@@ -1602,13 +1616,16 @@ async function observePhyTruth<
   return {
     holds:
       readMeasured &&
-      requestOutcomeIsCoherent &&
+      (requestOutcomeIsCoherent || requestExplicitlyUnsupported) &&
       readGenerationBound &&
       (!requestObservationPresent || requestObservationGenerationBound),
     generationBound: connection.connectionGeneration.length > 0,
     detail: {
       invoked: read.invoked && request.invoked,
       readMeasured,
+      txPhy: read.value?.txPhy ?? null,
+      rxPhy: read.value?.rxPhy ?? null,
+      requestExplicitlyUnsupported,
       readGenerationBound,
       requestOutcomeIsCoherent,
       requestObservationPresent,
@@ -1620,33 +1637,86 @@ async function observePhyTruth<
   }
 }
 
-function observeParametersTruth(state: FeatureState): ControlFactObservation {
+async function observeParametersTruth<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(
+  connection: ConnectionHandle<Attachment, Identity>,
+  fixture: BackendTckFixture<Attachment, Identity, Backend>,
+  state: FeatureState
+): Promise<ControlFactObservation> {
   const expectedError = capabilityErrorCode(state)
-  const descriptorTruth = state === 'unsupported' || state === 'unavailable'
+  if (!isCallableFeatureState(state)) {
+    return {
+      holds: true,
+      generationBound: true,
+      detail: { invoked: false, operationAvailable: false, descriptorOnly: true, expectedError }
+    }
+  }
+  const read = await observePublicControl(() => fixture.controller.settle(connection.parameters(operationOptions)))
+  const measured =
+    read.errorCode === null &&
+    read.value !== null &&
+    isConnectionParameterValues(read.value) &&
+    Number.isFinite(read.value.observedAtMonotonicMs) &&
+    read.value.observedAtMonotonicMs >= 0 &&
+    read.value.terminal.outcome === 'succeeded'
+  const generationBound =
+    read.value !== null &&
+    String(read.value.connectionId) === String(connection.connectionId) &&
+    String(read.value.connectionGeneration) === String(connection.connectionGeneration)
   return {
-    holds: descriptorTruth,
-    generationBound: true,
+    holds: measured && generationBound,
+    generationBound,
     detail: {
-      invoked: false,
-      operationAvailable: false,
-      scope: 'descriptor/runtime-truth-only-no-parameters-seam',
-      expectedError
+      invoked: read.invoked,
+      operationAvailable: true,
+      measured,
+      generationBound,
+      readErrorCode: read.errorCode
     }
   }
 }
 
-function observeSubrateTruth(state: FeatureState): ControlFactObservation {
+async function observeSubrateTruth<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(
+  connection: ConnectionHandle<Attachment, Identity>,
+  fixture: BackendTckFixture<Attachment, Identity, Backend>,
+  state: FeatureState
+): Promise<ControlFactObservation> {
   const expectedError = capabilityErrorCode(state)
-  const descriptorTruth = state === 'unsupported' || state === 'unavailable'
-  return {
-    holds: descriptorTruth,
-    generationBound: true,
-    detail: {
-      invoked: false,
-      operationAvailable: false,
-      scope: 'descriptor/runtime-truth-only-no-subrate-seam',
-      expectedError
+  if (!isCallableFeatureState(state)) {
+    return {
+      holds: true,
+      generationBound: true,
+      detail: {
+        invoked: false,
+        descriptorOnly: true,
+        operationAvailable: false,
+        expectedError
+      }
     }
+  }
+  const request = await observePublicControl(() =>
+    fixture.controller.settle(connection.requestSubrate('low-power', operationOptions))
+  )
+  const reported =
+    request.errorCode === null &&
+    request.value !== null &&
+    typeof request.value.accepted === 'boolean' &&
+    request.value.requested === 'low-power' &&
+    Number.isFinite(request.value.observedAtMonotonicMs) &&
+    request.value.observedAtMonotonicMs >= 0 &&
+    request.value.terminal.outcome === 'succeeded'
+  const generationBound = reported && connection.connectionGeneration.length > 0
+  return {
+    holds: reported && generationBound,
+    generationBound,
+    detail: { invoked: request.invoked, operationAvailable: true, reported, requestErrorCode: request.errorCode }
   }
 }
 

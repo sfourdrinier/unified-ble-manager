@@ -49,6 +49,7 @@ test('packed TV staging uses the tarball and only stage-local shared sources', (
     })
     expect(result.status).toBe(0)
     const pkg = JSON.parse(fs.readFileSync(path.join(stage, 'package.json'), 'utf8'))
+    expect(pkg.packageManager).toBe(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).packageManager)
     expect(pkg.dependencies['unified-ble-manager']).toBe(`file:${tarball}`)
     expect(pkg.dependencies['react-native']).toBe('npm:react-native-tvos@0.86.3-0')
     expect(fs.readFileSync(path.join(stage, 'metro.config.js'), 'utf8')).toContain(

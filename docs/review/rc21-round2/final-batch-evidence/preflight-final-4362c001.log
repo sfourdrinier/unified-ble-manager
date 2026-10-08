@@ -1,0 +1,44 @@
+[1mpreflight[0m FETCH_HEAD (4362c001b)
+  workspace: /home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b
+  cargo target (shared): /home/sfourdrinier/.cache/ubm-preflight/cargo-target
+
+[1m▶ install (frozen lockfile)[0m
+  ✓ 6s
+[1m▶ cargo cache (locked, all targets)[0m
+[1m▶ package + tauri-plugin (parallel)[0m
+
+[1m── summary ──[0m
+[31m  ✗ package          187s  (exit 1)[0m
+            at IpcBleManager.assertActive (src/ipc/manager.ts:1432:26)
+            at IpcBleManager.assertActive (src/ipc/manager.ts:672:60)
+            at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+            at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+            at _next (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:22:7)
+            at IpcBleManager.<anonymous> (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:14:12)
+            at IpcBleManager.apply (src/ipc/manager.ts:663:14)
+            at route (src/ipc/manager.ts:2094:12)
+            at close (src/ipc/manager.ts:2113:74)
+            at Object.notifyOwnerTerminal (src/ipc/manager.ts:814:65)
+            at notifyOwnerTerminal (src/ipc/manager.ts:1094:43)
+            at IpcBleManager.run [as captureOwnerCleanup] (src/ipc/manager.ts:1104:22)
+            at captureOwnerCleanup (src/ipc/manager.ts:1094:12)
+            at IpcBleManager._loop [as terminalizeEventPump] (src/ipc/manager.ts:1092:29)
+            at IpcBleManager.terminalizeEventPump (src/ipc/manager.ts:1057:12)
+            at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:3:17)
+            at asyncGeneratorStep (node_modules/.pnpm/@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/asyncToGenerator.js:17:9)
+      
+      
+      Test Suites: 1 failed, 429 passed, 430 total
+      Tests:       8 failed, 5425 passed, 5433 total
+      Snapshots:   0 total
+      Time:        139.568 s
+      Ran all test suites.
+       ELIFECYCLE  Command failed with exit code 1.
+      full log: /home/sfourdrinier/.cache/ubm-preflight/package.log
+[32m  ✓ tauri-plugin     187s[0m
+[33m  – android          skipped (--fast; includes Expo reference typecheck)[0m
+  total 194s
+
+Not covered: windows/macos legs, the apple job, CoreBluetooth and WinRT
+boundaries, the Node matrix, and the runner OS. Push for those.
+workspace kept: /home/sfourdrinier/.cache/ubm-preflight/tree-4362c001b

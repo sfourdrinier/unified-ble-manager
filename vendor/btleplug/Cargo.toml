@@ -168,6 +168,7 @@ features = [
     "Devices_Radios",
     "Foundation_Collections",
     "Foundation",
+    "Foundation_Metadata",
     "Storage_Streams",
 ]
 

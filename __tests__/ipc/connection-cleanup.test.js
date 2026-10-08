@@ -2,7 +2,7 @@ const { IpcBleManager, IpcConnection, inspectIpcProvisionalAdmissionForTests } =
 const { BackendContractError } = require('../../src/backend-contract/errors')
 const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
 
-function negotiated(axis, value = axis === 'ipc-protocol' ? 5 : 1) {
+function negotiated(axis, value = axis === 'ipc-protocol' ? 6 : 1) {
   const selected = { axis, value }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
@@ -82,6 +82,7 @@ function transportError(operation) {
 async function createConnectedIpc(behavior) {
   const commands = []
   const bootstrap = bootstrapRecord()
+  let eventListener
   const transport = {
     invoke: async request => {
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap }
@@ -147,9 +148,25 @@ async function createConnectedIpc(behavior) {
         )
       if (command === 'gatt.unsubscribe') return behavior.gattUnsubscribe()
       if (command === 'connection.rssi') return { kind: 'route', payload: { rssi: -42 } }
+      if (command === 'connection.parameters') return { kind: 'route', payload: behavior.parameters(payload) }
+      if (command === 'connection.parameters.subscribe') {
+        return (
+          behavior.parametersSubscribe?.(payload) ?? { kind: 'route', payload: { state: 'released', failures: [] } }
+        )
+      }
+      if (command === 'connection.parameters.unsubscribe') {
+        return behavior.parametersUnsubscribe?.() ?? { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+      if (command === 'connection.write-readiness.subscribe') {
+        return behavior.readinessSubscribe?.(payload) ?? { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+      if (command === 'connection.write-readiness.unsubscribe') {
+        return behavior.readinessUnsubscribe?.() ?? { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
       return { kind: 'route', payload: { state: 'released', failures: [] } }
     },
-    subscribe() {
+    subscribe(listener) {
+      eventListener = listener
       return () => undefined
     },
     acknowledge: async () => ({ kind: 'event.ack' })
@@ -161,8 +178,115 @@ async function createConnectedIpc(behavior) {
     await new Promise(resolve => setImmediate(resolve))
   }
   expect(commands).toContain('connection.events.ready')
-  return { ipc, connection, commands }
+  return {
+    ipc,
+    connection,
+    commands,
+    emit(streamId, value) {
+      eventListener({
+        rendererLease: bootstrap.rendererLease,
+        eventId: `metadata-${streamId}`,
+        streamId,
+        item: { kind: 'value', value }
+      })
+    }
+  }
 }
+
+test.each([
+  ['matching', 'connection-id-1', 'generation-1', null],
+  ['foreign connection', 'other-connection', 'generation-1', 'protocol.violation'],
+  ['old generation', 'connection-id-1', 'old-generation', 'protocol.violation'],
+  ['missing identity', undefined, undefined, 'protocol.malformed']
+])('parameter snapshot validates the host identity: %s', async (_label, connectionId, connectionGeneration, code) => {
+  const fixture = await createConnectedIpc({
+    parameters: () => ({
+      connectionId,
+      connectionGeneration,
+      intervalUs: 30_000,
+      latency: 0,
+      supervisionTimeoutUs: 4_000_000
+    }),
+    unsubscribe: async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }),
+    disconnect: async () => ({ kind: 'route', payload: { state: 'released', failures: [] } })
+  })
+  try {
+    if (code === null) await expect(fixture.connection.parameters()).resolves.toMatchObject({ intervalUs: 30_000 })
+    else await expect(fixture.connection.parameters()).rejects.toMatchObject({ normalized: { code } })
+  } finally {
+    await fixture.ipc.destroy()
+  }
+})
+
+function releaseFailed(resourceKind, operation) {
+  return {
+    kind: 'route',
+    payload: {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind,
+          error: {
+            code: 'platform.failure',
+            domain: 'connection',
+            operation,
+            platform: null,
+            retryability: 'caller-decides'
+          }
+        }
+      ]
+    }
+  }
+}
+
+describe('admitted control watches', () => {
+  test.each([
+    [
+      'parameterEvents',
+      'parametersSubscribe',
+      'parametersUnsubscribe',
+      'ipc-manager.connection-parameters-handle',
+      'IPC connection-parameter watch admission cleanup failed'
+    ],
+    [
+      'writeReadiness',
+      'readinessSubscribe',
+      'readinessUnsubscribe',
+      'ipc-manager.write-readiness-handle',
+      'IPC write-readiness watch admission cleanup failed'
+    ]
+  ])(
+    '%s keeps a failed unsubscribe after the host has admitted the watch',
+    async (method, subscribeHook, unsubscribeHook, operation, message) => {
+      let unsubscribes = 0
+      const { ipc, connection } = await createConnectedIpc({
+        [subscribeHook]: () => ({ kind: 'route', payload: { handle: 'not-the-client-handle' } }),
+        [unsubscribeHook]: () => {
+          unsubscribes += 1
+          return unsubscribes === 1
+            ? releaseFailed(method, operation)
+            : { kind: 'route', payload: { state: 'released', failures: [] } }
+        },
+        unsubscribe: async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }),
+        disconnect: async () => ({ kind: 'route', payload: { state: 'released', failures: [] } })
+      })
+
+      let caught = null
+      try {
+        await connection[method]()
+      } catch (error) {
+        caught = error
+      }
+      expect(caught).toBeInstanceOf(AggregateError)
+      expect(caught.message).toBe(message)
+      expect(caught.errors[0]).toMatchObject({ normalized: { code: 'protocol.malformed', operation } })
+      expect(caught.errors[1]).toMatchObject({ cleanup: { state: 'release-failed' } })
+      expect(unsubscribes).toBe(1)
+      await expect(ipc.destroy()).resolves.toMatchObject({ state: 'released' })
+      expect(unsubscribes).toBe(2)
+    }
+  )
+})
 
 describe('IPC connection cleanup independence', () => {
   test('late GATT admission after confirmed parent rejects without another native cleanup request', async () => {
@@ -786,5 +910,66 @@ describe('IPC connection cleanup independence', () => {
     })
     await connection.release()
     await expect(ipc.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+})
+
+describe.each([
+  [
+    'parameterEvents',
+    'parametersSubscribe',
+    'parameterEventsHandle',
+    { intervalUs: 30000, latency: 0, supervisionTimeoutUs: 4000000 }
+  ],
+  ['writeReadiness', 'readinessSubscribe', 'writeReadinessHandle', { ready: true }]
+])('%s private control metadata', (method, subscribeHook, handleField, measurement) => {
+  test.each([
+    ['timestamp NaN', 'observedAtMonotonicMs', NaN],
+    ['timestamp infinity', 'observedAtMonotonicMs', Infinity],
+    ['timestamp negative', 'observedAtMonotonicMs', -1],
+    ['ordinal NaN', 'ordinal', NaN],
+    ['ordinal infinity', 'ordinal', Infinity],
+    ['ordinal negative', 'ordinal', -1],
+    ['ordinal zero', 'ordinal', 0],
+    ['ordinal fractional', 'ordinal', 1.5],
+    ['ordinal unsafe', 'ordinal', Number.MAX_SAFE_INTEGER + 1]
+  ])('terminalizes %s and releases the admitted host watch', async (_label, field, value) => {
+    let streamId
+    const fixture = await createConnectedIpc({
+      [subscribeHook]: payload => {
+        streamId = payload[handleField]
+        return { kind: 'route', payload: { handle: streamId } }
+      }
+    })
+    try {
+      const watch = await fixture.connection[method]()
+      expect(() =>
+        fixture.emit(streamId, {
+          connectionId: 'connection-id-1',
+          connectionGeneration: 'generation-1',
+          ...measurement,
+          observedAtMonotonicMs: 0,
+          ordinal: 1,
+          [field]: value
+        })
+      ).not.toThrow()
+      const result = await watch.events[Symbol.asyncIterator]().next()
+      expect(result.value).toMatchObject({
+        kind: 'terminal',
+        reason: 'source-failed',
+        error: { code: 'protocol.malformed' }
+      })
+      await watch.close()
+      if (!Number.isFinite(value)) {
+        await expect(fixture.ipc.route('adapter.state', {})).rejects.toMatchObject({
+          normalized: { code: 'lifecycle.destroyed' }
+        })
+        expect(fixture.commands).not.toContain('adapter.state')
+      }
+      expect(fixture.commands).toContain(
+        method === 'parameterEvents' ? 'connection.parameters.unsubscribe' : 'connection.write-readiness.unsubscribe'
+      )
+    } finally {
+      await fixture.ipc.destroy()
+    }
   })
 })

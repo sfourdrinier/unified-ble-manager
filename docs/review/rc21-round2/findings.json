@@ -1,0 +1,1695 @@
+{
+  "repository": "https://github.com/sfourdrinier/unified-ble-manager",
+  "pull_request": 251,
+  "reviewed_head": "b80542f39144949738b04dc7d19b4a7ee52cc8c6",
+  "previous_reviewed_head": "86c9cd2ff86e22e410c95880fab59aca82f99bb1",
+  "base": "f702f3c116b2f45fba64cfceb94d3916cadc9baf",
+  "review_date_utc": "2026-10-07",
+  "verdict": "request_changes",
+  "priority_counts": {
+    "P1": 2,
+    "P2": 30,
+    "P3": 1
+  },
+  "findings": [
+    {
+      "id": "R2-01",
+      "priority": "P1",
+      "title": "The latest canonical package tests and Rust gates still fail",
+      "category": "build-and-qualification",
+      "origin": "current gate failures, including defects exposed after the documentation repair",
+      "platforms": [
+        "all package consumers"
+      ],
+      "evidence_level": "same-head GitHub Actions logs, local API-report/typecheck checks and focused test validation",
+      "references": [
+        {
+          "path": "__tests__/native-protocol/AppleNativeProtocolV2.test.js",
+          "start_line": 455,
+          "end_line": 455,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/__tests__/native-protocol/AppleNativeProtocolV2.test.js#L455"
+        },
+        {
+          "path": "__tests__/ElectronIpcBoundary.test.js",
+          "start_line": 541,
+          "end_line": 545,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/__tests__/ElectronIpcBoundary.test.js#L541-L545"
+        },
+        {
+          "path": "native/tauri/src/btleplug_dispatcher.rs",
+          "start_line": 17,
+          "end_line": 24,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/native/tauri/src/btleplug_dispatcher.rs#L17-L24"
+        },
+        {
+          "path": "crates/ubm-mobile/tests/recording_peer_scope.rs",
+          "start_line": 435,
+          "end_line": 435,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-mobile/tests/recording_peer_scope.rs#L435"
+        }
+      ],
+      "behavior": "The final commit fixes the seven stale API reports and now gets through packaging. In same-head CI run37558288591, Linux Node22 completes Jest with 7 failed suites / 8 failed tests / 5,279 passed tests (420 suites,5,287 tests total). Failures include the two stale Electron timing assertions, the Apple 901-versus-900 file cap, two WinRT parameter TCK assertions, actual missing native parameter forwarding (R2-34), and two RN connection/bridge shape mismatches (R2-35). All four JS lanes are red. Tauri Linux fails rustfmt on the new import list. Windows Rust also fails the sustained-recording fixture because continuation setup step0 reaches its command deadline. That timeout is an unresolved gate failure; this review has not established a distinct product root cause or proved it flaky. The packed Linux Bun gate now passes and Classic RN Android assembles successfully; those improvements must be credited.",
+      "correction": "Fix actual forwarding and bridge-contract defects, complete TCK evidence for the newly supported parameter operation, correct the Apple file organization and Tauri formatting, and await explicit Electron retirement instead of six microtasks. Investigate the Windows recording timeout using its setup/deadline trace before changing budgets. Preserve all ownership assertions and run the unchanged canonical gates again.",
+      "acceptance": "At one commit, all required JS/native/format gates execute and pass. Keep packed Bun and Android successes. The local final-head API-report check passes; a standalone docs:check stops later only because this fresh worktree lacks generated build input, which is an environment prerequisite rather than a remaining API-report defect.",
+      "evidence_files": [
+        "evidence/final-ci-package-failures.log",
+        "evidence/final-ci-112589503267.log",
+        "evidence/final-ci-112589503295.log",
+        "evidence/final-head-docs-check.log",
+        "evidence/final-head-typecheck.log",
+        "evidence/final-head-delta-jest.log",
+        "evidence/ci-jobs.json",
+        "evidence/electron-retirement.md"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-02",
+      "priority": "P1",
+      "title": "An accepted external Pair can lose its link when UBM releases its last lease",
+      "category": "ownership",
+      "origin": "new regression in the fix batch",
+      "platforms": [
+        "Linux maintained BlueZ daemon"
+      ],
+      "evidence_level": "complete production C functions executed with controlled OS boundaries",
+      "references": [
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "start_line": 3287,
+          "end_line": 3295,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/bluez/ubm-le-gatt-5.87.patch#L3287-L3295"
+        },
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "start_line": 767,
+          "end_line": 771,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/bluez/ubm-le-gatt-5.87.patch#L767-L771"
+        },
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "start_line": 3813,
+          "end_line": 3838,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/bluez/ubm-le-gatt-5.87.patch#L3813-L3838"
+        }
+      ],
+      "behavior": "On an already-connected, unpaired LE device, another D-Bus sender starts Pair. The real Pair handler accepts the SMP security request and retains bonding state, but its admission stays uncommitted until bonding completes. protecting_interest counts in-flight read/write operations and committed admissions, so it ignores this accepted Pair. Releasing UBM’s final lease then submits a physical disconnect while the other app is still pairing, potentially while waiting for human input. The control verifies the disconnect request; it does not claim a measured HCI teardown.",
+      "correction": "Represent the lifetime of accepted asynchronous work explicitly and protect it until success, failure or cancellation. Preserve immediate rejection rollback and generation-aware arrival provenance. Counting only successful resource acquisition is too late for an active Pair.",
+      "acceptance": "Pause a foreign Pair after security-request acceptance, release the final lease, and assert no physical disconnect. Cover Pair success, refusal, cancellation, sender death and Pair opening the link before the first lease; retain rejected-Pair rollback controls. Then qualify the same pause with a real SMP agent/controller.",
+      "evidence_files": [
+        "evidence/linux.md",
+        "reproductions/linux-controls/README.md",
+        "reproductions/linux-controls/logs/current.log"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-03",
+      "priority": "P2",
+      "title": "Protected logical release forgets the owner of deferred cleanup and token retirement",
+      "category": "ownership",
+      "origin": "new lifecycle gap while correcting F09",
+      "platforms": [
+        "Linux Rust client and BlueZ daemon"
+      ],
+      "evidence_level": "production Rust path inspected; daemon lifecycle control executed",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/os/linux_lease.rs",
+          "start_line": 381,
+          "end_line": 397,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/os/linux_lease.rs#L381-L397"
+        },
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "start_line": 3298,
+          "end_line": 3338,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/bluez/ubm-le-gatt-5.87.patch#L3298-L3338"
+        },
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "start_line": 3963,
+          "end_line": 3965,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/bluez/ubm-le-gatt-5.87.patch#L3963-L3965"
+        }
+      ],
+      "behavior": "The Rust client now correctly returns logical release for a protected receipt, but deletes the entry without terminal tracking or ACK maintenance. The daemon retains that nonterminal token, rejects its ACK and reconciles deferred physical cleanup only for dead owners. With a live sender and a temporary foreign read, finishing the read leaves the former UBM-created ACL without an active reconciliation owner while the sender stays alive. Even a later physical-loss observation leaves the live sender’s token allocated. Repeated overlapping successful sessions can exhaust the global 1,024-token limit. The new client test asserts the forgotten state without testing the real daemon’s opposing contract.",
+      "correction": "Complete logical retirement as one producer/consumer protocol: reclaim the token idempotently, preserve generation-scoped deferred physical cleanup and replay identity, and reconcile when the last temporary protector ends. Retained client maintenance may bridge the transition. Simply accepting protected ACKs and freeing the final owner is insufficient if it loses cleanup authority. Preserve the corrected public logical success.",
+      "acceptance": "Use real daemon/client integration for more than 1,024 overlapping cycles with two live senders, plus one live sender and a foreign read. Assert bounded retained tokens, cleanup after the final protector, no interference with the other lease, and correct duplicate/lost-reply/stale-generation behavior.",
+      "evidence_files": [
+        "evidence/linux.md",
+        "reproductions/linux-controls/logs/current.log"
+      ],
+      "previous_findings": [
+        "F09",
+        "F08"
+      ],
+      "status": "open"
+    },
+    {
+      "id": "R2-04",
+      "priority": "P2",
+      "title": "Deferred AcquireWrite/AcquireNotify socket errors leave a durable interest",
+      "category": "ownership",
+      "origin": "residual previous finding",
+      "platforms": [
+        "Linux maintained BlueZ daemon"
+      ],
+      "evidence_level": "complete deferred AcquireWrite and shared callback executed; corresponding AcquireNotify path source-inspected",
+      "references": [
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "start_line": 1436,
+          "end_line": 1447,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/bluez/ubm-le-gatt-5.87.patch#L1436-L1447"
+        }
+      ],
+      "behavior": "When GATT is not ready, acquired-FD handlers commit an admission before waiting for characteristic_ready. If deferred create_sock later fails, for example socketpair returns EMFILE, the callback replies with an error and discards the request without abandoning that admission. The caller received no FD, yet its connection interest survives. The same immediate socket failure correctly rolls back. AcquireNotify shares the deferred socket path, so correcting only AcquireWrite’s immediate branch does not close this defect.",
+      "correction": "Carry the exact admission through deferred completion and abandon it on every failed delivery, along with any half-created subscription/socket resources. Separate accepted pending work from successful durable resource ownership.",
+      "acceptance": "Inject identical socket/resource errors in immediate and deferred write and notify acquisitions; assert one error, no FD, no retained admission and retryable cleanup for any half-created resource. Include cancellation and disconnect while readiness is pending.",
+      "evidence_files": [
+        "evidence/linux.md",
+        "reproductions/linux-controls/generated/function-provenance.json",
+        "reproductions/linux-controls/logs/current.log"
+      ],
+      "previous_findings": [
+        "F07"
+      ],
+      "status": "open"
+    },
+    {
+      "id": "R2-05",
+      "priority": "P2",
+      "title": "Foreign one-shot GATT operations started before the first lease are unprotected",
+      "category": "ownership",
+      "origin": "inherited gap found in the renewed review",
+      "platforms": [
+        "Linux maintained BlueZ daemon"
+      ],
+      "evidence_level": "complete production ReadValue and ownership guards executed",
+      "references": [
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "start_line": 3669,
+          "end_line": 3676,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/bluez/ubm-le-gatt-5.87.patch#L3669-L3676"
+        }
+      ],
+      "behavior": "operation_begin returns immediately if no UBM lease peer exists. A foreign application can start an accepted native ReadValue on a daemon-connected link before the first ReserveLease. Both actual pre-dispatch and post-dispatch guards miss that read. UBM then adopts the connection and its final release requests physical disconnect while the foreign read is still active. No independent external Connect is needed in the reproduced scenario.",
+      "correction": "Track accepted one-shot activity by device and physical generation even before a lease peer exists. Adopt that observation when the first lease arrives, and retire it at exact completion/cancellation without converting ordinary reads into permanent holds.",
+      "acceptance": "Start a real accepted foreign read before ReserveLease, hold its completion, acquire/release UBM and assert no disconnect until the read ends. Cover failed admission, cancellation, peer removal and generation replacement.",
+      "evidence_files": [
+        "evidence/linux.md",
+        "reproductions/linux-controls/logs/current.log"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-06",
+      "priority": "P2",
+      "title": "Physical loss before any lease exists leaves arrival records and stale ownership",
+      "category": "ownership",
+      "origin": "new regression in the fix batch",
+      "platforms": [
+        "Linux maintained BlueZ daemon"
+      ],
+      "evidence_level": "production connection/loss handlers executed",
+      "references": [
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "start_line": 4130,
+          "end_line": 4145,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/bluez/ubm-le-gatt-5.87.patch#L4130-L4145"
+        }
+      ],
+      "behavior": "The physical-loss handler returns when it cannot find a UBM peer, before cleaning global arrival and early-admission registries. Those registries now receive events before the first lease. In the control, 100 no-lease connection/loss cycles retain 100 stale arrival records. A completed external Connect admission also survives the end of its physical generation and can falsely classify a later daemon-created connection as externally owned.",
+      "correction": "Retire device/generation-scoped arrival and early-admission state on physical loss regardless of whether a lease peer was created. Audit device removal and attachment replacement as the same lifetime boundary.",
+      "acceptance": "Run repeated connect/loss cycles without any UBM lease and assert storage returns to baseline. Then end an early external generation and create a daemon-only generation; the old admission must not protect or relabel it.",
+      "evidence_files": [
+        "evidence/linux.md",
+        "reproductions/linux-controls/logs/current.log"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-07",
+      "priority": "P2",
+      "title": "RN Apple writeWhenReady violates payload ownership, FIFO admission and invalidation",
+      "category": "shared-semantics",
+      "origin": "new regression in the F13 implementation",
+      "platforms": [
+        "React Native Apple"
+      ],
+      "evidence_level": "three reproductions through the actual public factory, provider and strict native binding",
+      "references": [
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-manager.ts",
+          "start_line": 1521,
+          "end_line": 1548,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/reactnative/react-native-rust-core-manager.ts#L1521-L1548"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-manager.ts",
+          "start_line": 1493,
+          "end_line": 1496,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/reactnative/react-native-rust-core-manager.ts#L1493-L1496"
+        },
+        {
+          "path": "docs/UNIFIED_SEMANTICS.md",
+          "start_line": 949,
+          "end_line": 962,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/docs/UNIFIED_SEMANTICS.md#L949-L962"
+        }
+      ],
+      "behavior": "The new helper waits outside the connection operation queue and copies the caller’s bytes only when it eventually calls ordinary write. Reproductions show submitted [42] becomes native [99] after caller mutation; a later normal write [2] reaches native before the pending helper [1]; and a database-change event leaves the helper pending even though a subsequent read already rejects gatt.stale-handle. It settles only when an unrelated readiness edge or caller timeout arrives.",
+      "correction": "Use the same connection-owned admission coordinator as other writes, or an equivalent Rust-owner reservation implementing that contract. Validate/copy before the first await, wait at the FIFO head, preserve the original deadline and promptly settle on database invalidation, link end or destroy. An early copy alone fixes only one symptom.",
+      "acceptance": "Port the shared helper contract through the ordinary RN public factory: byte reuse, following same-link write, service change with no later readiness edge, abort/deadline before and after acquisition, disconnect and destroy. Assert native bytes/order/count and local/native resource retirement.",
+      "evidence_files": [
+        "reproductions/mobile-readiness-repro.test.ts",
+        "reproductions/mobile-bun-preload.ts",
+        "evidence/mobile-readiness-repro.log",
+        "evidence/shared-mobile.md",
+        "evidence/final-head-mobile5.log",
+        "evidence/final-head-mobile-tauri.md"
+      ],
+      "previous_findings": [
+        "F13"
+      ],
+      "status": "open"
+    },
+    {
+      "id": "R2-08",
+      "priority": "P2",
+      "title": "RN readiness streams lose or hang on native source failure",
+      "category": "streams-and-errors",
+      "origin": "new regression in the F13 implementation",
+      "platforms": [
+        "React Native Apple"
+      ],
+      "evidence_level": "two public stream fault-injection reproductions",
+      "references": [
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "start_line": 1347,
+          "end_line": 1370,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/reactnative/react-native-rust-core-provider.ts#L1347-L1370"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "start_line": 2972,
+          "end_line": 2979,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/reactnative/react-native-rust-core-provider.ts#L2972-L2979"
+        }
+      ],
+      "behavior": "drainFailed closes the established scan/notification/adapter/general-event sources but omits the newly added readinessWatches. With successful later connection cleanup, a pending public readiness next() completes normally and loses the source error. If connection cleanup also fails, next() remains pending despite the irrecoverable source failure. Stream termination incorrectly depends on an independent cleanup operation succeeding.",
+      "correction": "Immediately close every readiness watch as source-failed with the normalized original error in the owner-wide drain-failure path. Keep native cleanup debt separately owned and retryable; it must not prevent a local terminal from being delivered.",
+      "acceptance": "Fail draining with a readiness next() pending, with successful, delayed and failed connection cleanup. Assert prompt public BleError with the original cause, zero retained local watches, preserved independent cleanup debt, and correct acquisition-time failure.",
+      "evidence_files": [
+        "reproductions/mobile-readiness-repro.test.ts",
+        "evidence/mobile-readiness-repro.log",
+        "evidence/shared-mobile.md",
+        "evidence/final-head-mobile5.log",
+        "evidence/final-head-mobile-tauri.md"
+      ],
+      "previous_findings": [
+        "F13"
+      ],
+      "status": "open"
+    },
+    {
+      "id": "R2-09",
+      "priority": "P2",
+      "title": "Electron/Tauri public characteristics still cannot writeWhenReady",
+      "category": "feature-completion",
+      "origin": "residual previous finding",
+      "platforms": [
+        "Electron renderer on macOS",
+        "Tauri on macOS"
+      ],
+      "evidence_level": "actual shared public IPC adapter with a scripted host",
+      "references": [
+        {
+          "path": "src/ipc/public-manager.ts",
+          "start_line": 1173,
+          "end_line": 1210,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/ipc/public-manager.ts#L1173-L1210"
+        },
+        {
+          "path": "src/public/gatt.ts",
+          "start_line": 466,
+          "end_line": 478,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/public/gatt.ts#L466-L478"
+        },
+        {
+          "path": "docs/UNIFIED_SEMANTICS.md",
+          "start_line": 994,
+          "end_line": 995,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/docs/UNIFIED_SEMANTICS.md#L994-L995"
+        }
+      ],
+      "behavior": "The new IPC writeReadiness stream works, but createIpcGattSource never supplies writeWhenReady. The public characteristic therefore still throws capability.unsupported before any native write. The reproduction first reads readiness=true and then gets that refusal for the helper, with zero native writes. The updated semantics text says the helper follows the stream across these hosts, which is not implemented.",
+      "correction": "Connect the IPC public characteristic to the same owned/FIFO readiness-write operation used by the in-process implementation. Carry cancellation, original deadline, bytes and generation through the host boundary. Do not add a third ad hoc wait loop that repeats the RN defects.",
+      "acceptance": "Run the shared helper suite through the real Electron renderer and Tauri public factories on a readiness-capable host: ready/not-ready transitions, ordering, caller mutation, invalidation, cancellation and cleanup failure.",
+      "evidence_files": [
+        "reproductions/ipc-public-readiness-repro.ts",
+        "evidence/final-ipc-public-readiness-repro.log"
+      ],
+      "previous_findings": [
+        "F14"
+      ],
+      "status": "open"
+    },
+    {
+      "id": "R2-11",
+      "priority": "P2",
+      "title": "Tauri watch quota is consumed permanently by successfully released handles",
+      "category": "resource-lifetime",
+      "origin": "new regression",
+      "platforms": [
+        "Tauri"
+      ],
+      "evidence_level": "deterministic source accounting across subscribe, ACK, release, reset and caller teardown",
+      "references": [
+        {
+          "path": "native/tauri/src/write_readiness.rs",
+          "start_line": 289,
+          "end_line": 298,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/native/tauri/src/write_readiness.rs#L289-L298"
+        },
+        {
+          "path": "native/tauri/src/write_readiness.rs",
+          "start_line": 334,
+          "end_line": 339,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/native/tauri/src/write_readiness.rs#L334-L339"
+        },
+        {
+          "path": "native/tauri/src/connection_parameters.rs",
+          "start_line": 344,
+          "end_line": 352,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/native/tauri/src/connection_parameters.rs#L344-L352"
+        },
+        {
+          "path": "native/tauri/src/connection_parameters.rs",
+          "start_line": 393,
+          "end_line": 398,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/native/tauri/src/connection_parameters.rs#L393-L398"
+        },
+        {
+          "path": "native/tauri/src/btleplug_dispatcher.rs",
+          "start_line": 33,
+          "end_line": 33,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/native/tauri/src/btleplug_dispatcher.rs#L33"
+        }
+      ],
+      "behavior": "Each watch admission counts active handles plus released-handle tombstones against 256. A successful unsubscribe moves the fresh handle into a released set that normal event ACK, disconnect and adapter reset do not retire. Under one renderer lease, 256 sequential successful open/read/ACK/close cycles of one watch type exhaust its quota despite at most one live watch. The 257th acquisition returns stream.quota. Readiness and parameter quotas are separate. Replacing the entire renderer lease restores capacity; an ordinary stream close does not.",
+      "correction": "Separate the live-resource limit from bounded idempotent replay history, and define retirement using the stream/caller generation and acknowledgement protocol. Preserve duplicate-release safety without an ever-growing tombstone set or a lifetime-use quota disguised as a concurrency bound.",
+      "acceptance": "Perform more than 256 sequential successful cycles for each watch under the same renderer lease with events ACKed and zero live watches between cycles. Also test true concurrent overflow, duplicate release, late events, reset and caller replacement.",
+      "evidence_files": [
+        "evidence/tauri-watch-quota.md"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-12",
+      "priority": "P2",
+      "title": "Scan accumulation still misses split service lists and native ingress drops needed evidence",
+      "category": "scan-semantics",
+      "origin": "partial previous fix",
+      "platforms": [
+        "shared scan paths",
+        "WinRT native ingress"
+      ],
+      "evidence_level": "actual shared evidence/matcher reproduction plus native filter inspection",
+      "references": [
+        {
+          "path": "src/backend-contract/scan-evidence.ts",
+          "start_line": 146,
+          "end_line": 182,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backend-contract/scan-evidence.ts#L146-L182"
+        },
+        {
+          "path": "src/backend-contract/scan-evidence.ts",
+          "start_line": 220,
+          "end_line": 232,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backend-contract/scan-evidence.ts#L220-L232"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/watcher.rs",
+          "start_line": 140,
+          "end_line": 146,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/ble/watcher.rs#L140-L146"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/watcher.rs",
+          "start_line": 176,
+          "end_line": 232,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/ble/watcher.rs#L176-L232"
+        }
+      ],
+      "behavior": "The common cache fixes a simple service-first/name-later pair, but replaces rather than unions two nonempty service UUID lists. services.all=[180D,180F] still fails when one UUID appears in each in-window packet. The WinRT prefilter also requires all pushed-down UUIDs in one event before admitting its address and drops a name-bearing scan response arriving before that packet. Evidence removed at ingress can never be reconstructed by the new common cache.",
+      "correction": "Define one bounded evidence-merging policy for partial lists and make native filtering conservative enough to retain every packet needed for residual matching. Avoid another independent native cache with different identity/expiry semantics. Preserve packet facts separately from accumulated query evidence.",
+      "acceptance": "Exercise two nonempty split lists, response-first/service-later, absent versus empty fields, multiple conditions and both packet orders through native ingress and public scan. Retain the simple pair positive control and test expiry and identity boundaries from R2-13/14.",
+      "evidence_files": [
+        "reproductions/scan-evidence-repro.ts",
+        "evidence/scan-evidence-repro.log",
+        "evidence/windows.md",
+        "evidence/final-head-scan-evidence-repro.log"
+      ],
+      "previous_findings": [
+        "F05"
+      ],
+      "status": "open"
+    },
+    {
+      "id": "R2-13",
+      "priority": "P2",
+      "title": "Unrelated scan packets refresh old field evidence beyond its expiry window",
+      "category": "scan-semantics",
+      "origin": "new cache defect",
+      "platforms": [
+        "shared advertisement and IPC scan evidence"
+      ],
+      "evidence_level": "actual production evidence and public query matcher executed",
+      "references": [
+        {
+          "path": "src/backend-contract/scan-evidence.ts",
+          "start_line": 88,
+          "end_line": 111,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backend-contract/scan-evidence.ts#L88-L111"
+        }
+      ],
+      "behavior": "The cache stores one timestamp for the whole merged record. Every newer packet refreshes the record while retaining omitted old fields. A name seen only at t=0 still matches at t=20 seconds under the declared 10-second window when unrelated packets arrive every five seconds. The IPC shape has the same behavior. A busy device can keep stale names/service facts eligible indefinitely.",
+      "correction": "Track freshness at the evidence granularity needed by each field/element. Expire observations by their original observation time; merging an already-derived record downstream must not freshen its constituent facts. Keep the time domain and generation explicit.",
+      "acceptance": "Keep unrelated traffic active beyond the window and verify old names, service members and manufacturer/service data stop matching. Check exact window boundaries, out-of-order packets and repeated downstream projection.",
+      "evidence_files": [
+        "reproductions/scan-evidence-repro.ts",
+        "evidence/scan-evidence-repro.log",
+        "evidence/final-head-scan-evidence-repro.log"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-14",
+      "priority": "P2",
+      "title": "Scan evidence merges distinct public/random peer identities with identical address bits",
+      "category": "identity",
+      "origin": "new cache defect",
+      "platforms": [
+        "shared address-bearing scan paths",
+        "WinRT ingress"
+      ],
+      "evidence_level": "actual production cache and matcher reproduction",
+      "references": [
+        {
+          "path": "src/backend-contract/scan-evidence.ts",
+          "start_line": 114,
+          "end_line": 121,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backend-contract/scan-evidence.ts#L114-L121"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/watcher.rs",
+          "start_line": 176,
+          "end_line": 204,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/ble/watcher.rs#L176-L204"
+        }
+      ],
+      "behavior": "The advertisement and IPC cache keys use the address bytes without the address type or distinct peer identity. Two peers with identical address bits but different public/random address types share evidence. The reproduction makes the random peer match a local-name filter using a name observed only from the public peer. WinRT’s numeric admitted-address set also lacks type separation.",
+      "correction": "Use the complete canonical peer identity within the owning adapter/scan generation, including address type where it is part of identity. Define conservative behavior for unknown type; do not merge records merely because one identity component is absent.",
+      "acceptance": "Use equal address bits with public versus random types and distinct peer IDs; also cover different adapters, unknown-to-known refinement and generation replacement. No query fact may cross those boundaries.",
+      "evidence_files": [
+        "reproductions/scan-evidence-repro.ts",
+        "evidence/scan-evidence-repro.log",
+        "evidence/final-head-scan-evidence-repro.log"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-15",
+      "priority": "P2",
+      "title": "The scan evidence cache retains inactive peers without a capacity or expiry sweep",
+      "category": "resource-lifetime",
+      "origin": "new cache defect",
+      "platforms": [
+        "long-running shared scans",
+        "WinRT admitted addresses"
+      ],
+      "evidence_level": "actual production map retention reproduction; native set inspected",
+      "references": [
+        {
+          "path": "src/backend-contract/scan-evidence.ts",
+          "start_line": 41,
+          "end_line": 42,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backend-contract/scan-evidence.ts#L41-L42"
+        },
+        {
+          "path": "src/backend-contract/scan-evidence.ts",
+          "start_line": 88,
+          "end_line": 111,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backend-contract/scan-evidence.ts#L88-L111"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/watcher.rs",
+          "start_line": 176,
+          "end_line": 204,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/ble/watcher.rs#L176-L204"
+        }
+      ],
+      "behavior": "Expired entries are reconsidered only if that same identity sends again. There is no global eviction or capacity bound, and clear occurs at scan end. After 10,000 peers at t=0, a new observation at t=60 seconds still leaves 10,001 entries despite a 10-second evidence window. Continuous scans in an environment with many transient/randomized addresses retain all of them. WinRT’s admitted-address set is also unbounded for the scan lifetime.",
+      "correction": "Add bounded, generation-scoped retention with time-driven or admission-driven expiry and a defined overflow policy. Bound native and public intermediate state together; preserve explicit diagnostics/semantics when capacity affects evidence.",
+      "acceptance": "Run sustained transient-peer traffic across multiple windows, verify bounded memory/state without repeat packets from old peers, and ensure eviction never creates cross-peer matches or resurrects expired evidence.",
+      "evidence_files": [
+        "reproductions/scan-evidence-repro.ts",
+        "evidence/scan-evidence-repro.log",
+        "evidence/final-head-scan-evidence-repro.log"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-16",
+      "priority": "P2",
+      "title": "A delayed initial parameter probe is emitted after a newer live event",
+      "category": "streams-and-ordering",
+      "origin": "new regression",
+      "platforms": [
+        "Windows desktop provider",
+        "hosts using that provider"
+      ],
+      "evidence_level": "actual production watch and event methods with controlled native scheduling",
+      "references": [
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start_line": 2908,
+          "end_line": 2927,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/desktop/desktop-rust-core-provider.ts#L2908-L2927"
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start_line": 2946,
+          "end_line": 2990,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/desktop/desktop-rust-core-provider.ts#L2946-L2990"
+        }
+      ],
+      "behavior": "The watch is registered before awaiting its initial native probe. Live events immediately publish while the probe is pending; the delayed probe then publishes unconditionally. A 30,000-microsecond probe followed by a newer 60,000-microsecond event yields [60000,30000], with increasing ordinals and emission times. The stale sample is presented as the newest measurement. The real NAPI consumer path is currently blocked earlier by R2-34; the source-level defect remains independently demonstrated and must also be fixed when that forwarding path is restored. No live WinRT execution is claimed.",
+      "correction": "Order initial sampling and live updates explicitly: buffer/replay events around initial publication or discard an obsolete probe. Preserve observation authority and timestamps. The adjacent readiness implementation already has initial-probe buffering machinery to compare.",
+      "acceptance": "Test event-before-probe-resolution, multiple buffered events, probe failure and disconnect during acquisition. The final public sample must be the newest valid observation, never an old sample with a fresh authority marker.",
+      "evidence_files": [
+        "reproductions/parameter-watch-race.ts",
+        "evidence/parameter-watch-race.log",
+        "evidence/windows.md",
+        "evidence/final-parameter-watch-race.log",
+        "evidence/final-head-windows.md"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-17",
+      "priority": "P2",
+      "title": "Parameter events accept invalid measurements that the snapshot API rejects",
+      "category": "truthful-observations",
+      "origin": "new regression",
+      "platforms": [
+        "public parameter streams",
+        "Windows native parameter source"
+      ],
+      "evidence_level": "actual public factory reproduction and Microsoft API contract",
+      "references": [
+        {
+          "path": "src/public/ble-manager.ts",
+          "start_line": 1283,
+          "end_line": 1293,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/public/ble-manager.ts#L1283-L1293"
+        },
+        {
+          "path": "src/public/ble-manager.ts",
+          "start_line": 1189,
+          "end_line": 1203,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/public/ble-manager.ts#L1189-L1203"
+        },
+        {
+          "path": "src/public/ble-manager.ts",
+          "start_line": 1784,
+          "end_line": 1796,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/public/ble-manager.ts#L1784-L1796"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/device.rs",
+          "start_line": 78,
+          "end_line": 96,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/ble/device.rs#L78-L96"
+        }
+      ],
+      "behavior": "The stream mapper validates connection identity but not interval, timeout or latency. The same all-zero observation is rejected by controls.parameters() as protocol.violation and emitted by parameterEvents() as state:measured with zero interval/timeout. Microsoft documents an all-zero result when GetConnectionParameters observes a disconnected device, so this is also a plausible native disconnect race, not solely malformed test input. The real NAPI consumer path is currently blocked earlier by R2-34; the source-level defect remains independently demonstrated and must also be fixed when that forwarding path is restored. No live WinRT execution is claimed.",
+      "correction": "Use one validator for snapshot and stream observations. Classify native disconnected/all-zero results as loss/unavailability instead of a measured link, and preserve typed source failure. Do not fabricate defaults when the OS has no valid measurement.",
+      "acceptance": "Test zero, NaN, nonfinite/negative values, fractional/negative latency, valid unit conversion and a disconnect crossing the native read. Both public APIs must agree.",
+      "evidence_files": [
+        "reproductions/parameter-invalid-stream.ts",
+        "evidence/parameter-invalid-stream.log",
+        "evidence/windows.md",
+        "evidence/final-parameter-invalid-stream.log",
+        "evidence/final-head-windows.md"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-18",
+      "priority": "P2",
+      "title": "Lost-link parameter reads use a different error vocabulary from other link controls",
+      "category": "streams-and-errors",
+      "origin": "new regression",
+      "platforms": [
+        "Windows connection parameter reads"
+      ],
+      "evidence_level": "actual pinned Rust crate built and its error classifier executed",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/errors.rs",
+          "start_line": 276,
+          "end_line": 282,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/errors.rs#L276-L282"
+        },
+        {
+          "path": "crates/ubm-desktop/src/central_parity.rs",
+          "start_line": 440,
+          "end_line": 448,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/central_parity.rs#L440-L448"
+        },
+        {
+          "path": "crates/ubm-desktop/src/btleplug_backend.rs",
+          "start_line": 4539,
+          "end_line": 4562,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/btleplug_backend.rs#L4539-L4562"
+        }
+      ],
+      "behavior": "The established-link operation allowlist omits connection.parameters. Identical btleplug/not-connected evidence becomes connection.lost for RSSI and effective MTU, but platform.failure for the new parameters operation. The reproduction builds the pinned crate and executes that classifier. Requested release consequently also misses the ordinary operation.disconnected renaming path. This finding concerns error semantics and reconnect-policy input; it does not alone prove an ownership mutation. The real NAPI consumer path is currently blocked earlier by R2-34; the source-level defect remains independently demonstrated and must also be fixed when that forwarding path is restored. No live WinRT execution is claimed.",
+      "correction": "Classify the new operation as an established-link operation. Prefer an exhaustive typed operation classification over an indefinitely growing string allowlist, and retain native detail.",
+      "acceptance": "Extend the existing link-loss/security matrix with parameter read and requested release. The same observed link end must produce the same public code across equivalent controls and hosts.",
+      "evidence_files": [
+        "reproductions/parameter-link-loss.rs",
+        "reproductions/run-parameter-link-loss.py",
+        "evidence/parameter-link-loss.log",
+        "evidence/parameter-link-loss-build.log"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-19",
+      "priority": "P2",
+      "title": "Desktop code drops a soft delivery preference that WinRT can honor",
+      "category": "feature-parity",
+      "origin": "remaining gap exposed by the hard-requirement fix",
+      "platforms": [
+        "WinRT; compare Android"
+      ],
+      "evidence_level": "production dispatch/selection paths and current regression test inspected",
+      "references": [
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start_line": 4524,
+          "end_line": 4527,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/desktop/desktop-rust-core-provider.ts#L4524-L4527"
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start_line": 4549,
+          "end_line": 4559,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/desktop/desktop-rust-core-provider.ts#L4549-L4559"
+        },
+        {
+          "path": "crates/ubm-desktop/src/delivery.rs",
+          "start_line": 76,
+          "end_line": 80,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/delivery.rs#L76-L80"
+        },
+        {
+          "path": "crates/ubm-mobile/src/session.rs",
+          "start_line": 2400,
+          "end_line": 2409,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-mobile/src/session.rs#L2400-L2409"
+        }
+      ],
+      "behavior": "Both hard require modes now reach the core, closing the original F03. Every prefer mode is still discarded. On a characteristic supporting both modes, prefer-indication therefore reaches WinRT without a preference and defaults to Notification, although this revision can select the first CCCD mode. Android preserves the soft preference separately. A new desktop test explicitly expects preference loss on every host.",
+      "correction": "Carry required and preferred mode as distinct values through desktop/core/NAPI/IPC. Honor the supported preference on WinRT before the first CCCD write, retain truthful fallback where an OS cannot choose, and report actual delivery. Do not turn a soft preference into a hard requirement.",
+      "acceptance": "Cover dual-property prefer-indication, unsupported preferred-property fallback, both require modes and existing shared physical subscriptions on Windows and Android, with explicit OS fallback behavior on Apple/BlueZ.",
+      "evidence_files": [
+        "evidence/windows.md",
+        "evidence/desktop-hard-delivery.log"
+      ],
+      "previous_findings": [
+        "F03"
+      ],
+      "status": "open"
+    },
+    {
+      "id": "R2-20",
+      "priority": "P2",
+      "title": "Initial WinRT discovery and compound subscription rollback still flatten native errors",
+      "category": "streams-and-errors",
+      "origin": "residual previous finding",
+      "platforms": [
+        "WinRT"
+      ],
+      "evidence_level": "current production failure branches inspected",
+      "references": [
+        {
+          "path": "vendor/btleplug/src/winrtble/peripheral.rs",
+          "start_line": 449,
+          "end_line": 462,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/peripheral.rs#L449-L462"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/device.rs",
+          "start_line": 226,
+          "end_line": 243,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/ble/device.rs#L226-L243"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/utils.rs",
+          "start_line": 27,
+          "end_line": 37,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/utils.rs#L27-L37"
+        }
+      ],
+      "behavior": "Ordinary new read/write/discovery/CCCD errors now preserve typed status/ATT/HRESULT detail. Two reachable paths still do not: a typed CCCD failure plus RemoveValueChanged failure becomes one Error::Other string; initial connection GetGattServices keeps only status and invokes the old mapper, which loses the ATT byte and treats ProtocolError as NotSupported. This differs from the corrected rediscovery path and can destroy useful security/link classification and cleanup diagnostics.",
+      "correction": "Use the same result-bearing structured projection for initial discovery and preserve primary plus cleanup failures as separate structured records. Keep ownership of a handler whose removal failed so cleanup remains retryable.",
+      "acceptance": "Inject CCCD ProtocolError with ATT authentication plus a rollback HRESULT failure, and initial discovery ProtocolError/ATT, AccessDenied without ATT and Unreachable. Verify public code/detail and retained cleanup obligation.",
+      "evidence_files": [
+        "evidence/windows.md"
+      ],
+      "previous_findings": [
+        "F11"
+      ],
+      "status": "open"
+    },
+    {
+      "id": "R2-22",
+      "priority": "P2",
+      "title": "Native GATT graphs fabricate primary services and empty inclusion relationships",
+      "category": "truthful-observations",
+      "origin": "inherited completeness gap",
+      "platforms": [
+        "desktop native",
+        "React Native",
+        "Tauri"
+      ],
+      "evidence_level": "native models, wire models and public projection traced",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/boundary.rs",
+          "start_line": 818,
+          "end_line": 824,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/boundary.rs#L818-L824"
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start_line": 4184,
+          "end_line": 4185,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/desktop/desktop-rust-core-provider.ts#L4184-L4185"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "start_line": 3190,
+          "end_line": 3190,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/reactnative/react-native-rust-core-provider.ts#L3190"
+        },
+        {
+          "path": "native/tauri/src/btleplug_dispatcher.rs",
+          "start_line": 6014,
+          "end_line": 6023,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/native/tauri/src/btleplug_dispatcher.rs#L6014-L6023"
+        },
+        {
+          "path": "src/public/gatt.ts",
+          "start_line": 368,
+          "end_line": 389,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/public/gatt.ts#L368-L389"
+        }
+      ],
+      "behavior": "The shared native service snapshot carries neither primary/secondary status nor included-service relationships. Desktop, RN and Tauri fill primary:true and includedServices:[] anyway, so unknown or discarded facts become confident public assertions. Tauri explicitly leaves primary metadata to a follow-up. The vendored CoreBluetooth layer already reads CBService.isPrimary, but the desktop mapper drops it; mobile Swift/Android and strict wire models likewise omit these fields. Secondary or included services cannot be represented faithfully. The last commit fixes Tauri restriction metadata but moves these same primary/includes defaults into ipc_service_record; it does not correct the graph facts.",
+      "correction": "Propagate observed primary status and inclusion relationships through one shared graph and all native/IPC codecs. Discover them where supported. Where a platform does not provide a fact, represent unknown/unavailable explicitly rather than synthesizing true or an empty set. Preserve service occurrence identity when resolving inclusion edges.",
+      "acceptance": "Use a database with primary and secondary services, included-service relationships and duplicate UUID occurrences. Compare public graphs across native, RN, Electron and Tauri; test incomplete discovery and stale generations without fabricated metadata.",
+      "evidence_files": [
+        "evidence/shared-mobile.md"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-23",
+      "priority": "P2",
+      "title": "Windows preferred connection presets remain unreachable from requestPriority",
+      "category": "feature-completion",
+      "origin": "residual previous finding",
+      "platforms": [
+        "Windows 11 build 22000+"
+      ],
+      "evidence_level": "public/native route inventory and primary Microsoft API",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "start_line": 408,
+          "end_line": 415,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/capabilities.rs#L408-L415"
+        },
+        {
+          "path": "src/core/core-connection-controls.ts",
+          "start_line": 145,
+          "end_line": 147,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/core/core-connection-controls.ts#L145-L147"
+        },
+        {
+          "path": "src/public/ble-manager.ts",
+          "start_line": 1682,
+          "end_line": 1713,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/public/ble-manager.ts#L1682-L1713"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/device.rs",
+          "start_line": 337,
+          "end_line": 374,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/ble/device.rs#L337-L374"
+        }
+      ],
+      "behavior": "The new parameter read/watch route does not implement the request/control half of F17. connection:priority still has no OS override and the backend hook is absent. The vendored WinRT preset wrapper already exists but is unused. Balanced, ThroughputOptimized and PowerOptimized correspond to the public balanced/high-throughput/low-power requests on API-capable Windows.",
+      "correction": "Complete the owned public→provider→core→WinRT request path and host projections, with runtime API detection, typed statuses and explicit request-object lifetime. Keep request acceptance separate from observed parameter values; successful intent is not a measurement.",
+      "acceptance": "Test each preset, rejection status, pre-22000 runtime refusal, disconnected request, cancellation/deadline and request lifetime. No successful request may fabricate interval/latency/timeout observations.",
+      "evidence_files": [
+        "evidence/windows.md"
+      ],
+      "previous_findings": [
+        "F17"
+      ],
+      "status": "open"
+    },
+    {
+      "id": "R2-24",
+      "priority": "P2",
+      "title": "Parameter capability registration ignores the actual Windows API floor",
+      "category": "capability-truth",
+      "origin": "new implementation remains statically advertised",
+      "platforms": [
+        "Windows before build 22000"
+      ],
+      "evidence_level": "capability registration and native runtime guard inspected",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "start_line": 417,
+          "end_line": 428,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/capabilities.rs#L417-L428"
+        },
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "start_line": 681,
+          "end_line": 693,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/capabilities.rs#L681-L693"
+        },
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "start_line": 732,
+          "end_line": 779,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/capabilities.rs#L732-L779"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/device.rs",
+          "start_line": 58,
+          "end_line": 96,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/ble/device.rs#L58-L96"
+        }
+      ],
+      "behavior": "Every compiled Windows target registers connection:parameters as provided/limited. Method presence is checked only when the native operation runs. On an older Windows host, supports can therefore report usable support even though every call is known to be unavailable. A Windows-11 floor in limitation prose does not satisfy the repository’s instantiated-runtime capability requirement. The call guard avoids blindly calling an absent API; this is not a crash claim.",
+      "correction": "Carry runtime API presence into the instantiated capability set and expose the precise unavailable/unsupported reason on hosts below the floor. Keep limited only for actual available functionality with real restrictions.",
+      "acceptance": "For the same compiled target, test runtime profiles with and without the API and verify snapshot/watch capability projections through direct and IPC hosts.",
+      "evidence_files": [
+        "evidence/windows.md"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-25",
+      "priority": "P2",
+      "title": "Native parameter-event failures and early queue loss remain invisible to consumers",
+      "category": "streams-and-errors",
+      "origin": "new regression",
+      "platforms": [
+        "WinRT parameter event source"
+      ],
+      "evidence_level": "production callback and relay failure branches inspected",
+      "references": [
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/device.rs",
+          "start_line": 164,
+          "end_line": 183,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/ble/device.rs#L164-L183"
+        },
+        {
+          "path": "crates/ubm-desktop/src/btleplug_backend.rs",
+          "start_line": 2089,
+          "end_line": 2113,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/btleplug_backend.rs#L2089-L2113"
+        }
+      ],
+      "behavior": "The WinRT event callback ignores a failed read_connection_parameters via if let Ok and returns success, which can leave the last sample stale without a source error. The vendor-to-radio relay turns Lagged into only a diagnostic counter and silently stops on Closed. Lag can lose intermediate transitions without a continuity indication even when a newer queued value subsequently arrives. Downstream NAPI lag reconciliation is not triggered by this earlier source loss.",
+      "correction": "Transport a typed failed/uncertain or reconciliation event from the originating boundary. Make queue lag produce observable discontinuity or guaranteed fresh reconciliation, and terminate closed sources explicitly. Retain the original source cause and independent cleanup ownership.",
+      "acceptance": "Inject getter failure during an OS callback, overflow the vendor-to-radio queue independently of the NAPI queue, and close the source. Assert a public terminal or successful fresh reconciliation with explicit continuity semantics.",
+      "evidence_files": [
+        "evidence/windows.md"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-26",
+      "priority": "P2",
+      "title": "Peer directories still omit OS-supported known or system-connected retrieval",
+      "category": "feature-completion",
+      "origin": "inherited completion gaps",
+      "platforms": [
+        "Linux",
+        "Windows",
+        "Android",
+        "iOS"
+      ],
+      "evidence_level": "current public/native route inventory plus primary OS APIs",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "start_line": 270,
+          "end_line": 289,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/capabilities.rs#L270-L289"
+        },
+        {
+          "path": "src/backends/desktop/desktop-peer-directory.ts",
+          "start_line": 91,
+          "end_line": 139,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/desktop/desktop-peer-directory.ts#L91-L139"
+        },
+        {
+          "path": "crates/ubm-desktop/src/btleplug_backend.rs",
+          "start_line": 3458,
+          "end_line": 3558,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/btleplug_backend.rs#L3458-L3558"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "start_line": 1816,
+          "end_line": 1820,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/reactnative/react-native-rust-core-provider.ts#L1816-L1820"
+        },
+        {
+          "path": "crates/ubm-mobile/src/session.rs",
+          "start_line": 1684,
+          "end_line": 1706,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-mobile/src/session.rs#L1684-L1706"
+        }
+      ],
+      "behavior": "Linux and Windows known()/system-connected native routes remain unsupported; reference resolution is restricted to bonded inventory, missing known unbonded OS records. The code already performs owner-fenced BlueZ object enumeration and WinRT paired-device enumeration. Mobile connected() reads only cached/restored/core-owned records, and rejects all nonempty service filters, so a fresh manager misses a peer connected by another app; the service-scoped iOS case refuses outright. BlueZ object/bearer state, WinRT connected selectors, Android BluetoothManager.getConnectedDevices(GATT), and CoreBluetooth service-scoped retrieval provide supported subsets.",
+      "correction": "Implement genuinely distinct known, bonded and system-connected queries through existing owned native boundaries. Make Apple’s references/services prerequisites platform-specific. Preserve adapter identity, owner fencing, actual OS visibility and native failures; inventory membership must never create a local connection lease or disconnect authority. For dual-mode BlueZ, Device1.Connected alone is not proof of an LE connection: use positive bearer-specific facts where available. Do not promise unrestricted historical enumeration or Android service facts the inventory does not supply.",
+      "acceptance": "Exercise explicit paired/cached/unbonded/unavailable references, a foreign-app-connected peer absent from local caches, service criteria on Apple, adapter filtering, BR/EDR-only BlueZ state, native disappearance and owner replacement. Assert no scan/connect/pair/lease side effects. Cover direct and IPC/mobile public calls.",
+      "evidence_files": [
+        "evidence/linux-completeness.md",
+        "evidence/windows-omissions.md",
+        "evidence/shared-mobile.md"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-27",
+      "priority": "P2",
+      "title": "Optional BlueZ acquired-FD GATT transports are explicitly left unimplemented",
+      "category": "feature-completion",
+      "origin": "inherited implementation gap",
+      "platforms": [
+        "Linux Node/Bun Rust route"
+      ],
+      "evidence_level": "current first-party TCK/feature inventory and verified BlueZ source",
+      "references": [
+        {
+          "path": "src/tck/first-party/desktop-rust-core-tck-registration.ts",
+          "start_line": 322,
+          "end_line": 331,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/tck/first-party/desktop-rust-core-tck-registration.ts#L322-L331"
+        },
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "start_line": 634,
+          "end_line": 639,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/capabilities.rs#L634-L639"
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start_line": 5130,
+          "end_line": 5194,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/desktop/desktop-rust-core-provider.ts#L5130-L5194"
+        }
+      ],
+      "behavior": "The current first-party Rust registration excludes bluez:acquire-write and bluez:acquire-notify explicitly because they are not implemented. A bounded-sequential-only capability limitation does not implement the FD transports. The maintained BlueZ producer already offers AcquireWrite/AcquireNotify on eligible characteristics, returning an FD and actual MTU. This is a supported-feature completion gap, not a claim that normal WriteValue/StartNotify are broken.",
+      "correction": "Provide the owned FD acquisition/transport route with runtime method/flag availability, cancellation, backpressure, HUP/error handling and teardown. Preserve real acquisition conflicts and native errors. Do not label sequential writes as an acquired transport or use missing radio qualification as a reason to leave the software route absent.",
+      "acceptance": "Test write and notify acquisitions, optional-method absence, flag restrictions, conflicts, cancellation before/after FD delivery, close/HUP, reconnection/MTU change, bounded buffering and daemon-interest cleanup through actual Node and Bun consumers.",
+      "evidence_files": [
+        "evidence/linux-completeness.md"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-28",
+      "priority": "P2",
+      "title": "Android subrate requests remain an unconditional stub on capable authorized hosts",
+      "category": "feature-completion",
+      "origin": "inherited implementation gap",
+      "platforms": [
+        "Android SDK 36.1+"
+      ],
+      "evidence_level": "current public/native inventory and primary Android API",
+      "references": [
+        {
+          "path": "src/public/ble-manager.ts",
+          "start_line": 1760,
+          "end_line": 1763,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/public/ble-manager.ts#L1760-L1763"
+        },
+        {
+          "path": "src/public/ble-manager.ts",
+          "start_line": 1816,
+          "end_line": 1817,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/public/ble-manager.ts#L1816-L1817"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-features.ts",
+          "start_line": 327,
+          "end_line": 395,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/reactnative/react-native-rust-core-features.ts#L327-L395"
+        }
+      ],
+      "behavior": "requestSubrate always throws unsupported and no mobile radio request/callback route exists. Android’s public requestSubrateMode and onSubrateChange exist from 36.1. An ordinary companion-associated application with BLUETOOTH_CONNECT can invoke the request; BLUETOOTH_PRIVILEGED is an alternative, not a universal prerequisite. A connected/bonded capable peer with those conditions still cannot use the existing public UBM control.",
+      "correction": "Implement the owned command and callback path, public registration, typed native results and full SDK-version admission. 36.0 and 36.1 must not be collapsed into the same major-version check. Preserve permission/association/controller refusal and cancellation/generation semantics. Requested mode must not become a fabricated measured subrate factor or connection-parameter observation.",
+      "acceptance": "Invoke the real public path on native fixtures for 36.0 versus 36.1, association/permission/native failures, acceptance versus callback result, deadlines and stale completion. Current TCK coverage that records invoked:false cannot establish implementation.",
+      "evidence_files": [
+        "evidence/shared-mobile.md"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-29",
+      "priority": "P2",
+      "title": "Android security discards encryption observations that public APIs provide",
+      "category": "feature-completion",
+      "origin": "inherited implementation gap",
+      "platforms": [
+        "Android API 36 events; 36.1 snapshot"
+      ],
+      "evidence_level": "current native source and primary Android API",
+      "references": [
+        {
+          "path": "android/src/main/java/com/sfourdrinier/unifiedblemanager/rustcore/OwnedRadioPort.kt",
+          "start_line": 324,
+          "end_line": 337,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/android/src/main/java/com/sfourdrinier/unifiedblemanager/rustcore/OwnedRadioPort.kt#L324-L337"
+        },
+        {
+          "path": "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+          "start_line": 1078,
+          "end_line": 1124,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt#L1078-L1124"
+        }
+      ],
+      "behavior": "The native security projection hardcodes encryption=unsupported with a no-public-API explanation and the receiver listens only to bond-state changes. Android exposes ACTION_ENCRYPTION_CHANGE from API36 and getEncryptionStatus(TRANSPORT_LE) from 36.1, using ordinary CONNECT permission. Security state/watch therefore discard an available link observation even on the current target-36 platform.",
+      "correction": "Carry transport- and generation-correlated encryption observations into the shared security snapshot/watch with precise runtime floors and stale-state retirement. The 36.1 query can return null for unencrypted or disconnected, so it is not standalone proof of an unencrypted live link. Keep authentication and Secure Connections unknown unless independently established.",
+      "acceptance": "Test API35 fallback, API36 encryption changes without bond transitions, 36.1 snapshots, BR/EDR versus LE separation, stale callbacks, connection loss and receiver cleanup/retry.",
+      "evidence_files": [
+        "evidence/shared-mobile.md"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-30",
+      "priority": "P2",
+      "title": "Android rejects public batching and PHY scan options instead of implementing them",
+      "category": "feature-completion",
+      "origin": "inherited implementation gap",
+      "platforms": [
+        "Android scan"
+      ],
+      "evidence_level": "public options, production native scan and primary Android API",
+      "references": [
+        {
+          "path": "src/public/ble-manager.ts",
+          "start_line": 392,
+          "end_line": 402,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/public/ble-manager.ts#L392-L402"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "start_line": 1953,
+          "end_line": 1967,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/reactnative/react-native-rust-core-provider.ts#L1953-L1967"
+        },
+        {
+          "path": "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+          "start_line": 823,
+          "end_line": 858,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt#L823-L858"
+        },
+        {
+          "path": "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+          "start_line": 881,
+          "end_line": 904,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt#L881-L904"
+        }
+      ],
+      "behavior": "The public type exposes reportDelayMs and phy, but the RN provider rejects either unconditionally, including reportDelayMs:0. Native code applies neither ScanSettings option and lacks onBatchScanResults. setReportDelay exists from API21, below the package minimum; setPhy exists from API26 for nonlegacy scanning with actual adapter support. Removing only the TS rejection would still leave the feature incomplete.",
+      "correction": "Complete typed options through the native wire/settings builder and implement owned bounded batch delivery. Gate PHY choices against actual OS/adapter support, preserve native refusal and acknowledge OS batching timing constraints.",
+      "acceptance": "Call the ordinary public scan with zero delay, positive batching and nonlegacy 1M/coded/all-supported PHY. Check actual native settings, batches, byte ownership, quotas, stop/cancellation and unsupported combinations.",
+      "evidence_files": [
+        "evidence/shared-mobile.md"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-31",
+      "priority": "P2",
+      "title": "Windows scan controls are a placeholder despite supported WinRT options",
+      "category": "feature-completion",
+      "origin": "inherited implementation gap",
+      "platforms": [
+        "Windows scan"
+      ],
+      "evidence_level": "current public/native inventory and primary WinRT API",
+      "references": [
+        {
+          "path": "src/public/ble-manager.ts",
+          "start_line": 403,
+          "end_line": 410,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/public/ble-manager.ts#L403-L410"
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start_line": 2451,
+          "end_line": 2453,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/desktop/desktop-rust-core-provider.ts#L2451-L2453"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/watcher.rs",
+          "start_line": 104,
+          "end_line": 123,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/ble/watcher.rs#L104-L123"
+        },
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "start_line": 237,
+          "end_line": 243,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/capabilities.rs#L237-L243"
+        }
+      ],
+      "behavior": "The WinRT platform-options type accepts only kind:winrt, additional controls are invalid, and the provider refuses any platform options. Native scanning is fixed to Active and extended advertisements remain disabled. WinRT offers Passive/Active scanning and, on build19041+, None reception and AllowExtendedAdvertisements. The current blanket refusal is a library omission for those supported subsets.",
+      "correction": "Expose concrete typed Windows scan controls, pass them through planning/ownership/native configuration and detect actual API/adapter support. Retain conservative defaults if desired. Do not imply Windows supports Android batching/PHY controls that its API does not expose.",
+      "acceptance": "Verify active/passive/none mapping, extended-advertisement opt-in and payload mapping, precise unsupported runtime profiles, adapter refusal and unchanged shared cancellation/cleanup semantics.",
+      "evidence_files": [
+        "evidence/windows-omissions.md"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    },
+    {
+      "id": "R2-32",
+      "priority": "P2",
+      "title": "Passing Linux Bun gates still omit the real packed desktop integration and two operating systems",
+      "category": "qualification-gap",
+      "origin": "partially improved previous qualification gap",
+      "platforms": [
+        "Bun Linux",
+        "Bun macOS",
+        "Bun Windows"
+      ],
+      "evidence_level": "current CI step results and qualifier source inspection",
+      "references": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "start_line": 159,
+          "end_line": 167,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/.github/workflows/ci.yml#L159-L167"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "start_line": 319,
+          "end_line": 348,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/.github/workflows/ci.yml#L319-L348"
+        },
+        {
+          "path": "scripts/ci/bun-packed-desktop-acceptance.js",
+          "start_line": 120,
+          "end_line": 168,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/scripts/ci/bun-packed-desktop-acceptance.js#L120-L168"
+        },
+        {
+          "path": "scripts/ci/bun-packed-desktop-acceptance.js",
+          "start_line": 182,
+          "end_line": 214,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/scripts/ci/bun-packed-desktop-acceptance.js#L182-L214"
+        }
+      ],
+      "behavior": "At the final head, both the Linux source-mode Bun1.4.2 smoke and packed Bun desktop acceptance pass in CI. The packed qualifier verifies exact installed native identity and an actual raw-native event waker. However, imports of desktop factories are only checked for typeof function; its six public scenarios use createDeterministicManagerScenarioFactory, while a separate native scenario opens a raw synthetic central. Neither path joins the public desktop factory/provider to native. Both Bun gates are Linux-only: macOS and Windows have no same-head Bun packed/public-route CI qualification in this evidence. This does not erase earlier low-level/manual receipts. R2-34 is a concrete example of the missing integration: a production NAPI forwarding omission survives the passing packed tests. No new Bun-specific loader incompatibility was established.",
+      "correction": "Keep the useful low-level and generic tests, then run common scenarios through the actual packed desktop factory/provider with the synthetic native boundary on all three OSes, under Node and Bun. Exercise actual CJS and ESM operations, native events, cancellation/deadline, stale completion and cleanup. Maintain separate change-scoped physical-radio evidence.",
+      "acceptance": "A successful same-head three-OS matrix must instantiate the real consumer route and assert events/waker delivery and zero-resource retirement. Source smoke, packed integration and physical evidence should each state their own scope. A Linux import of another OS factory is not execution on that OS.",
+      "evidence_files": [
+        "evidence/bun-qualification.md",
+        "evidence/ci-jobs.json",
+        "evidence/final-head-windows.md"
+      ],
+      "previous_findings": [
+        "Q1"
+      ],
+      "status": "open"
+    },
+    {
+      "id": "R2-33",
+      "priority": "P3",
+      "title": "Windows scan planning still says connectability is unavailable after the native fix",
+      "category": "capability-truth",
+      "origin": "residual planning metadata",
+      "platforms": [
+        "Windows scan planner"
+      ],
+      "evidence_level": "native observation mapping and planner input inspected",
+      "references": [
+        {
+          "path": "vendor/btleplug/src/winrtble/gatt_model.rs",
+          "start_line": 56,
+          "end_line": 74,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/gatt_model.rs#L56-L74"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/peripheral.rs",
+          "start_line": 237,
+          "end_line": 242,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/vendor/btleplug/src/winrtble/peripheral.rs#L237-L242"
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start_line": 258,
+          "end_line": 269,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/desktop/desktop-rust-core-provider.ts#L258-L269"
+        }
+      ],
+      "behavior": "Native connectability is now mapped from actual legacy event type or the extended flag, closing the original data defect. The provider’s observationFields still omits connectable, so planning/explanation metadata reports it unavailable. The residual public matcher can use the delivered field; this is not a claim that scan execution necessarily rejects the query.",
+      "correction": "Make the WinRT planning profile reflect the observations that this backend actually supplies, with unknown retained for packets that do not establish connectability. Keep profile capability and per-packet evidence distinct.",
+      "acceptance": "Build a connectability query plan using the real profile and compare its explanation with legacy, scan-response and extended packet observations. No false unavailable annotation and no invented false for unknown scan responses.",
+      "evidence_files": [
+        "evidence/windows.md"
+      ],
+      "previous_findings": [
+        "F16"
+      ],
+      "status": "open"
+    },
+    {
+      "id": "R2-34",
+      "priority": "P2",
+      "title": "The NAPI dispatch wrapper never forwards connection_parameters",
+      "category": "feature-completion",
+      "origin": "introduced with the parameter implementation; exposed once the package gate opened",
+      "platforms": [
+        "Windows Node",
+        "Windows Bun",
+        "Electron on Windows"
+      ],
+      "evidence_level": "actual production call chain and independently failing focused forwarding guard",
+      "references": [
+        {
+          "path": "bindings/napi/src/dispatch.rs",
+          "start_line": 221,
+          "end_line": 247,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/bindings/napi/src/dispatch.rs#L221-L247"
+        },
+        {
+          "path": "bindings/napi/src/dispatch.rs",
+          "start_line": 2912,
+          "end_line": 2912,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/bindings/napi/src/dispatch.rs#L2912"
+        },
+        {
+          "path": "bindings/napi/src/dispatch.rs",
+          "start_line": 3569,
+          "end_line": 3583,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/bindings/napi/src/dispatch.rs#L3569-L3583"
+        },
+        {
+          "path": "crates/ubm-desktop/src/boundary.rs",
+          "start_line": 1292,
+          "end_line": 1304,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/boundary.rs#L1292-L1304"
+        },
+        {
+          "path": "crates/ubm-desktop/src/central_parity.rs",
+          "start_line": 436,
+          "end_line": 436,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/crates/ubm-desktop/src/central_parity.rs#L436"
+        }
+      ],
+      "behavior": "UbmCentral wraps the actual radio in DispatchRadio before constructing DesktopCentral. The wrapper implements RadioBoundary but omits connection_parameters, so the exported NAPI call executes the trait default that returns capability.unsupported. The real WinRT getter is never reached. Both the public snapshot and parameter-watch initial acquisition need this probe, so the advertised operation fails through Node/Bun/Electron even on a connected API-capable Windows host. This is an implementation omission, not a stale source-test expectation. Tauri opens its native central directly and is outside this specific wrapper defect.",
+      "correction": "Forward the method through both Radio and Synthetic variants, preserving its parameters, error and operation lifetime. Complete the synthetic fixture’s parameter observation support and prove the actual packed consumer route. Update required parameter TCK evidence to exercise a measured observation instead of merely registering the capability.",
+      "acceptance": "The focused forwarding guard currently reports1failed/49passed. Make it pass, then call parameters() and acquire parameterEvents() through the real NAPI/provider/public route with a controlled native radio. Assert native invocation and value/error propagation. Retain separate tests for R2-16–18/24–25, which are not fixed by forwarding alone.",
+      "evidence_files": [
+        "evidence/napi-parameter-forwarding.md",
+        "evidence/final-dispatch-forwarding-jest.log",
+        "evidence/final-ci-package-failures.log"
+      ],
+      "previous_findings": [
+        "F17"
+      ],
+      "status": "open"
+    },
+    {
+      "id": "R2-35",
+      "priority": "P2",
+      "title": "The exported RN internal connection and bridge shape omit the new parameter methods",
+      "category": "host-parity",
+      "origin": "introduced when the shared Connection contract gained parameter controls",
+      "platforms": [
+        "React Native internal/advanced manager"
+      ],
+      "evidence_level": "actual exported Android and Apple environment-factory handles reproduced; production shape table and current CI",
+      "references": [
+        {
+          "path": "src/manager/ble-manager.ts",
+          "start_line": 728,
+          "end_line": 733,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/manager/ble-manager.ts#L728-L733"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-manager.ts",
+          "start_line": 250,
+          "end_line": 265,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/reactnative/react-native-rust-core-manager.ts#L250-L265"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-manager.ts",
+          "start_line": 325,
+          "end_line": 330,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/reactnative/react-native-rust-core-manager.ts#L325-L330"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-manager.ts",
+          "start_line": 1029,
+          "end_line": 1038,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/backends/reactnative/react-native-rust-core-manager.ts#L1029-L1038"
+        },
+        {
+          "path": "src/react-native.ts",
+          "start_line": 30,
+          "end_line": 30,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/b80542f39144949738b04dc7d19b4a7ee52cc8c6/src/react-native.ts#L30"
+        }
+      ],
+      "behavior": "The shared Connection now includes parameters() and parameterEvents(), but RN NativeConnection implements neither and BRIDGE_SHAPES.connection omits both. The production shape assertion consequently accepts an incomplete handle. The exported createReactNativeBleManagerWithEnvironment returns this typed internal connection; invoking its promised methods can throw TypeError. Current CI detects both missing methods in the native-manager parity and bridge-shape tests. Ordinary public controls remain guarded by capability/method checks, so this finding does not mean all public mobile connections or parameter calls crash.",
+      "correction": "Implement the normalized, capability-gated methods on NativeConnection and add them to the authoritative bridge table so validation covers them. On a platform without parameter observations, the methods should provide the shared unsupported behavior rather than be absent. Do not remove the common interface or weaken parity assertions to hide the gap.",
+      "acceptance": "Assert actual exported RN internal handles expose every shared connection method; invoke both absent-capability methods and receive the correct normalized refusal rather than TypeError. Keep the ordinary public capability behavior unchanged and run both production shape tests.",
+      "evidence_files": [
+        "evidence/final-head-mobile-tauri.md",
+        "evidence/final-head-ci-triage.md",
+        "reproductions/native-connection-shape-repro.test.ts",
+        "evidence/native-connection-shape-repro.log",
+        "evidence/final-ci-package-failures.log"
+      ],
+      "previous_findings": [],
+      "status": "open"
+    }
+  ],
+  "previous_review_closure": [
+    {
+      "id": "F01",
+      "status": "Closed in source",
+      "detail": "Real uncached WinRT descriptor enumeration and indexing replace empty success. Native radio not run here."
+    },
+    {
+      "id": "F02",
+      "status": "Original scenario closed",
+      "detail": "An earlier committed external Connect now protects a borrowed lease. R2-02 and R2-05 are different still-unprotected operations."
+    },
+    {
+      "id": "F03",
+      "status": "Original hard-requirement defect closed",
+      "detail": "Both hard modes are forwarded, and subscription keys distinguish requirements. Soft preference remains R2-19."
+    },
+    {
+      "id": "F04",
+      "status": "Closed in source at final head",
+      "detail": "The last commit adds the missing Tauri service-row restriction projection; R2-21 is closed. Primary/includes metadata is a separate surviving finding, R2-22."
+    },
+    {
+      "id": "F05",
+      "status": "Partial",
+      "detail": "Simple name/service split works. Split nonempty lists, ingress filtering and new cache faults remain: R2-12–15."
+    },
+    {
+      "id": "F06",
+      "status": "Closed",
+      "detail": "FIFO dirty-scope scheduling fixes starvation beyond one 32-scope batch; full mobile Rust suite passed."
+    },
+    {
+      "id": "F07",
+      "status": "Partial",
+      "detail": "Immediate rejected admissions roll back. Deferred acquired-socket failures still leak: R2-04."
+    },
+    {
+      "id": "F08",
+      "status": "Original scenario closed",
+      "detail": "Dead-owner cleanup resumes after the foreign read. R2-03 concerns the different newly accepted live-sender retirement."
+    },
+    {
+      "id": "F09",
+      "status": "Public result corrected; lifetime partial",
+      "detail": "Protected non-final release is logical success, but token/deferred cleanup ownership is lost: R2-03."
+    },
+    {
+      "id": "F10",
+      "status": "Closed in source",
+      "detail": "WinRT selects the initial CCCD mode before enabling; the old Indicate-then-Notify sequence is removed."
+    },
+    {
+      "id": "F11",
+      "status": "Partial",
+      "detail": "Normal structured errors improved. Initial connect and compound rollback still flatten native detail: R2-20."
+    },
+    {
+      "id": "F12",
+      "status": "Closed",
+      "detail": "Apple when-available uses real pending connect and caller deadline/cancellation; Rust and relevant public-boundary tests passed."
+    },
+    {
+      "id": "F13",
+      "status": "Mechanism implemented; behavior incomplete",
+      "detail": "Apple RN readiness plumbing exists. New helper admission and source-failure defects remain: R2-07–08."
+    },
+    {
+      "id": "F14",
+      "status": "Partial",
+      "detail": "IPC readiness/parameter streams exist and their typed error projection is now fixed. The characteristic helper remains unwired: R2-09; cumulative Tauri quota remains R2-11."
+    },
+    {
+      "id": "F15",
+      "status": "Closed in source and deterministic checks",
+      "detail": "Apple ATT MTU remains unobserved while true per-mode write capacities stay available; no conversion of capacity to a measured ATT MTU."
+    },
+    {
+      "id": "F16",
+      "status": "Native data closed; planner partial",
+      "detail": "Legacy/extended connectability now observed truthfully; planner field inventory remains stale: R2-33."
+    },
+    {
+      "id": "F17",
+      "status": "Partial",
+      "detail": "Low-level WinRT getter/events exist, but the real NAPI dispatch wrapper omits forwarding (R2-34), presets remain absent, and parameter semantics still have R2-16–18/23–25."
+    },
+    {
+      "id": "R1",
+      "status": "Addressed at production control-flow level",
+      "detail": "Successful explicit LE Pair clears suppression and permits Medium-to-High retry on the same attachment. Actual SMP/controller qualification remains required."
+    },
+    {
+      "id": "Q1",
+      "status": "Partial",
+      "detail": "Both Linux source-mode and packed Bun gates pass at the final head. Actual public desktop/native integration and macOS/Windows CI coverage still remain R2-32."
+    }
+  ],
+  "os_sources": [
+    {
+      "title": "Microsoft: GetConnectionParameters",
+      "url": "https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.getconnectionparameters?view=winrt-26100",
+      "supports": "R2-17/24: disconnected all-zero observation; Windows11 build22000 API floor."
+    },
+    {
+      "title": "Microsoft: RequestPreferredConnectionParameters",
+      "url": "https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.requestpreferredconnectionparameters?view=winrt-26100",
+      "supports": "R2-23: preset request API and request-object semantics."
+    },
+    {
+      "title": "Microsoft: LE device enumeration selector",
+      "url": "https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.getdeviceselector?view=winrt-26100",
+      "supports": "R2-26: OS-visible LE enumeration subset."
+    },
+    {
+      "title": "Microsoft: connected-device selector",
+      "url": "https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.getdeviceselectorfromconnectionstatus?view=winrt-26100",
+      "supports": "R2-26: connection-status selector; Windows10 build10586."
+    },
+    {
+      "title": "Microsoft: typed address lookup",
+      "url": "https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.frombluetoothaddressasync?view=winrt-26100",
+      "supports": "R2-26: paired/system-cached visibility and absence; object lookup is not ownership of a link."
+    },
+    {
+      "title": "Microsoft: scan modes",
+      "url": "https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.advertisement.bluetoothlescanningmode?view=winrt-26100",
+      "supports": "R2-31: Passive/Active and versioned None reception."
+    },
+    {
+      "title": "Microsoft: extended advertisements",
+      "url": "https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.advertisement.bluetoothleadvertisementwatcher.allowextendedadvertisements?view=winrt-26100",
+      "supports": "R2-31: opt-in, default false, build19041 floor."
+    },
+    {
+      "title": "Android: subrate request",
+      "url": "https://developer.android.com/reference/android/bluetooth/BluetoothGatt#requestSubrateMode(int)",
+      "supports": "R2-28: SDK36.1; CONNECT plus companion association or privileged permission; native request status."
+    },
+    {
+      "title": "Android: subrate callback",
+      "url": "https://developer.android.com/reference/android/bluetooth/BluetoothGattCallback#onSubrateChange(android.bluetooth.BluetoothGatt,int,int)",
+      "supports": "R2-28: mode/status callback; not measured interval/latency/timeout."
+    },
+    {
+      "title": "Android: 16 QPR2 release",
+      "url": "https://developer.android.com/blog/posts/android-16-qpr-2-is-released",
+      "supports": "R2-28: released 2December2025; SDK_INT_FULL admission guidance."
+    },
+    {
+      "title": "Android: encryption observations",
+      "url": "https://developer.android.com/reference/android/bluetooth/BluetoothDevice",
+      "supports": "R2-29: ACTION_ENCRYPTION_CHANGE API36, getEncryptionStatus36.1, transport and permission requirements."
+    },
+    {
+      "title": "Android: encryption status object",
+      "url": "https://developer.android.com/reference/android/bluetooth/EncryptionStatus",
+      "supports": "R2-29: encryption properties do not alone prove authentication or Secure Connections."
+    },
+    {
+      "title": "Android: scan settings",
+      "url": "https://developer.android.com/reference/android/bluetooth/le/ScanSettings.Builder",
+      "supports": "R2-30: report delay API21; PHY API26 with nonlegacy and hardware restrictions."
+    },
+    {
+      "title": "Android: system-connected profile inventory",
+      "url": "https://developer.android.com/reference/android/bluetooth/BluetoothManager#getConnectedDevices(int)",
+      "supports": "R2-26: system-wide GATT profile connections with normal CONNECT permission."
+    },
+    {
+      "title": "Apple: retrieving connected peripherals",
+      "url": "https://developer.apple.com/library/archive/documentation/NetworkingInternetWeb/Conceptual/CoreBluetooth_concepts/BestPracticesForInteractingWithARemotePeripheralDevice/BestPracticesForInteractingWithARemotePeripheralDevice.html",
+      "supports": "R2-26: system-connected/other-app service-scoped lookup requires subsequent local connect for GATT."
+    },
+    {
+      "title": "BlueZ5.87 official source archive",
+      "url": "https://www.kernel.org/pub/linux/bluetooth/bluez-5.87.tar.xz",
+      "supports": "R2-26/27 and Linux control provenance; verified archive SHA-256 in Linux control README."
+    }
+  ],
+  "initial_review_head": "65be89d4a8cc528945b070cad8a0fce01cda04e8",
+  "open_finding_count": 33,
+  "tracked_finding_count": 35,
+  "resolved_during_review": [
+    {
+      "id": "R2-10",
+      "priority": "P2",
+      "title": "New IPC control streams discard source errors and expose an internal error class",
+      "category": "streams-and-errors",
+      "origin": "new regression",
+      "platforms": [
+        "Electron renderer",
+        "Tauri renderer"
+      ],
+      "evidence_level": "public IPC readiness reproduction; identical parameter branch inspected",
+      "references": [
+        {
+          "path": "src/ipc/public-manager.ts",
+          "start_line": 684,
+          "end_line": 794,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/65be89d4a8cc528945b070cad8a0fce01cda04e8/src/ipc/public-manager.ts#L684-L794"
+        },
+        {
+          "path": "src/ipc/public-manager.ts",
+          "start_line": 796,
+          "end_line": 880,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/65be89d4a8cc528945b070cad8a0fce01cda04e8/src/ipc/public-manager.ts#L796-L880"
+        }
+      ],
+      "behavior": "On source-failed, both new control-stream adapters construct generic platform.failure instead of preserving the normalized terminal error. They throw BackendContractError directly rather than projecting the public BleError contract. The reproduction sends adapter.powered-off from the host; the renderer receives platform.failure, domain stream, platform null, retryability never, and instanceof BleError is false. The parameter terminal type also omits the provided error field.",
+      "correction": "Reuse the common public-stream terminal/error projection, preserve original code/domain/platform detail and cleanup aggregation, and validate the typed IPC envelope without replacing its cause.",
+      "acceptance": "Carry adapter loss, permission refusal, link loss and a generic source failure through readiness and parameter streams. Assert public BleError identity, original normalized fields and independent cleanup failure ownership.",
+      "evidence_files": [
+        "reproductions/ipc-public-readiness-repro.ts",
+        "evidence/ipc-public-readiness-repro.log"
+      ],
+      "previous_findings": [],
+      "status": "resolved_during_review",
+      "original_evidence_head": "65be89d4a8cc528945b070cad8a0fce01cda04e8",
+      "resolved_at_head": "b80542f39144949738b04dc7d19b4a7ee52cc8c6",
+      "resolution": "Typed source errors now preserve their cause and become public BleError; verified by the final public IPC reproduction and 66 passing affected Jest tests."
+    },
+    {
+      "id": "R2-21",
+      "priority": "P2",
+      "title": "Tauri discovery drops the newly preserved service restriction reason",
+      "category": "host-parity",
+      "origin": "residual previous finding",
+      "platforms": [
+        "Tauri on Windows"
+      ],
+      "evidence_level": "native producer and IPC/public consumer traced",
+      "references": [
+        {
+          "path": "native/tauri/src/btleplug_dispatcher.rs",
+          "start_line": 3461,
+          "end_line": 3471,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/65be89d4a8cc528945b070cad8a0fce01cda04e8/native/tauri/src/btleplug_dispatcher.rs#L3461-L3471"
+        },
+        {
+          "path": "src/ipc/manager.ts",
+          "start_line": 3740,
+          "end_line": 3790,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/65be89d4a8cc528945b070cad8a0fce01cda04e8/src/ipc/manager.ts#L3740-L3790"
+        }
+      ],
+      "behavior": "The native core, NAPI, desktop provider, Electron main and public GATT model now retain an inaccessible service and its restriction. Tauri’s discovery serializer still ignores service_access and never emits restriction. The receiving IPC model can already retain it. Through Tauri, an access-restricted service therefore still looks like an ordinary empty service without the reason.",
+      "correction": "Serialize the core’s observed service-access metadata through the Tauri discovery boundary and validate it consistently with NAPI/Electron. Keep protocol/ATT failures distinct from OS access restriction.",
+      "acceptance": "Discover the same access-restricted service via in-process, Electron and Tauri factories; assert identical service identity, restriction reason and absence of fabricated characteristic success.",
+      "evidence_files": [
+        "evidence/windows.md"
+      ],
+      "previous_findings": [
+        "F04"
+      ],
+      "status": "resolved_during_review",
+      "original_evidence_head": "65be89d4a8cc528945b070cad8a0fce01cda04e8",
+      "resolved_at_head": "b80542f39144949738b04dc7d19b4a7ee52cc8c6",
+      "resolution": "Tauri now reads service-row access and emits restriction through ipc_service_record; current source and added tests inspected. Primary/includes fabrication remains R2-22."
+    }
+  ],
+  "ci_run_url": "https://github.com/sfourdrinier/unified-ble-manager/actions/runs/37558288591"
+}

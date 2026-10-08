@@ -23,6 +23,7 @@ function pinnedRustc(toolchain) {
 function readAppleRadio() {
   return [
     read('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift'),
+    read('ios/Owned/OwnedCoreBluetoothProtocolRadioDiscovery.swift'),
     read('ios/Owned/OwnedCoreBluetoothProtocolRadioCancellation.swift'),
     read('ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift')
   ].join('\n')
@@ -460,6 +461,18 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(support).toContain('This owns no radio state')
   })
 
+  test('compiles discovery callbacks from the owned discovery extension on every Apple product route', () => {
+    const discovery = read('ios/Owned/OwnedCoreBluetoothProtocolRadioDiscovery.swift')
+    expect(discovery).toContain('extension OwnedCoreBluetoothProtocolRadio')
+    expect(discovery).toContain('didDiscoverIncludedServicesFor service: CBService')
+    expect(discovery).toContain('pending.isDrained')
+    expect(read('unified-ble-manager.podspec')).toContain('ios/Owned/OwnedCoreBluetoothProtocolRadioDiscovery.swift')
+    expect(read('scripts/native-protocol/test-apple-native-protocol.js')).toContain(
+      'ios/Owned/OwnedCoreBluetoothProtocolRadioDiscovery.swift'
+    )
+    expect(read('scripts/ci/check-tvos-library.sh')).toContain('OwnedCoreBluetoothProtocolRadioDiscovery.swift')
+  })
+
   test('carries every CoreBluetooth-provided rich advertisement field through owned protocol binary references', () => {
     const support = read('ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift')
     const advertisement = read('ios/NativeProtocol/UnifiedBleProtocolAppleAdvertisement.mm')
@@ -514,7 +527,10 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(descriptors).toContain('didWriteValueFor descriptor')
     // The discovery snapshot is a stateless projection, so it lives in support.
     const support = read('ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift')
-    expect(radio).toContain('OwnedCoreBluetoothProtocolRadioSupport.discoverySnapshot(')
+    const discovery = read('ios/Owned/OwnedCoreBluetoothProtocolRadioDiscovery.swift')
+    expect(discovery).toContain('OwnedCoreBluetoothProtocolRadioSupport.discoverySnapshot(')
+    expect(discovery).toContain('pending.characteristicCallbacks = Set(services.map(ObjectIdentifier.init))')
+    expect(discovery).toContain('pending.includeCallbacks = Set(services.map(ObjectIdentifier.init))')
     expect(support).toContain('"descriptors": descriptors')
     expect(execution).toContain('if (kind == "readDescriptor")')
     expect(execution).toContain('kind == "readDescriptor" || kind == "writeDescriptor"')
@@ -534,12 +550,16 @@ describe('Apple Native Protocol v2 radio boundary', () => {
       // its own bound here (CI pre-builds it, so this is a fresh-check no-op
       // there), and the harness budget below covers only the harness itself.
       const toolchain = pinnedRustToolchain()
-      const rustHost = childProcess.spawnSync('rustup', ['run', toolchain, 'cargo', 'build', '--locked', '-p', 'ubm5_uniffi_echo'], {
-        cwd: root,
-        encoding: 'utf8',
-        timeout: 900_000,
-        env: { ...process.env, RUSTC: pinnedRustc(toolchain) }
-      })
+      const rustHost = childProcess.spawnSync(
+        'rustup',
+        ['run', toolchain, 'cargo', 'build', '--locked', '-p', 'ubm5_uniffi_echo'],
+        {
+          cwd: root,
+          encoding: 'utf8',
+          timeout: 900_000,
+          env: { ...process.env, RUSTC: pinnedRustc(toolchain) }
+        }
+      )
       expect(rustHost.error).toBeUndefined()
       if (rustHost.status !== 0) {
         throw new Error(`UniFFI mobile host build failed on macOS:\n${rustHost.stderr}`)

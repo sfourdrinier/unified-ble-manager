@@ -1,0 +1,5 @@
+{"guestPid": 1684}
+{"services":[1,1,1,1,1,1,1,1,1,1,1,1,1,1],"connected":"Connected","maintainConnection":true,"address":"DC:56:7B:D9:E8:A4","phase":"foreign-native-owner-ready","deviceId":"BluetoothLE#BluetoothLE20:e1:5d:9e:a0:7f-dc:56:7b:d9:e8:a4"}
+{"sessionReleased":true,"phase":"foreign-native-owner-cleanup"}
+
+{"exitcode": 0, "outTruncated": false, "errTruncated": false}

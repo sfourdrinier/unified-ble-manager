@@ -60,6 +60,8 @@ export interface WebBluetoothCharacteristicBoundary {
 
 export interface WebBluetoothServiceBoundary {
   readonly uuid: string
+  readonly primary?: boolean | null
+  getIncludedServices?(): Promise<readonly WebBluetoothServiceBoundary[] | null>
   getCharacteristics(): Promise<readonly WebBluetoothCharacteristicBoundary[]>
 }
 

@@ -792,12 +792,18 @@ function physicalSubscriptionKey<Attachment extends string>(
   path: CurrentCharacteristicPath<Attachment>,
   deliveryMode: SubscriptionOptions['deliveryMode']
 ): string {
+  // A hard requirement must not share the preference or automatic entry.
+  // Identical require-* values still share one physical enable. A hard
+  // request that misses that key reaches the core, which accepts the join
+  // or returns capability.limited without disabling the first CCCD.
   const physicalMode =
-    deliveryMode === 'prefer-notification' || deliveryMode === 'require-notification'
-      ? 'notification'
-      : deliveryMode === 'prefer-indication' || deliveryMode === 'require-indication'
-        ? 'indication'
-        : 'automatic'
+    deliveryMode === 'require-notification' || deliveryMode === 'require-indication'
+      ? deliveryMode
+      : deliveryMode === 'prefer-notification'
+        ? 'notification'
+        : deliveryMode === 'prefer-indication'
+          ? 'indication'
+          : 'automatic'
   return `${exactPathKey(path)}|${physicalMode}`
 }
 

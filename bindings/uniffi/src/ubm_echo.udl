@@ -18,7 +18,7 @@
 // `protocol.incompatible` on every call: no effect without valid init.
 
 namespace ubm_echo {
-    // ---- Mobile Rust owner (crates/ubm-mobile, wire ubm-mobile-wire/1) ----
+    // ---- Mobile Rust owner (crates/ubm-mobile, wire ubm-mobile-wire/2) ----
     // One host per process; see docs/MOBILE_RUST_WIRE.md for the frozen
     // shape. Nothing below reaches the staged/fake radio.
     string mobile_build_identity_json();
@@ -64,7 +64,7 @@ dictionary MobileInstance {
 [Enum]
 interface MobileRadioRequest {
     AdapterState(u64 id);
-    StartScan(u64 id, sequence<string> service_uuids, sequence<string> device_addresses, string? scan_mode, string? callback_type, boolean? legacy);
+    StartScan(u64 id, sequence<string> service_uuids, sequence<string> device_addresses, string? scan_mode, string? callback_type, boolean? legacy, u32? report_delay_ms, string? phy);
     StopScan(u64 id);
     Connect(u64 id, string peer_id, boolean auto_connect, sequence<string> preferred_phy);
     Disconnect(u64 id, string peer_id);
@@ -77,15 +77,19 @@ interface MobileRadioRequest {
     DisableNotifications(u64 id, MobileInstance instance);
     ReadMtu(u64 id, string peer_id);
     ReadWriteLimits(u64 id, string peer_id);
+    ReadWriteReadiness(u64 id, string peer_id);
     RequestMtu(u64 id, string peer_id, u16 mtu);
     ReadRssi(u64 id, string peer_id);
     RequestConnectionPriority(u64 id, string peer_id, string priority);
+    RequestSubrate(u64 id, string peer_id, string mode);
     ReadPhy(u64 id, string peer_id);
     RequestPhy(u64 id, string peer_id, string? tx, string? rx);
     SecurityState(u64 id, string peer_id);
     CreateBond(u64 id, string peer_id, string transport);
     CancelBond(u64 id, string peer_id);
     BondedPeers(u64 id);
+    ConnectedPeers(u64 id, sequence<string> services);
+    ResolvePeer(u64 id, string peer_id);
     AcquireBackground(u64 id, string kind, string reason);
     ReleaseBackground(u64 id, string lease_id);
     UpdateBackgroundNotification(u64 id, string lease_id, string title, string? body);
@@ -127,6 +131,8 @@ dictionary MobileGattCharacteristic {
 dictionary MobileGattService {
     string uuid;
     u64 occurrence;
+    boolean? primary;
+    sequence<MobileGattDescriptor>? included_services;
     sequence<MobileGattCharacteristic> characteristics;
 };
 
@@ -167,12 +173,15 @@ interface MobileRadioCompletion {
     NotifyEnabled(string delivery);
     Mtu(u16? mtu);
     WriteLimits(u16 with_response, u16 without_response);
+    Ready(boolean ready);
     Rssi(i16 rssi);
     Accepted(boolean accepted);
     Phy(string tx, string rx);
     PhyRequest(boolean accepted, string? tx, string? rx);
     Security(MobileSecurityState state);
     BondedPeers(sequence<MobilePeerName> peers);
+    ConnectedPeers(sequence<MobilePeerName> peers);
+    ResolvedPeer(MobilePeerName? peer);
     Lease(string lease_id);
     Companion(i64 association_id, string? peer_id, string? display_name, boolean already_associated);
     CompanionList(sequence<MobileCompanionRecord> records);
@@ -221,6 +230,7 @@ interface MobileRadioIngress {
     AdapterState(MobileAdapterSnapshot snapshot);
     ScanFailed(string detail);
     SecurityChanged(string peer_id, MobileSecurityState state);
+    WriteReadiness(string peer_id, boolean ready);
     Restored(sequence<MobileRestoredPeer> peers);
     Dropped(string ingress_class, string detail);
 };

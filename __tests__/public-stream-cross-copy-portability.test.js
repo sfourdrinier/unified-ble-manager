@@ -138,10 +138,10 @@ void electronFromB
       stdio: 'pipe'
     })
   } catch (error) {
-    const stderr = error instanceof Error && 'stderr' in error ? String(error.stderr) : ''
-    const stdout = error instanceof Error && 'stdout' in error ? String(error.stdout) : ''
+    const stderr = typeof error === 'object' && error !== null && 'stderr' in error ? String(error.stderr) : ''
+    const stdout = typeof error === 'object' && error !== null && 'stdout' in error ? String(error.stdout) : ''
     const output =
-      error instanceof Error && 'output' in error && Array.isArray(error.output)
+      typeof error === 'object' && error !== null && 'output' in error && Array.isArray(error.output)
         ? error.output.map(value => String(value ?? '')).join('')
         : ''
     throw new Error(`cross-copy declaration compilation failed:\n${stdout}${stderr}${output}`)

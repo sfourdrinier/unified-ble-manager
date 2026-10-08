@@ -346,6 +346,28 @@ describe('first-party backend standard TCK registrations', () => {
       expect(registration.suites.map(suite => suite.suiteId)).toEqual([suiteId])
       const report = await createFirstPartyBackendTckRegistry([registration]).run(backendId)
 
+      if (platform === 'winrt') {
+        const controls = report.standard.receipts.find(
+          receipt => receipt.scenarioId === 'connection.rssi-and-att-mtu-capability-contract'
+        )
+        expect(controls.facts).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: 'connection-phy-truth-is-explicit',
+              holds: true,
+              detail: expect.objectContaining({
+                readMeasured: true,
+                txPhy: 'le-2m',
+                rxPhy: 'le-coded',
+                requestExplicitlyUnsupported: true,
+                requestErrorCode: 'capability.unsupported'
+              })
+            })
+          ])
+        )
+        expect(harness.calls.some(([method]) => method === 'readPhy')).toBe(true)
+      }
+
       expect(report.standard.baseScenarioIds).toEqual([
         'identity.provider-loadability-and-adapter-availability',
         'identity.adapter-selection-and-unique-instance',
@@ -366,6 +388,14 @@ describe('first-party backend standard TCK registrations', () => {
         'tck.feature.gatt.maximum-write-length'
       ])
       expectEveryReceiptHolds(report)
+      const parameterCalls = harness.calls.filter(([name]) => name === 'connectionParameters')
+      if (platform === 'winrt') {
+        // Each bound capability exercises the shared controls scenario;
+        // adding a callable feature must not impose a stale exact call count.
+        expect(parameterCalls.length).toBeGreaterThanOrEqual(3)
+      } else {
+        expect(parameterCalls).toHaveLength(0)
+      }
       expect(inventoryRead).toHaveBeenCalledTimes(1)
       expect(harness.calls.filter(([name]) => name === 'connectWhenAvailable')).toHaveLength(
         ['winrt', 'bluez'].includes(platform) ? 1 : 0
@@ -404,8 +434,8 @@ describe('first-party backend standard TCK registrations', () => {
       ).toEqual(
         platform === 'bluez'
           ? [
-              { featureId: 'bluez:acquire-write', state: 'unsupported' },
-              { featureId: 'bluez:acquire-notify', state: 'unsupported' },
+              { featureId: 'bluez:acquire-write', state: 'unavailable' },
+              { featureId: 'bluez:acquire-notify', state: 'unavailable' },
               { featureId: 'bluez:pairing-agent', state: 'unsupported' },
               { featureId: 'bluez:deterministic-advanced-scenario-controls', state: 'unavailable' },
               { featureId: 'bluez:live-radio', state: 'unavailable' }

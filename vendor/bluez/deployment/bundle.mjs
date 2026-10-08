@@ -60,7 +60,7 @@ export function buildBundle(options, dependencies = {}) {
     manifest.schemaVersion !== 1 ||
     manifest.name !== 'bluez' ||
     manifest.version !== '5.87' ||
-    JSON.stringify(manifest.distribution?.linuxAuthorityContract) !== '[1,2,1]'
+    JSON.stringify(manifest.distribution?.linuxAuthorityContract) !== '[1,3,1]'
   ) {
     throw new Error('source producer is not ready for Linux authority deployment')
   }
@@ -166,7 +166,7 @@ export function buildBundle(options, dependencies = {}) {
     schema: 'ubm-bluez-deployment/1',
     release,
     prefix,
-    authorityContract: [1, 2, 1],
+    authorityContract: [1, 3, 1],
     qualification: 'built-not-radio-qualified',
     platform: process.platform,
     architecture: process.arch,
@@ -217,7 +217,7 @@ export function verifyBundle(directory) {
   const bundle = JSON.parse(fs.readFileSync(path.join(root, 'bundle.json'), 'utf8'))
   if (
     bundle.schema !== 'ubm-bluez-deployment/1' ||
-    JSON.stringify(bundle.authorityContract) !== '[1,2,1]' ||
+    JSON.stringify(bundle.authorityContract) !== '[1,3,1]' ||
     !/^\/opt\/unified-ble-manager\/bluez\/5\.87-ubm\.[1-9][0-9]*-[a-f0-9]{12}$/.test(bundle.prefix) ||
     !Array.isArray(bundle.files)
   )
@@ -254,7 +254,7 @@ export function verifyBundle(directory) {
   const source = JSON.parse(fs.readFileSync(path.join(root, 'source-asset-manifest.json'), 'utf8'))
   if (
     digest(path.join(root, 'source-asset-manifest.json')) !== bundle.sourceManifestSha256 ||
-    JSON.stringify(source.distribution?.linuxAuthorityContract) !== '[1,2,1]' ||
+    JSON.stringify(source.distribution?.linuxAuthorityContract) !== '[1,3,1]' ||
     source.distribution.release !== bundle.release
   )
     throw new Error('source manifest identity mismatch')

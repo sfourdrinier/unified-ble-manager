@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license-file = "../../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
-description = "Process-owned mobile Rust owner for UBM 5.0: DesktopCentral over the platform radio (Android GATT / CoreBluetooth) with per-session leases and the ubm-mobile-wire/1 op table"
+description = "Process-owned mobile Rust owner for UBM 5.0: DesktopCentral over the platform radio (Android GATT / CoreBluetooth) with per-session leases and the ubm-mobile-wire/2 op table"
 repository = "https://github.com/sfourdrinier/unified-ble-manager"
 
 [dependencies]

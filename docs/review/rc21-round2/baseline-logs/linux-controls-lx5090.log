@@ -1,0 +1,16 @@
+PASS F02 control: earlier committed external Connect remains protected
+PASS F07 control: actual immediate AcquireNotify rejection rolls back
+PASS F07 control: actual synchronous Connect refusal rolls back
+PASS F08 control: foreign read completion retries a dead owner's release
+FAIL N1: accepted external LE Pair still pending, but last lease disconnects its live ATT
+PASS R1 control: actual successful bonding completion reenables same-attachment Medium-to-High ATT retry
+FAIL N2a: successful protected logical release by live sender strands ACL/token after last foreign read ends
+FAIL N2b: actual PhysicalLost still retains the forgotten released token until sender death or unreachable ACK
+FAIL N3: delayed AcquireWrite socket failure replies error but retains committed application hold
+PASS N3 control: immediate socket failure rolls back the same admission
+FAIL N4: foreign ReadValue begun before first ReserveLease is untracked; borrowed daemon link disconnects during read
+FAIL N5a: 100 ordinary no-lease connect/loss cycles retain 100 stale arrival records
+FAIL N5b: no-peer physical loss leaves old admission; later daemon connection inherits external provenance from ended generation
+7 reproduced failure scenarios; exact production functions, dependency doubles, no physical-radio claim
+generated executable exit: 1 (expected at reviewed head: 1)
+Wrapper exit 0: all 7 documented failure scenarios and 6 positive controls matched.

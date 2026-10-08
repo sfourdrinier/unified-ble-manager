@@ -1,0 +1,8 @@
+PASS __tests__/public/scan-evidence.test.js
+PASS __tests__/public-scan-query.test.js (5.917 s)
+
+Test Suites: 2 passed, 2 total
+Tests:       108 passed, 108 total
+Snapshots:   0 total
+Time:        10.661 s
+Ran all test suites matching /__tests__\/public-scan-query.test.js|__tests__\/public\/scan-evidence.test.js/i.

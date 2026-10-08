@@ -1,4 +1,4 @@
-//! Golden wire vectors: real `ubm-mobile-wire/1` text produced by the Rust
+//! Golden wire vectors: real `ubm-mobile-wire/2` text produced by the Rust
 //! owner over the scripted radio, replayed by the TS parsers in
 //! `__tests__/backends/reactnative/rust-core-wire.golden.test.js`.
 //!
@@ -153,6 +153,7 @@ fn responder(request: &RadioRequest) -> Reply {
             }),
         },
         RadioRequest::RequestConnectionPriority { .. } => RadioCompletion::Accepted(true),
+        RadioRequest::RequestSubrate { .. } => ubm_mobile::subrate_status_completion(0),
         RadioRequest::SecurityState { .. } => RadioCompletion::Security(SecurityState {
             bond: BondState::NotBonded,
             encryption: EncryptionState::NotEncrypted,
@@ -167,6 +168,13 @@ fn responder(request: &RadioRequest) -> Reply {
             secure_connections: SecureConnectionsState::Yes,
             pairing_possible: None,
         }),
+        RadioRequest::ResolvePeer { .. } => RadioCompletion::ResolvedPeer(None),
+        RadioRequest::ConnectedPeers { .. } => {
+            RadioCompletion::ConnectedPeers(vec![ubm_mobile::ConnectedPeer {
+                peer_id: POLAR.into(),
+                name: Some("Polar H10".into()),
+            }])
+        }
         RadioRequest::BondedPeers { .. } => {
             RadioCompletion::BondedPeers(vec![ubm_mobile::BondedPeer {
                 peer_id: "C0:FF:EE:00:00:02".to_owned(),
@@ -236,6 +244,8 @@ async fn generate() -> String {
     r.invoke(&session, "scan start", "scan.start",
         json!({"serviceUuids": ["180D"], "duplicatePolicy": "all", "operationId": "scan-1", "budgetMs": 30000})).await;
     host.ingest(RadioIngress::Advertisement(Advertisement {
+        capture_timestamp_ms: None,
+        cached_name: None,
         peer_id: peer.to_owned(),
         address: Some(peer.to_owned()),
         local_name: Some("Polar H10 1234".to_owned()),
@@ -257,6 +267,8 @@ async fn generate() -> String {
         raw_record: Some(vec![0x02, 0x01, 0x06]),
     }));
     host.ingest(RadioIngress::Advertisement(Advertisement {
+        capture_timestamp_ms: None,
+        cached_name: None,
         peer_id: peer.to_owned(),
         address: None,
         local_name: None,
@@ -271,12 +283,12 @@ async fn generate() -> String {
     r.invoke(&session, "known peers", "peers.known", json!({}))
         .await;
     r.invoke(&session, "resolve known", "peers.resolve",
-        json!({"reference": {"version": 1, "backendId": "rn", "scope": "origin", "opaqueId": peer}})).await;
+        json!({"reference": {"version": 1, "backendId": "rn", "scope": "origin", "opaqueId": peer}, "operationId":"resolve-known"})).await;
     r.invoke(
         &session,
         "resolve unknown",
         "peers.resolve",
-        json!({"reference": {"opaqueId": "nobody"}}),
+        json!({"reference": {"opaqueId": "nobody"}, "operationId":"resolve-unknown"}),
     )
     .await;
     r.invoke(&session, "connect", "connection.connect",
@@ -290,8 +302,13 @@ async fn generate() -> String {
     .await;
     r.invoke(&session, "connect phy with when-available", "connection.connect",
         json!({"peerId": peer, "lease": "lease-2", "operationId": "connect-2", "intent": "when-available", "preferredPhy": ["le-coded"]})).await;
-    r.invoke(&session, "connected peers", "peers.connected", json!({}))
-        .await;
+    r.invoke(
+        &session,
+        "connected peers",
+        "peers.connected",
+        json!({"services":[], "operationId":"system-connected"}),
+    )
+    .await;
     r.invoke(
         &session,
         "discover",
@@ -322,6 +339,8 @@ async fn generate() -> String {
         json!({"peerId": peer, "selector": sel, "valueB64": "", "mode": "without-response", "operationId": "w-2"})).await;
     r.invoke(&session, "write refused by the peer (android gatt status)", "gatt.write",
         json!({"peerId": peer, "selector": sel, "valueB64": "3Q==", "mode": "with-response", "operationId": "w-5"})).await;
+    r.invoke(&session, "atomic readiness write runtime refusal", "gatt.write-when-ready",
+        json!({"peerId": peer, "selector": sel, "valueB64": "Kg==", "mode": "without-response", "operationId": "wr-1"})).await;
     r.invoke(&session, "write descriptor", "gatt.write-descriptor",
         json!({"peerId": peer, "selector": descriptor, "valueB64": "AQA=", "mode": "with-response", "operationId": "wd-1"})).await;
     r.invoke(
@@ -373,9 +392,47 @@ async fn generate() -> String {
     .await;
     r.invoke(
         &session,
+        "write readiness on android",
+        "connection.write-readiness",
+        json!({"peerId": peer, "lease": "lease-1", "operationId": "ready-1"}),
+    )
+    .await;
+    r.invoke(
+        &session,
         "request mtu",
         "connection.request-mtu",
         json!({"peerId": peer, "lease": "lease-1", "mtu": 247, "operationId": "mtu-1"}),
+    )
+    .await;
+    r.invoke(
+        &session,
+        "connection control capabilities",
+        "connection.control-capabilities",
+        json!({}),
+    )
+    .await;
+    r.invoke(
+        &session,
+        "subrate unavailable",
+        "connection.request-subrate",
+        json!({"peerId":peer,"lease":"lease-1","mode":"low-power","operationId":"subrate-1"}),
+    )
+    .await;
+    radio
+        .subrate_available
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    r.invoke(
+        &session,
+        "connection control capabilities available",
+        "connection.control-capabilities",
+        json!({}),
+    )
+    .await;
+    r.invoke(
+        &session,
+        "subrate accepted",
+        "connection.request-subrate",
+        json!({"peerId":peer,"lease":"lease-1","mode":"low-power","operationId":"subrate-2"}),
     )
     .await;
     r.invoke(&session, "request priority", "connection.request-priority",
@@ -516,6 +573,19 @@ async fn generate() -> String {
     });
     r.drain(&session, "adapter, security, restored, ingress-drop", 4)
         .await;
+    host.ingest(RadioIngress::SecurityFailed {
+        peer_id: Some(peer.to_owned()),
+        failure: ubm_mobile::PlatformFailure {
+            native_domain: Some("android.bluetooth.HciEncryptionChange".into()),
+            native_code: Some(5),
+            native_name: Some("ENCRYPTION_CHANGE_FAILED".into()),
+            ..ubm_mobile::PlatformFailure::new(
+                ubm_mobile::FailureKind::Platform,
+                "controller encryption failure",
+            )
+        },
+    });
+    r.drain(&session, "encryption source failure", 1).await;
     r.invoke(&session, "restored peers", "peers.restored", json!({}))
         .await;
     r.invoke(

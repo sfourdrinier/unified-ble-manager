@@ -30,10 +30,10 @@ use ubm_desktop::{
 use ubm_mobile::{
     AdapterAuthorization, AdapterAvailability, AdapterPower, AdapterSnapshot, Advertisement,
     AuthenticationState, BondState, BondedPeer, CloseFailure, CompanionRecord, CompletionStatus,
-    EncryptionState, FailureKind, HostOptions, IngressClass, IngressStatus, Instance,
-    ManufacturerData, MobileHost, MobilePlatform, PhyObservation, PlatformFailure, PlatformRadio,
-    RadioCompletion, RadioIngress, RadioRequest, RestoredPeer, SecureConnectionsState,
-    SecurityState, ServiceData, WakeSink,
+    ConnectedPeer, EncryptionState, FailureKind, HostOptions, IngressClass, IngressStatus,
+    Instance, ManufacturerData, MobileHost, MobilePlatform, PhyObservation, PlatformFailure,
+    PlatformRadio, RadioCompletion, RadioIngress, RadioRequest, ResolvedPeer, RestoredPeer,
+    SecureConnectionsState, SecurityState, ServiceData, WakeSink,
 };
 
 use crate::build_identity::ubm_build_identity_json;
@@ -229,6 +229,8 @@ pub fn request_call(request: &RadioRequest) -> (&'static str, Vec<Arg>) {
                     Arg::Str(android.mode.map(|mode| mode.as_str().to_owned())),
                     Arg::Str(android.callback_type.map(|kind| kind.as_str().to_owned())),
                     Arg::Int(android.legacy.map_or(-1, i32::from)),
+                    Arg::Long(android.report_delay_ms.map_or(0, i64::from)),
+                    Arg::Str(android.phy.map(|phy| phy.as_str().to_owned())),
                 ],
             )
         }
@@ -311,6 +313,9 @@ pub fn request_call(request: &RadioRequest) -> (&'static str, Vec<Arg>) {
         RadioRequest::ReadWriteLimits { peer_id, .. } => {
             ("readWriteLimits", vec![rid, text(peer_id)])
         }
+        RadioRequest::ReadWriteReadiness { peer_id, .. } => {
+            ("readWriteReadiness", vec![rid, text(peer_id)])
+        }
         RadioRequest::RequestMtu { peer_id, mtu, .. } => (
             "requestMtu",
             vec![rid, text(peer_id), Arg::Int(i32::from(*mtu))],
@@ -321,6 +326,10 @@ pub fn request_call(request: &RadioRequest) -> (&'static str, Vec<Arg>) {
         } => (
             "requestConnectionPriority",
             vec![rid, text(peer_id), text(priority.as_str())],
+        ),
+        RadioRequest::RequestSubrate { peer_id, mode, .. } => (
+            "requestSubrate",
+            vec![rid, text(peer_id), text(mode.as_str())],
         ),
         RadioRequest::ReadPhy { peer_id, .. } => ("readPhy", vec![rid, text(peer_id)]),
         RadioRequest::RequestPhy {
@@ -343,6 +352,10 @@ pub fn request_call(request: &RadioRequest) -> (&'static str, Vec<Arg>) {
         ),
         RadioRequest::CancelBond { peer_id, .. } => ("cancelBond", vec![rid, text(peer_id)]),
         RadioRequest::BondedPeers { .. } => ("bondedPeers", vec![rid]),
+        RadioRequest::ResolvePeer { peer_id, .. } => ("resolvePeer", vec![rid, text(peer_id)]),
+        RadioRequest::ConnectedPeers { services, .. } => {
+            ("connectedPeers", vec![rid, Arg::Strings(services.clone())])
+        }
         RadioRequest::AcquireBackground { kind, reason, .. } => (
             "acquireBackground",
             vec![rid, text(kind.as_str()), text(reason)],
@@ -439,6 +452,7 @@ struct JniRadio {
     vm: JavaVM,
     host: Global<JObject<'static>>,
     owner: OnceLock<MobileHost>,
+    subrate_available: bool,
 }
 
 impl JniRadio {
@@ -449,6 +463,9 @@ impl JniRadio {
 }
 
 impl PlatformRadio for JniRadio {
+    fn connection_subrate_available(&self) -> bool {
+        self.subrate_available
+    }
     fn submit(&self, request: RadioRequest) {
         let (method, args) = request_call(&request);
         if let Err(error) = self.invoke(method, &args) {
@@ -713,11 +730,28 @@ pub fn discovery_tree(
         let occurrence = u64::try_from(occurrences[index]).map_err(|_| "negative occurrence")?;
         let uuid = uuids[index].clone();
         match levels[index] {
-            0 => services.push(ServiceSnapshot {
-                uuid,
-                occurrence,
-                characteristics: Vec::new(),
-            }),
+            0 => {
+                if properties[index] & !7 != 0 {
+                    return Err("invalid service metadata bits");
+                }
+                services.push(ServiceSnapshot {
+                    primary: match properties[index] & 3 {
+                        0 => None,
+                        1 => Some(true),
+                        2 => Some(false),
+                        _ => return Err("invalid primary fact"),
+                    },
+                    included_services: if properties[index] & 4 != 0 {
+                        Some(Vec::new())
+                    } else {
+                        None
+                    },
+                    uuid,
+                    occurrence,
+                    characteristics: Vec::new(),
+                    access: std::default::Default::default(),
+                });
+            }
             1 => services
                 .last_mut()
                 .ok_or("characteristic before any service")?
@@ -734,7 +768,14 @@ pub fn discovery_tree(
                 .ok_or("descriptor before any characteristic")?
                 .descriptors
                 .push(DescriptorSnapshot { uuid, occurrence }),
-            _ => return Err("level must be 0, 1 or 2"),
+            3 => services
+                .last_mut()
+                .ok_or("inclusion before any service")?
+                .included_services
+                .as_mut()
+                .ok_or("inclusion without observed list")?
+                .push(ubm_desktop::boundary::IncludedServiceReference { uuid, occurrence }),
+            _ => return Err("level must be 0, 1, 2 or 3"),
         }
     }
     Ok(services)
@@ -889,6 +930,14 @@ pub extern "system" fn Java_com_ubm_core_MobileCoreBridge_nativeInstallHost<'cal
                 vm: env.get_java_vm()?,
                 host: env.new_global_ref(&radio)?,
                 owner: OnceLock::new(),
+                subrate_available: env
+                    .call_method(
+                        &radio,
+                        JNIString::from("subrateAvailable"),
+                        MethodSignature::from(&RuntimeMethodSignature::from_str("()Z")?),
+                        &[],
+                    )?
+                    .z()?,
             });
             let jni_wake = Arc::new(JniWake {
                 vm: env.get_java_vm()?,
@@ -1552,6 +1601,38 @@ completion_native!(
 );
 
 completion_native!(
+    Java_com_ubm_core_MobileCoreBridge_nativeCompleteResolvedPeer,
+    "mobile.complete.resolve-peer",
+    (peer_id: JString<'caller>, name: JString<'caller>),
+    |env| {
+        const OP: &str = "mobile.complete.resolve-peer";
+        let peer_id = read_opt_text(env, &peer_id, OP)?;
+        let name = read_opt_text(env, &name, OP)?;
+        if peer_id.is_none() && name.is_some() { return Err(invalid(OP, "absent peer with a name")); }
+        Ok(RadioCompletion::ResolvedPeer(peer_id.map(|peer_id| ResolvedPeer { peer_id, name })))
+    }
+);
+
+completion_native!(
+    Java_com_ubm_core_MobileCoreBridge_nativeCompleteConnectedPeers,
+    "mobile.complete.connected-peers",
+    (peer_ids: JObjectArray<'caller, JString<'caller>>, names: JObjectArray<'caller, JString<'caller>>),
+    |env| {
+        const OP: &str = "mobile.complete.connected-peers";
+        let peer_ids = read_required_texts(env, &peer_ids, OP)?;
+        let names = read_texts(env, &names, OP)?;
+        same_length(OP, &[peer_ids.len(), names.len()])?;
+        Ok(RadioCompletion::ConnectedPeers(
+            peer_ids
+                .into_iter()
+                .zip(names)
+                .map(|(peer_id, name)| ConnectedPeer { peer_id, name })
+                .collect(),
+        ))
+    }
+);
+
+completion_native!(
     Java_com_ubm_core_MobileCoreBridge_nativeCompleteLease,
     "mobile.complete.lease",
     (lease_id: JString<'caller>),
@@ -1666,6 +1747,13 @@ completion_native!(
     }
 );
 
+completion_native!(
+    Java_com_ubm_core_MobileCoreBridge_nativeCompleteSubrateStatus,
+    "mobile.complete.subrate-status",
+    (status: jint),
+    |_env| Ok(ubm_mobile::subrate_status_completion(status))
+);
+
 // -- natives: ingress ------------------------------------------------------
 
 macro_rules! ingress_native {
@@ -1710,7 +1798,7 @@ fn ingress_class_of(operation: &str) -> IngressClass {
 ingress_native!(
     Java_com_ubm_core_MobileCoreBridge_nativeIngestAdvertisement,
     "mobile.ingest.advertisement",
-    (peer_id: JString<'caller>, address: JString<'caller>, local_name: JString<'caller>, rssi: jint, tx_power: jint, service_uuids: JObjectArray<'caller, JString<'caller>>, company_ids: JIntArray<'caller>, manufacturer_payloads: JObjectArray<'caller, JByteArray<'caller>>, service_data_uuids: JObjectArray<'caller, JString<'caller>>, service_data_payloads: JObjectArray<'caller, JByteArray<'caller>>, connectable: jint, solicited_service_uuids: JObjectArray<'caller, JString<'caller>>, overflow_service_uuids: JObjectArray<'caller, JString<'caller>>, appearance: jint, raw_record: JByteArray<'caller>),
+    (peer_id: JString<'caller>, address: JString<'caller>, local_name: JString<'caller>, rssi: jint, tx_power: jint, service_uuids: JObjectArray<'caller, JString<'caller>>, company_ids: JIntArray<'caller>, manufacturer_payloads: JObjectArray<'caller, JByteArray<'caller>>, service_data_uuids: JObjectArray<'caller, JString<'caller>>, service_data_payloads: JObjectArray<'caller, JByteArray<'caller>>, connectable: jint, solicited_service_uuids: JObjectArray<'caller, JString<'caller>>, overflow_service_uuids: JObjectArray<'caller, JString<'caller>>, appearance: jint, raw_record: JByteArray<'caller>, cached_name: JString<'caller>, capture_timestamp_ms: jlong),
     |env| {
         const OP: &str = "mobile.ingest.advertisement";
         let company_ids = read_ints(env, &company_ids)?;
@@ -1720,6 +1808,8 @@ ingress_native!(
         let service_data_payloads = read_byte_arrays(env, &service_data_payloads, OP)?;
         same_length(OP, &[service_data_uuids.len(), service_data_payloads.len()])?;
         Ok(RadioIngress::Advertisement(Advertisement {
+            cached_name: read_opt_text(env, &cached_name, OP)?,
+            capture_timestamp_ms: if capture_timestamp_ms == -1 { None } else { Some(u64::try_from(capture_timestamp_ms).map_err(|_| invalid(OP, "capture timestamp must be non-negative or absent"))?) },
             peer_id: read_text(env, &peer_id, OP)?,
             address: read_opt_text(env, &address, OP)?,
             local_name: read_opt_text(env, &local_name, OP)?,
@@ -1849,6 +1939,27 @@ ingress_native!(
 );
 
 ingress_native!(
+    Java_com_ubm_core_MobileCoreBridge_nativeIngestSecurityFailure,
+    "mobile.ingest.security-failed",
+    (peer_id: JString<'caller>, kind: JString<'caller>, encryption_status: jint, detail: JString<'caller>),
+    |env| {
+        const OP: &str = "mobile.ingest.security-failed";
+        let status = optional_int(encryption_status);
+        Ok(RadioIngress::SecurityFailed {
+            peer_id: read_opt_text(env, &peer_id, OP)?,
+            failure: PlatformFailure {
+                kind: parse_enum(&read_text(env, &kind, OP)?, FailureKind::parse, OP)?,
+                gatt_status: None,
+                native_domain: status.map(|_| "android.bluetooth.HciEncryptionChange".into()),
+                native_code: status.map(i64::from),
+                native_name: Some(if status.is_some() { "ENCRYPTION_CHANGE_FAILED" } else { "encryption-observation-failed" }.into()),
+                detail: read_opt_text(env, &detail, OP)?.unwrap_or_default(), dispatched: false,
+            },
+        })
+    }
+);
+
+ingress_native!(
     Java_com_ubm_core_MobileCoreBridge_nativeIngestRestored,
     "mobile.ingest.restored",
     (peer_ids: JObjectArray<'caller, JString<'caller>>, names: JObjectArray<'caller, JString<'caller>>, connected: JBooleanArray<'caller>),
@@ -1893,6 +2004,32 @@ mod tests {
     use super::*;
     use ubm_mobile::{Instance, ScanRequest};
 
+    #[test]
+    fn subrate_request_preserves_the_mode_and_native_request_id() {
+        for mode in [
+            ubm_mobile::SubrateMode::Default,
+            ubm_mobile::SubrateMode::LowLatency,
+            ubm_mobile::SubrateMode::LowPower,
+            ubm_mobile::SubrateMode::HighThroughput,
+        ] {
+            let (method, args) = request_call(&RadioRequest::RequestSubrate {
+                id: 42,
+                peer_id: "peer".into(),
+                mode,
+            });
+            assert_eq!(method, "requestSubrate");
+            assert_eq!(
+                args,
+                vec![
+                    Arg::Long(42),
+                    Arg::Str(Some("peer".into())),
+                    Arg::Str(Some(mode.as_str().into()))
+                ]
+            );
+            assert_eq!(signature(&args), "(JLjava/lang/String;Ljava/lang/String;)V");
+        }
+    }
+
     fn hr() -> Instance {
         Instance {
             peer_id: "p".to_owned(),
@@ -1926,9 +2063,26 @@ mod tests {
         assert_eq!(method, "startScan");
         assert_eq!(
             signature(&args),
-            "(J[Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V"
+            "(J[Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IJLjava/lang/String;)V"
         );
         assert_eq!(args[5], Arg::Int(-1));
+        assert_eq!(args[6], Arg::Long(0));
+        assert_eq!(args[7], Arg::Str(None));
+        let (_, args) = request_call(&RadioRequest::StartScan {
+            id: 2,
+            scan: ScanRequest {
+                android: Some(ubm_mobile::AndroidScanOptions {
+                    legacy: Some(false),
+                    report_delay_ms: Some(500),
+                    phy: Some(ubm_mobile::ScanPhy::LeCoded),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        });
+        assert_eq!(args[5], Arg::Int(0));
+        assert_eq!(args[6], Arg::Long(500));
+        assert_eq!(args[7], Arg::Str(Some("coded".to_owned())));
         let (method, args) = request_call(&RadioRequest::Connect {
             id: 2,
             peer_id: "p".to_owned(),
@@ -2005,6 +2159,24 @@ mod tests {
         assert_eq!(tree[0].characteristics[0].descriptors.len(), 1);
         assert!(discovery_tree(&[1], &["x".to_owned()], &[0], &[0]).is_err());
         assert!(discovery_tree(&[0], &["x".to_owned()], &[-1], &[0]).is_err());
+        let graph = discovery_tree(
+            &[0, 3, 0, 0],
+            &["a".into(), "a".into(), "a".into(), "b".into()],
+            &[0, 1, 1, 0],
+            &[5, 0, 6, 0],
+        )
+        .expect("service facts");
+        assert_eq!(graph[0].primary, Some(true));
+        assert_eq!(
+            graph[0].included_services.as_ref().unwrap()[0].occurrence,
+            1
+        );
+        assert_eq!(graph[1].primary, Some(false));
+        assert_eq!(graph[1].included_services, Some(Vec::new()));
+        assert_eq!(graph[2].primary, None);
+        assert_eq!(graph[2].included_services, None);
+        assert!(discovery_tree(&[0], &["x".into()], &[0], &[3]).is_err());
+        assert!(discovery_tree(&[3], &["x".into()], &[0], &[0]).is_err());
     }
 
     #[test]

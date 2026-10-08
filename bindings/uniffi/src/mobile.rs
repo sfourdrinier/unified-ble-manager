@@ -136,6 +136,8 @@ pub enum MobileRadioRequest {
         scan_mode: Option<String>,
         callback_type: Option<String>,
         legacy: Option<bool>,
+        report_delay_ms: Option<u32>,
+        phy: Option<String>,
     },
     StopScan {
         id: u64,
@@ -200,6 +202,10 @@ pub enum MobileRadioRequest {
         id: u64,
         peer_id: String,
     },
+    ReadWriteReadiness {
+        id: u64,
+        peer_id: String,
+    },
     RequestMtu {
         id: u64,
         peer_id: String,
@@ -213,6 +219,11 @@ pub enum MobileRadioRequest {
         id: u64,
         peer_id: String,
         priority: String,
+    },
+    RequestSubrate {
+        id: u64,
+        peer_id: String,
+        mode: String,
     },
     ReadPhy {
         id: u64,
@@ -239,6 +250,14 @@ pub enum MobileRadioRequest {
     },
     BondedPeers {
         id: u64,
+    },
+    ConnectedPeers {
+        id: u64,
+        services: Vec<String>,
+    },
+    ResolvePeer {
+        id: u64,
+        peer_id: String,
     },
     AcquireBackground {
         id: u64,
@@ -298,6 +317,8 @@ impl From<&RadioRequest> for MobileRadioRequest {
                     scan_mode: android.mode.map(|mode| mode.as_str().to_owned()),
                     callback_type: android.callback_type.map(|kind| kind.as_str().to_owned()),
                     legacy: android.legacy,
+                    report_delay_ms: android.report_delay_ms,
+                    phy: android.phy.map(|phy| phy.as_str().to_owned()),
                 }
             }
             RadioRequest::StopScan { id } => Self::StopScan { id: *id },
@@ -380,6 +401,10 @@ impl From<&RadioRequest> for MobileRadioRequest {
                 id: *id,
                 peer_id: peer_id.clone(),
             },
+            RadioRequest::ReadWriteReadiness { id, peer_id } => Self::ReadWriteReadiness {
+                id: *id,
+                peer_id: peer_id.clone(),
+            },
             RadioRequest::RequestMtu { id, peer_id, mtu } => Self::RequestMtu {
                 id: *id,
                 peer_id: peer_id.clone(),
@@ -397,6 +422,11 @@ impl From<&RadioRequest> for MobileRadioRequest {
                 id: *id,
                 peer_id: peer_id.clone(),
                 priority: priority.as_str().to_owned(),
+            },
+            RadioRequest::RequestSubrate { id, peer_id, mode } => Self::RequestSubrate {
+                id: *id,
+                peer_id: peer_id.clone(),
+                mode: mode.as_str().to_owned(),
             },
             RadioRequest::ReadPhy { id, peer_id } => Self::ReadPhy {
                 id: *id,
@@ -431,6 +461,14 @@ impl From<&RadioRequest> for MobileRadioRequest {
                 peer_id: peer_id.clone(),
             },
             RadioRequest::BondedPeers { id } => Self::BondedPeers { id: *id },
+            RadioRequest::ResolvePeer { id, peer_id } => Self::ResolvePeer {
+                id: *id,
+                peer_id: peer_id.clone(),
+            },
+            RadioRequest::ConnectedPeers { id, services } => Self::ConnectedPeers {
+                id: *id,
+                services: services.clone(),
+            },
             RadioRequest::AcquireBackground { id, kind, reason } => Self::AcquireBackground {
                 id: *id,
                 kind: kind.as_str().to_owned(),
@@ -522,6 +560,8 @@ pub struct MobileGattCharacteristic {
 pub struct MobileGattService {
     pub uuid: String,
     pub occurrence: u64,
+    pub primary: Option<bool>,
+    pub included_services: Option<Vec<MobileGattDescriptor>>,
     pub characteristics: Vec<MobileGattCharacteristic>,
 }
 
@@ -585,6 +625,9 @@ pub enum MobileRadioCompletion {
         with_response: u16,
         without_response: u16,
     },
+    Ready {
+        ready: bool,
+    },
     Rssi {
         rssi: i16,
     },
@@ -605,6 +648,12 @@ pub enum MobileRadioCompletion {
     },
     BondedPeers {
         peers: Vec<MobilePeerName>,
+    },
+    ConnectedPeers {
+        peers: Vec<MobilePeerName>,
+    },
+    ResolvedPeer {
+        peer: Option<MobilePeerName>,
     },
     Lease {
         lease_id: String,
@@ -693,6 +742,18 @@ pub fn completion(value: MobileRadioCompletion) -> Result<RadioCompletion, Strin
             services
                 .into_iter()
                 .map(|service| ServiceSnapshot {
+                    primary: service.primary,
+                    included_services: service.included_services.map(|references| {
+                        references
+                            .into_iter()
+                            .map(
+                                |reference| ubm_desktop::boundary::IncludedServiceReference {
+                                    uuid: reference.uuid,
+                                    occurrence: reference.occurrence,
+                                },
+                            )
+                            .collect()
+                    }),
                     uuid: service.uuid,
                     occurrence: service.occurrence,
                     characteristics: service
@@ -712,6 +773,7 @@ pub fn completion(value: MobileRadioCompletion) -> Result<RadioCompletion, Strin
                                 .collect(),
                         })
                         .collect(),
+                    access: std::default::Default::default(),
                 })
                 .collect(),
         ),
@@ -736,6 +798,7 @@ pub fn completion(value: MobileRadioCompletion) -> Result<RadioCompletion, Strin
                 without_response,
             })
         }
+        MobileRadioCompletion::Ready { ready } => RadioCompletion::Ready(ready),
         MobileRadioCompletion::Rssi { rssi } => RadioCompletion::Rssi(rssi),
         MobileRadioCompletion::Accepted { accepted } => RadioCompletion::Accepted(accepted),
         MobileRadioCompletion::Phy { tx, rx } => RadioCompletion::Phy(PhyObservation {
@@ -758,6 +821,21 @@ pub fn completion(value: MobileRadioCompletion) -> Result<RadioCompletion, Strin
             peers
                 .into_iter()
                 .map(|peer| BondedPeer {
+                    peer_id: peer.peer_id,
+                    name: peer.name,
+                })
+                .collect(),
+        ),
+        MobileRadioCompletion::ResolvedPeer { peer } => {
+            RadioCompletion::ResolvedPeer(peer.map(|peer| ubm_mobile::ResolvedPeer {
+                peer_id: peer.peer_id,
+                name: peer.name,
+            }))
+        }
+        MobileRadioCompletion::ConnectedPeers { peers } => RadioCompletion::ConnectedPeers(
+            peers
+                .into_iter()
+                .map(|peer| ubm_mobile::ConnectedPeer {
                     peer_id: peer.peer_id,
                     name: peer.name,
                 })
@@ -881,6 +959,10 @@ pub enum MobileRadioIngress {
         peer_id: String,
         state: MobileSecurityState,
     },
+    WriteReadiness {
+        peer_id: String,
+        ready: bool,
+    },
     Restored {
         peers: Vec<MobileRestoredPeer>,
     },
@@ -903,6 +985,8 @@ pub fn ingress(value: MobileRadioIngress) -> Result<RadioIngress, String> {
     Ok(match value {
         MobileRadioIngress::Advertisement { advertisement } => {
             RadioIngress::Advertisement(Advertisement {
+                capture_timestamp_ms: None,
+                cached_name: None,
                 peer_id: advertisement.peer_id,
                 address: advertisement.address,
                 local_name: advertisement.local_name,
@@ -963,6 +1047,9 @@ pub fn ingress(value: MobileRadioIngress) -> Result<RadioIngress, String> {
             peer_id,
             state: security(state)?,
         },
+        MobileRadioIngress::WriteReadiness { peer_id, ready } => {
+            RadioIngress::WriteReadiness { peer_id, ready }
+        }
         MobileRadioIngress::Restored { peers } => RadioIngress::Restored {
             peers: peers
                 .into_iter()

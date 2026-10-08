@@ -37,6 +37,8 @@ fn advertisement(peer_id: &str) -> RadioEvent {
 
 fn control_service() -> ServiceSnapshot {
     ServiceSnapshot {
+        primary: None,
+        included_services: None,
         uuid: HRM_SERVICE.to_owned(),
         occurrence: 0,
         characteristics: vec![CharacteristicSnapshot {
@@ -51,6 +53,7 @@ fn control_service() -> ServiceSnapshot {
             },
             descriptors: Vec::new(),
         }],
+        access: std::default::Default::default(),
     }
 }
 
@@ -755,6 +758,8 @@ const HRM_MEASUREMENT: &str = "00002a37-0000-1000-8000-00805f9b34fb";
 
 fn notify_service() -> ServiceSnapshot {
     ServiceSnapshot {
+        primary: None,
+        included_services: None,
         uuid: HRM_SERVICE.to_owned(),
         occurrence: 0,
         characteristics: vec![CharacteristicSnapshot {
@@ -769,6 +774,7 @@ fn notify_service() -> ServiceSnapshot {
             },
             descriptors: Vec::new(),
         }],
+        access: std::default::Default::default(),
     }
 }
 
@@ -900,6 +906,9 @@ async fn advertisement_extras_reach_the_host_verbatim() {
         .await
         .expect("scan");
     let extras = ubm_desktop::AdvertisementExtras {
+        capture_timestamp_ms: None,
+        cached_name: None,
+        address_type: None,
         solicited_service_uuids: Some(vec![HRM_SERVICE.to_owned()]),
         overflow_service_uuids: Some(Vec::new()),
         connectable: None,
@@ -1009,6 +1018,63 @@ async fn write_readiness_is_probed_and_reported_per_connection() {
         .expect("report");
     assert!(report.ready);
     assert_eq!(report.peer_id, "peer-wr");
+    assert_eq!(report.connection_generation, generation);
+}
+
+/// Observed connection parameters stay on the lease that holds the link and
+/// carry the generation current when the report arrives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connection_parameters_are_read_and_reported_per_connection() {
+    let central = open().await;
+    connected_peer(&central, "peer-cp").await;
+    let unsupported = central
+        .connection_parameters("peer-cp", "lease-a", OpControl::budget_ms(1000))
+        .await
+        .expect_err("a radio without parameters says so");
+    assert_eq!(unsupported.code_str(), "capability.unsupported");
+    central.boundary().set_connection_parameters(
+        "peer-cp",
+        ubm_desktop::ObservedConnectionParameters {
+            interval_us: 7_500,
+            latency: 0,
+            supervision_timeout_us: 200_000,
+        },
+    );
+    let read = central
+        .connection_parameters("peer-cp", "lease-a", OpControl::budget_ms(1000))
+        .await
+        .expect("probe");
+    assert_eq!(read.interval_us, 7_500);
+    assert_eq!(read.latency, 0);
+    assert_eq!(read.supervision_timeout_us, 200_000);
+    let foreign = central
+        .connection_parameters("peer-cp", "lease-z", OpControl::budget_ms(1000))
+        .await
+        .expect_err("foreign lease");
+    assert_eq!(foreign.code_str(), "ownership.denied");
+    let generation = central
+        .peer_records()
+        .await
+        .into_iter()
+        .find(|record| record.peer_id == "peer-cp")
+        .and_then(|record| record.connection_generation);
+    let mut reports = central.connection_parameter_events();
+    central
+        .boundary()
+        .push_event(RadioEvent::ConnectionParameters {
+            peer_id: "peer-cp".to_owned(),
+            interval_us: 15_000,
+            latency: 4,
+            supervision_timeout_us: 400_000,
+        });
+    let report = tokio::time::timeout(Duration::from_secs(2), reports.recv())
+        .await
+        .expect("in time")
+        .expect("report");
+    assert_eq!(report.interval_us, 15_000);
+    assert_eq!(report.latency, 4);
+    assert_eq!(report.supervision_timeout_us, 400_000);
+    assert_eq!(report.peer_id, "peer-cp");
     assert_eq!(report.connection_generation, generation);
 }
 
@@ -1253,4 +1319,200 @@ async fn a_link_loss_answer_is_connection_lost_through_the_central() {
         assert_eq!(discover.code_str(), "connection.lost", "{platform:?}");
         assert_eq!(discover.platform(), Some(platform));
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn watch_probe_refuses_a_preexisting_failed_source_without_refusing_an_ordinary_snapshot() {
+    let central = open().await;
+    connected_peer(&central, "peer-source").await;
+    central.boundary().set_connection_parameters(
+        "peer-source",
+        ubm_desktop::ObservedConnectionParameters {
+            interval_us: 30_000,
+            latency: 2,
+            supervision_timeout_us: 4_000_000,
+        },
+    );
+    let mut reports = central.connection_parameter_events();
+    let original = ubm_desktop::DesktopError::new(
+        ubm_core::contracts::BleErrorCode::StreamClosed,
+        ubm_core::contracts::BleErrorDomain::Stream,
+        "native.parameter-source",
+    );
+    central
+        .boundary()
+        .push_event(RadioEvent::ConnectionParameterSourceFailed {
+            peer_id: "peer-source".into(),
+            error: original,
+        });
+    tokio::time::timeout(Duration::from_secs(2), reports.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let error = central
+        .connection_parameters_watch_initial("peer-source", "lease-a", OpControl::budget_ms(1000))
+        .await
+        .unwrap_err();
+    assert_eq!(error.operation(), "native.parameter-source");
+    assert_eq!(error.code_str(), "stream.closed");
+    assert_eq!(
+        central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| call.as_str() == "connection_parameters")
+            .count(),
+        0
+    );
+    assert_eq!(
+        central
+            .connection_parameters("peer-source", "lease-a", OpControl::budget_ms(1000))
+            .await
+            .unwrap()
+            .interval_us,
+        30_000
+    );
+    central
+        .boundary()
+        .push_event(RadioEvent::ConnectionParameters {
+            peer_id: "peer-source".into(),
+            interval_us: 60_000,
+            latency: 2,
+            supervision_timeout_us: 4_000_000,
+        });
+    tokio::time::timeout(Duration::from_secs(2), reports.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        central
+            .connection_parameters_watch_initial(
+                "peer-source",
+                "lease-a",
+                OpControl::budget_ms(1000)
+            )
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transient_parameter_callback_failure_recovers_through_a_fresh_watch_probe() {
+    let central = open().await;
+    connected_peer(&central, "peer-transient").await;
+    central.boundary().set_connection_parameters(
+        "peer-transient",
+        ubm_desktop::ObservedConnectionParameters {
+            interval_us: 90_000,
+            latency: 2,
+            supervision_timeout_us: 4_000_000,
+        },
+    );
+    let mut reports = central.connection_parameter_events();
+    central
+        .boundary()
+        .push_event(RadioEvent::ConnectionParameterSourceFailed {
+            peer_id: "peer-transient".into(),
+            error: ubm_desktop::DesktopError::new(
+                ubm_core::contracts::BleErrorCode::PlatformFailure,
+                ubm_core::contracts::BleErrorDomain::Platform,
+                "transient.callback",
+            ),
+        });
+    tokio::time::timeout(Duration::from_secs(2), reports.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        central
+            .connection_parameter_source_failure("peer-transient")
+            .await
+            .is_some()
+    );
+    let measured = central
+        .connection_parameters_watch_initial(
+            "peer-transient",
+            "lease-a",
+            OpControl::budget_ms(1000),
+        )
+        .await
+        .unwrap();
+    assert_eq!(measured.interval_us, 90_000);
+    assert!(
+        central
+            .connection_parameter_source_failure("peer-transient")
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn newer_identical_parameter_fault_wins_over_pending_watch_recovery() {
+    let central = open().await;
+    connected_peer(&central, "peer-revision").await;
+    central.boundary().set_connection_parameters(
+        "peer-revision",
+        ubm_desktop::ObservedConnectionParameters {
+            interval_us: 90_000,
+            latency: 2,
+            supervision_timeout_us: 4_000_000,
+        },
+    );
+    let mut reports = central.connection_parameter_events();
+    let failure = ubm_desktop::DesktopError::new(
+        ubm_core::contracts::BleErrorCode::PlatformFailure,
+        ubm_core::contracts::BleErrorDomain::Platform,
+        "identical.callback",
+    );
+    central
+        .boundary()
+        .push_event(RadioEvent::ConnectionParameterSourceFailed {
+            peer_id: "peer-revision".into(),
+            error: failure.clone(),
+        });
+    tokio::time::timeout(Duration::from_secs(2), reports.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    central.boundary().block_op(FaultOp::ConnectionParameters);
+    let probing = central.clone();
+    let watch = tokio::spawn(async move {
+        probing
+            .connection_parameters_watch_initial(
+                "peer-revision",
+                "lease-a",
+                OpControl::budget_ms(5000),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !central
+            .boundary()
+            .calls()
+            .iter()
+            .any(|call| call == "connection_parameters")
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    central
+        .boundary()
+        .push_event(RadioEvent::ConnectionParameterSourceFailed {
+            peer_id: "peer-revision".into(),
+            error: failure.clone(),
+        });
+    tokio::time::timeout(Duration::from_secs(2), reports.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    central.boundary().unblock_op(FaultOp::ConnectionParameters);
+    assert_eq!(watch.await.unwrap().unwrap_err(), failure);
+    assert_eq!(
+        central
+            .connection_parameter_source_failure("peer-revision")
+            .await,
+        Some(failure)
+    );
 }

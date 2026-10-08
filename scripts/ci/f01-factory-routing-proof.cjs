@@ -6,7 +6,7 @@
 //
 // REAL in this proof: the packed `lib/` factory code, the production
 // `UnifiedBleRustCore` TurboModule resolution (no `rustCore` injection), the
-// production binding and `ubm-mobile-wire/1` codec, the packed sealed build
+// production binding and `ubm-mobile-wire/2` codec, the packed sealed build
 // identity, and a throwing legacy `UnifiedBleProtocolControl` (any legacy-route
 // work throws and fails the proof).
 //
@@ -124,8 +124,8 @@ async function proveReactNative(installed) {
     check('rn-factory-creates', manager !== null && manager !== undefined, 'the ordinary factory must create a manager')
     check(
       'rn-session-admitted',
-      native.calls.some(call => call[0] === 'openSession' && call[2] === 'ubm-mobile-wire/1'),
-      'creation must admit one ubm-mobile-wire/1 session on UnifiedBleRustCore'
+      native.calls.some(call => call[0] === 'openSession' && call[2] === 'ubm-mobile-wire/2'),
+      'creation must admit one ubm-mobile-wire/2 session on UnifiedBleRustCore'
     )
     check(
       'rn-entropy-native',

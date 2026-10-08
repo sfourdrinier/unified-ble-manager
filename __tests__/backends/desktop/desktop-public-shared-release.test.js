@@ -137,6 +137,8 @@ test.each(
         selector: failedChild.selector,
         consumer: failedChild.consumer
       })
+      // Both logical owners share one native lease. Retrying A's child cleanup
+      // must leave that native lease alive for B until its final release.
       expect(calls('disconnect')).toHaveLength(0)
       await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
       expect(calls('unsubscribe')).toHaveLength(unsubscribes + 1)

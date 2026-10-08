@@ -10,6 +10,8 @@
 const {
   DESKTOP_RUST_CORE_PROFILES,
   assertDesktopRustCorePlatform,
+  desktopRustCoreWiring,
+  createDesktopRustCoreFeatureRegistry,
   createTestDesktopRustCoreBackendProvider
 } = require('../../../src/backends/desktop/desktop-rust-core-provider')
 const {
@@ -19,7 +21,22 @@ const {
 } = require('../../../src/backends/desktop/desktop-rust-core-binding')
 const { DESKTOP_RUST_CORE_PARITY } = require('../../../src/backends/desktop/desktop-rust-core-parity')
 const { normalizeScanQuery } = require('../../../src/public/scan-query')
+
+test('WinRT scan planning includes the connectability reported by native observations', () => {
+  expect(DESKTOP_RUST_CORE_PROFILES.winrt.observationFields).toContain('connectable')
+})
 const { BUILT_IN_FEATURE_IDS } = require('../../../src/backend-contract/capabilities')
+
+test('the provider retains an unavailable runtime parameter descriptor and its native reason', () => {
+  const wiring = desktopRustCoreWiring([
+    { id: BUILT_IN_FEATURE_IDS.connectionParameters, state: 'unavailable', limitation: 'runtime-api-absent' }
+  ])
+  const registry = createDesktopRustCoreFeatureRegistry(DESKTOP_RUST_CORE_PROFILES.winrt, wiring)
+  expect(registry.registrations.find(row => row.id === BUILT_IN_FEATURE_IDS.connectionParameters)).toMatchObject({
+    state: 'unavailable',
+    limitations: [{ code: 'runtime-api-absent' }]
+  })
+})
 const {
   HRM_MEASUREMENT,
   HRM_SERVICE,
@@ -871,25 +888,86 @@ describe('delivery mode (decision 3, PR210-31)', () => {
     })
   })
 
-  test('require-notification on a notify characteristic subscribes; the value delivery is what the core observed', async () => {
-    await withBackend('bluez', async ({ backend, stage }) => {
+  test('require-notification is forwarded and a contradictory radio report is refused', async () => {
+    await withBackend('bluez', async ({ backend, stage, harness }) => {
       const { database, measurement } = await connectAndDiscover(backend, stage)
       await stage.stageObservedDelivery('indication')
-      const subscription = await database.subscribe(
-        measurement.path,
-        subscribeOptions({ deliveryMode: 'require-notification' })
-      )
-      const values = subscription.values[Symbol.asyncIterator]()
-      await stage.stageNotification({
-        peerId: 'peer-1',
-        serviceUuid: HRM_SERVICE,
-        characteristicUuid: HRM_MEASUREMENT,
-        value: Buffer.from([9])
-      })
-      expect((await nextValue(values, 5000)).delivery).toBe('indication')
-      await subscription.remove()
+      await expect(
+        database.subscribe(measurement.path, subscribeOptions({ deliveryMode: 'require-notification' }))
+      ).rejects.toMatchObject({ normalized: { code: 'capability.limited' } })
+      const forwarded = harness.calls.filter(([name]) => name === 'subscribe').at(-1)
+      expect(forwarded[1][0].deliveryMode).toBe('notification')
     })
   })
+
+  test.each(['bluez', 'corebluetooth', 'winrt'])(
+    '%s forwards require-indication and refuses a radio that enabled notification instead',
+    async platform => {
+      await withBackend(platform, async ({ backend, stage, harness }) => {
+        const { database, measurement } = await connectAndDiscover(
+          backend,
+          stage,
+          hrmServices({ notify: true, indicate: true })
+        )
+        await stage.stageObservedDelivery('notification')
+        const before = harness.calls.filter(([name]) => name === 'subscribe').length
+        await expect(
+          database.subscribe(measurement.path, subscribeOptions({ deliveryMode: 'require-indication' }))
+        ).rejects.toMatchObject({ normalized: { code: 'capability.limited' } })
+        const subscribe = harness.calls.filter(([name]) => name === 'subscribe')
+        expect(subscribe).toHaveLength(before + 1)
+        expect(subscribe.at(-1)[1][0].deliveryMode).toBe('indication')
+      })
+    }
+  )
+
+  test.each(['bluez', 'corebluetooth', 'winrt'])(
+    '%s forwards a delivery preference separately from its hard requirement',
+    async platform => {
+      await withBackend(platform, async ({ backend, stage, harness }) => {
+        const { database, measurement } = await connectAndDiscover(
+          backend,
+          stage,
+          hrmServices({ notify: true, indicate: true })
+        )
+        const subscription = await database.subscribe(
+          measurement.path,
+          subscribeOptions({ deliveryMode: 'prefer-indication' })
+        )
+        const forwarded = harness.calls.filter(([name]) => name === 'subscribe').at(-1)
+        expect(forwarded[1][0].deliveryMode).toBeUndefined()
+        expect(forwarded[1][0].preferredDeliveryMode).toBe('indication')
+        await subscription.remove()
+      })
+    }
+  )
+
+  test.each(['bluez', 'corebluetooth', 'winrt'])(
+    '%s does not attach require-indication to an existing prefer-indication subscription',
+    async platform => {
+      await withBackend(platform, async ({ backend, stage, harness }) => {
+        const { database, measurement } = await connectAndDiscover(
+          backend,
+          stage,
+          hrmServices({ notify: true, indicate: true })
+        )
+        const first = await database.subscribe(
+          measurement.path,
+          subscribeOptions({ deliveryMode: 'prefer-indication' })
+        )
+        const stagedBefore = (await stage.stagedDeliveryRequests()).length
+        const callsBefore = harness.calls.filter(([name]) => name === 'subscribe').length
+        await expect(
+          database.subscribe(measurement.path, subscribeOptions({ deliveryMode: 'require-indication' }))
+        ).rejects.toMatchObject({ normalized: { code: 'capability.limited' } })
+        const subscribe = harness.calls.filter(([name]) => name === 'subscribe')
+        expect(subscribe).toHaveLength(callsBefore + 1)
+        expect(subscribe.at(-1)[1][0].deliveryMode).toBe('indication')
+        expect(await stage.stagedDeliveryRequests()).toHaveLength(stagedBefore)
+        await first.remove()
+      })
+    }
+  )
 })
 
 describe('error and cleanup mapping', () => {
@@ -1111,12 +1189,9 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
     return { backend, stage: harness.opened[harness.opened.length - 1], harness, adapter }
   }
 
-  test('WinRT carries require-* to the core; CoreBluetooth and BlueZ keep the legacy property check', async () => {
-    for (const [platform, expected] of [
-      ['winrt', ['notification']],
-      ['corebluetooth', [null]],
-      ['bluez', [null]]
-    ]) {
+  test('every desktop platform carries a hard delivery requirement to the core', async () => {
+    for (const platform of ['winrt', 'corebluetooth', 'bluez']) {
+      const expected = ['notification']
       await withBackend(platform, async ({ backend, stage }) => {
         const { database, measurement } = await connectAndDiscover(backend, stage)
         const subscription = await database.subscribe(
@@ -1552,6 +1627,19 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
     }
   })
 
+  test('an OS link loss ends a ready write-readiness watch', async () => {
+    await withBackend('corebluetooth', async ({ backend, stage }) => {
+      const { lease } = await connectAndDiscover(backend, stage)
+      await stage.stageWriteReadiness('peer-1', true)
+      const watch = await backend.connections.writeWithoutResponseReadiness(lease.connection)
+      const events = watch.events[Symbol.asyncIterator]()
+      expect(await nextValue(events, 3000)).toMatchObject({ ready: true })
+      await stage.stageLinkLoss('peer-1')
+      expect(await nextItem(events, 3000)).toMatchObject({ kind: 'terminal', reason: 'connection-lost' })
+      expect(await lease.release()).toEqual({ state: 'released', failures: [] })
+    })
+  })
+
   test('CoreBluetooth write-without-response readiness: the core probe, then OS reports for this connection', async () => {
     await withBackend('corebluetooth', async ({ backend, stage }) => {
       expect(backend.features.registrations.map(entry => entry.id)).toContain(
@@ -1712,7 +1800,8 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
       const lease = await backend.scanner.start(scanOptions(), 'client-1')
       const iterator = lease.observations[Symbol.asyncIterator]()
       try {
-        await stage.stageAdvertisement({ peerId: 'peer-8', address: 'AA:BB:CC:DD:EE:08' })
+        // Scan identity uses this sighting's native fact, not an earlier lookup.
+        await stage.stageAdvertisement({ peerId: 'peer-8', address: 'AA:BB:CC:DD:EE:08', addressType: 'random' })
         const observation = await nextValue(iterator, 5000)
         expect(observation.device.address).toEqual({ value: 'AA:BB:CC:DD:EE:08', type: 'random' })
       } finally {
@@ -1722,7 +1811,7 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
     })
   })
 
-  test('BlueZ address without a reported type is random, as legacy mapped it', async () => {
+  test('BlueZ address without a reported type remains opaque', async () => {
     await withBackend('bluez', async ({ backend, stage }) => {
       const lease = await backend.scanner.start(scanOptions(), 'client-1')
       const iterator = lease.observations[Symbol.asyncIterator]()
@@ -1731,7 +1820,7 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
         // mapped every non-public (including unknown) type to random.
         await stage.stageAdvertisement({ peerId: 'peer-9', address: 'AA:BB:CC:DD:EE:09' })
         const observation = await nextValue(iterator, 5000)
-        expect(observation.device.address).toEqual({ value: 'AA:BB:CC:DD:EE:09', type: 'random' })
+        expect(observation.device.address).toEqual({ value: 'AA:BB:CC:DD:EE:09', type: 'opaque' })
       } finally {
         await iterator.return?.()
         await lease.stop()
@@ -1815,6 +1904,27 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
 })
 
 describe('scan name prefix reaches the OS filter (LEGACY-AUDIT-2 N10)', () => {
+  test('BlueZ preserves each sighting address type and never guesses a missing type', async () => {
+    await withBackend('bluez', async ({ backend, stage }) => {
+      const lease = await backend.scanner.start(scanOptions(), 'identity-client')
+      const iterator = lease.observations[Symbol.asyncIterator]()
+      try {
+        for (const [addressType, expected] of [
+          ['public', 'public'],
+          ['random', 'random'],
+          [null, 'opaque'],
+          ['random', 'random'],
+          [undefined, 'opaque']
+        ]) {
+          await stage.stageAdvertisement({ peerId: 'same-native-path', address: 'AA:BB:CC:DD:EE:FF', addressType })
+          expect((await nextValue(iterator, 5000)).device.address.type).toBe(expected)
+        }
+      } finally {
+        await iterator.return?.()
+        await lease.stop()
+      }
+    })
+  })
   test.each(PLATFORMS)(
     '%s: a caller name prefix is handed to the radio and the software match still filters',
     async platform => {

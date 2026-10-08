@@ -14,6 +14,8 @@ use ubm_mobile::{
 
 fn polar_advertisement() -> RadioIngress {
     RadioIngress::Advertisement(Advertisement {
+        capture_timestamp_ms: None,
+        cached_name: None,
         peer_id: POLAR.to_owned(),
         address: Some(POLAR.to_owned()),
         local_name: Some("Polar H10 1234".to_owned()),
@@ -68,6 +70,182 @@ async fn connect(session: &ubm_mobile::MobileSession, op: &str) -> Value {
 
 async fn counters(session: &ubm_mobile::MobileSession) -> Value {
     ok(&call(session, "counters.describe", "{}").await)
+}
+
+#[tokio::test]
+async fn subrate_reports_runtime_availability_and_requests_all_modes_without_inventing_observations()
+ {
+    let radio = Scripted::new(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::RequestSubrate { .. } => {
+            Reply::Now(RadioCompletion::Accepted(true))
+        }
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("subrate").unwrap();
+    assert_eq!(
+        ok(&call(&session, "connection.control-capabilities", "{}").await),
+        json!({"subrate": false})
+    );
+    connect(&session, "subrate-connect").await;
+    let request = |mode: &str| {
+        let phase = if radio.subrate_available.load(Ordering::SeqCst) {
+            "available"
+        } else {
+            "unavailable"
+        };
+        json!({"peerId": POLAR, "lease": "lease-1", "operationId": format!("subrate-{phase}-{mode}"), "mode": mode}).to_string()
+    };
+    let refusal = call(
+        &session,
+        "connection.request-subrate",
+        &request("low-power"),
+    )
+    .await;
+    assert_eq!(failure(&refusal).0["code"], "capability.unsupported");
+    assert_eq!(radio.count(RequestKind::RequestSubrate), 0);
+    radio.subrate_available.store(true, Ordering::SeqCst);
+    assert_eq!(
+        ok(&call(&session, "connection.control-capabilities", "{}").await),
+        json!({"subrate": true})
+    );
+    for mode in ["default", "low-latency", "low-power", "high-throughput"] {
+        assert_eq!(
+            ok(&call(&session, "connection.request-subrate", &request(mode)).await),
+            json!({"accepted": true})
+        );
+    }
+    assert_eq!(radio.count(RequestKind::RequestSubrate), 4);
+    assert_eq!(
+        failure(
+            &call(
+                &session,
+                "connection.request-subrate",
+                &request("system-update")
+            )
+            .await
+        )
+        .0["code"],
+        "argument.invalid"
+    );
+    assert_eq!(radio.count(RequestKind::RequestSubrate), 4);
+    assert_eq!(parse(&host.shutdown().await)["state"], "released");
+}
+
+#[tokio::test]
+async fn apple_subrate_never_dispatches_an_android_control() {
+    let radio = Scripted::polar();
+    radio.subrate_available.store(true, Ordering::SeqCst);
+    let (host, _) = open(&radio, MobilePlatform::Apple).await;
+    let session = host.open_session("subrate-apple").unwrap();
+    assert_eq!(
+        ok(&call(&session, "connection.control-capabilities", "{}").await),
+        json!({"subrate": false})
+    );
+    let refusal = call(
+        &session,
+        "connection.request-subrate",
+        &json!({"peerId": POLAR,"lease":"lease-1","operationId":"s","mode":"default"}).to_string(),
+    )
+    .await;
+    assert_eq!(failure(&refusal).0["code"], "capability.unsupported");
+    assert_eq!(radio.count(RequestKind::RequestSubrate), 0);
+    assert_eq!(parse(&host.shutdown().await)["state"], "released");
+}
+
+#[tokio::test]
+async fn subrate_preserves_bluetooth_status_codes_without_fabricating_gatt_status() {
+    let radio = Scripted::polar();
+    radio.subrate_available.store(true, Ordering::SeqCst);
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("subrate-status").unwrap();
+    connect(&session, "connect").await;
+    for (status, code) in [
+        (1, "adapter.powered-off"),
+        (2, "permission.restricted"),
+        (6, "permission.denied"),
+        (11, "capability.unsupported"),
+        (3, "platform.failure"),
+        (777, "platform.failure"),
+    ] {
+        radio.set_responder(Box::new(move |request| match request {
+            ubm_mobile::RadioRequest::RequestSubrate { .. } => {
+                Reply::Now(ubm_mobile::subrate_status_completion(status))
+            }
+            other => polar_responder(other),
+        }));
+        let answer = call(&session, "connection.request-subrate", &json!({"peerId":POLAR,"lease":"lease-1","operationId":format!("status-{status}"),"mode":"default"}).to_string()).await;
+        let error = failure(&answer).0;
+        assert_eq!(error["code"], code);
+        assert_eq!(error["platform"]["domain"], "android");
+        assert_eq!(
+            error["platform"]["metadata"]["androidBluetoothStatus"],
+            status
+        );
+        assert_eq!(
+            error["platform"]["metadata"]["nativeDomain"],
+            "android.bluetooth.BluetoothStatusCodes"
+        );
+        assert!(
+            error["platform"]["metadata"]
+                .get("androidGattStatus")
+                .is_none()
+        );
+    }
+    assert_eq!(parse(&host.shutdown().await)["state"], "released");
+}
+
+#[tokio::test]
+async fn encryption_source_failure_is_typed_and_survives_reconciliation() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("encryption-source").unwrap();
+    let failure = PlatformFailure {
+        native_domain: Some("android.bluetooth.HciEncryptionChange".into()),
+        native_code: Some(5),
+        native_name: Some("ENCRYPTION_CHANGE_FAILED".into()),
+        ..PlatformFailure::new(FailureKind::Platform, "controller encryption failure")
+    };
+    assert_eq!(
+        host.ingest(RadioIngress::SecurityFailed {
+            peer_id: Some(POLAR.into()),
+            failure
+        }),
+        IngressStatus::Accepted
+    );
+    let records = drain_until(&session, |r| !of_type(r, "security-failed").is_empty()).await;
+    let report = of_type(&records, "security-failed")[0];
+    assert_eq!(report["error"]["code"], "platform.failure");
+    assert_eq!(
+        report["error"]["platform"]["metadata"]["androidEncryptionStatus"],
+        5
+    );
+    let snapshot = ok(&call(&session, "session.reconcile", "{}").await);
+    assert_eq!(snapshot["securityFailures"][0]["error"], report["error"]);
+    assert!(snapshot["security"].as_array().unwrap().is_empty());
+    radio.set_responder(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::SecurityState { .. } => {
+            Reply::Now(RadioCompletion::Security(ubm_mobile::SecurityState {
+                bond: ubm_mobile::BondState::Bonded,
+                encryption: ubm_mobile::EncryptionState::Encrypted,
+                authentication: ubm_mobile::AuthenticationState::Unsupported,
+                secure_connections: ubm_mobile::SecureConnectionsState::Unsupported,
+                pairing_possible: Some(true),
+            }))
+        }
+        other => polar_responder(other),
+    }));
+    // Explicit retry recovers without requiring another bond/encryption event.
+    ok(&call(
+        &session,
+        "security.state",
+        &json!({"peerId": POLAR, "operationId": "healthy-retry"}).to_string(),
+    )
+    .await);
+    let recovered = ok(&call(&session, "session.reconcile", "{}").await);
+    assert!(recovered["securityFailures"].as_array().unwrap().is_empty());
+    assert_eq!(recovered["security"].as_array().unwrap().len(), 1);
+    assert_eq!(parse(&host.shutdown().await)["state"], "released");
 }
 
 #[tokio::test]
@@ -185,6 +363,83 @@ async fn failed_ingress_worker_closes_admission_and_retains_its_cleanup_result()
         "released",
         "cleanup remains retryable"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_busy_consumer_does_not_keep_the_other_unpolled() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let first = host.open_session("first").expect("first session");
+    let second = host.open_session("second").expect("second session");
+    connect(&first, "connect-first").await;
+    ok(&call(
+        &first,
+        "gatt.discover",
+        &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "discover-first"}).to_string(),
+    )
+    .await);
+    connect(&second, "connect-second").await;
+    ok(&call(
+        &second,
+        "gatt.discover",
+        &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "discover-second"}).to_string(),
+    )
+    .await);
+    for (session, consumer, operation) in [
+        (&first, "first", "sub-first"),
+        (&second, "second", "sub-second"),
+    ] {
+        ok(&call(
+            session,
+            "gatt.subscribe",
+            &json!({"peerId": POLAR, "selector": selector(), "consumer": consumer,
+                "deliveryMode": "require-notification", "operationId": operation})
+            .to_string(),
+        )
+        .await);
+    }
+    let epoch = enable_epoch(&radio);
+    const BURST: u8 = 8;
+    for sequence in 0..BURST {
+        host.ingest(hr_value(&[sequence], epoch));
+    }
+    let first_records = drain_until(&first, |records| {
+        of_type(records, "value").len() == BURST as usize
+    })
+    .await;
+    let second_records = drain_until(&second, |records| {
+        of_type(records, "value").len() == BURST as usize
+    })
+    .await;
+    let values = |records: &[Value]| -> Vec<String> {
+        of_type(records, "value")
+            .into_iter()
+            .map(|record| record["valueB64"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(values(&first_records), values(&second_records));
+    assert!(
+        of_type(&first_records, "stream-end").is_empty()
+            && of_type(&second_records, "stream-end").is_empty(),
+        "neither consumer overflows while the other is drained"
+    );
+    let turns = host.route_turns();
+    let mut first_polls = 0usize;
+    let mut second_polled_during_backlog = false;
+    for consumer in &turns {
+        match consumer.as_str() {
+            "first" => first_polls += 1,
+            "second" if first_polls < BURST as usize => second_polled_during_backlog = true,
+            _ => {}
+        }
+    }
+    assert!(
+        second_polled_during_backlog,
+        "second consumer was not polled until the first backlog finished: {turns:?}"
+    );
+    ok(&call(&first, "session.dispose", "{}").await);
+    ok(&call(&second, "session.dispose", "{}").await);
+    host.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1067,7 +1322,12 @@ async fn restored_peers_are_listed_and_adopted_by_connect() {
         )
         .await);
     assert!(adopted["connectionGeneration"].is_string());
-    let connected = ok(&call(&session, "peers.connected", "{}").await);
+    let connected = ok(&call(
+        &session,
+        "peers.connected",
+        &json!({"services":[HR_SERVICE],"operationId":"system-inventory"}).to_string(),
+    )
+    .await);
     assert_eq!(connected.as_array().unwrap().len(), 1);
 }
 
@@ -1087,10 +1347,6 @@ async fn apple_refuses_android_only_controls_before_effects() {
             json!({"peerId": POLAR, "lease": "l", "priority": "balanced", "operationId": "p"}),
         ),
         (
-            "connection.connect",
-            json!({"peerId": POLAR, "lease": "l", "intent": "when-available", "operationId": "c"}),
-        ),
-        (
             "scan.start",
             json!({"serviceUuids": [], "duplicatePolicy": "all", "platform": {"mode": "balanced"}, "operationId": "s"}),
         ),
@@ -1099,6 +1355,35 @@ async fn apple_refuses_android_only_controls_before_effects() {
         assert_eq!(error["code"], "capability.unsupported", "{op}");
     }
     assert_eq!(radio.requests.lock().unwrap().len(), before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apple_when_available_connects_without_android_auto_connect() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Apple).await;
+    let session = host.open_session("rn").unwrap();
+    let connected = ok(&call(
+        &session,
+        "connection.connect",
+        &json!({"peerId": POLAR, "lease": "l", "intent": "when-available", "operationId": "c"})
+            .to_string(),
+    )
+    .await);
+    assert!(connected["connectionGeneration"].is_string());
+    let auto = radio
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|request| match request {
+            ubm_mobile::RadioRequest::Connect { auto_connect, .. } => Some(*auto_connect),
+            _ => None,
+        });
+    assert_eq!(
+        auto,
+        Some(false),
+        "a pending CoreBluetooth connect is not Android autoConnect"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1714,6 +1999,8 @@ async fn advertisement_appearance_and_raw_record_travel_with_their_advertisement
     )
     .await);
     host.ingest(RadioIngress::Advertisement(Advertisement {
+        capture_timestamp_ms: None,
+        cached_name: None,
         appearance: Some(0x0341),
         raw_record: Some(vec![0x02, 0x01, 0x06]),
         ..match polar_advertisement() {
@@ -1905,6 +2192,27 @@ async fn apple_maximum_write_length_is_corebluetooth_maximum_write_value_length(
     assert_eq!(with["maximumWriteLength"], 512);
     let without = ok(&maximum_write_length(&session, "lease-1", "without-response", "m2").await);
     assert_eq!(without["maximumWriteLength"], 182);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apple_effective_mtu_is_unobserved_without_a_radio_read() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Apple).await;
+    let session = host.open_session("rn").unwrap();
+    connect(&session, "c").await;
+    let before = radio.count(RequestKind::ReadMtu);
+    let answer = ok(&call(
+        &session,
+        "connection.effective-mtu",
+        &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "mtu"}).to_string(),
+    )
+    .await);
+    assert_eq!(answer["mtu"], Value::Null);
+    assert_eq!(
+        radio.count(RequestKind::ReadMtu),
+        before,
+        "write length is not an ATT MTU"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2793,18 +3101,14 @@ async fn an_android_native_code_names_the_platform_detail_whatever_the_kind() {
 // -- 139 (AN-1..3): Android link-control and scan-option identities --------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn android_scan_phy_and_report_delay_are_capability_unsupported_as_legacy() {
-    for key in ["phy", "reportDelayMs"] {
+async fn android_scan_phy_and_report_delay_reach_the_radio() {
+    for phy in ["all-supported", "1m", "coded"] {
         let radio = Scripted::polar();
         let (host, _) = open(&radio, MobilePlatform::Android).await;
         let session = host.open_session("rn").unwrap();
-        let mut platform = json!({"mode": "balanced"});
-        platform[key] = if key == "phy" {
-            json!("le-coded")
-        } else {
-            json!(500)
-        };
-        let (error, _) = failure(
+        let platform =
+            json!({"mode": "balanced", "legacy": false, "phy": phy, "reportDelayMs": 500});
+        ok(
             &call(
                 &session,
                 "scan.start",
@@ -2813,10 +3117,37 @@ async fn android_scan_phy_and_report_delay_are_capability_unsupported_as_legacy(
             )
             .await,
         );
-        assert_eq!(error["code"], "capability.unsupported", "{key}");
-        assert_eq!(error["domain"], "scan", "{key}");
-        assert_eq!(error["operation"], "scan.start.platform-options", "{key}");
-        assert_eq!(radio.count(RequestKind::StartScan), 0, "{key}: no effect");
+        let requests = radio.requests.lock().unwrap();
+        let scan = requests
+            .iter()
+            .find_map(|request| match request {
+                ubm_mobile::RadioRequest::StartScan { scan, .. } => Some(scan),
+                _ => None,
+            })
+            .expect("the supported scan reaches the actual radio adapter boundary");
+        let android = scan.android.as_ref().unwrap();
+        assert_eq!(android.report_delay_ms, Some(500));
+        assert_eq!(android.phy.map(|value| value.as_str()), Some(phy));
+        assert_eq!(android.legacy, Some(false));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn invalid_android_batching_and_phy_options_never_reach_the_radio() {
+    for platform in [
+        json!({"reportDelayMs": -1}),
+        json!({"reportDelayMs": 2_147_483_648_u64}),
+        json!({"reportDelayMs": 0.5}),
+        json!({"phy": "le-coded"}),
+        json!({"phy": "2m"}),
+    ] {
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("rn").unwrap();
+        let (error, _) = failure(&call(&session, "scan.start",
+            &json!({"serviceUuids": [], "duplicatePolicy": "all", "operationId": "s", "platform": platform}).to_string()).await);
+        assert_eq!(error["code"], "argument.invalid");
+        assert_eq!(radio.count(RequestKind::StartScan), 0);
     }
 }
 
@@ -3346,4 +3677,216 @@ async fn stale_epoch_notification_never_reaches_the_new_subscription() {
             .all(|v| v["valueB64"] != "CQk="),
         "stale-epoch value surfaced late: {trailing:#?}"
     );
+}
+
+#[tokio::test]
+async fn a_newer_security_failure_survives_an_older_successful_probe() {
+    let radio = Scripted::new(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::SecurityState { .. } => Reply::Hold,
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("security-recovery-race").unwrap();
+    let args = json!({"peerId": POLAR, "operationId": "held-recovery"}).to_string();
+    let probe = call(&session, "security.state", &args);
+    let fault = async {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while radio.held_of(RequestKind::SecurityState).is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fresh security probe dispatches");
+        host.ingest(RadioIngress::SecurityFailed {
+            peer_id: None,
+            failure: PlatformFailure::new(
+                FailureKind::PermissionDenied,
+                "newer permission failure",
+            ),
+        });
+        let id = radio.held_of(RequestKind::SecurityState)[0];
+        radio.answer(
+            id,
+            RadioCompletion::Security(ubm_mobile::SecurityState {
+                bond: ubm_mobile::BondState::Bonded,
+                encryption: ubm_mobile::EncryptionState::Encrypted,
+                authentication: ubm_mobile::AuthenticationState::Unsupported,
+                secure_connections: ubm_mobile::SecureConnectionsState::Unsupported,
+                pairing_possible: Some(true),
+            }),
+        );
+    };
+    let (answer, ()) = tokio::join!(probe, fault);
+    assert_eq!(failure(&answer).0["code"], "permission.denied");
+    let snapshot = ok(&call(&session, "session.reconcile", "{}").await);
+    assert_eq!(snapshot["securityFailures"].as_array().unwrap().len(), 1);
+    assert!(snapshot["security"].as_array().unwrap().is_empty());
+    assert_eq!(parse(&host.shutdown().await)["state"], "released");
+}
+
+fn effectful_control_args(op: &str, budget_ms: Option<u64>) -> Value {
+    let mut args = json!({"peerId":POLAR,"lease":"lease-1","operationId":op});
+    match op {
+        "connection.request-mtu" => args["mtu"] = json!(247),
+        "connection.request-priority" => args["priority"] = json!("balanced"),
+        "connection.request-subrate" => args["mode"] = json!("low-power"),
+        "connection.request-phy" => args["tx"] = json!("le-1m"),
+        _ => {}
+    }
+    if let Some(ms) = budget_ms {
+        args["budgetMs"] = json!(ms);
+    }
+    args
+}
+
+const EFFECTFUL_CONTROLS: [(&str, RequestKind); 4] = [
+    ("connection.request-mtu", RequestKind::RequestMtu),
+    (
+        "connection.request-priority",
+        RequestKind::RequestConnectionPriority,
+    ),
+    ("connection.request-subrate", RequestKind::RequestSubrate),
+    ("connection.request-phy", RequestKind::RequestPhy),
+];
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn effectful_control_post_dispatch_cancel_and_deadline_are_uncertain_and_never_retryable() {
+    for (op, kind) in EFFECTFUL_CONTROLS {
+        for cancelled in [true, false] {
+            let radio = Scripted::new(Box::new(move |request| {
+                if request.kind() == kind {
+                    Reply::Hold
+                } else {
+                    polar_responder(request)
+                }
+            }));
+            radio.subrate_available.store(true, Ordering::SeqCst);
+            let (host, _) = open(&radio, MobilePlatform::Android).await;
+            let session = host.open_session("effectful-control").unwrap();
+            connect(&session, "connect-control").await;
+            let pending = tokio::spawn({
+                let session = session.clone();
+                let args = effectful_control_args(op, Some(1000)).to_string();
+                async move { call(&session, op, &args).await }
+            });
+            wait_for(|| !radio.held_of(kind).is_empty()).await;
+            if cancelled {
+                ok(&call(
+                    &session,
+                    "op.cancel",
+                    &json!({"operationId":op}).to_string(),
+                )
+                .await);
+            } else {
+                tokio::time::advance(Duration::from_millis(1000)).await;
+            }
+            let result = parse(&pending.await.unwrap());
+            assert_eq!(
+                result["error"]["code"],
+                if cancelled {
+                    "operation.aborted"
+                } else {
+                    "operation.timed-out"
+                },
+                "{op}"
+            );
+            assert_eq!(result["commit"], "uncertain", "{op}");
+            assert_eq!(result["retryability"], "never", "{op}");
+            assert_eq!(radio.count(kind), 1, "{op}: no implicit replay");
+        }
+    }
+}
+
+#[tokio::test]
+async fn effectful_control_pre_dispatch_cancel_reports_no_effect_and_caller_decides() {
+    for (op, kind) in EFFECTFUL_CONTROLS {
+        let radio = Scripted::polar();
+        radio.subrate_available.store(true, Ordering::SeqCst);
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("pre-dispatch-control").unwrap();
+        connect(&session, "connect-control").await;
+        let args = admitted_args(&session, op, &effectful_control_args(op, None).to_string());
+        ok(&call(
+            &session,
+            "op.cancel",
+            &json!({"operationId":op}).to_string(),
+        )
+        .await);
+        let result = parse(&call(&session, op, &args).await);
+        assert_eq!(result["error"]["code"], "operation.aborted", "{op}");
+        assert_eq!(result["commit"], "not-dispatched", "{op}");
+        assert_eq!(result["retryability"], "caller-decides", "{op}");
+        assert_eq!(radio.count(kind), 0, "{op}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn read_only_control_timeout_has_no_commit_uncertainty() {
+    let radio = Scripted::new(Box::new(|request| {
+        if request.kind() == RequestKind::ReadPhy {
+            Reply::Hold
+        } else {
+            polar_responder(request)
+        }
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("read-control").unwrap();
+    connect(&session, "connect-control").await;
+    let result = parse(
+        &call(
+            &session,
+            "connection.read-phy",
+            &effectful_control_args("connection.read-phy", Some(1000)).to_string(),
+        )
+        .await,
+    );
+    assert_eq!(result["error"]["code"], "operation.timed-out");
+    assert!(result["commit"].is_null());
+    assert_eq!(result["retryability"], "caller-decides");
+}
+
+#[tokio::test]
+async fn effectful_controls_preserve_the_platforms_accepted_rejected_and_observed_answers() {
+    for accepted in [true, false] {
+        let radio = Scripted::new(Box::new(move |request| match request {
+            ubm_mobile::RadioRequest::RequestMtu { .. } => {
+                Reply::Now(RadioCompletion::Mtu(Some(185)))
+            }
+            ubm_mobile::RadioRequest::RequestConnectionPriority { .. }
+            | ubm_mobile::RadioRequest::RequestSubrate { .. } => {
+                Reply::Now(RadioCompletion::Accepted(accepted))
+            }
+            ubm_mobile::RadioRequest::RequestPhy { .. } => {
+                Reply::Now(RadioCompletion::PhyRequest {
+                    accepted,
+                    observation: accepted.then_some(ubm_mobile::PhyObservation {
+                        tx: ubm_mobile::Phy::Le2m,
+                        rx: ubm_mobile::Phy::Le2m,
+                    }),
+                })
+            }
+            other => polar_responder(other),
+        }));
+        radio.subrate_available.store(true, Ordering::SeqCst);
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("completed-control").unwrap();
+        connect(&session, "connect-control").await;
+        for (op, kind) in EFFECTFUL_CONTROLS {
+            let result =
+                ok(&call(&session, op, &effectful_control_args(op, None).to_string()).await);
+            if op == "connection.request-mtu" {
+                assert_eq!(result["mtu"], 185);
+            } else {
+                assert_eq!(result["accepted"], accepted, "{op}");
+            }
+            if op == "connection.request-phy" {
+                if accepted {
+                    assert_eq!(result["observation"]["tx"], "le-2m");
+                } else {
+                    assert!(result["observation"].is_null());
+                }
+            }
+            assert_eq!(radio.count(kind), 1, "{op}");
+        }
+    }
 }

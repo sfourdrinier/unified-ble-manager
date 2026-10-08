@@ -232,15 +232,17 @@ export class BluezGattDatabase implements GattDatabase<string, string, string> {
         Object.freeze({
           path: Object.freeze(servicePath),
           primary: service.primary,
-          // An included service can reference a BlueZ object outside this
-          // snapshot; such a link has no occurrence in this database and is
-          // omitted rather than failing the whole snapshot.
-          includedServices: Object.freeze(
-            service.includedServices.flatMap(included => {
-              const occurrence = serviceOccurrenceByObjectPath.get(included.objectPath)
-              return occurrence === undefined ? [] : [Object.freeze({ uuid: included.uuid, occurrence })]
-            })
-          )
+          includedServices:
+            service.includedServices === null
+              ? null
+              : Object.freeze(
+                  service.includedServices.map(included => {
+                    const occurrence = serviceOccurrenceByObjectPath.get(included.objectPath)
+                    if (occurrence === undefined)
+                      throw contractError('protocol.violation', 'gatt', 'bluez.gatt.included-service-unresolved')
+                    return Object.freeze({ uuid: included.uuid, occurrence })
+                  })
+                )
         })
       )
       const characteristicCounts = new Map<string, number>()

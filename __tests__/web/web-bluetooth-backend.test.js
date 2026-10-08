@@ -132,6 +132,166 @@ function createBoundary(options = {}) {
 }
 
 describe('WebBluetoothBackend', () => {
+  test('preserves included secondary instances and distinguishes an unavailable inclusion getter', async () => {
+    const mock = createBoundary()
+    const secondary = {
+      uuid: HEART_RATE_SERVICE,
+      primary: false,
+      getCharacteristics: async () => [],
+      getIncludedServices: async () => []
+    }
+    const primary = {
+      uuid: HEART_RATE_SERVICE,
+      primary: true,
+      getCharacteristics: async () => [],
+      getIncludedServices: async () => [secondary]
+    }
+    const unknown = { uuid: CLIENT_CONFIGURATION, getCharacteristics: async () => [] }
+    mock.device.gatt.getPrimaryServices = async () => [primary, unknown]
+    const { backend } = await createAttachedWebBackend(mock.boundary)
+    try {
+      const chosen = await backend.choose({ filters: [], acceptAllDevices: true, optionalServices: [] }, noDeadline())
+      const lease = await backend.connections.connect(chosen.peerId, 'graph-client', noDeadline())
+      const database = await backend.gatt.discover(lease.connection, noDeadline())
+      const graph = await database.snapshot()
+      expect(graph.services[0].primary).toBe(true)
+      expect(String(graph.services[0].includedServices[0].occurrence)).toBe('1')
+      expect(graph.services[1].primary).toBe(true) // getPrimaryServices is itself a primary observation.
+      expect(graph.services[1].includedServices).toBeNull()
+      expect(graph.services[2].primary).toBe(false)
+      expect(graph.services[2].includedServices).toEqual([])
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test('discovers characteristics on a service whose inclusion getter reports normal absence', async () => {
+    const mock = createBoundary()
+    mock.service.getIncludedServices = jest.fn(async () => {
+      throw new DOMException('No included services', 'NotFoundError')
+    })
+    const { backend } = await createAttachedWebBackend(mock.boundary)
+    try {
+      const chosen = await backend.choose({ filters: [], acceptAllDevices: true, optionalServices: [] }, noDeadline())
+      const lease = await backend.connections.connect(chosen.peerId, 'empty-inclusions', noDeadline())
+      const database = await backend.gatt.discover(lease.connection, noDeadline())
+      const graph = await database.snapshot()
+      expect(graph.services).toHaveLength(1)
+      expect(graph.services[0].includedServices).toEqual([])
+      expect(graph.characteristics).toHaveLength(1)
+      expect(mock.service.getIncludedServices).toHaveBeenCalledTimes(1)
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test.each([
+    ['SecurityError', 'platform.security'],
+    ['NetworkError', 'connection.lost'],
+    ['AbortError', 'operation.aborted'],
+    ['Error', 'platform.failure']
+  ])('preserves %s inclusion failure instead of publishing an empty list', async (name, code) => {
+    const mock = createBoundary()
+    mock.service.getIncludedServices = jest.fn(async () => {
+      const error = new Error('Inclusion discovery failed')
+      error.name = name
+      throw error
+    })
+    mock.service.getCharacteristics = jest.fn(async () => [mock.characteristic])
+    const { backend } = await createAttachedWebBackend(mock.boundary)
+    try {
+      const chosen = await backend.choose({ filters: [], acceptAllDevices: true, optionalServices: [] }, noDeadline())
+      const lease = await backend.connections.connect(chosen.peerId, 'failed-inclusions', noDeadline())
+      await expect(backend.gatt.discover(lease.connection, noDeadline())).rejects.toMatchObject({
+        normalized: { code, operation: 'web-gatt.discover-included-services', platform: { code: name } }
+      })
+      expect(mock.service.getCharacteristics).not.toHaveBeenCalled()
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test('normal absent inclusions cross the production Navigator wrapper into discovery', async () => {
+    const rawService = {
+      uuid: HEART_RATE_SERVICE,
+      isPrimary: true,
+      getIncludedServices: jest.fn(async () => {
+        throw new DOMException('None', 'NotFoundError')
+      }),
+      getCharacteristics: async () => []
+    }
+    const rawGatt = {
+      connected: false,
+      connect: async () => {
+        rawGatt.connected = true
+        return rawGatt
+      },
+      disconnect: () => {
+        rawGatt.connected = false
+      },
+      getPrimaryServices: async () => [rawService]
+    }
+    const rawDevice = {
+      id: 'empty-inclusion-browser-peer',
+      gatt: rawGatt,
+      addEventListener: () => {},
+      removeEventListener: () => {}
+    }
+    const boundary = new NavigatorWebBluetoothBoundary({
+      implementationVersion: 'navigator-inclusion-test',
+      browserEngine: 'test-engine',
+      bluetooth: { requestDevice: async () => rawDevice },
+      isSecureContext: () => true,
+      hasTransientUserActivation: () => true,
+      now: () => 1,
+      setTimer: callback => ({ callback }),
+      clearTimer: () => {},
+      addPageLifecycleListener: () => () => {}
+    })
+    const { backend } = await createAttachedWebBackend(boundary)
+    try {
+      const chosen = await backend.choose(
+        { filters: [], acceptAllDevices: true, optionalServices: [HEART_RATE_SERVICE] },
+        noDeadline()
+      )
+      const lease = await backend.connections.connect(chosen.peerId, 'navigator-empty-inclusions', noDeadline())
+      const graph = await (await backend.gatt.discover(lease.connection, noDeadline())).snapshot()
+      expect(graph.services).toHaveLength(1)
+      expect(graph.services[0].includedServices).toEqual([])
+      expect(rawService.getIncludedServices).toHaveBeenCalledTimes(1)
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test.each(['roots', 'includes'])('bounds %s service discovery without publishing a partial graph', async source => {
+    const mock = createBoundary()
+    const children = Array.from({ length: 4097 }, () => ({
+      uuid: HEART_RATE_SERVICE,
+      getCharacteristics: jest.fn(async () => [])
+    }))
+    const root = {
+      uuid: CLIENT_CONFIGURATION,
+      getCharacteristics: jest.fn(async () => []),
+      getIncludedServices: jest.fn(async () => children)
+    }
+    mock.device.gatt.getPrimaryServices = async () => (source === 'roots' ? children : [root])
+    const { backend } = await createAttachedWebBackend(mock.boundary)
+    try {
+      const chosen = await backend.choose({ filters: [], acceptAllDevices: true, optionalServices: [] }, noDeadline())
+      const lease = await backend.connections.connect(chosen.peerId, 'graph-capacity', noDeadline())
+      await expect(backend.gatt.discover(lease.connection, noDeadline())).rejects.toMatchObject({
+        normalized: {
+          code: 'stream.quota'
+        }
+      })
+      expect(root.getCharacteristics).not.toHaveBeenCalled()
+      expect(children.every(child => child.getCharacteristics.mock.calls.length === 0)).toBe(true)
+    } finally {
+      await backend.destroy()
+    }
+  })
+
   test('exposes origin-authorized devices through the backend peer directory contract', async () => {
     const mock = createBoundary({ authorizedDevices: [] })
     mock.boundary.getAuthorizedDevices = async () => [mock.device]
@@ -1256,6 +1416,45 @@ describe('InMemoryWebBluetoothTckBoundary', () => {
     boundary.resolveChooser()
     // A browser grants only the services a request names; this one names none.
     await expect(choosing).resolves.toMatchObject({ grantedServices: [] })
+  })
+
+  test('refuses a delivery mode Web Bluetooth cannot write before startNotifications', async () => {
+    const boundary = new InMemoryWebBluetoothTckBoundary()
+    const { backend } = await createAttachedWebBackend(boundary)
+    const chooser = backend.choose(chooserRequest(), noDeadline())
+    await boundary.flush()
+    boundary.resolveChooser()
+    const selected = await chooser
+    const lease = await backend.connections.connect(selected.peerId, 'delivery-client', noDeadline())
+    const database = await backend.gatt.discover(lease.connection, noDeadline())
+    const snapshot = await database.snapshot()
+    const path = snapshot.characteristics[0].path
+    const delivery = {
+      itemCapacity: 2,
+      byteCapacity: 16,
+      reservedControlCapacity: 1,
+      overflowPolicy: 'error'
+    }
+    const before = boundary.notificationStarts
+    await expect(
+      database.subscribe(path, { signal: null, deadline: null, delivery, deliveryMode: 'require-indication' })
+    ).rejects.toMatchObject({ normalized: { code: 'gatt.property-not-supported' } })
+    boundary.characteristic.properties = {
+      read: true,
+      write: false,
+      writeWithoutResponse: false,
+      notify: true,
+      indicate: true
+    }
+    await expect(
+      database.subscribe(path, { signal: null, deadline: null, delivery, deliveryMode: 'require-indication' })
+    ).rejects.toMatchObject({ normalized: { code: 'capability.limited' } })
+    await expect(
+      database.subscribe(path, { signal: null, deadline: null, delivery, deliveryMode: 'prefer-indication' })
+    ).resolves.toEqual(expect.anything())
+    expect(boundary.notificationStarts).toBe(before + 1)
+    await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 })
 

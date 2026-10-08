@@ -3,7 +3,7 @@
 // D2(v): the React Native and Expo entrypoints reach one native
 // implementation — the production `UnifiedBleRustCore` TurboModule — with one
 // session lease per manager, paired closes, no effect before admission, and
-// the frozen `ubm-mobile-wire/1` argument shapes.
+// the frozen `ubm-mobile-wire/2` argument shapes.
 
 let mockNativeModule = null
 

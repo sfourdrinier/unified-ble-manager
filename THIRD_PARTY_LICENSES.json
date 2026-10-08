@@ -4,14 +4,14 @@
   "schemaVersion": "1.0.0",
   "package": {
     "name": "unified-ble-manager",
-    "version": "5.0.0-rc.20"
+    "version": "5.0.0-rc.21"
   },
   "source": {
     "method": "pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence) + reviewed bundled source-asset manifests (not linked runtime dependencies)",
     "lockfile": "pnpm-lock.yaml",
     "lockfileSha256": "503c3db14119e9532319fae77e44dddb1256ae11e23ef829d1e36fa38dbd2ae3",
     "cargoLockfile": "Cargo.lock",
-    "cargoLockfileSha256": "c60eea5a7d72b4d58fd65ee8388157fc4c95e78cad58718727221e59ee998fd2"
+    "cargoLockfileSha256": "237ea61d22b8547a4690b5aef48944fa9599bd3726baf7ec14b61b7648f1340f"
   },
   "reviewedOverrides": [
     {
@@ -1790,7 +1790,7 @@
         },
         "patch": {
           "file": "ubm-le-gatt-5.87.patch",
-          "sha256": "6853424fdcdd86b0aa6e1f611dbbeaa8e0703f9a656f26a71af5d51d8df31954"
+          "sha256": "8235bc30ea71b213b30326afeb6c1b68511ec9a5ed3e95b77c8dc4a447602134"
         },
         "licenseFiles": [
           {
@@ -1815,10 +1815,10 @@
         "automaticInstallOrLaunch": false,
         "linuxAuthorityContract": [
           1,
-          2,
+          3,
           1
         ],
-        "release": "5.87-ubm.5"
+        "release": "5.87-ubm.10"
       }
     }
   ]

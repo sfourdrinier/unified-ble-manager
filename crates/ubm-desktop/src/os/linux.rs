@@ -32,8 +32,8 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
 use super::bluez_model::{
     self, BluezCharacteristic, PAIRING_POSSIBLE, PairFailure, access_for_instances, bond_state,
-    cancel_error_proves_terminal, classify_pair_error, device_path, device_path_for_address,
-    link_mtu,
+    cancel_error_proves_terminal, characteristic_for_instance, classify_pair_error, device_path,
+    device_path_for_address, link_mtu,
 };
 use crate::boundary::{
     AdapterPowerState, AddressType, BondState, CharacteristicAccess, InstanceKey, PairOutcome,
@@ -41,6 +41,11 @@ use crate::boundary::{
 };
 use crate::errors::DesktopError;
 
+#[path = "bluez_acquired.rs"]
+mod acquired;
+#[cfg(test)]
+#[path = "bluez_acquired_tests.rs"]
+mod acquired_tests;
 #[path = "bluez_discovery.rs"]
 mod discovery;
 
@@ -353,10 +358,20 @@ impl Bluez {
         interface: &str,
         operation: &str,
     ) -> Result<HashMap<String, OwnedValue>, DesktopError> {
+        self.get_all_from(BLUEZ, path, interface, operation).await
+    }
+
+    async fn get_all_from(
+        &self,
+        destination: &str,
+        path: &str,
+        interface: &str,
+        operation: &str,
+    ) -> Result<HashMap<String, OwnedValue>, DesktopError> {
         let reply = self
             .conn
             .call_method(
-                Some(BLUEZ),
+                Some(destination),
                 object_path(path, operation)?,
                 Some(PROPERTIES),
                 "GetAll",
@@ -382,11 +397,13 @@ impl Bluez {
         })
     }
 
-    /// Read selected-adapter bond facts from one current daemon epoch.
-    pub(crate) async fn bonded_peers(
+    /// Read selected-adapter inventory from one fenced current daemon epoch.
+    async fn directory_peers(
         &self,
+        operation: &str,
+        bonded_only: bool,
+        connected_only: bool,
     ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
-        let operation = "peers.bonded";
         let owner = self.current_daemon_owner_for(operation).await?;
         let reply = self
             .conn
@@ -410,7 +427,7 @@ impl Bluez {
                 operation,
             )
             .with_detail(
-                "the BlueZ daemon owner changed during bonded enumeration; create a fresh manager",
+                "the BlueZ daemon owner changed during directory enumeration; create a fresh manager",
             ));
         }
         let mut peers = Vec::new();
@@ -418,26 +435,62 @@ impl Bluez {
             let Some(properties) = interfaces.get(DEVICE) else {
                 continue;
             };
-            let Some(id) = bluez_model::bonded_peer_id(
-                path.as_str(),
-                &self.adapter_path,
-                bool_of(properties, "Paired"),
-                bool_of(properties, "Bonded"),
-            ) else {
+            let Some(id) = bluez_model::known_peer_id(path.as_str(), &self.adapter_path) else {
                 continue;
             };
+            if bonded_only
+                && bluez_model::bonded_peer_id(
+                    path.as_str(),
+                    &self.adapter_path,
+                    bool_of(properties, "Paired"),
+                    bool_of(properties, "Bonded"),
+                )
+                .is_none()
+            {
+                continue;
+            }
+            let le = interfaces
+                .get(LE)
+                .and_then(|properties| bool_of(properties, "Connected"));
+            let connection =
+                bluez_model::directory_le_connection(bool_of(properties, "Connected"), le);
+            if connected_only && connection != "connected" {
+                continue;
+            }
+            if peers.len() >= 4096 {
+                return Err(DesktopError::new(
+                    BleErrorCode::CapabilityLimited,
+                    BleErrorDomain::Capability,
+                    operation,
+                )
+                .with_detail(
+                    "the selected-adapter native peer directory exceeds its 4096-record bound",
+                ));
+            }
             peers.push(crate::boundary::DirectoryPeer {
                 peer_id: id.to_owned(),
                 name: string_of(properties, "Name"),
-                connection: match bool_of(properties, "Connected") {
-                    Some(true) => "connected",
-                    Some(false) => "disconnected",
-                    None => "unknown",
-                },
+                connection,
             });
         }
         peers.sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
         Ok(peers)
+    }
+
+    pub(crate) async fn bonded_peers(
+        &self,
+    ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        self.directory_peers("peers.bonded", true, false).await
+    }
+    pub(crate) async fn known_peers(
+        &self,
+    ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        self.directory_peers("peers.known", false, false).await
+    }
+    pub(crate) async fn connected_peers(
+        &self,
+    ) -> Result<Vec<crate::boundary::DirectoryPeer>, DesktopError> {
+        self.directory_peers("peers.connected", false, true).await
     }
 
     /// `Device1.Paired`/`Bonded` of one peer.
@@ -649,7 +702,7 @@ impl Bluez {
         Ok(!present)
     }
 
-    async fn current_daemon_owner_for(&self, operation: &str) -> Result<String, DesktopError> {
+    async fn observe_daemon_owner_for(&self, operation: &str) -> Result<String, DesktopError> {
         let owner: String = self
             .conn
             .call_method(
@@ -664,6 +717,11 @@ impl Bluez {
             .body()
             .deserialize()
             .map_err(|error| platform(operation, error))?;
+        Ok(owner)
+    }
+
+    async fn current_daemon_owner_for(&self, operation: &str) -> Result<String, DesktopError> {
+        let owner = self.observe_daemon_owner_for(operation).await?;
         if self
             .le_owner
             .as_ref()
@@ -677,6 +735,45 @@ impl Bluez {
             .with_detail("the bound BlueZ daemon owner changed; create a fresh manager to resolve and verify native authority"));
         }
         Ok(owner)
+    }
+
+    // Admission keeps its bound authority refusal. An already admitted
+    // acquisition instead compares its captured epoch before FD publication.
+    async fn verify_acquired_owner(
+        &self,
+        owner: &str,
+        operation: &str,
+    ) -> Result<(), DesktopError> {
+        let reset =
+            || DesktopError::new(BleErrorCode::BackendReset, BleErrorDomain::Core, operation);
+        match self.observe_daemon_owner_for(operation).await {
+            Ok(current) if current == owner => Ok(()),
+            Ok(current) => Err(reset()
+                .with_detail("the BlueZ daemon owner changed during acquired transport admission")
+                .with_platform(
+                    crate::errors::PlatformDetail::new("bluez-daemon", "owner-changed")
+                        .with_metadata(
+                            "expectedOwner",
+                            crate::errors::PlatformValue::Text(owner.into()),
+                        )
+                        .with_metadata(
+                            "observedOwner",
+                            crate::errors::PlatformValue::Text(current),
+                        ),
+                )),
+            Err(error) => {
+                if let Some(detail) = error.platform()
+                    && detail.domain == "bluez-dbus"
+                    && detail.code == "org.freedesktop.DBus.Error.NameHasNoOwner"
+                {
+                    Err(reset()
+                        .with_detail(error.to_string())
+                        .with_platform(detail.clone()))
+                } else {
+                    Err(error)
+                }
+            }
+        }
     }
 
     /// A daemon owner string is an epoch, not a capability. Verify the private
@@ -734,7 +831,7 @@ impl Bluez {
             .with_detail(format!("malformed Linux authority contract: {error}"))
             .with_platform(bluez_dbus_detail(&error))
         })?;
-        if versions != (1, 2, 1) {
+        if versions != (1, 3, 1) {
             return Err(DesktopError::new(
                 BleErrorCode::CapabilityUnsupported,
                 BleErrorDomain::Capability,
@@ -1054,11 +1151,15 @@ impl Bluez {
         result
     }
 
-    async fn managed_objects(&self, operation: &str) -> Result<Managed, DesktopError> {
+    async fn managed_objects_from(
+        &self,
+        destination: &str,
+        operation: &str,
+    ) -> Result<Managed, DesktopError> {
         let reply = self
             .conn
             .call_method(
-                Some(BLUEZ),
+                Some(destination),
                 "/",
                 Some(OBJECT_MANAGER),
                 "GetManagedObjects",
@@ -1077,8 +1178,17 @@ impl Bluez {
         peer_id: &str,
         operation: &str,
     ) -> Result<(HashMap<String, String>, Vec<BluezCharacteristic>), DesktopError> {
+        self.characteristics_from(BLUEZ, peer_id, operation).await
+    }
+
+    async fn characteristics_from(
+        &self,
+        destination: &str,
+        peer_id: &str,
+        operation: &str,
+    ) -> Result<(HashMap<String, String>, Vec<BluezCharacteristic>), DesktopError> {
         let prefix = format!("{}/", device_path(peer_id));
-        let managed = self.managed_objects(operation).await?;
+        let managed = self.managed_objects_from(destination, operation).await?;
         let mut services = HashMap::new();
         let mut characteristics = Vec::new();
         for (path, interfaces) in &managed {
@@ -1117,6 +1227,169 @@ impl Bluez {
             }
         }
         Ok((services, characteristics))
+    }
+
+    /// Explicit acquired transport. Both the graph lookup and acquisition
+    /// are addressed to the same unique daemon owner; no WriteValue/StartNotify
+    /// substitute is permitted when the optional mechanism is absent.
+    pub(crate) async fn acquire_gatt(
+        &self,
+        scope: &InstanceKey,
+        kind: crate::acquired_gatt::AcquisitionKind,
+    ) -> Result<crate::acquired_gatt::AcquiredGattTransport, DesktopError> {
+        use crate::acquired_gatt::{AcquisitionKind, LinuxAcquiredGattIo};
+        let operation = match kind {
+            AcquisitionKind::Write => "gatt.acquire-write",
+            AcquisitionKind::Notify => "gatt.acquire-notify",
+        };
+        let owner = self.current_daemon_owner_for(operation).await?;
+        if bluez_model::known_peer_id(&device_path(&scope.0), &self.adapter_path).is_none() {
+            return Err(DesktopError::new(
+                BleErrorCode::PeerScopeMismatch,
+                BleErrorDomain::Gatt,
+                operation,
+            ));
+        }
+        let (services, characteristics) = self
+            .characteristics_from(&owner, &scope.0, operation)
+            .await?;
+        self.verify_acquired_owner(&owner, operation).await?;
+        if characteristics.len() > 4096 {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityLimited,
+                BleErrorDomain::Capability,
+                operation,
+            )
+            .with_detail("native characteristic inventory exceeds the acquisition bound"));
+        }
+        let characteristic = characteristic_for_instance(scope, &services, &characteristics)
+            .ok_or_else(|| {
+                DesktopError::new(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    operation,
+                )
+            })?;
+        let flag_present = match kind {
+            AcquisitionKind::Write => characteristic
+                .flags
+                .iter()
+                .any(|flag| flag == "write-without-response"),
+            AcquisitionKind::Notify => characteristic
+                .flags
+                .iter()
+                .any(|flag| flag == "notify" || flag == "indicate"),
+        };
+        if !flag_present {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                operation,
+            )
+            .with_detail("characteristic flags do not permit this acquired transport"));
+        }
+        let properties = self
+            .get_all_from(&owner, &characteristic.path, CHARACTERISTIC, operation)
+            .await?;
+        let acquired_property = match kind {
+            AcquisitionKind::Write => "WriteAcquired",
+            AcquisitionKind::Notify => "NotifyAcquired",
+        };
+        if bool_of(&properties, acquired_property).is_none() {
+            return Err(DesktopError::new(
+                BleErrorCode::CapabilityUnsupported,
+                BleErrorDomain::Capability,
+                operation,
+            )
+            .with_detail("optional acquired transport property is absent"));
+        }
+        self.verify_acquired_owner(&owner, operation).await?;
+        let method = match kind {
+            AcquisitionKind::Write => "AcquireWrite",
+            AcquisitionKind::Notify => "AcquireNotify",
+        };
+        // A deferred Acquire has daemon-side ownership before an FD reply.
+        // Its dedicated sender is retained with the FD after publication;
+        // dropping an opening closes that sender and cancels its admission.
+        let opening = acquired::OpeningOwner::reserve(acquired::parent_key(&self.conn))?;
+        opening.observe_with(self.conn.clone());
+        let connection = match self.bus {
+            crate::boundary::BluezBus::System => zbus::Connection::system().await,
+            crate::boundary::BluezBus::Session => zbus::Connection::session().await,
+        }
+        .map_err(|error| platform(operation, error))?;
+        let same_bus = connection.server_guid() == self.conn.server_guid();
+        opening.install_connection(connection.clone());
+        if !same_bus {
+            return Err(DesktopError::new(
+                BleErrorCode::BackendReset,
+                BleErrorDomain::Core,
+                operation,
+            )
+            .with_detail("acquired sender connected to a different bus epoch"));
+        }
+        let options: HashMap<&str, Value<'_>> = HashMap::new();
+        let reply = connection
+            .call_method(
+                Some(owner.as_str()),
+                object_path(&characteristic.path, operation)?,
+                Some(CHARACTERISTIC),
+                method,
+                &(options,),
+            )
+            .await
+            .map_err(|error| {
+                let code = match dbus_error_name(&error).map(|(name, _)| name).as_deref() {
+                    Some(
+                        "org.bluez.Error.NotSupported" | "org.freedesktop.DBus.Error.UnknownMethod",
+                    ) => BleErrorCode::CapabilityUnsupported,
+                    Some("org.bluez.Error.NotPermitted" | "org.bluez.Error.InProgress") => {
+                        BleErrorCode::OwnershipDenied
+                    }
+                    _ => BleErrorCode::PlatformFailure,
+                };
+                DesktopError::new(code, BleErrorDomain::Platform, operation)
+                    .with_detail(error.to_string())
+                    .with_platform(bluez_dbus_detail(&error))
+            })?;
+        let (fd, mtu): (zbus::zvariant::OwnedFd, u16) = reply
+            .body()
+            .deserialize()
+            .map_err(|error| platform(operation, error))?;
+        if !(23..=517).contains(&mtu) {
+            return Err(DesktopError::new(
+                BleErrorCode::ProtocolViolation,
+                BleErrorDomain::Gatt,
+                operation,
+            )
+            .with_detail("acquired transport returned an invalid ATT MTU"));
+        }
+        let io = Arc::new(LinuxAcquiredGattIo::new(
+            fd.into(),
+            usize::from(mtu - 3).min(512),
+        )?);
+        opening.install_fd(io);
+        let admission = self.verify_acquired_owner(&owner, operation).await;
+        if let Err(primary) = admission {
+            return match opening.close().await {
+                Ok(()) => Err(primary),
+                Err(cleanup) => {
+                    match crate::errors::cleanup_result("bluez-acquired-fd", vec![primary, cleanup])
+                    {
+                        Err(error) => Err(error),
+                        Ok(()) => unreachable!("nonempty cleanup failures"),
+                    }
+                }
+            };
+        }
+        Ok(crate::acquired_gatt::AcquiredGattTransport {
+            mtu,
+            io: opening.publish(),
+        })
+    }
+
+    pub(crate) async fn finish_acquired(&self) -> Vec<DesktopError> {
+        acquired::retry_parent(&acquired::parent_key(&self.conn)).await
     }
 
     /// `GattCharacteristic1.Flags` per instance (by ATT handle).
@@ -1733,10 +2006,31 @@ mod watch_tests {
         properties.insert("Paired".into(), Variant(Box::new(true)));
         properties.insert("Bonded".into(), Variant(Box::new(true)));
         properties.insert("Connected".into(), Variant(Box::new(false)));
-        HashMap::from([(
+        let mut snapshot = HashMap::from([(
             dbus::Path::new("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF").unwrap(),
             HashMap::from([(DEVICE.to_owned(), properties)]),
-        )])
+        )]);
+        for (adapter, address, le_connected) in [
+            ("hci0", "AA_BB_CC_DD_EE_01", Some(true)),
+            ("hci0", "AA_BB_CC_DD_EE_02", None),
+            ("hci1", "AA_BB_CC_DD_EE_03", Some(true)),
+        ] {
+            let mut device = dbus::arg::PropMap::new();
+            device.insert("Paired".into(), Variant(Box::new(false)));
+            device.insert("Bonded".into(), Variant(Box::new(false)));
+            device.insert("Connected".into(), Variant(Box::new(true)));
+            let mut interfaces = HashMap::from([(DEVICE.to_owned(), device)]);
+            if let Some(connected) = le_connected {
+                let mut le = dbus::arg::PropMap::new();
+                le.insert("Connected".into(), Variant(Box::new(connected)));
+                interfaces.insert(LE.to_owned(), le);
+            }
+            snapshot.insert(
+                dbus::Path::new(format!("/org/bluez/{adapter}/dev_{address}")).unwrap(),
+                interfaces,
+            );
+        }
+        snapshot
     }
 
     async fn bonded_snapshot_fixture(
@@ -1777,6 +2071,42 @@ mod watch_tests {
             }),
         );
         (publisher, state, entered, worker)
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a dedicated dbus-run-session; no system Bluetooth access"]
+    async fn private_bus_directories_include_unbonded_peers_but_exclude_classic_only_connected_state()
+     {
+        assert_eq!(
+            std::env::var("UBM_BLUEZ_PRIVATE_BUS_TEST").as_deref(),
+            Ok("1")
+        );
+        let (publisher, state, _, worker) = bonded_snapshot_fixture(false).await;
+        let authority = Bluez::open_authority("hci0", crate::boundary::BluezBus::Session, None)
+            .await
+            .unwrap();
+        let known = authority.known_peers().await.unwrap();
+        assert_eq!(known.len(), 3);
+        assert!(known.iter().all(|peer| peer.peer_id.starts_with("hci0/")));
+        assert_eq!(
+            known
+                .iter()
+                .find(|peer| peer.peer_id.ends_with("EE_02"))
+                .unwrap()
+                .connection,
+            "unknown"
+        );
+        let connected = authority.connected_peers().await.unwrap();
+        assert_eq!(connected.len(), 1);
+        assert!(connected[0].peer_id.ends_with("EE_01"));
+        assert_eq!(authority.bonded_peers().await.unwrap().len(), 1);
+        assert_eq!(
+            state.lock().unwrap().0,
+            3,
+            "only read-only directory queries"
+        );
+        publisher.release_name(BLUEZ).await.unwrap();
+        worker.abort();
     }
 
     #[tokio::test]
@@ -1846,7 +2176,7 @@ mod watch_tests {
         );
         let publisher = zbus::Connection::session().await.unwrap();
         publisher.request_name(BLUEZ).await.unwrap();
-        let versions = Arc::new(StdMutex::new((1, 2, 1)));
+        let versions = Arc::new(StdMutex::new((1, 3, 1)));
         publisher
             .object_server()
             .at("/org/bluez/hci0", LinuxContractFixture(versions.clone()))
@@ -1856,7 +2186,7 @@ mod watch_tests {
             .await
             .unwrap();
         assert!(authority.verify_connection_contract().await.is_ok());
-        for unsupported in [(1, 1, 1), (2, 2, 1), (1, 0, 1), (1, 2, 2)] {
+        for unsupported in [(1, 1, 1), (1, 2, 1), (2, 3, 1), (1, 0, 1), (1, 3, 2)] {
             *versions.lock().unwrap() = unsupported;
             assert!(authority.verify_connection_contract().await.is_err());
         }

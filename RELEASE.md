@@ -80,6 +80,89 @@ Before a stable release tag is pushed:
 10. GitHub private vulnerability reporting is enabled for the canonical repository.
 11. the complete five-target desktop Node-API prebuild matrix (macOS `arm64`; Windows/Linux `arm64`/`x64`) is produced from the release tag and verified under Node and Electron. Intel macOS desktop is outside UBM's support policy; iOS/tvOS simulators are `arm64` only and physical iPhone support is unchanged.
 
+## Remediation and release qualification
+
+Use the release's existing review closure record and retained evidence; for
+rc.21, start with [`docs/review/RC21_REMEDIATION.md`](docs/review/RC21_REMEDIATION.md).
+Keep the original finding IDs and review denominator. The following readiness
+requirements apply before claiming remediation complete or qualifying a release:
+
+1. **Identify the violated invariant.** Trace each finding to its underlying
+   ownership, cancellation, ordering, cleanup or recovery rule. Investigate
+   other paths susceptible to the same cause, and write regressions before
+   changing the implementation.
+2. **Assess and complete every affected route.** Record each fix's cross-platform
+   impact assessment for shared core, native implementation and applicable
+   NAPI, React Native, Electron, Tauri and Web routes, including their public
+   entrypoints, behavior and capability declarations.
+   Preserve equivalent supported semantics. Record genuine OS limitations and
+   their runtime capability/error; a library omission is not an OS limitation.
+3. **Verify equivalent adverse behavior continuously.** Use focused checks
+   throughout implementation through real public entrypoints and production
+   boundaries. Cover success, failure, cancellation, concurrency, stale
+   callbacks, reconnect and cleanup/retry on affected hosts. Reuse existing
+   package, native-protocol, private-bus, packed-consumer and CI checks. One
+   mock or one host pass cannot establish cross-platform correctness. Repeat
+   successful unrelated checks only for a changed dependency or concrete failure.
+4. **Prove the root cause is resolved.** Re-read each complete route, including
+   admission, forwarding, ordering, deadlines, terminal errors and teardown.
+   Verify the invariant and susceptible paths, not only the original
+   reproduction. Complete tests, types, guides, changelog and generated
+   artifacts through their existing generators. Supported capabilities must
+   have no unresolved TODOs, placeholders or deferred implementation. Keep
+   unverified qualification requirements explicit.
+5. **Qualify one immutable candidate.** Once implementation, tests and docs are
+   complete, record the exact commit, clean tree, release version and applicable
+   native identities; bind each candidate artifact to its digest. Refresh
+   affected native artifacts through their canonical consumers/builders in
+   [`docs/NATIVE_ARTIFACTS.md`](docs/NATIVE_ARTIFACTS.md). Run clean builds,
+   required tests, artifact/packed-consumer checks, clean cross-platform CI and
+   independent review against that candidate using existing infrastructure.
+   Final publication remains subject to the current `main`/tag requirements.
+   Linux preflight, including `--fast`, does not replace missing host lanes or
+   required physical qualification.
+6. **Requalify after changes.** A code change invalidates the freeze. Record the
+   new candidate identity, repeat affected regression, host/native/consumer
+   checks and independent review, and complete every required final release
+   gate against the new candidate.
+   Retain unaffected earlier evidence with its original identity and explicit
+   applicability; never relabel it as a fresh run. Metadata, documentation and
+   version-only changes need applicable identity, generated-artifact and
+   package checks. Rerun affected actual-radio scenarios when runtime behavior
+   changes or a concrete hardware failure requires reproduction.
+7. **Close each item with evidence.** In the existing closure record, retain
+   finding ID, root cause, affected platforms/paths, fixing commit, regression
+   tests, commands/results and receipt links, evidence level, genuine OS
+   limitations and remaining qualification gaps. The final report identifies
+   the qualified commit/artifact digests, required gate results, independent
+   review result and every remaining limitation. No item or required release
+   qualification is complete without its acceptance evidence. Optional platform
+   qualification remains separate from package SemVer; declared release
+   requirements remain mandatory.
+
+### Evidence levels for closure
+
+These distinctions describe receipts; they do not change generated backend
+support labels or confer production readiness on an untested route.
+
+| Evidence                             | Proves within its recorded scope                                                                                           |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| Source inspection                    | Traced implementation/control flow; no execution claim.                                                                    |
+| Compilation/typecheck                | Compatibility with the recorded target/toolchain; no runtime or radio claim.                                               |
+| Mock/deterministic test              | Behavior under controlled replacements; no production native or radio claim.                                               |
+| Native synthetic runtime integration | Actual public/provider/native routing with an explicit synthetic radio; no RF/controller claim.                            |
+| Actual-radio qualification           | Executed scenarios on the recorded OS, adapter, physical peripherals and native artifact; no untested host/scenario claim. |
+| Production deployment                | Observed deployed behavior in the real application environment; no automatic broader reliability or support promotion.     |
+
+For execution receipts, retain source/artifact identity, host/tool versions,
+scenario, result, cleanup outcome and limitations. State when real production
+functions execute against controlled native boundaries. A real D-Bus or native
+binary alone does not make a controller-free test actual-radio evidence.
+Production readiness requires the declared acceptance evidence at its required
+levels; compilation, mocks and synthetic radios cannot substitute for required
+actual-radio or deployment evidence. Never manufacture, backdate or relabel
+evidence to make a release pass.
+
 ## Required local validation
 
 From a clean checkout of the release commit:
@@ -131,7 +214,7 @@ once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
 history. `4.0.28` is immutable tagged history. The unpublished
 `v5.0.0-rc.5` tag is immutable after its publish-only Tauri consumer failure.
-The next prepared candidate is `5.0.0-rc.20`; rc.19, rc.18, rc.17, rc.16 and rc.14 are immutable published history.
+The next prepared candidate is `5.0.0-rc.21`. `5.0.0-rc.20` is immutable published history. rc.19, rc.18, rc.17, rc.16 and rc.14 are immutable published history.
 The immutable `v5.0.0-rc.15` tag remains unpublished: its publisher was cancelled
 before npm publication when the Apple architecture policy changed.
 
@@ -160,6 +243,49 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 ```sh
 git tag -a v4.0.0 -m "v4.0.0"
 ```
+
+## Releasing 5.0.0-rc.21
+
+This candidate includes the PR #251 remediation batch. Before publication,
+complete the item-by-item acceptance ledger in
+[`docs/review/RC21_REMEDIATION.md`](docs/review/RC21_REMEDIATION.md) on the exact
+integrated head. The maintained source daemon is `5.87-ubm.10`, with authority
+contract `(1, 3, 1)`; older contracts fail closed. The packed qualifier executes
+the installed public desktop factory, production provider and sealed addon
+under Node and Bun 1.4.2, in CommonJS and ESM, on Linux, macOS and Windows.
+Its explicit synthetic radio proves integration and resource ownership.
+Changed BlueZ ownership and acquired-FD radio scenarios require their separate
+native-daemon and physical qualification receipts. No pending remediation
+entry or required qualification gap may be presented as closed.
+
+Retained prior qualification history follows; it does not qualify this new
+batch. `bun scripts/ci/bun-desktop-host-smoke.js` loads the sealed prebuild and
+runs the synthetic central. Source daemon
+`5.87-ubm.6` ends a finished GATT read or write hold when the call completes.
+Installing that daemon changed the glibc Linux H10 disconnect from
+`lease-released-protected` to `lease-released-indeterminate` and left the
+link up, because profile-probe auto-connect bookkeeping was recorded as an
+unknown holder. `5.87-ubm.7` does not treat that bookkeeping as a hold on an
+exclusive link this process created, and that exclusive release stops kernel
+auto-connect for an untrusted device. Installing it changed the glibc Linux
+H10 disconnect to `lease-released-protected` and left the link up, because
+the controller had already initiated the bonded link and the lease adopted
+it as borrowed. `5.87-ubm.8` releases a locally initiated link when no other
+application hold remains. That prior authority contract was `(1, 2, 1)`.
+Installing `5.87-ubm.8`, the glibc Linux H10 session reported disconnect
+`released` and close `released`, and the link was down. `5.87-ubm.9` fails an
+unbonded LE attribute operation that returns Insufficient Encryption or
+Insufficient Authentication instead of raising link security. Installing it,
+the unbonded glibc Linux H10 session on source digest `0b31ce8e` completed the
+same exchange, reported disconnect `released` and close `released`, and left
+the link down with no pairing request. The same digest completed that session
+on macOS Apple Silicon and, twice back to back, on Windows x64. It does not
+promote backend qualification labels and it does not make a physical radio
+receipt.
+Verify exact current `main`, all `5.0.0-rc.21` identities, required CI and
+release gates, and absence of the registry version and annotated tag before
+creating `v5.0.0-rc.21`. Use the trusted tag publisher only; `next` advances to
+rc.21 and `latest` remains 4.0.28.
 
 ## Releasing 5.0.0-rc.20
 
@@ -959,7 +1085,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.0-rc.20
+version=5.0.0-rc.21
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -970,7 +1096,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- npm `next` resolves to `5.0.0-rc.20`, while `latest` remains on the 4.0 stable
+- npm `next` resolves to `5.0.0-rc.21`, while `latest` remains on the 4.0 stable
   line; a stable release moves `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the
@@ -978,7 +1104,7 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.0-rc.20` explicitly and import the documented host
+  `unified-ble-manager@5.0.0-rc.21` explicitly and import the documented host
   entrypoints. A bare install still selects `latest` (the 4.0 line). This
   catches a packaging gap the repository's
   own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a

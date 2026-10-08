@@ -5,6 +5,28 @@ use uuid::Uuid;
 
 use crate::DeviceId;
 
+pub(crate) fn inclusion_property(
+    properties: &dbus::arg::PropMap,
+) -> Result<Option<Vec<ServiceId>>, crate::BluetoothError> {
+    if !properties.contains_key("Includes") {
+        return Ok(None);
+    }
+    let wrapper = bluez_generated::OrgBluezGattService1Properties(properties);
+    let paths = wrapper
+        .includes()
+        .ok_or(crate::BluetoothError::RequiredPropertyMissing(
+            "Includes (object-path array)",
+        ))?;
+    Ok(Some(
+        paths
+            .iter()
+            .map(|path| ServiceId {
+                object_path: path.clone(),
+            })
+            .collect(),
+    ))
+}
+
 /// Opaque identifier for a GATT service on a Bluetooth device.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct ServiceId {
@@ -58,11 +80,30 @@ pub struct ServiceInfo {
     pub uuid: Uuid,
     /// Whether this GATT service is a primary service.
     pub primary: bool,
+    /// Observed inclusion identities; absent optional property is unknown.
+    pub includes: Option<Vec<ServiceId>>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inclusion_property_distinguishes_absence_empty_and_malformed() {
+        use dbus::arg::{PropMap, Variant};
+        let mut properties = PropMap::new();
+        assert_eq!(super::inclusion_property(&properties).unwrap(), None);
+        properties.insert(
+            "Includes".into(),
+            Variant(Box::new(Vec::<Path<'static>>::new())),
+        );
+        assert_eq!(
+            super::inclusion_property(&properties).unwrap(),
+            Some(Vec::new())
+        );
+        properties.insert("Includes".into(), Variant(Box::new(42u32)));
+        assert!(super::inclusion_property(&properties).is_err());
+    }
 
     #[test]
     fn service_device() {

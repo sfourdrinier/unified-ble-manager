@@ -1,0 +1,1370 @@
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	﻿2026-10-07T21:36:22.3663034Z Current runner version: '2.337.0'
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3689467Z ##[group]Runner Image Provisioner
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3690486Z Hosted Compute Agent
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3691093Z Version: 20261002.596
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3691816Z Commit: c3d12f3313a95f25162a1503be624f3b0617f8c0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3692564Z Build Date: 2026-10-02T22:28:27Z
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3693229Z Worker ID: {2482fdc6-3af3-47e9-8a08-7c57bb5d8e2d}
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3694270Z Region: westcentralus
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3694912Z Cloud: Azure
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3695503Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3697238Z ##[group]Operating System
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3697898Z Ubuntu
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3698504Z 24.04.5
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3699014Z LTS
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3699599Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3700296Z ##[group]Runner Image
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3700897Z Image: ubuntu-24.04
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3701504Z Version: 20261004.327.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3702828Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261004.327/images/ubuntu/Ubuntu2404-Readme.md
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3705036Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261004.327
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3706056Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3707331Z ##[group]GITHUB_TOKEN Permissions
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3709538Z Contents: read
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3710591Z Metadata: read
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3711186Z PullRequests: read
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3711735Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3713905Z Secret source: Actions
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3715103Z Cache mode: write
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3715951Z Prepare workflow directory
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.4110247Z Prepare all required actions
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.4159022Z Getting action download info
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7032618Z Download action repository 'actions/checkout@v7.0.0' (SHA:9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.8832991Z Complete job name: Rust 5.0 workspace (ubuntu-latest)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9736930Z ##[group]Run actions/checkout@v7.0.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9737850Z with:
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9738387Z   repository: sfourdrinier/unified-ble-manager
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9742362Z   token: ***
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9742801Z   ssh-strict: true
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9743240Z   ssh-user: git
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9743691Z   persist-credentials: true
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9744590Z   clean: true
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9745066Z   sparse-checkout-cone-mode: true
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9745603Z   fetch-depth: 1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9746032Z   fetch-tags: false
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9746480Z   show-progress: true
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9746930Z   lfs: false
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9747351Z   submodules: false
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9747807Z   set-safe-directory: true
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9748316Z   allow-unsafe-pr-checkout: false
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9749147Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0732441Z Syncing repository: sfourdrinier/unified-ble-manager
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0734709Z ##[group]Getting Git version info
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0735737Z Working directory is '/home/runner/work/unified-ble-manager/unified-ble-manager'
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0736962Z [command]/usr/bin/git version
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0810022Z git version 2.55.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0831352Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0842877Z Temporarily overriding HOME='/home/runner/work/_temp/bea47fdd-3410-4e7c-95b2-6277f6fa2a2f' before making global git config changes
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0844818Z Adding repository directory to the temporary git global config as a safe directory
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0849907Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/unified-ble-manager/unified-ble-manager
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0896310Z Deleting the contents of '/home/runner/work/unified-ble-manager/unified-ble-manager'
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0899621Z ##[group]Determining repository object format
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0901426Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0902203Z ##[group]Initializing the repository
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0906151Z [command]/usr/bin/git init /home/runner/work/unified-ble-manager/unified-ble-manager
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1014270Z hint: Using 'master' as the name for the initial branch. This default branch name
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1016394Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1018103Z hint: to use in all of your new repositories, which will suppress this warning,
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1019535Z hint: call:
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1020307Z hint:
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1021277Z hint: 	git config --global init.defaultBranch <name>
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1022419Z hint:
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1023556Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1025528Z hint: 'development'. The just-created branch can be renamed via this command:
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1026808Z hint:
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1027556Z hint: 	git branch -m <name>
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1028477Z hint:
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1029687Z hint: Disable this message with "git config set advice.defaultBranchName false"
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1031788Z Initialized empty Git repository in /home/runner/work/unified-ble-manager/unified-ble-manager/.git/
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1035128Z [command]/usr/bin/git remote add origin https://github.com/sfourdrinier/unified-ble-manager
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1080896Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1082190Z ##[group]Disabling automatic garbage collection
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1084829Z [command]/usr/bin/git config --local gc.auto 0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1116613Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1117974Z ##[group]Setting up auth
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1118921Z Removing SSH command configuration
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1123530Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1155917Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1492560Z Removing HTTP extra header
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1499508Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1531546Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1748495Z Removing includeIf entries pointing to credentials config files
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1752723Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.1791099Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.2010983Z [command]/usr/bin/git config --file /home/runner/work/_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config http.https://github.com/.extraheader AUTHORIZATION: basic ***
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.2047944Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/unified-ble-manager/unified-ble-manager/.git.path /home/runner/work/_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.2078973Z [command]/usr/bin/git config --local includeIf.gitdir:/home/runner/work/unified-ble-manager/unified-ble-manager/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.2127737Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.2151230Z [command]/usr/bin/git config --local includeIf.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.2178932Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.2179732Z ##[group]Fetching the repository
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:23.2187780Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +9916500f44a0789d25a83d9f1879e48456be8a70:refs/remotes/origin/release/5.0.0-rc.21
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1478178Z From https://github.com/sfourdrinier/unified-ble-manager
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1481011Z  * [new ref]         9916500f44a0789d25a83d9f1879e48456be8a70 -> origin/release/5.0.0-rc.21
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1492955Z [command]/usr/bin/git branch --list --remote origin/release/5.0.0-rc.21
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1518262Z   origin/release/5.0.0-rc.21
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1527112Z [command]/usr/bin/git rev-parse refs/remotes/origin/release/5.0.0-rc.21
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1549119Z 9916500f44a0789d25a83d9f1879e48456be8a70
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1554888Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1556848Z ##[group]Determining the checkout info
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1558907Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1559795Z [command]/usr/bin/git sparse-checkout disable
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1609000Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1640336Z ##[group]Checking out the ref
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1643274Z [command]/usr/bin/git checkout --progress --force -B release/5.0.0-rc.21 refs/remotes/origin/release/5.0.0-rc.21
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.4960070Z Switched to a new branch 'release/5.0.0-rc.21'
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.4965038Z branch 'release/5.0.0-rc.21' set up to track 'origin/release/5.0.0-rc.21'.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.4978633Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.5029817Z [command]/usr/bin/git log -1 --format=%H
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.5058107Z 9916500f44a0789d25a83d9f1879e48456be8a70
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.5278771Z ##[group]Run cargo --version
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.5279195Z [36;1mcargo --version[0m
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.5279536Z [36;1mrustup component add rustfmt clippy[0m
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.5565805Z shell: /usr/bin/bash -e {0}
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.5566180Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:25.6436414Z info: syncing channel updates for 1.98.1-x86_64-unknown-linux-gnu
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:26.1147424Z info: latest update on 2026-09-03 for version 1.98.1 (48a229cea 2026-09-01)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:26.1149694Z info: downloading 5 components
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.3800629Z warn: the missing active toolchain `1.98.1-x86_64-unknown-linux-gnu` has been auto-installed
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.3801976Z warn: this might cause rustup commands to take longer time to finish than expected
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.3812446Z info: you may opt out with `RUSTUP_AUTO_INSTALL=0` or `rustup set auto-install disable`
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.3890542Z cargo 1.98.1 (797e8a9bc 2026-08-05)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.4833369Z info: component rustfmt is up to date
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.4834327Z info: component clippy is up to date
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.4944299Z ##[group]Run bash scripts/ci/install-linux-native-system-dependencies.sh bluez
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.4945075Z [36;1mbash scripts/ci/install-linux-native-system-dependencies.sh bluez[0m
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.5008386Z shell: /usr/bin/bash -e {0}
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.5008659Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.5851230Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.6083745Z Get:6 https://packages.microsoft.com/ubuntu/24.04/prod noble InRelease [3600 B]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.6187812Z Hit:2 http://azure.archive.ubuntu.com/ubuntu noble InRelease
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.6205571Z Get:3 http://azure.archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.6258326Z Get:4 http://azure.archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.6283434Z Get:5 http://azure.archive.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.6894305Z Get:7 https://packages.microsoft.com/ubuntu/24.04/prod noble/main amd64 Packages [519 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.7130153Z Get:8 https://packages.microsoft.com/ubuntu/24.04/prod noble/main arm64 Packages [463 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.8295711Z Get:9 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1375 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.8407122Z Get:10 http://azure.archive.ubuntu.com/ubuntu noble-updates/main Translation-en [306 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.8433584Z Get:11 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [1702 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.8522503Z Get:12 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe Translation-en [341 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.8554641Z Get:13 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1730 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.8640723Z Get:14 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted Translation-en [396 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.8679615Z Get:15 http://azure.archive.ubuntu.com/ubuntu noble-updates/multiverse Translation-en [13.3 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.9365765Z Get:16 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 Packages [1073 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.9427092Z Get:17 http://azure.archive.ubuntu.com/ubuntu noble-security/main Translation-en [223 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.9447134Z Get:18 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1218 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.9938051Z Get:19 http://azure.archive.ubuntu.com/ubuntu noble-security/universe Translation-en [245 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:34.9964657Z Get:20 http://azure.archive.ubuntu.com/ubuntu noble-security/multiverse Translation-en [11.6 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:37.9625924Z Fetched 9996 kB in 1s (9169 kB/s)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:38.8723252Z Reading package lists...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:38.9130986Z Reading package lists...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.1361780Z Building dependency tree...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.1368954Z Reading state information...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3137465Z pkg-config is already the newest version (1.8.1-2build1).
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3138436Z dbus-daemon is already the newest version (1.14.10-4ubuntu4.1).
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3139181Z dbus-daemon set to manually installed.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3139846Z curl is already the newest version (8.5.0-2ubuntu10.15).
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3140520Z patch is already the newest version (2.7.6-7build3).
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3141073Z patch set to manually installed.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3141704Z xz-utils is already the newest version (5.6.1+really5.4.5-1ubuntu0.3).
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3142477Z The following additional packages will be installed:
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3143303Z   libblkid-dev libgirepository-2.0-0 libglib2.0-dev-bin libmount-dev
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3144984Z   libselinux1-dev libsepol-dev uuid-dev
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3152123Z Suggested packages:
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3152760Z   gir1.2-glib-2.0-dev libglib2.0-doc libgdk-pixbuf2.0-bin libxml2-utils
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3391413Z The following NEW packages will be installed:
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3393072Z   build-essential libblkid-dev libdbus-1-dev libgirepository-2.0-0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3396737Z   libglib2.0-dev libglib2.0-dev-bin libmount-dev libselinux1-dev libsepol-dev
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3399032Z   libudev-dev uuid-dev
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3576179Z 0 upgraded, 11 newly installed, 0 to remove and 11 not upgraded.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3577282Z Need to get 3089 kB of archives.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3577862Z After this operation, 16.9 MB of additional disk space will be used.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.3578562Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.4219462Z Get:2 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 build-essential amd64 12.10ubuntu1 [4928 B]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.4672587Z Get:3 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libdbus-1-dev amd64 1.14.10-4ubuntu4.1 [190 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.5163192Z Get:4 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libgirepository-2.0-0 amd64 2.80.0-6ubuntu3.9 [73.5 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.5640661Z Get:5 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libglib2.0-dev-bin amd64 2.80.0-6ubuntu3.9 [138 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.6122625Z Get:6 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 uuid-dev amd64 2.39.3-9ubuntu6.6 [33.5 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.6595573Z Get:7 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libblkid-dev amd64 2.39.3-9ubuntu6.6 [205 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.7088755Z Get:8 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libsepol-dev amd64 3.5-2build1 [384 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.7608996Z Get:9 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libselinux1-dev amd64 3.5-2ubuntu2.1 [164 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.8089559Z Get:10 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libmount-dev amd64 2.39.3-9ubuntu6.6 [14.9 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.8562280Z Get:11 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libglib2.0-dev amd64 2.80.0-6ubuntu3.9 [1860 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:39.9149255Z Get:12 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libudev-dev amd64 255.4-1ubuntu8.17 [22.0 kB]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.1785240Z Fetched 3089 kB in 1s (5438 kB/s)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.1999520Z Selecting previously unselected package build-essential.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.2282255Z (Reading database ... 
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.2282727Z (Reading database ... 5%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.2283101Z (Reading database ... 10%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.2283350Z (Reading database ... 15%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.2283592Z (Reading database ... 20%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.2283823Z (Reading database ... 25%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.2284375Z (Reading database ... 30%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.2284807Z (Reading database ... 35%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.2285252Z (Reading database ... 40%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.2285643Z (Reading database ... 45%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.2286034Z (Reading database ... 50%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.2339369Z (Reading database ... 55%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.3392676Z (Reading database ... 60%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.5447326Z (Reading database ... 65%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.7498055Z (Reading database ... 70%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:40.9335080Z (Reading database ... 75%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.0960843Z (Reading database ... 80%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.3413928Z (Reading database ... 85%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.5340163Z (Reading database ... 90%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.7006338Z (Reading database ... 95%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.7006772Z (Reading database ... 100%
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.7007149Z (Reading database ... 203191 files and directories currently installed.)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.7050336Z Preparing to unpack .../00-build-essential_12.10ubuntu1_amd64.deb ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.7076312Z Unpacking build-essential (12.10ubuntu1) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.7306496Z Selecting previously unselected package libdbus-1-dev:amd64.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.7432720Z Preparing to unpack .../01-libdbus-1-dev_1.14.10-4ubuntu4.1_amd64.deb ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.7441039Z Unpacking libdbus-1-dev:amd64 (1.14.10-4ubuntu4.1) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.7773228Z Selecting previously unselected package libgirepository-2.0-0:amd64.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.7900315Z Preparing to unpack .../02-libgirepository-2.0-0_2.80.0-6ubuntu3.9_amd64.deb ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.7920479Z Unpacking libgirepository-2.0-0:amd64 (2.80.0-6ubuntu3.9) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.8139951Z Selecting previously unselected package libglib2.0-dev-bin.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.8268390Z Preparing to unpack .../03-libglib2.0-dev-bin_2.80.0-6ubuntu3.9_amd64.deb ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.8277818Z Unpacking libglib2.0-dev-bin (2.80.0-6ubuntu3.9) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.8633451Z Selecting previously unselected package uuid-dev:amd64.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.8758830Z Preparing to unpack .../04-uuid-dev_2.39.3-9ubuntu6.6_amd64.deb ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.8767958Z Unpacking uuid-dev:amd64 (2.39.3-9ubuntu6.6) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.9037028Z Selecting previously unselected package libblkid-dev:amd64.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.9164529Z Preparing to unpack .../05-libblkid-dev_2.39.3-9ubuntu6.6_amd64.deb ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.9172735Z Unpacking libblkid-dev:amd64 (2.39.3-9ubuntu6.6) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.9409067Z Selecting previously unselected package libsepol-dev:amd64.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.9534335Z Preparing to unpack .../06-libsepol-dev_3.5-2build1_amd64.deb ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.9542937Z Unpacking libsepol-dev:amd64 (3.5-2build1) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.9856166Z Selecting previously unselected package libselinux1-dev:amd64.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.9981385Z Preparing to unpack .../07-libselinux1-dev_3.5-2ubuntu2.1_amd64.deb ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:41.9989223Z Unpacking libselinux1-dev:amd64 (3.5-2ubuntu2.1) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.0408362Z Selecting previously unselected package libmount-dev:amd64.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.0535873Z Preparing to unpack .../08-libmount-dev_2.39.3-9ubuntu6.6_amd64.deb ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.0546919Z Unpacking libmount-dev:amd64 (2.39.3-9ubuntu6.6) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.0763893Z Selecting previously unselected package libglib2.0-dev:amd64.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.0892340Z Preparing to unpack .../09-libglib2.0-dev_2.80.0-6ubuntu3.9_amd64.deb ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.0902042Z Unpacking libglib2.0-dev:amd64 (2.80.0-6ubuntu3.9) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.1961060Z Selecting previously unselected package libudev-dev:amd64.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.2089442Z Preparing to unpack .../10-libudev-dev_255.4-1ubuntu8.17_amd64.deb ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.2098073Z Unpacking libudev-dev:amd64 (255.4-1ubuntu8.17) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.2556931Z Setting up libglib2.0-dev-bin (2.80.0-6ubuntu3.9) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.4256545Z Setting up libgirepository-2.0-0:amd64 (2.80.0-6ubuntu3.9) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.4281952Z Setting up libdbus-1-dev:amd64 (1.14.10-4ubuntu4.1) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.6094405Z Setting up uuid-dev:amd64 (2.39.3-9ubuntu6.6) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.6112329Z Setting up libudev-dev:amd64 (255.4-1ubuntu8.17) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.6132111Z Setting up libsepol-dev:amd64 (3.5-2build1) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.6151952Z Setting up build-essential (12.10ubuntu1) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.6173960Z Setting up libblkid-dev:amd64 (2.39.3-9ubuntu6.6) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.6193930Z Setting up libselinux1-dev:amd64 (3.5-2ubuntu2.1) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.6214600Z Setting up libmount-dev:amd64 (2.39.3-9ubuntu6.6) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.6233843Z Setting up libglib2.0-dev:amd64 (2.80.0-6ubuntu3.9) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.6259411Z Processing triggers for libc-bin (2.39-0ubuntu8.9) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.6581432Z Processing triggers for man-db (2.12.0-4build2) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.6605467Z Not building database; man-db/auto-update is not 'true'.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.6617786Z Processing triggers for libglib2.0-0t64:amd64 (2.80.0-6ubuntu3.9) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:42.6805803Z Processing triggers for sgml-base (1.31) ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:43.3341472Z 
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:43.3342150Z Running kernel seems to be up-to-date.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:43.3342529Z 
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:43.3342695Z No services need to be restarted.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:43.3342989Z 
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:43.3343159Z No containers need to be restarted.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:43.3343450Z 
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:43.3343651Z No user sessions are running outdated binaries.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:43.3344296Z 
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:43.3345034Z No VM guests are running outdated hypervisor (qemu) binaries on this host.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:44.3741068Z ##[group]Run cargo fmt --all -- --check
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:44.3741434Z [36;1mcargo fmt --all -- --check[0m
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:44.3803511Z shell: /usr/bin/bash -e {0}
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:44.3803787Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:45.8035076Z ##[group]Run cargo clippy --locked --all-targets -- -D warnings
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:45.8035590Z [36;1mcargo clippy --locked --all-targets -- -D warnings[0m
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:45.8096965Z shell: /usr/bin/bash -e {0}
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:45.8097231Z ##[endgroup]
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:45.8940685Z     Updating crates.io index
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.5320351Z  Downloading crates ...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6294579Z   Downloaded askama_macros v0.16.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6407996Z   Downloaded anyhow v1.0.104
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6453853Z   Downloaded askama v0.16.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6536268Z   Downloaded scroll v0.12.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6611153Z   Downloaded enumflags2_derive v0.7.12
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6621920Z   Downloaded equivalent v1.0.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6660260Z   Downloaded bluez-generated v0.4.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6691524Z   Downloaded cfg-if v1.0.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6706881Z   Downloaded semver v1.0.28
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6750586Z   Downloaded endi v1.1.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6762712Z   Downloaded async-recursion v1.1.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6809596Z   Downloaded futures-macro v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6889815Z   Downloaded scroll_derive v0.12.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6900782Z   Downloaded serde v1.0.229
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6953327Z   Downloaded jni-sys v0.4.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6969787Z   Downloaded errno v0.3.14
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.6990400Z   Downloaded autocfg v1.5.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7018178Z   Downloaded cargo-platform v0.3.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7031328Z   Downloaded convert_case v0.6.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7049691Z   Downloaded dashmap v6.2.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7084398Z   Downloaded enumflags2 v0.7.12
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7100014Z   Downloaded hex v0.4.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7118202Z   Downloaded siphasher v1.0.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7132642Z   Downloaded dbus-tokio v0.7.6
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7146306Z   Downloaded pkg-config v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7162124Z   Downloaded futures-core v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7176150Z   Downloaded rustc_version v0.4.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7189384Z   Downloaded futures-task v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7201030Z   Downloaded itoa v1.0.18
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7216166Z   Downloaded find-msvc-tools v0.1.14
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7232179Z   Downloaded lock_api v0.4.14
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7244849Z   Downloaded napi-derive-backend v1.0.75
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7261149Z   Downloaded zvariant_derive v5.15.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7276659Z   Downloaded uniffi_internal_macros v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7288154Z   Downloaded uniffi_pipeline v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7300909Z   Downloaded percent-encoding v2.3.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7310320Z   Downloaded fallible-streaming-iterator v0.1.9
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7320303Z   Downloaded napi-build v2.4.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7329868Z   Downloaded futures-io v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7338530Z   Downloaded futures-sink v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7347770Z   Downloaded napi-sys v2.4.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7356823Z   Downloaded parking v2.2.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7367973Z   Downloaded event-listener-strategy v0.5.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7380047Z   Downloaded plain v0.2.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7390918Z   Downloaded same-file v1.0.6
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7404598Z   Downloaded heck v0.5.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7417096Z   Downloaded proc-macro-crate v3.5.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7431547Z   Downloaded rustc-hash v2.1.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7447982Z   Downloaded jni-sys-macros v0.4.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7457077Z   Downloaded ctor v0.2.9
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7468688Z   Downloaded serde_spanned v1.1.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7480727Z   Downloaded serde-xml-rs v0.8.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7541026Z   Downloaded smawk v0.3.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7558662Z   Downloaded tokio-macros v2.7.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7569611Z   Downloaded thiserror-impl v2.0.20
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7584625Z   Downloaded toml_datetime v1.1.1+spec-1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7603819Z   Downloaded fastrand v2.5.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7633292Z   Downloaded fs-err v3.3.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7666663Z   Downloaded camino v1.2.6
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7688171Z   Downloaded once_cell v1.21.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7722593Z   Downloaded pin-project-lite v0.2.17
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7812756Z   Downloaded cargo_metadata v0.23.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7834979Z   Downloaded foldhash v0.2.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7848605Z   Downloaded ordered-stream v0.2.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7861491Z   Downloaded either v1.18.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7879485Z   Downloaded glob v0.3.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7898038Z   Downloaded futures-executor v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7913917Z   Downloaded scopeguard v1.2.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7927477Z   Downloaded async-broadcast v0.7.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7947158Z   Downloaded async-trait v0.1.92
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.7993431Z   Downloaded napi-derive v2.16.13
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8007713Z   Downloaded quote v1.0.47
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8037867Z   Downloaded uniffi_build v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8046316Z   Downloaded uniffi_meta v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8061376Z   Downloaded basic-toml v0.1.10
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8205419Z   Downloaded crossbeam-utils v0.8.23
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8238284Z   Downloaded parking_lot_core v0.9.12
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8266533Z   Downloaded proc-macro2 v1.0.107
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8303179Z   Downloaded event-listener v5.4.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8321959Z   Downloaded fallible-iterator v0.3.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8336314Z   Downloaded futures-lite v2.6.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8353951Z   Downloaded hashlink v0.12.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8374836Z   Downloaded futures v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8436202Z   Downloaded jni-macros v0.22.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8454519Z   Downloaded bitflags v2.13.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8499721Z   Downloaded futures-channel v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8518826Z   Downloaded getrandom v0.4.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8557041Z   Downloaded log v0.4.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8582364Z   Downloaded bytes v1.12.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8617603Z   Downloaded zcheapstr v1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8635065Z   Downloaded tempfile v3.27.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8660489Z   Downloaded tokio-stream v0.1.19
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8712200Z   Downloaded simdutf8 v0.1.5
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8736130Z   Downloaded toml_writer v1.1.2+spec-1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8749746Z   Downloaded zbus_macros v5.19.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8765774Z   Downloaded zvariant_utils v4.2.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8785330Z   Downloaded serde_core v1.0.229
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8812606Z   Downloaded static_assertions v1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8826930Z   Downloaded zbus_names v4.3.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8842406Z   Downloaded askama_parser v0.16.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8885057Z   Downloaded thiserror v2.0.20
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8949931Z   Downloaded askama_derive v0.16.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.8991211Z   Downloaded dbus v0.9.12
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9033602Z   Downloaded memchr v2.8.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9090811Z   Downloaded minimal-lexical v0.2.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9159776Z   Downloaded napi v2.16.17
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9243580Z   Downloaded smallvec v1.16.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9258988Z   Downloaded tracing-attributes v0.1.31
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9286913Z   Downloaded combine v4.6.8
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9325481Z   Downloaded aho-corasick v1.1.5
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9379224Z   Downloaded indexmap v2.14.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9423295Z   Downloaded cc v1.5.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9456535Z   Downloaded mio v1.2.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9520570Z   Downloaded hashbrown v0.17.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9574789Z   Downloaded nom v7.1.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9626849Z   Downloaded weedle2 v5.0.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9643682Z   Downloaded uniffi v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9662340Z   Downloaded walkdir v2.5.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9681543Z   Downloaded zmij v1.0.23
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9700596Z   Downloaded signal-hook-registry v1.4.8
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9713416Z   Downloaded slab v0.4.12
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9726882Z   Downloaded uniffi_udl v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9742259Z   Downloaded serde_repr v0.1.21
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9762961Z   Downloaded shlex v2.0.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9776764Z   Downloaded toml_parser v1.1.3+spec-1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9799984Z   Downloaded xml v1.4.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9829511Z   Downloaded itertools v0.14.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9901841Z   Downloaded regex v1.13.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:46.9955023Z   Downloaded rusqlite v0.40.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0023372Z   Downloaded hashbrown v0.14.5
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0070895Z   Downloaded futures-util v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0204060Z   Downloaded goblin v0.8.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0261227Z   Downloaded jni v0.22.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0332620Z   Downloaded rustix v1.1.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0607723Z   Downloaded regex-syntax v0.8.11
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0674672Z   Downloaded tracing-core v0.1.36
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0701402Z   Downloaded uniffi_macros v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0725106Z   Downloaded textwrap v0.16.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0750711Z   Downloaded socket2 v0.6.5
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0769114Z   Downloaded toml v1.1.6+spec-1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0810061Z   Downloaded uniffi_core v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0833284Z   Downloaded uuid v1.26.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0862965Z   Downloaded serde_derive v1.0.229
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0893781Z   Downloaded toml_edit v0.25.15+spec-1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0933697Z   Downloaded unicode-ident v1.0.24
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.0961464Z   Downloaded zvariant v5.15.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.1031672Z   Downloaded unicode-segmentation v1.13.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.1060436Z   Downloaded regex-automata v0.4.18
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.1200012Z   Downloaded libc v0.2.189
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.1636997Z   Downloaded libdbus-sys v0.2.7
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.1948341Z   Downloaded winnow v1.0.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.2046134Z   Downloaded serde_json v1.0.151
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.2119190Z   Downloaded tokio-util v0.7.19
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.2199140Z   Downloaded zbus v5.19.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.2296429Z   Downloaded uniffi_bindgen v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.2479154Z   Downloaded linux-raw-sys v0.12.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.3095450Z   Downloaded vcpkg v0.2.15
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.3636334Z   Downloaded unicode-width v0.2.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.3690332Z   Downloaded syn v2.0.119
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.3795720Z   Downloaded syn v3.0.5
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.3901950Z   Downloaded simd_cesu8 v1.2.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.3946225Z   Downloaded tracing v0.1.44
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.4111412Z   Downloaded tokio v1.53.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.4574748Z   Downloaded libsqlite3-sys v0.38.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.6163167Z    Compiling proc-macro2 v1.0.107
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.6163814Z    Compiling quote v1.0.47
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.6164607Z    Compiling unicode-ident v1.0.24
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.6175138Z    Compiling serde_core v1.0.229
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.6775515Z    Compiling memchr v2.8.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:47.7995153Z    Compiling serde v1.0.229
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:48.4645189Z    Compiling winnow v1.0.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:48.5615670Z    Compiling syn v3.0.5
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:49.6995189Z    Compiling syn v2.0.119
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:49.9235521Z    Compiling hashbrown v0.17.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:50.1425364Z    Compiling equivalent v1.0.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:50.1755219Z    Compiling libc v0.2.189
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:50.5128997Z    Compiling indexmap v2.14.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:51.1925610Z     Checking pin-project-lite v0.2.17
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:51.3948082Z    Compiling toml_datetime v1.1.1+spec-1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:51.6098876Z    Compiling toml_parser v1.1.3+spec-1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:51.6260743Z     Checking futures-core v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:51.6905495Z     Checking once_cell v1.21.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:51.8175500Z    Compiling thiserror v2.0.20
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:52.0275236Z     Checking bitflags v2.13.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:52.1720373Z     Checking bytes v1.12.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:52.2305868Z    Compiling pkg-config v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:52.6065342Z     Checking cfg-if v1.0.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:52.6295254Z     Checking futures-sink v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:52.6755208Z    Compiling zmij v1.0.23
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:52.7155302Z     Checking futures-io v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:52.7695419Z    Compiling rustix v1.1.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:52.8375125Z     Checking foldhash v0.2.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:53.0695163Z     Checking errno v0.3.14
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:53.1305498Z     Checking linux-raw-sys v0.12.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:53.4315149Z     Checking fastrand v2.5.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:53.8155595Z    Compiling serde_derive v1.0.229
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:54.4385186Z    Compiling thiserror-impl v2.0.20
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:54.5332677Z    Compiling serde_json v1.0.151
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:54.8926195Z    Compiling enumflags2_derive v0.7.12
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:55.3007420Z    Compiling futures-macro v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:55.5605214Z    Compiling tokio-macros v2.7.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:55.9775895Z     Checking signal-hook-registry v1.4.8
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:56.0725194Z     Checking futures-channel v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:56.0775073Z    Compiling toml_edit v0.25.15+spec-1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:56.2135055Z     Checking mio v1.2.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:56.4665130Z     Checking socket2 v0.6.5
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:56.7065137Z     Checking log v0.4.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:56.8084883Z     Checking futures-task v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:56.9045305Z     Checking slab v0.4.12
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:57.1797530Z     Checking futures-util v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:57.4648776Z     Checking tokio v1.53.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:57.4875882Z    Compiling zvariant_utils v4.2.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:57.5085634Z    Compiling proc-macro-crate v3.5.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:57.9405058Z    Compiling libdbus-sys v0.2.7
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:58.4585050Z     Checking itoa v1.0.18
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:58.5425560Z     Checking ubm-core v0.1.0 (/home/runner/work/unified-ble-manager/unified-ble-manager/crates/ubm-core)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:58.5825540Z    Compiling zvariant_derive v5.15.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:59.0025175Z    Compiling shlex v2.0.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:59.1215254Z    Compiling find-msvc-tools v0.1.14
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:59.2925714Z     Checking parking v2.2.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:59.3415530Z    Compiling cc v1.5.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:36:59.4937973Z     Checking dbus v0.9.12
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:00.9155008Z    Compiling enumflags2 v0.7.12
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:01.0525391Z    Compiling zcheapstr v1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:01.1285444Z    Compiling vcpkg v0.2.15
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:01.1512073Z    Compiling parking_lot_core v0.9.12
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:01.2305650Z     Checking smallvec v1.16.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:01.2745214Z    Compiling endi v1.1.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:01.3625670Z    Compiling crossbeam-utils v0.8.23
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:01.3745552Z    Compiling zvariant v5.15.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:01.5465206Z     Checking futures-executor v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:01.6235160Z     Checking event-listener v5.4.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:01.7721679Z    Compiling libsqlite3-sys v0.38.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:02.0015123Z     Checking uuid v1.26.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:02.2425231Z     Checking scopeguard v1.2.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:02.2625630Z     Checking static_assertions v1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:02.2855383Z     Checking xml v1.4.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:02.2915187Z    Compiling btleplug v0.12.0 (/home/runner/work/unified-ble-manager/unified-ble-manager/vendor/btleplug)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:02.4795053Z     Checking either v1.18.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:02.6315016Z     Checking itertools v0.14.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:02.7275213Z     Checking serde-xml-rs v0.8.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:03.0825036Z     Checking lock_api v0.4.14
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:03.8595250Z    Compiling zbus_names v4.3.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:03.9545206Z     Checking event-listener-strategy v0.5.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:04.0175197Z     Checking futures v0.3.34
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:04.4375465Z     Checking dbus-tokio v0.7.6
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:04.5205188Z     Checking bluez-generated v0.4.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:04.5255003Z     Checking tokio-util v0.7.19
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:04.5715293Z    Compiling tracing-attributes v0.1.31
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:04.6535696Z    Compiling async-trait v0.1.92
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:04.7284955Z     Checking tracing-core v0.1.36
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:05.0595432Z     Checking hashbrown v0.14.5
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:05.4482913Z     Checking tokio-stream v0.1.19
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:05.4760915Z     Checking dashmap v6.2.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:05.6895382Z     Checking tracing v0.1.44
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:05.7067339Z     Checking bluez-async v0.8.2 (/home/runner/work/unified-ble-manager/unified-ble-manager/vendor/bluez-async)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:05.8225188Z    Compiling zbus_macros v5.19.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:06.1245204Z     Checking async-broadcast v0.7.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:06.2624854Z     Checking futures-lite v2.6.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:06.8705755Z    Compiling async-recursion v1.1.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:07.0515256Z    Compiling serde_repr v0.1.21
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:07.3072847Z     Checking hashlink v0.12.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:07.3655648Z     Checking ordered-stream v0.2.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:07.5715016Z     Checking hex v0.4.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:07.6058114Z     Checking fallible-streaming-iterator v0.1.9
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:07.6845194Z     Checking fallible-iterator v0.3.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:07.7536379Z    Compiling ubm-desktop v0.1.0 (/home/runner/work/unified-ble-manager/unified-ble-manager/crates/ubm-desktop)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:08.0695045Z    Compiling anyhow v1.0.104
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:08.2845212Z    Compiling getrandom v0.4.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:08.6015262Z     Checking zbus v5.19.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:08.8161685Z    Compiling uniffi_internal_macros v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:09.1265203Z    Compiling semver v1.0.28
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:09.6466486Z    Compiling camino v1.2.6
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:09.7365062Z    Compiling autocfg v1.5.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:10.0685164Z    Compiling rustc-hash v2.1.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:10.0735170Z    Compiling fs-err v3.3.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:10.1235385Z    Compiling askama_parser v0.16.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:11.2225627Z    Compiling basic-toml v0.1.10
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:11.8845710Z    Compiling scroll_derive v0.12.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:12.7355576Z    Compiling glob v0.3.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:13.0025902Z    Compiling askama_derive v0.16.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:14.7756708Z    Compiling tempfile v3.27.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:14.9695345Z    Compiling heck v0.5.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:15.0385458Z    Compiling siphasher v1.0.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:15.1215493Z    Compiling uniffi_pipeline v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:15.2125115Z     Checking rusqlite v0.40.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:15.3025515Z    Compiling uniffi_meta v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:15.5035215Z    Compiling serde_spanned v1.1.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:15.7055762Z    Compiling toml_writer v1.1.2+spec-1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:15.8665029Z    Compiling minimal-lexical v0.2.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:16.0565121Z    Compiling nom v7.1.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:16.1062592Z    Compiling toml v1.1.6+spec-1.1.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:16.8490303Z    Compiling askama_macros v0.16.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:17.4585493Z     Checking ubm-fake-radio v0.1.0 (/home/runner/work/unified-ble-manager/unified-ble-manager/crates/ubm-fake-radio)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:17.5825371Z    Compiling smawk v0.3.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:17.6485290Z    Compiling weedle2 v5.0.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:17.7235528Z    Compiling textwrap v0.16.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:18.2317503Z    Compiling scroll v0.12.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:18.4972500Z    Compiling plain v0.2.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:18.6655244Z    Compiling goblin v0.8.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:19.9355543Z    Compiling uniffi_udl v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:20.1775366Z    Compiling askama v0.16.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:22.2245327Z    Compiling uniffi_bindgen v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:22.7164847Z    Compiling uniffi_macros v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:23.1444970Z    Compiling rustc_version v0.4.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:23.8675046Z    Compiling cargo-platform v0.3.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:24.3485893Z     Checking ubm-mobile v0.1.0 (/home/runner/work/unified-ble-manager/unified-ble-manager/crates/ubm-mobile)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:24.3625112Z    Compiling aho-corasick v1.1.5
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:26.1975510Z    Compiling regex-syntax v0.8.11
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:26.8235215Z    Compiling same-file v1.0.6
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:27.1535524Z    Compiling uniffi_core v0.32.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:27.6785185Z    Compiling walkdir v2.5.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:27.8839926Z    Compiling regex-automata v0.4.18
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:28.5915349Z    Compiling cargo_metadata v0.23.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:29.8475606Z    Compiling jni-macros v0.22.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:30.3405312Z    Compiling simdutf8 v0.1.5
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:30.5405411Z    Compiling unicode-segmentation v1.13.3
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:30.9095168Z    Compiling convert_case v0.6.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:31.1780740Z    Compiling simd_cesu8 v1.2.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:31.2295008Z    Compiling regex v1.13.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:31.2805689Z    Compiling jni v0.22.4
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:31.3895469Z    Compiling jni-sys-macros v0.4.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:31.8095172Z    Compiling napi-build v2.4.2
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:32.0095570Z    Compiling ubm5_napi_echo v0.1.0 (/home/runner/work/unified-ble-manager/unified-ble-manager/bindings/napi)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:32.3995407Z     Checking jni-sys v0.4.1
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:32.5935126Z    Compiling napi-derive-backend v1.0.75
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:34.6732612Z    Compiling ctor v0.2.9
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:35.0255584Z     Checking combine v4.6.8
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:35.2395727Z     Checking napi-sys v2.4.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:35.2995626Z    Compiling ubm5_jni_echo v0.1.0 (/home/runner/work/unified-ble-manager/unified-ble-manager/bindings/jni)
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:35.7975240Z     Checking napi v2.16.17
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:38.6075312Z    Compiling napi-derive v2.16.13
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:56.3115432Z error[E0433]: cannot find module or crate `log` in this scope
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:56.3116896Z    --> crates/ubm-desktop/tests/../../../vendor/btleplug/src/active_operations.rs:172:13
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:56.3144672Z     |
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:56.3181052Z 172 |             log::error!(
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:56.3204798Z     |             ^^^ use of unresolved module or unlinked crate `log`
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:56.3234270Z 
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:56.3795228Z For more information about this error, try `rustc --explain E0433`.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:56.3835349Z error: could not compile `ubm-desktop` (test "winrt_discovery_retirement") due to 1 previous error
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:37:56.3837284Z warning: build failed, waiting for other jobs to finish...
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.4402738Z ##[error]Process completed with exit code 101.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.4542233Z Post job cleanup.
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.5376713Z [command]/usr/bin/git version
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.5415843Z git version 2.55.0
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.5459427Z Temporarily overriding HOME='/home/runner/work/_temp/6452df0f-b299-468a-85fb-919fcaf6f3c7' before making global git config changes
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.5460816Z Adding repository directory to the temporary git global config as a safe directory
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.5465740Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/unified-ble-manager/unified-ble-manager
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.5495313Z Removing SSH command configuration
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.5501949Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.5535549Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.5757054Z Removing HTTP extra header
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.5762117Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.5798312Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6023212Z Removing includeIf entries pointing to credentials config files
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6029652Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6056809Z includeif.gitdir:/home/runner/work/unified-ble-manager/unified-ble-manager/.git.path
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6057768Z includeif.gitdir:/home/runner/work/unified-ble-manager/unified-ble-manager/.git/worktrees/*.path
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6058349Z includeif.gitdir:/github/workspace/.git.path
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6058717Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6065476Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/unified-ble-manager/unified-ble-manager/.git.path
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6086721Z /home/runner/work/_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6096314Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/unified-ble-manager/unified-ble-manager/.git.path /home/runner/work/_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6132009Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/home/runner/work/unified-ble-manager/unified-ble-manager/.git/worktrees/*.path
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6154778Z /home/runner/work/_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6162572Z [command]/usr/bin/git config --local --unset includeif.gitdir:/home/runner/work/unified-ble-manager/unified-ble-manager/.git/worktrees/*.path /home/runner/work/_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6201576Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git.path
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6222225Z /github/runner_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6229706Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6260173Z [command]/usr/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6280870Z /github/runner_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6292121Z [command]/usr/bin/git config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6323269Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6537199Z Removing credentials config '/home/runner/work/_temp/git-credentials-75719d26-726d-4843-89a4-5858bb6bae8b.config'
+Rust 5.0 workspace (ubuntu-latest)	UNKNOWN STEP	2026-10-07T21:38:18.6690874Z Cleaning up orphan processes
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	﻿2026-10-07T21:39:38.8642190Z ##[group]Run cargo clippy --locked --all-targets -- -D warnings
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:38.8643590Z [36;1mcargo clippy --locked --all-targets -- -D warnings[0m
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:38.8724580Z shell: /bin/bash -e {0}
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:38.8725320Z ##[endgroup]
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:39.4055400Z     Updating crates.io index
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.0563440Z  Downloading crates ...
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.1451450Z   Downloaded futures-sink v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.1552610Z   Downloaded futures-macro v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.1614470Z   Downloaded foldhash v0.2.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.1706560Z   Downloaded crossbeam-utils v0.8.23
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.1828440Z   Downloaded aho-corasick v1.1.5
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.1983040Z   Downloaded askama_macros v0.16.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2020740Z   Downloaded dashmap v6.2.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2116720Z   Downloaded equivalent v1.0.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2141970Z   Downloaded fastrand v2.5.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2183460Z   Downloaded futures-core v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2221160Z   Downloaded block2 v0.5.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2267930Z   Downloaded cargo-platform v0.3.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2294990Z   Downloaded objc2-core-bluetooth v0.2.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2341710Z   Downloaded ctor v0.2.9
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2359510Z   Downloaded fallible-iterator v0.3.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2392800Z   Downloaded fs-err v3.3.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2438660Z   Downloaded futures v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2598930Z   Downloaded futures-channel v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2634350Z   Downloaded futures-io v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2650330Z   Downloaded futures-task v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2693290Z   Downloaded itoa v1.0.18
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2724570Z   Downloaded napi-build v2.4.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2771720Z   Downloaded percent-encoding v2.3.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2772360Z   Downloaded pin-project-lite v0.2.17
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2899120Z   Downloaded rustc_version v0.4.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2941020Z   Downloaded same-file v1.0.6
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.2989260Z   Downloaded signal-hook-registry v1.4.8
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3011560Z   Downloaded simdutf8 v0.1.5
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3089840Z   Downloaded askama_parser v0.16.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3177820Z   Downloaded autocfg v1.5.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3236150Z   Downloaded errno v0.3.14
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3266330Z   Downloaded fallible-streaming-iterator v0.1.9
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3289350Z   Downloaded hashlink v0.12.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3342080Z   Downloaded napi-derive-backend v1.0.75
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3377310Z   Downloaded heck v0.5.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3409570Z   Downloaded jni-sys-macros v0.4.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3427340Z   Downloaded lock_api v0.4.14
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3489940Z   Downloaded napi-derive v2.16.13
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3532410Z   Downloaded objc-sys v0.3.5
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3575130Z   Downloaded objc2-encode v4.1.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3599600Z   Downloaded once_cell v1.21.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3659890Z   Downloaded pkg-config v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3687740Z   Downloaded quote v1.0.47
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3747490Z   Downloaded rustc-hash v2.1.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3772350Z   Downloaded scopeguard v1.2.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3794650Z   Downloaded serde_derive v1.0.229
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3879830Z   Downloaded serde_spanned v1.1.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3897720Z   Downloaded siphasher v1.0.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3923790Z   Downloaded tokio-macros v2.7.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3942380Z   Downloaded uniffi_internal_macros v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3957580Z   Downloaded uniffi_pipeline v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.3975980Z   Downloaded askama v0.16.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4025900Z   Downloaded async-trait v0.1.92
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4091630Z   Downloaded basic-toml v0.1.10
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4306160Z   Downloaded convert_case v0.6.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4331100Z   Downloaded find-msvc-tools v0.1.14
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4359500Z   Downloaded futures-executor v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4396750Z   Downloaded jni-sys v0.4.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4412440Z   Downloaded log v0.4.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4453780Z   Downloaded napi-sys v2.4.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4465660Z   Downloaded plain v0.2.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4481830Z   Downloaded scroll_derive v0.12.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4493000Z   Downloaded serde v1.0.229
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4546600Z   Downloaded anyhow v1.0.104
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4618250Z   Downloaded bitflags v2.13.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4715070Z   Downloaded cfg-if v1.0.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4735150Z   Downloaded jni-macros v0.22.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4764910Z   Downloaded semver v1.0.28
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4802420Z   Downloaded cargo_metadata v0.23.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4849220Z   Downloaded parking_lot_core v0.9.12
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4928220Z   Downloaded scroll v0.12.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.4960860Z   Downloaded shlex v2.0.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.5008610Z   Downloaded camino v1.2.6
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.5046740Z   Downloaded glob v0.3.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.5126170Z   Downloaded mio v1.2.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.5295730Z   Downloaded getrandom v0.4.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.5425720Z   Downloaded proc-macro2 v1.0.107
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.5529090Z   Downloaded askama_derive v0.16.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.5627880Z   Downloaded bytes v1.12.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.5699650Z   Downloaded combine v4.6.8
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.5762880Z   Downloaded indexmap v2.14.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.5845320Z   Downloaded serde_core v1.0.229
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.5894150Z   Downloaded thiserror v2.0.20
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6036220Z   Downloaded thiserror-impl v2.0.20
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6065300Z   Downloaded toml_writer v1.1.2+spec-1.1.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6090740Z   Downloaded uniffi v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6125050Z   Downloaded uniffi_build v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6141730Z   Downloaded uniffi_meta v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6161570Z   Downloaded uniffi_udl v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6188340Z   Downloaded walkdir v2.5.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6237500Z   Downloaded weedle2 v5.0.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6267140Z   Downloaded cc v1.5.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6324130Z   Downloaded napi v2.16.17
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6461080Z   Downloaded slab v0.4.12
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6495560Z   Downloaded smallvec v1.16.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6517870Z   Downloaded smawk v0.3.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6550770Z   Downloaded static_assertions v1.1.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6588430Z   Downloaded tokio-stream v0.1.19
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6811390Z   Downloaded toml_datetime v1.1.1+spec-1.1.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6835510Z   Downloaded zmij v1.0.23
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.6872670Z   Downloaded memchr v2.8.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.7026560Z   Downloaded minimal-lexical v0.2.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.7175480Z   Downloaded hashbrown v0.17.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.7322170Z   Downloaded nom v7.1.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.7506950Z   Downloaded tempfile v3.27.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.7611320Z   Downloaded toml v1.1.6+spec-1.1.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.7773810Z   Downloaded toml_parser v1.1.3+spec-1.1.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.7860460Z   Downloaded goblin v0.8.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.8041070Z   Downloaded hashbrown v0.14.5
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.8167490Z   Downloaded serde_json v1.0.151
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.8410030Z   Downloaded uniffi_core v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.8529890Z   Downloaded uniffi_macros v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.8646220Z   Downloaded futures-util v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.9211290Z   Downloaded jni v0.22.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.9387470Z   Downloaded objc2-foundation v0.2.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.9791560Z   Downloaded regex v1.13.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.9959700Z   Downloaded socket2 v0.6.5
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:40.9990780Z   Downloaded rusqlite v0.40.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.0123280Z   Downloaded objc2 v0.5.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.0296680Z   Downloaded unicode-ident v1.0.24
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.0450750Z   Downloaded uuid v1.26.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.0534740Z   Downloaded textwrap v0.16.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.0632730Z   Downloaded unicode-segmentation v1.13.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.0723280Z   Downloaded simd_cesu8 v1.2.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.0829340Z   Downloaded tokio-util v0.7.19
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.1320950Z   Downloaded regex-syntax v0.8.11
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.1525920Z   Downloaded rustix v1.1.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.2555340Z   Downloaded winnow v1.0.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.2920690Z   Downloaded vcpkg v0.2.15
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.5293900Z   Downloaded unicode-width v0.2.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.5443260Z   Downloaded uniffi_bindgen v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.6130240Z   Downloaded syn v3.0.5
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.6426580Z   Downloaded syn v2.0.119
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.6909070Z   Downloaded regex-automata v0.4.18
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.7543580Z   Downloaded libc v0.2.189
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:41.9309880Z   Downloaded tokio v1.53.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:42.1362500Z   Downloaded libsqlite3-sys v0.38.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:42.4494630Z    Compiling proc-macro2 v1.0.107
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:42.4498680Z    Compiling quote v1.0.47
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:42.4499450Z    Compiling unicode-ident v1.0.24
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:42.8981120Z    Compiling serde_core v1.0.229
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:48.4766110Z    Compiling libc v0.2.189
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:48.9690110Z     Checking memchr v2.8.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:49.7130240Z    Compiling syn v3.0.5
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:50.1927880Z     Checking bitflags v2.13.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:50.3910710Z     Checking cfg-if v1.0.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:50.4282500Z     Checking once_cell v1.21.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:50.5470490Z    Compiling thiserror v2.0.20
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:50.7299580Z    Compiling zmij v1.0.23
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:51.0211820Z     Checking foldhash v0.2.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:51.1337920Z    Compiling serde_json v1.0.151
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:51.1584700Z     Checking hashbrown v0.17.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:51.3409530Z     Checking pin-project-lite v0.2.17
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:51.4179210Z     Checking futures-sink v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:51.4899170Z    Compiling objc-sys v0.3.5
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:51.6880950Z     Checking bytes v1.12.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:51.8020360Z     Checking futures-core v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:51.9145190Z     Checking ubm-core v0.1.0 (/Users/runner/work/unified-ble-manager/unified-ble-manager/crates/ubm-core)
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:52.2024580Z     Checking log v0.4.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:52.2969150Z     Checking itoa v1.0.18
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:52.4629740Z    Compiling find-msvc-tools v0.1.14
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:52.6769240Z     Checking objc2-encode v4.1.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:52.9013380Z    Compiling shlex v2.0.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:53.1414560Z    Compiling cc v1.5.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:53.3846060Z     Checking objc2 v0.5.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:54.4846390Z     Checking futures-channel v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:54.7683590Z    Compiling thiserror-impl v2.0.20
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:54.8692370Z    Compiling tokio-macros v2.7.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:55.2745380Z    Compiling futures-macro v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:55.6290330Z     Checking tokio v1.53.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:56.2251950Z     Checking smallvec v1.16.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:56.4558190Z     Checking futures-task v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:56.5867050Z     Checking slab v0.4.12
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:56.6175550Z    Compiling parking_lot_core v0.9.12
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:56.7362800Z    Compiling pkg-config v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:56.8966110Z    Compiling crossbeam-utils v0.8.23
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:57.2979830Z     Checking futures-io v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:57.3713230Z    Compiling vcpkg v0.2.15
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:57.3815030Z     Checking futures-util v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:58.0639800Z    Compiling libsqlite3-sys v0.38.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:58.1148190Z     Checking block2 v0.5.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:58.4123920Z     Checking scopeguard v1.2.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:58.5109480Z     Checking static_assertions v1.1.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:58.5837580Z    Compiling btleplug v0.12.0 (/Users/runner/work/unified-ble-manager/unified-ble-manager/vendor/btleplug)
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:58.9017180Z     Checking lock_api v0.4.14
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:39:59.6070380Z     Checking objc2-foundation v0.2.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:00.6098800Z     Checking futures-executor v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:01.0074190Z     Checking tokio-util v0.7.19
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:01.1727530Z     Checking hashbrown v0.14.5
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:01.1935570Z     Checking tokio-stream v0.1.19
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:01.6146820Z     Checking objc2-core-bluetooth v0.2.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:01.6953560Z     Checking dashmap v6.2.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:02.0728740Z     Checking futures v0.3.34
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:02.1300670Z    Compiling async-trait v0.1.92
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:02.1808060Z     Checking hashlink v0.12.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:02.5210880Z    Compiling ubm-desktop v0.1.0 (/Users/runner/work/unified-ble-manager/unified-ble-manager/crates/ubm-desktop)
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:03.0229760Z     Checking uuid v1.26.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:03.2361310Z     Checking fallible-streaming-iterator v0.1.9
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:03.3534290Z     Checking fallible-iterator v0.3.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:05.5666160Z    Compiling syn v2.0.119
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:08.5564270Z    Compiling anyhow v1.0.104
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:09.1905730Z    Compiling serde v1.0.229
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:09.6594030Z    Compiling rustix v1.1.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:10.1161220Z    Compiling getrandom v0.4.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:10.7265820Z    Compiling serde_derive v1.0.229
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:11.7148280Z     Checking rusqlite v0.40.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:14.8427760Z    Compiling equivalent v1.0.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:15.7013640Z    Compiling indexmap v2.14.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:15.7333250Z    Compiling winnow v1.0.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:17.3947560Z    Compiling uniffi_internal_macros v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:17.6880690Z    Compiling semver v1.0.28
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:18.5088480Z    Compiling camino v1.2.6
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:18.8128930Z    Compiling autocfg v1.5.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:18.9184650Z    Compiling rustc-hash v2.1.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:19.0384460Z    Compiling askama_parser v0.16.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:19.2840990Z    Compiling fs-err v3.3.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:19.5210180Z    Compiling errno v0.3.14
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:19.6732700Z    Compiling basic-toml v0.1.10
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:20.5958490Z    Compiling scroll_derive v0.12.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:21.5382050Z    Compiling glob v0.3.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:23.1171870Z     Checking ubm-mobile v0.1.0 (/Users/runner/work/unified-ble-manager/unified-ble-manager/crates/ubm-mobile)
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:23.4543730Z    Compiling askama_derive v0.16.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:25.8417440Z    Compiling fastrand v2.5.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:26.0786040Z    Compiling tempfile v3.27.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:26.4279700Z    Compiling heck v0.5.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:26.6014770Z    Compiling uniffi_pipeline v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:26.6453350Z    Compiling siphasher v1.0.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:26.7963590Z    Compiling uniffi_meta v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:27.1783110Z    Compiling toml_parser v1.1.3+spec-1.1.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:27.6953440Z    Compiling toml_datetime v1.1.1+spec-1.1.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:27.9151700Z    Compiling serde_spanned v1.1.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:28.0259100Z    Compiling toml_writer v1.1.2+spec-1.1.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:28.2335260Z    Compiling minimal-lexical v0.2.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:28.2450490Z    Compiling toml v1.1.6+spec-1.1.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:28.4420560Z    Compiling askama_macros v0.16.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:28.5047920Z    Compiling nom v7.1.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:29.9364200Z     Checking ubm-fake-radio v0.1.0 (/Users/runner/work/unified-ble-manager/unified-ble-manager/crates/ubm-fake-radio)
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:30.0435040Z    Compiling smawk v0.3.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:30.2558700Z    Compiling textwrap v0.16.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:30.3894510Z    Compiling weedle2 v5.0.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:30.6233230Z    Compiling scroll v0.12.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:30.8046240Z    Compiling plain v0.2.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:31.0346260Z    Compiling goblin v0.8.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:32.5915140Z    Compiling uniffi_udl v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:33.5621040Z    Compiling askama v0.16.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:34.6980110Z    Compiling uniffi_bindgen v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:35.7619390Z    Compiling uniffi_macros v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:37.9373500Z    Compiling rustc_version v0.4.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:38.7147910Z    Compiling aho-corasick v1.1.5
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:40.0020980Z    Compiling cargo-platform v0.3.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:40.6993280Z    Compiling same-file v1.0.6
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:40.7760060Z    Compiling regex-syntax v0.8.11
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:41.4756550Z    Compiling uniffi_core v0.32.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:42.8474470Z    Compiling walkdir v2.5.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:43.2166500Z    Compiling regex-automata v0.4.18
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:47.2136830Z    Compiling cargo_metadata v0.23.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:47.9104920Z    Compiling jni-macros v0.22.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:49.1753840Z    Compiling unicode-segmentation v1.13.3
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:49.4377510Z    Compiling simdutf8 v0.1.5
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:49.6323120Z    Compiling convert_case v0.6.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:49.7103420Z    Compiling simd_cesu8 v1.2.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:50.0112190Z    Compiling regex v1.13.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:50.4328980Z    Compiling jni v0.22.4
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:50.6692030Z    Compiling jni-sys-macros v0.4.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:51.5569910Z    Compiling napi-build v2.4.2
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:52.2795190Z    Compiling ubm5_napi_echo v0.1.0 (/Users/runner/work/unified-ble-manager/unified-ble-manager/bindings/napi)
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:54.5941690Z     Checking jni-sys v0.4.1
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:40:54.8669540Z    Compiling napi-derive-backend v1.0.75
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:41:02.0200270Z    Compiling ctor v0.2.9
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:41:02.5567780Z     Checking combine v4.6.8
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:41:09.3906530Z    Compiling ubm5_jni_echo v0.1.0 (/Users/runner/work/unified-ble-manager/unified-ble-manager/bindings/jni)
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:41:10.7138720Z     Checking napi-sys v2.4.0
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:41:10.8209230Z     Checking napi v2.16.17
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:41:21.8941560Z    Compiling napi-derive v2.16.13
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:41:52.1896070Z     Checking ubm5_wasm_echo v0.1.0 (/Users/runner/work/unified-ble-manager/unified-ble-manager/bindings/wasm)
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:42:07.3197150Z error[E0433]: cannot find module or crate `log` in this scope
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:42:07.3300290Z    --> crates/ubm-desktop/tests/../../../vendor/btleplug/src/active_operations.rs:172:13
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:42:07.3431820Z     |
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:42:07.3500970Z 172 |             log::error!(
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:42:07.3625620Z     |             ^^^ use of unresolved module or unlinked crate `log`
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:42:07.3711600Z 
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:42:07.4157780Z For more information about this error, try `rustc --explain E0433`.
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:42:07.4260680Z error: could not compile `ubm-desktop` (test "winrt_discovery_retirement") due to 1 previous error
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:42:07.4368320Z warning: build failed, waiting for other jobs to finish...
+Rust 5.0 workspace (macos-latest)	Reject Rust warnings	2026-10-07T21:42:22.5849300Z ##[error]Process completed with exit code 101.
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	﻿2026-10-07T21:36:21.9107517Z Current runner version: '2.337.0'
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9140101Z ##[group]Runner Image Provisioner
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9141428Z Hosted Compute Agent
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9142301Z Version: 20260901.588
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9143238Z Commit: f88ec8081b781fac6c440065ac7ff9e710ce3d0b
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9144399Z Build Date: 2026-09-01T19:56:44Z
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9145442Z Worker ID: {872d784f-a62c-4881-a168-d6791c411d11}
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9146550Z Azure Region: westus
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9147417Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9149318Z ##[group]Operating System
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9150351Z Microsoft Windows Server 2025
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9151299Z 10.0.26100
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9152064Z Datacenter
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9152846Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9153744Z ##[group]Runner Image
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9154649Z Image: windows-2025-vs2026
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9155558Z Version: 20260925.250.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9158229Z Included Software: https://github.com/actions/runner-images/blob/win25-vs2026/20260925.250/images/windows/Windows2025-VS2026-Readme.md
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9161055Z Image Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20260925.250
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9162707Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9164641Z ##[group]GITHUB_TOKEN Permissions
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9167051Z Contents: read
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9167942Z Metadata: read
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9168845Z PullRequests: read
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9169695Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9172373Z Secret source: Actions
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9173739Z Cache mode: write
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9174764Z Prepare workflow directory
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9670256Z Prepare all required actions
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:21.9720932Z Getting action download info
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.3296621Z Download action repository 'actions/checkout@v7.0.0' (SHA:9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.5929345Z Complete job name: Rust 5.0 workspace (windows-latest)
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7579262Z ##[group]Run actions/checkout@v7.0.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7580767Z with:
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7581436Z   repository: sfourdrinier/unified-ble-manager
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7586957Z   token: ***
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7587414Z   ssh-strict: true
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7587861Z   ssh-user: git
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7588314Z   persist-credentials: true
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7588823Z   clean: true
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7589289Z   sparse-checkout-cone-mode: true
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7589839Z   fetch-depth: 1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7590273Z   fetch-tags: false
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7590726Z   show-progress: true
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7591185Z   lfs: false
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7591604Z   submodules: false
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7592061Z   set-safe-directory: true
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7592593Z   allow-unsafe-pr-checkout: false
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.7593370Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9065802Z Syncing repository: sfourdrinier/unified-ble-manager
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9068249Z ##[group]Getting Git version info
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:22.9069124Z Working directory is 'D:\a\unified-ble-manager\unified-ble-manager'
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.0148975Z [command]"C:\Program Files\Git\bin\git.exe" version
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.3831204Z git version 2.55.0.windows.5
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.3884373Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.3899921Z Temporarily overriding HOME='D:\a\_temp\1955f1f6-5294-4ca8-83d6-1c0dbf2599cc' before making global git config changes
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.3901620Z Adding repository directory to the temporary git global config as a safe directory
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.3910953Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\unified-ble-manager\unified-ble-manager
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.4616279Z Deleting the contents of 'D:\a\unified-ble-manager\unified-ble-manager'
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.4621553Z ##[group]Determining repository object format
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.4623798Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.4632805Z ##[group]Initializing the repository
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.4634470Z [command]"C:\Program Files\Git\bin\git.exe" init D:\a\unified-ble-manager\unified-ble-manager
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.5559478Z Initialized empty Git repository in D:/a/unified-ble-manager/unified-ble-manager/.git/
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.5610220Z [command]"C:\Program Files\Git\bin\git.exe" remote add origin https://github.com/sfourdrinier/unified-ble-manager
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.6282773Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.6284217Z ##[group]Disabling automatic garbage collection
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.6292556Z [command]"C:\Program Files\Git\bin\git.exe" config --local gc.auto 0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.6583433Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.6584664Z ##[group]Setting up auth
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.6585699Z Removing SSH command configuration
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.6594503Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:23.6885307Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1581039Z Removing HTTP extra header
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1589201Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:25.1888267Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:25.7357358Z Removing includeIf entries pointing to credentials config files
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:25.7367569Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:25.7665807Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:26.3142820Z [command]"C:\Program Files\Git\bin\git.exe" config --file D:\a\_temp\git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:26.3477731Z [command]"C:\Program Files\Git\bin\git.exe" config --local includeIf.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git.path D:\a\_temp\git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:26.3783846Z [command]"C:\Program Files\Git\bin\git.exe" config --local includeIf.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git/worktrees/*.path D:\a\_temp\git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:26.4141225Z [command]"C:\Program Files\Git\bin\git.exe" config --local includeIf.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:26.4472486Z [command]"C:\Program Files\Git\bin\git.exe" config --local includeIf.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:26.4796435Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:26.4797078Z ##[group]Fetching the repository
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:26.4810521Z [command]"C:\Program Files\Git\bin\git.exe" -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +9916500f44a0789d25a83d9f1879e48456be8a70:refs/remotes/origin/release/5.0.0-rc.21
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:29.7864553Z From https://github.com/sfourdrinier/unified-ble-manager
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:29.7866332Z  * [new ref]         9916500f44a0789d25a83d9f1879e48456be8a70 -> origin/release/5.0.0-rc.21
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:29.7933205Z [command]"C:\Program Files\Git\bin\git.exe" branch --list --remote origin/release/5.0.0-rc.21
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:29.8679212Z   origin/release/5.0.0-rc.21
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:29.8725354Z [command]"C:\Program Files\Git\bin\git.exe" rev-parse refs/remotes/origin/release/5.0.0-rc.21
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:29.8996960Z 9916500f44a0789d25a83d9f1879e48456be8a70
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:29.9032222Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:29.9033919Z ##[group]Determining the checkout info
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:29.9034972Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:29.9042394Z [command]"C:\Program Files\Git\bin\git.exe" sparse-checkout disable
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:30.0165575Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all extensions.worktreeConfig
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:30.0464033Z ##[group]Checking out the ref
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:30.0476491Z [command]"C:\Program Files\Git\bin\git.exe" checkout --progress --force -B release/5.0.0-rc.21 refs/remotes/origin/release/5.0.0-rc.21
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:31.0107105Z Switched to a new branch 'release/5.0.0-rc.21'
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:31.0182840Z branch 'release/5.0.0-rc.21' set up to track 'origin/release/5.0.0-rc.21'.
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:31.0255489Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:31.0773233Z [command]"C:\Program Files\Git\bin\git.exe" log -1 --format=%H
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:31.1053088Z 9916500f44a0789d25a83d9f1879e48456be8a70
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:31.1478146Z ##[group]Run cargo --version
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:31.1478558Z [36;1mcargo --version[0m
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:31.1478835Z [36;1mrustup component add rustfmt clippy[0m
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:31.2100486Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:31.2101496Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:32.2270695Z info: syncing channel updates for 1.98.1-x86_64-pc-windows-msvc
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:32.8420430Z info: latest update on 2026-09-03 for version 1.98.1 (48a229cea 2026-09-01)
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:32.8537615Z info: downloading 5 components
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:42.5299425Z warn: the missing active toolchain `1.98.1-x86_64-pc-windows-msvc` has been auto-installed
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:42.5300236Z warn: this might cause rustup commands to take longer time to finish than expected
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:42.5301863Z info: you may opt out with `RUSTUP_AUTO_INSTALL=0` or `rustup set auto-install disable`
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:42.5491553Z cargo 1.98.1 (797e8a9bc 2026-08-05)
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:44.1324183Z info: component rustfmt is up to date
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:44.2484385Z info: component clippy is up to date
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:44.2673644Z ##[group]Run cargo clippy --locked --all-targets -- -D warnings
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:44.2674183Z [36;1mcargo clippy --locked --all-targets -- -D warnings[0m
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:44.2742515Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:44.2742869Z ##[endgroup]
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:49.6818921Z     Updating crates.io index
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.3356192Z  Downloading crates ...
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.4190746Z   Downloaded futures-io v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.4342628Z   Downloaded ctor v0.2.9
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.4448937Z   Downloaded askama_macros v0.16.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.4626906Z   Downloaded cfg-if v1.0.4
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.4771090Z   Downloaded futures-task v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.5080982Z   Downloaded percent-encoding v2.3.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.5201698Z   Downloaded cargo_metadata v0.23.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.5435995Z   Downloaded fs-err v3.3.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.5715878Z   Downloaded fallible-iterator v0.3.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.5829620Z   Downloaded rustc_version v0.4.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.5963883Z   Downloaded pkg-config v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.6152566Z   Downloaded scroll v0.12.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.6314761Z   Downloaded futures-core v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.9475993Z   Downloaded futures-sink v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.9577532Z   Downloaded napi-derive-backend v1.0.75
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.9824955Z   Downloaded siphasher v1.0.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:50.9969544Z   Downloaded smawk v0.3.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.0204728Z   Downloaded anyhow v1.0.104
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.0695385Z   Downloaded basic-toml v0.1.10
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.2334546Z   Downloaded find-msvc-tools v0.1.14
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.2504629Z   Downloaded shlex v2.0.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.2644555Z   Downloaded cargo-platform v0.3.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.2809833Z   Downloaded futures-macro v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.2933843Z   Downloaded quote v1.0.47
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.3285374Z   Downloaded lock_api v0.4.14
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.3384334Z   Downloaded plain v0.2.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.3488898Z   Downloaded fastrand v2.5.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.3607872Z   Downloaded uniffi_udl v0.32.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.3886881Z   Downloaded askama v0.16.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.4154781Z   Downloaded equivalent v1.0.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.4258668Z   Downloaded jni-macros v0.22.4
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.4455667Z   Downloaded napi-sys v2.4.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.4540432Z   Downloaded same-file v1.0.6
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.4677067Z   Downloaded textwrap v0.16.4
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.4971712Z   Downloaded itoa v1.0.18
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.5121058Z   Downloaded askama_parser v0.16.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.5557637Z   Downloaded simdutf8 v0.1.5
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.5800666Z   Downloaded static_assertions v1.1.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.6010842Z   Downloaded autocfg v1.5.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.6214607Z   Downloaded futures v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.6904760Z   Downloaded hashlink v0.12.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.7166272Z   Downloaded smallvec v1.16.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.7278806Z   Downloaded convert_case v0.6.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.7480289Z   Downloaded napi v2.16.17
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.8254157Z   Downloaded parking_lot_core v0.9.12
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.8493359Z   Downloaded serde v1.0.229
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.8871129Z   Downloaded bitflags v2.13.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.9485279Z   Downloaded bytes v1.12.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:51.9976770Z   Downloaded minimal-lexical v0.2.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.0530344Z   Downloaded windows-interface v0.59.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.0675430Z   Downloaded windows-result v0.4.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.0823417Z   Downloaded foldhash v0.2.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.5955720Z   Downloaded futures-executor v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.6107258Z   Downloaded serde_derive v1.0.229
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.6469816Z   Downloaded toml_datetime v1.1.1+spec-1.1.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.6605924Z   Downloaded combine v4.6.8
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.6952349Z   Downloaded proc-macro2 v1.0.107
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.7374742Z   Downloaded camino v1.2.6
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.7514611Z   Downloaded fallible-streaming-iterator v0.1.9
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.7602915Z   Downloaded indexmap v2.14.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.8047987Z   Downloaded toml v1.1.6+spec-1.1.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.8495389Z   Downloaded getrandom v0.4.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.8982803Z   Downloaded askama_derive v0.16.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.9390109Z   Downloaded jni-sys v0.4.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.9609349Z   Downloaded glob v0.3.4
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:52.9843519Z   Downloaded heck v0.5.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:53.0059502Z   Downloaded libloading v0.8.9
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:53.0307934Z   Downloaded napi-build v2.4.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:53.0433495Z   Downloaded async-trait v0.1.92
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:53.0935550Z   Downloaded scroll_derive v0.12.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:53.1091198Z   Downloaded dashmap v6.2.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:53.1338801Z   Downloaded serde_spanned v1.1.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:53.1472242Z   Downloaded semver v1.0.28
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:53.1711711Z   Downloaded cc v1.5.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:53.2048579Z   Downloaded hashbrown v0.17.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:53.2522839Z   Downloaded pin-project-lite v0.2.17
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:53.4025837Z   Downloaded rustc-hash v2.1.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:53.7527933Z   Downloaded uniffi_macros v0.32.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:53.8791237Z   Downloaded mio v1.2.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:54.3105012Z   Downloaded once_cell v1.21.4
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:54.4513599Z   Downloaded windows-core v0.62.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:54.7396467Z   Downloaded toml_writer v1.1.2+spec-1.1.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:54.7798053Z   Downloaded log v0.4.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:54.9355168Z   Downloaded memchr v2.8.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:55.2171287Z   Downloaded crossbeam-utils v0.8.23
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:55.3117026Z   Downloaded socket2 v0.6.5
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:55.3333903Z   Downloaded scopeguard v1.2.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:55.4460028Z   Downloaded aho-corasick v1.1.5
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:55.7478709Z   Downloaded napi-derive v2.16.13
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:55.8140668Z   Downloaded slab v0.4.12
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:55.8752902Z   Downloaded thiserror-impl v2.0.20
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:55.9855035Z   Downloaded tokio-macros v2.7.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:56.0508585Z   Downloaded futures-channel v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:56.8267707Z   Downloaded goblin v0.8.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:56.9769335Z   Downloaded hashbrown v0.14.5
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:57.0196360Z   Downloaded jni v0.22.4
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:57.1118746Z   Downloaded uniffi_build v0.32.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:57.1213028Z   Downloaded tempfile v3.27.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:57.1506624Z   Downloaded serde_core v1.0.229
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:57.1833975Z   Downloaded tokio-stream v0.1.19
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:57.3095862Z   Downloaded thiserror v2.0.20
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:57.4093216Z   Downloaded uniffi_internal_macros v0.32.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:57.4194332Z   Downloaded windows-threading v0.2.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:57.4286723Z   Downloaded serde_json v1.0.151
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:57.5144816Z   Downloaded windows-strings v0.5.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:57.5335135Z   Downloaded futures-util v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.1892572Z   Downloaded regex v1.13.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.2529728Z   Downloaded nom v7.1.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.3251470Z   Downloaded syn v2.0.119
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.4312068Z   Downloaded rusqlite v0.40.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.5205301Z   Downloaded tokio-util v0.7.19
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.6061461Z   Downloaded regex-syntax v0.8.11
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.6576803Z   Downloaded simd_cesu8 v1.2.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.6879352Z   Downloaded syn v3.0.5
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.7902792Z   Downloaded windows-collections v0.3.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.8019434Z   Downloaded unicode-ident v1.0.24
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.8322359Z   Downloaded uniffi_pipeline v0.32.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.8414287Z   Downloaded windows-numerics v0.3.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.8583675Z   Downloaded windows-implement v0.60.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:58.8747057Z   Downloaded regex-automata v0.4.18
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:59.3398682Z   Downloaded uniffi v0.32.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:59.3606356Z   Downloaded winapi-util v0.1.11
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:59.3789744Z   Downloaded tokio v1.53.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:36:59.8301725Z   Downloaded windows-link v0.2.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.1982100Z   Downloaded zmij v1.0.23
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.2121900Z   Downloaded uniffi_meta v0.32.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.2233812Z   Downloaded walkdir v2.5.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.2382193Z   Downloaded windows-future v0.3.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.2524279Z   Downloaded toml_parser v1.1.3+spec-1.1.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.2701164Z   Downloaded weedle2 v5.0.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.2888581Z   Downloaded uniffi_core v0.32.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.3096285Z   Downloaded uuid v1.26.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.5672802Z   Downloaded unicode-segmentation v1.13.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.5830146Z   Downloaded winnow v1.0.4
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.6674391Z   Downloaded libsqlite3-sys v0.38.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.7535169Z   Downloaded unicode-width v0.2.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.7712542Z   Downloaded uniffi_bindgen v0.32.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:00.9589308Z   Downloaded vcpkg v0.2.15
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:02.4821562Z   Downloaded jni-sys-macros v0.4.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:02.4936709Z   Downloaded windows-sys v0.61.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:02.8168795Z   Downloaded windows v0.62.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:04.4719104Z    Compiling proc-macro2 v1.0.107
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:04.4720039Z    Compiling unicode-ident v1.0.24
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:04.4720827Z    Compiling quote v1.0.47
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:04.4722030Z    Compiling serde_core v1.0.229
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:04.6166257Z     Checking windows-link v0.2.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:04.6664101Z     Checking memchr v2.8.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:05.0631915Z     Checking cfg-if v1.0.4
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:05.0956843Z    Compiling thiserror v2.0.20
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:07.4299207Z     Checking once_cell v1.21.4
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:07.4971164Z    Compiling zmij v1.0.23
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:07.7917928Z     Checking foldhash v0.2.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:07.9059860Z    Compiling serde_json v1.0.151
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:07.9259847Z     Checking hashbrown v0.17.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:08.2788040Z     Checking pin-project-lite v0.2.17
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:08.7932640Z    Compiling syn v2.0.119
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:08.8332036Z    Compiling syn v3.0.5
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:08.8954367Z     Checking windows-sys v0.61.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:10.5014526Z     Checking futures-sink v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:10.5927537Z     Checking bytes v1.12.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:10.6430131Z     Checking futures-core v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:10.7582971Z     Checking windows-strings v0.5.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:10.9858267Z     Checking windows-result v0.4.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:11.1534545Z     Checking ubm-core v0.1.0 (D:\a\unified-ble-manager\unified-ble-manager\crates\ubm-core)
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:11.2725672Z     Checking itoa v1.0.18
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:11.4466247Z     Checking log v0.4.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:11.6099602Z    Compiling find-msvc-tools v0.1.14
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:12.9542271Z    Compiling shlex v2.0.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:12.9640954Z     Checking futures-channel v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:13.1877891Z    Compiling cc v1.5.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:13.2219458Z     Checking futures-io v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:13.3368238Z    Compiling vcpkg v0.2.15
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:14.4341121Z     Checking smallvec v1.16.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:14.6943296Z     Checking slab v0.4.12
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:14.8739159Z     Checking futures-task v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:15.0249472Z    Compiling crossbeam-utils v0.8.23
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:15.4143697Z    Compiling pkg-config v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:15.6507569Z    Compiling thiserror-impl v2.0.20
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:15.7035517Z    Compiling tokio-macros v2.7.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:16.2793430Z    Compiling futures-macro v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:16.7524494Z     Checking tokio v1.53.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:17.3411512Z    Compiling windows-interface v0.59.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:17.5037248Z    Compiling windows-implement v0.60.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:17.8234303Z    Compiling parking_lot_core v0.9.12
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:18.1675751Z     Checking futures-util v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:18.5540658Z    Compiling libsqlite3-sys v0.38.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:18.6490951Z     Checking windows-core v0.62.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:19.1082732Z     Checking windows-threading v0.2.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:19.1981742Z     Checking bitflags v2.13.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:19.3716217Z     Checking scopeguard v1.2.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:19.4290509Z     Checking static_assertions v1.1.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:19.4459323Z    Compiling btleplug v0.12.0 (D:\a\unified-ble-manager\unified-ble-manager\vendor\btleplug)
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:19.4819781Z     Checking lock_api v0.4.14
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:19.5394800Z     Checking tokio-util v0.7.19
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:19.7592831Z     Checking windows-future v0.3.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:20.3922546Z     Checking windows-numerics v0.3.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:20.5220545Z     Checking windows-collections v0.3.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:20.9725289Z     Checking hashbrown v0.14.5
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:21.0852338Z     Checking windows v0.62.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:21.6021907Z     Checking futures-executor v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:21.6136307Z     Checking dashmap v6.2.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:21.7341376Z     Checking futures v0.3.34
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:21.8131945Z     Checking tokio-stream v0.1.19
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:21.9870865Z    Compiling async-trait v0.1.92
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:22.2766912Z     Checking hashlink v0.12.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:22.6247927Z     Checking fallible-streaming-iterator v0.1.9
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:22.7670263Z    Compiling ubm-desktop v0.1.0 (D:\a\unified-ble-manager\unified-ble-manager\crates\ubm-desktop)
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:23.2237622Z     Checking uuid v1.26.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:23.4982872Z     Checking fallible-iterator v0.3.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:24.8448979Z    Compiling anyhow v1.0.104
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:25.3577698Z    Compiling getrandom v0.4.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:25.6601586Z    Compiling serde v1.0.229
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:26.9607770Z    Compiling serde_derive v1.0.229
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:28.4231770Z    Compiling equivalent v1.0.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:28.5109299Z     Checking rusqlite v0.40.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:29.3778073Z    Compiling indexmap v2.14.2
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:29.6322763Z    Compiling winnow v1.0.4
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:30.6967602Z    Compiling uniffi_internal_macros v0.32.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:31.5137276Z    Compiling semver v1.0.28
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:32.0280770Z    Compiling camino v1.2.6
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:32.3090204Z    Compiling autocfg v1.5.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:32.4928289Z    Compiling rustc-hash v2.1.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:32.6037722Z    Compiling scroll_derive v0.12.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:32.9211678Z    Compiling fs-err v3.3.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:33.1414169Z    Compiling basic-toml v0.1.10
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:33.1652253Z    Compiling askama_parser v0.16.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:33.5843427Z    Compiling glob v0.3.4
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:34.2905502Z    Compiling fastrand v2.5.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:34.3685906Z    Compiling heck v0.5.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:34.5799957Z    Compiling tempfile v3.27.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:34.6870178Z    Compiling siphasher v1.0.3
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:34.9360178Z    Compiling uniffi_pipeline v0.32.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:35.2700486Z    Compiling uniffi_meta v0.32.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:35.7578409Z    Compiling toml_parser v1.1.3+spec-1.1.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:36.7260523Z    Compiling toml_datetime v1.1.1+spec-1.1.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:36.9469988Z    Compiling serde_spanned v1.1.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:37.1322577Z    Compiling minimal-lexical v0.2.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:37.2193018Z    Compiling askama_derive v0.16.1
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:37.7552694Z    Compiling toml_writer v1.1.2+spec-1.1.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:38.0347648Z    Compiling toml v1.1.6+spec-1.1.0
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.2718005Z error: explicit call to `.into_iter()` in function argument accepting `IntoIterator`
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.2743468Z    --> crates\ubm-desktop\src\os\windows.rs:376:28
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.2803918Z     |
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.2805163Z 376 |             devices.extend(records.into_iter());
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.2948386Z     |                            ^^^^^^^^^^^^^^^^^^^
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.2949953Z     |
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.2951285Z note: this parameter accepts any `IntoIterator`, so you don't need to call `.into_iter()`
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.3042298Z    --> /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library\core\src\iter\traits\collect.rs:416:17
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.3062586Z     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_conversion
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.3120229Z     = note: `-D clippy::useless-conversion` implied by `-D warnings`
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.3122621Z     = help: to override `-D warnings` add `#[allow(clippy::useless_conversion)]`
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.3123927Z help: consider removing the `.into_iter()`
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.3125446Z     |
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.3125853Z 376 -             devices.extend(records.into_iter());
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.3281197Z 376 +             devices.extend(records);
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.3368278Z     |
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.3442071Z 
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.6629725Z error: could not compile `ubm-desktop` (lib) due to 1 previous error
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:39.6668966Z warning: build failed, waiting for other jobs to finish...
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:41.4547859Z ##[error]Process completed with exit code 1.
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:41.4811170Z Post job cleanup.
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:41.6896123Z [command]"C:\Program Files\Git\bin\git.exe" version
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:41.7199960Z git version 2.55.0.windows.5
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:41.7274697Z Temporarily overriding HOME='D:\a\_temp\d267358b-16d6-4023-935f-a50db4cb6bfa' before making global git config changes
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:41.7276545Z Adding repository directory to the temporary git global config as a safe directory
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:41.7286320Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\unified-ble-manager\unified-ble-manager
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:41.7590944Z Removing SSH command configuration
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:41.7603831Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:41.7903812Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:42.3338184Z Removing HTTP extra header
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:42.3348542Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:42.3653738Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:42.9063360Z Removing includeIf entries pointing to credentials config files
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:42.9073726Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:42.9335703Z includeif.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git.path
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:42.9336964Z includeif.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git/worktrees/*.path
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:42.9337487Z includeif.gitdir:/github/workspace/.git.path
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:42.9337850Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:42.9378033Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git.path
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:42.9635688Z D:\a\_temp\git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:42.9680290Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git.path D:\a\_temp\git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:43.0024432Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git/worktrees/*.path
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:43.0285779Z D:\a\_temp\git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:43.0328817Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:D:/a/unified-ble-manager/unified-ble-manager/.git/worktrees/*.path D:\a\_temp\git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:43.0626008Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:/github/workspace/.git.path
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:43.0886572Z /github/runner_temp/git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:43.0927514Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:/github/workspace/.git.path /github/runner_temp/git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:43.1236260Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:43.1497422Z /github/runner_temp/git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:43.1541742Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path /github/runner_temp/git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:43.1846710Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:43.7317570Z Removing credentials config 'D:\a\_temp\git-credentials-aa7ee0a6-da86-4460-b1da-08655feccb62.config'
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:43.7513818Z Cleaning up orphan processes
+Rust 5.0 workspace (windows-latest)	UNKNOWN STEP	2026-10-07T21:37:43.8291491Z Terminate orphan process: pid (2412) (vctip)

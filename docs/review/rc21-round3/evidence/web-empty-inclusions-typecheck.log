@@ -1,0 +1,4 @@
+
+> unified-ble-manager@5.0.0-rc.21 typecheck /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> tsc --noEmit -p tsconfig.build.json
+

@@ -44,6 +44,17 @@ async function run(argv = process.argv.slice(2)) {
     if (actual !== manifest.upstream.sha256) throw new Error('Refusing mismatched upstream BlueZ archive')
     const { buildBundle } = await import(pathToFileURL(path.join(assets, 'deployment/bundle.mjs')).href)
     const receipt = buildBundle({ archive, output: path.join(scratch, 'bundle'), work: path.join(scratch, 'work') })
+    execFileSync(
+      'python3',
+      [
+        path.join(__dirname, 'bluez-pair-bearer-controls.py'),
+        '--source',
+        path.join(scratch, 'work/test-source/bluez-5.87'),
+        '--output',
+        path.join(scratch, 'pair-bearer-controls')
+      ],
+      { stdio: 'inherit' }
+    )
     console.log(JSON.stringify({ release: receipt.release, qualification: receipt.qualification }))
     completed = true
   } finally {

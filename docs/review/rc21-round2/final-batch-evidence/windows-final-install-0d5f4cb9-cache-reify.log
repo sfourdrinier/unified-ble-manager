@@ -1,0 +1,10 @@
+{"guestPid": 13200}
+{"pendingGuestPid": 13200}
+{"guestPid": 13200}
+{"pendingGuestPid": 13200}
+{"guestPid": 13200}
+
+changed 1 package in 2m
+{"phase":"fresh-final-canonical-install","version":"5.0.0-rc.21","source":"0d5f4cb9","sha256":"60050759afe7cbca2564ecaef83b8c497e5f2231b6c0858916dc6f8c7baaaef2","previousPreparationFailure":"initial native command quoting, then two-minute archive reification limit; no BLE operation budget changed"}
+
+{"exitcode": 0, "outTruncated": false, "errTruncated": false}

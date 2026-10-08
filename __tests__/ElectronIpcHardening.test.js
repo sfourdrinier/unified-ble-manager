@@ -10,7 +10,7 @@ const { normalizeScanQuery } = require('../src/public/scan-query')
 const { snapshotScanPlan } = require('../src/backend-contract/scan-planning')
 
 function negotiated(axis) {
-  const selected = version(axis, axis === 'ipc-protocol' ? 5 : 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 6 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -1780,7 +1780,7 @@ describe('Electron deadline budget across process clocks', () => {
 // PR210-73: the renderer/main wire changed (relative `budgetMs`, `commit` on
 // errors), so the IPC protocol is 3. A mixed pair fails at bootstrap as
 // protocol.incompatible, in both directions, before any operation.
-describe('Electron IPC protocol version 5', () => {
+describe('Electron IPC protocol version 6', () => {
   const { IPC_PROTOCOL_VERSION } = require('../src/ipc/protocol')
   const { negotiateVersion } = require('../src/backend-contract/primitives')
   const { BackendContractError } = require('../src/backend-contract/errors')
@@ -1810,12 +1810,12 @@ describe('Electron IPC protocol version 5', () => {
     }
   }
 
-  test('the renderer offers exactly IPC protocol 5', () => {
-    expect(IPC_PROTOCOL_VERSION).toBe(5)
-    expect(IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol).toEqual(protocolRange(5))
+  test('the renderer offers exactly IPC protocol 6', () => {
+    expect(IPC_PROTOCOL_VERSION).toBe(6)
+    expect(IPC_CLIENT_COMPATIBILITY_OFFER.ipcProtocol).toEqual(protocolRange(6))
   })
 
-  test.each([3, 4])(
+  test.each([3, 4, 5])(
     'new main refuses protocol %s renderer at bootstrap with no lease and no effects',
     async oldVersion => {
       const connect = jest.fn()
@@ -1833,7 +1833,7 @@ describe('Electron IPC protocol version 5', () => {
         kind: 'bootstrap',
         offer: IPC_CLIENT_COMPATIBILITY_OFFER
       })
-      expect(response.bootstrap.versions.ipcProtocol.selected).toEqual(version('ipc-protocol', 5))
+      expect(response.bootstrap.versions.ipcProtocol.selected).toEqual(version('ipc-protocol', 6))
       await current.router.destroy()
     }
   )
@@ -1859,7 +1859,7 @@ describe('Electron IPC protocol version 5', () => {
     expect(transport.invoke.mock.calls.map(([request]) => request.kind)).toEqual(['bootstrap'])
   })
 
-  test.each([3, 4])('new renderer refuses bootstrap protocol %s and releases its lease', async oldVersion => {
+  test.each([3, 4, 5])('new renderer refuses bootstrap protocol %s and releases its lease', async oldVersion => {
     const transport = {
       invoke: jest.fn(async request => {
         if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: clientBootstrap(oldVersion) }

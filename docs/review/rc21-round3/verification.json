@@ -1,0 +1,616 @@
+{
+  "reviewed_head": "ca8f66ad9ce5b7693d703bb6f0c400865b4ada94",
+  "verified_head": "8f877ec839caa150a3f37d1fde8382f5273da04a",
+  "verdict": "release-blocked",
+  "findings_count": 17,
+  "priority_counts": {
+    "P1": 1,
+    "P2": 16
+  },
+  "executed_findings": 11,
+  "source_confirmed_findings": 6,
+  "original_handoff_zip_sha256": "1906d3c114f212b357cf590a4b7f4f11465afd1711252d99ce3cb42fdbba2f37",
+  "original_bundle_manifest_verified_files": 74,
+  "items": [
+    {
+      "id": "R3-01",
+      "priority": "P1",
+      "title": "Electron rollback can release a different operation's successful connection",
+      "status": "confirmed-open",
+      "verification": "executed-controlled-reproduction",
+      "references": [
+        {
+          "path": "src/electron/main-router.ts",
+          "start": 452,
+          "end": 453,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/electron/main-router.ts#L452-L453"
+        },
+        {
+          "path": "src/electron/main-router.ts",
+          "start": 580,
+          "end": 601,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/electron/main-router.ts#L580-L601"
+        },
+        {
+          "path": "src/electron/main-router.ts",
+          "start": 1871,
+          "end": 1989,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/electron/main-router.ts#L1871-L1989"
+        },
+        {
+          "path": "src/backend-contract/ipc.ts",
+          "start": 241,
+          "end": 279,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backend-contract/ipc.ts#L241-L279"
+        }
+      ],
+      "correction": "Attribute every provisional acquisition to its exact operation/correlation. Compensate only the resources created by that operation and retain their cleanup debt until confirmed. Keep concurrent unrelated work independent."
+    },
+    {
+      "id": "R3-02",
+      "priority": "P2",
+      "title": "Real Electron and Tauri initialization still disables implemented connection priority",
+      "status": "confirmed-open",
+      "verification": "executed-controlled-reproduction",
+      "references": [
+        {
+          "path": "src/ipc/manager.ts",
+          "start": 383,
+          "end": 396,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/ipc/manager.ts#L383-L396"
+        },
+        {
+          "path": "src/ipc/manager.ts",
+          "start": 1621,
+          "end": 1639,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/ipc/manager.ts#L1621-L1639"
+        },
+        {
+          "path": "src/ipc/public-manager.ts",
+          "start": 1127,
+          "end": 1144,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/ipc/public-manager.ts#L1127-L1144"
+        },
+        {
+          "path": "__tests__/ipc/public-manager-controls.test.js",
+          "start": 196,
+          "end": 218,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/__tests__/ipc/public-manager-controls.test.js#L196-L218"
+        }
+      ],
+      "correction": "Remove priority from the unconditional unsupported set and preserve native supported/limited/unavailable/unsupported states and limitations. Keep public admission and native request truth intact."
+    },
+    {
+      "id": "R3-03",
+      "priority": "P2",
+      "title": "Electron changes an accepted priority request into a timeout after completion",
+      "status": "confirmed-open",
+      "verification": "executed-controlled-reproduction",
+      "references": [
+        {
+          "path": "src/electron/main-router.ts",
+          "start": 514,
+          "end": 531,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/electron/main-router.ts#L514-L531"
+        },
+        {
+          "path": "src/electron/main-router.ts",
+          "start": 580,
+          "end": 598,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/electron/main-router.ts#L580-L598"
+        },
+        {
+          "path": "src/electron/main-router.ts",
+          "start": 2430,
+          "end": 2449,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/electron/main-router.ts#L2430-L2449"
+        }
+      ],
+      "correction": "Include priority in the appropriate completed-effect policy and preserve the owner's settled acceptance/rejection. Do not invent rollback or measured outcomes."
+    },
+    {
+      "id": "R3-04",
+      "priority": "P2",
+      "title": "WinRT physical loss makes retained discovery cleanup debt unreachable",
+      "status": "confirmed-open",
+      "verification": "joined-source-confirmation",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/btleplug_backend.rs",
+          "start": 1414,
+          "end": 1432,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/btleplug_backend.rs#L1414-L1432"
+        },
+        {
+          "path": "crates/ubm-desktop/src/btleplug_backend.rs",
+          "start": 2084,
+          "end": 2114,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/btleplug_backend.rs#L2084-L2114"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/peripheral.rs",
+          "start": 797,
+          "end": 809,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/vendor/btleplug/src/winrtble/peripheral.rs#L797-L809"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/device.rs",
+          "start": 160,
+          "end": 221,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/vendor/btleplug/src/winrtble/ble/device.rs#L160-L221"
+        },
+        {
+          "path": "crates/ubm-desktop/src/central.rs",
+          "start": 4201,
+          "end": 4211,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/central.rs#L4201-L4211"
+        },
+        {
+          "path": "crates/ubm-desktop/src/central.rs",
+          "start": 6796,
+          "end": 6808,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/central.rs#L6796-L6808"
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start": 4007,
+          "end": 4012,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backends/desktop/desktop-rust-core-provider.ts#L4007-L4012"
+        }
+      ],
+      "correction": "Track vendor device/discovery cleanup debt independently from logical link state. Release and close must keep visiting the exact owner, return retryable pending cleanup, and complete after natural native retirement. Preserve the safe avoidance of unconditional WinRT Cancel."
+    },
+    {
+      "id": "R3-05",
+      "priority": "P2",
+      "title": "Shutdown can race notification polling and strand an owned continuation queue",
+      "status": "confirmed-open",
+      "verification": "joined-source-confirmation",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/central.rs",
+          "start": 6421,
+          "end": 6425,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/central.rs#L6421-L6425"
+        },
+        {
+          "path": "crates/ubm-desktop/src/central.rs",
+          "start": 2482,
+          "end": 2488,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/central.rs#L2482-L2488"
+        },
+        {
+          "path": "crates/ubm-desktop/src/central.rs",
+          "start": 6584,
+          "end": 6590,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/central.rs#L6584-L6590"
+        },
+        {
+          "path": "crates/ubm-desktop/src/continuation_adapter.rs",
+          "start": 331,
+          "end": 343,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/continuation_adapter.rs#L331-L343"
+        },
+        {
+          "path": "crates/ubm-desktop/src/continuation_adapter.rs",
+          "start": 459,
+          "end": 465,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/continuation_adapter.rs#L459-L465"
+        }
+      ],
+      "correction": "Make owned-consumer draining independent of new radio-work admission across the shutdown transition. Preserve ownership validation and terminal order. Do not permanently retire a recoverable owned route solely because shutdown admission closed.",
+      "qualification": "Confirmed admission race and premature terminal with omitted pre-cutoff retained values. Later disposal can drain the queue; permanent memory leak or permanent resource stranding is not established. No forced native schedule executed."
+    },
+    {
+      "id": "R3-06",
+      "priority": "P2",
+      "title": "Established Tauri parameter streams still replay old reports after a fresh gap snapshot",
+      "status": "confirmed-open",
+      "verification": "joined-source-confirmation",
+      "references": [
+        {
+          "path": "native/tauri/src/connection_parameters.rs",
+          "start": 317,
+          "end": 355,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/native/tauri/src/connection_parameters.rs#L317-L355"
+        }
+      ],
+      "correction": "Create an explicit bounded source boundary for established Tauri queues before reconciliation. Discard pre-boundary values while preserving failures/terminals, and fence concurrent getter/event ordering and connection generations."
+    },
+    {
+      "id": "R3-07",
+      "priority": "P2",
+      "title": "A delayed readiness reprobe overwrites a newer live readiness event",
+      "status": "confirmed-open",
+      "verification": "executed-controlled-reproduction",
+      "references": [
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start": 3283,
+          "end": 3305,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backends/desktop/desktop-rust-core-provider.ts#L3283-L3305"
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start": 3312,
+          "end": 3335,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backends/desktop/desktop-rust-core-provider.ts#L3312-L3335"
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start": 3337,
+          "end": 3366,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backends/desktop/desktop-rust-core-provider.ts#L3337-L3366"
+        }
+      ],
+      "correction": "Fence successful and failed probe results against the accepted event revision and watch/connection generation. Apply to periodic polling and gap reconciliation."
+    },
+    {
+      "id": "R3-08",
+      "priority": "P2",
+      "title": "Android security cannot explicitly recover from a transient source failure",
+      "status": "confirmed-open",
+      "verification": "executed-controlled-reproduction",
+      "references": [
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-security.ts",
+          "start": 75,
+          "end": 92,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backends/reactnative/react-native-rust-core-security.ts#L75-L92"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-security.ts",
+          "start": 187,
+          "end": 200,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backends/reactnative/react-native-rust-core-security.ts#L187-L200"
+        },
+        {
+          "path": "crates/ubm-mobile/src/host.rs",
+          "start": 2331,
+          "end": 2349,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-mobile/src/host.rs#L2331-L2349"
+        },
+        {
+          "path": "crates/ubm-mobile/src/session.rs",
+          "start": 2444,
+          "end": 2464,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-mobile/src/session.rs#L2444-L2464"
+        }
+      ],
+      "correction": "Keep old streams terminal but admit fresh probes. Version peer/global failures so a successful fresh result can clear an older fault without erasing a newer fault that arrived while it was pending. Reconcile native retained state too."
+    },
+    {
+      "id": "R3-09",
+      "priority": "P2",
+      "title": "Transient parameter getter errors bar future watches after the getter recovers",
+      "status": "confirmed-open",
+      "verification": "executed-controlled-reproduction",
+      "references": [
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start": 2913,
+          "end": 2950,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backends/desktop/desktop-rust-core-provider.ts#L2913-L2950"
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start": 3067,
+          "end": 3090,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backends/desktop/desktop-rust-core-provider.ts#L3067-L3090"
+        },
+        {
+          "path": "crates/ubm-desktop/src/central_parity.rs",
+          "start": 470,
+          "end": 530,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/central_parity.rs#L470-L530"
+        },
+        {
+          "path": "crates/ubm-desktop/src/parameter_source.rs",
+          "start": 85,
+          "end": 99,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/parameter_source.rs#L85-L99"
+        }
+      ],
+      "correction": "Distinguish transient getter failure from truly closed event source in both native health and provider state. Establish a fresh healthy observation boundary before clearing an older transient failure; preserve newer faults and genuine closed-source refusal."
+    },
+    {
+      "id": "R3-10",
+      "priority": "P2",
+      "title": "Classic Pair contaminates LE ownership and leaves a false external origin",
+      "status": "confirmed-open",
+      "verification": "executed-controlled-reproduction",
+      "references": [
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "start": 767,
+          "end": 770,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/vendor/bluez/ubm-le-gatt-5.87.patch#L767-L770"
+        },
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "start": 4333,
+          "end": 4345,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/vendor/bluez/ubm-le-gatt-5.87.patch#L4333-L4345"
+        },
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "start": 4079,
+          "end": 4084,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/vendor/bluez/ubm-le-gatt-5.87.patch#L4079-L4084"
+        },
+        {
+          "path": "vendor/bluez/ubm-le-gatt-5.87.patch",
+          "start": 1042,
+          "end": 1065,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/vendor/bluez/ubm-le-gatt-5.87.patch#L1042-L1065"
+        }
+      ],
+      "correction": "Scope admission, commit, rollback and arrival provenance to the selected bearer. Keep the corrected accepted-pending foreign LE Pair protection."
+    },
+    {
+      "id": "R3-11",
+      "priority": "P2",
+      "title": "BlueZ ATT-handle parsers consume valid hexadecimal digits",
+      "status": "confirmed-open",
+      "verification": "executed-controlled-reproduction",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/os/bluez_model.rs",
+          "start": 261,
+          "end": 267,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/os/bluez_model.rs#L261-L267"
+        },
+        {
+          "path": "vendor/btleplug/src/bluez/peripheral.rs",
+          "start": 91,
+          "end": 97,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/vendor/btleplug/src/bluez/peripheral.rs#L91-L97"
+        },
+        {
+          "path": "crates/ubm-desktop/src/os/linux.rs",
+          "start": 1258,
+          "end": 1268,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/os/linux.rs#L1258-L1268"
+        }
+      ],
+      "correction": "Strip only the exact service/char/desc prefix, then parse the complete hexadecimal suffix consistently in both parsers."
+    },
+    {
+      "id": "R3-12",
+      "priority": "P2",
+      "title": "Native notification callback failures never reach active public subscriptions",
+      "status": "confirmed-open",
+      "verification": "joined-source-confirmation",
+      "references": [
+        {
+          "path": "vendor/btleplug/src/corebluetooth/central_delegate.rs",
+          "start": 1037,
+          "end": 1053,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/vendor/btleplug/src/corebluetooth/central_delegate.rs#L1037-L1053"
+        },
+        {
+          "path": "vendor/btleplug/src/corebluetooth/internal.rs",
+          "start": 1146,
+          "end": 1186,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/vendor/btleplug/src/corebluetooth/internal.rs#L1146-L1186"
+        },
+        {
+          "path": "vendor/btleplug/src/winrtble/ble/characteristic.rs",
+          "start": 78,
+          "end": 94,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/vendor/btleplug/src/winrtble/ble/characteristic.rs#L78-L94"
+        }
+      ],
+      "correction": "Route the original NSError/HRESULT and exact attribute/subscription generation to its notification owner using the shared failure/loss contract. Keep pending-read attribution distinct and never fabricate an empty successful notification."
+    },
+    {
+      "id": "R3-13",
+      "priority": "P2",
+      "title": "Android cached names continually renew absent advertisement local-name evidence",
+      "status": "confirmed-open",
+      "verification": "executed-controlled-reproduction",
+      "references": [
+        {
+          "path": "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+          "start": 947,
+          "end": 948,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt#L947-L948"
+        },
+        {
+          "path": "android/src/main/java/com/sfourdrinier/unifiedblemanager/rustcore/OwnedRadioPort.kt",
+          "start": 26,
+          "end": 41,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/android/src/main/java/com/sfourdrinier/unifiedblemanager/rustcore/OwnedRadioPort.kt#L26-L41"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "start": 737,
+          "end": 742,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backends/reactnative/react-native-rust-core-provider.ts#L737-L742"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "start": 2390,
+          "end": 2395,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backends/reactnative/react-native-rust-core-provider.ts#L2390-L2395"
+        }
+      ],
+      "correction": "Use the current ScanRecord for advertised localName. Preserve cached remote name separately with truthful device-state origin/provenance and no new AD timestamp."
+    },
+    {
+      "id": "R3-14",
+      "priority": "P2",
+      "title": "Android capture time and mobile source timestamps are discarded",
+      "status": "confirmed-open",
+      "verification": "executed-controlled-reproduction",
+      "references": [
+        {
+          "path": "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+          "start": 936,
+          "end": 951,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt#L936-L951"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "start": 2386,
+          "end": 2395,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backends/reactnative/react-native-rust-core-provider.ts#L2386-L2395"
+        },
+        {
+          "path": "src/backend-contract/advertisement.ts",
+          "start": 76,
+          "end": 80,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backend-contract/advertisement.ts#L76-L80"
+        },
+        {
+          "path": "docs/UNIFIED_SEMANTICS.md",
+          "start": 300,
+          "end": 317,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/docs/UNIFIED_SEMANTICS.md#L300-L317"
+        }
+      ],
+      "correction": "Carry capture time and clock origin/epoch through native ingress, Rust/wire/provider. Keep receipt time separate; preserve meaningful backend source time when platform capture time is unavailable and compare only compatible epochs."
+    },
+    {
+      "id": "R3-15",
+      "priority": "P2",
+      "title": "Public raw-advertisement opt-in unconditionally rejects supported Android bytes",
+      "status": "confirmed-open",
+      "verification": "executed-controlled-reproduction",
+      "references": [
+        {
+          "path": "src/public/ble-manager.ts",
+          "start": 1953,
+          "end": 1955,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/public/ble-manager.ts#L1953-L1955"
+        },
+        {
+          "path": "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+          "start": 1017,
+          "end": 1022,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt#L1017-L1022"
+        },
+        {
+          "path": "src/backends/reactnative/react-native-rust-core-provider.ts",
+          "start": 2423,
+          "end": 2426,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backends/reactnative/react-native-rust-core-provider.ts#L2423-L2426"
+        },
+        {
+          "path": "docs/UNIFIED_SEMANTICS.md",
+          "start": 300,
+          "end": 317,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/docs/UNIFIED_SEMANTICS.md#L300-L317"
+        }
+      ],
+      "correction": "Implement the public owned-byte projection and per-source support/absence behavior, including byte budget accounting. Label Android's obtainable combined scan record honestly; do not claim separately captured advertising/scan-response packets."
+    },
+    {
+      "id": "R3-16",
+      "priority": "P2",
+      "title": "Windows PHY observation remains unimplemented despite the native getter",
+      "status": "confirmed-open",
+      "verification": "joined-source-confirmation",
+      "references": [
+        {
+          "path": "crates/ubm-desktop/src/capabilities.rs",
+          "start": 462,
+          "end": 469,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/capabilities.rs#L462-L469"
+        },
+        {
+          "path": "src/public/ble-manager.ts",
+          "start": 1727,
+          "end": 1731,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/public/ble-manager.ts#L1727-L1731"
+        },
+        {
+          "path": "src/ipc/public-manager.ts",
+          "start": 1150,
+          "end": 1154,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/ipc/public-manager.ts#L1150-L1154"
+        }
+      ],
+      "correction": "Add a runtime-probed measured PHY read route through native, NAPI/provider and IPC/Tauri. Distinguish read from request/selection support; preserve disconnected/unknown answers without inventing defaults."
+    },
+    {
+      "id": "R3-17",
+      "priority": "P2",
+      "title": "The new NAPI queue reset discards retained parameter-source failures",
+      "status": "confirmed-open",
+      "verification": "joined-source-confirmation",
+      "references": [
+        {
+          "path": "bindings/napi/src/dispatch.rs",
+          "start": 3984,
+          "end": 3990,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/bindings/napi/src/dispatch.rs#L3984-L3990"
+        },
+        {
+          "path": "bindings/napi/src/dispatch.rs",
+          "start": 4015,
+          "end": 4033,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/bindings/napi/src/dispatch.rs#L4015-L4033"
+        },
+        {
+          "path": "crates/ubm-desktop/src/parameter_source.rs",
+          "start": 100,
+          "end": 166,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/parameter_source.rs#L100-L166"
+        },
+        {
+          "path": "src/backends/desktop/desktop-rust-core-provider.ts",
+          "start": 3122,
+          "end": 3145,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/src/backends/desktop/desktop-rust-core-provider.ts#L3122-L3145"
+        },
+        {
+          "path": "crates/ubm-desktop/src/central_parity.rs",
+          "start": 508,
+          "end": 530,
+          "url": "https://github.com/sfourdrinier/unified-ble-manager/blob/ca8f66ad9ce5b7693d703bb6f0c400865b4ada94/crates/ubm-desktop/src/central_parity.rs#L508-L530"
+        }
+      ],
+      "correction": "Preserve pending failure/terminal records while rebasing value history, or atomically reconcile source health with the original failure and generation. Keep the stale-value fix; do not restore old queue replay."
+    }
+  ],
+  "receipts": {
+    "r3-electron-current-verification.log": {
+      "original_sha256": "e5056868cbadbeb33dec1965628793a5962c928333a17ed32e33e20b055bf585",
+      "lf_normalized_sha256": "e5056868cbadbeb33dec1965628793a5962c928333a17ed32e33e20b055bf585"
+    },
+    "reverify-mobile-r3.log": {
+      "original_sha256": "d4cd708fea90b2340475db2cfde2f18d7146a578ed85e0c61db2cf177d6c167f",
+      "lf_normalized_sha256": "d4cd708fea90b2340475db2cfde2f18d7146a578ed85e0c61db2cf177d6c167f"
+    },
+    "reverify-gatt-handle.log": {
+      "original_sha256": "e48a02fd8366f50ee18a3b6bb1255e2479fc72be3d80c66fd9fdcbb16fec998d",
+      "lf_normalized_sha256": "e48a02fd8366f50ee18a3b6bb1255e2479fc72be3d80c66fd9fdcbb16fec998d"
+    },
+    "reverify-bearer-controls.log": {
+      "original_sha256": "5eb8c0e55dfd56a99bc72cb3ea1151e4e69fdfe5d5c0aa234e6864d198b4aee9",
+      "lf_normalized_sha256": "5eb8c0e55dfd56a99bc72cb3ea1151e4e69fdfe5d5c0aa234e6864d198b4aee9"
+    },
+    "reverify-bearer-compile.log": {
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "lf_normalized_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "current-controls-results.json": {
+      "original_sha256": "d087d2d0a7fb923838acd619fe47257e663f4605f472ae6a08fb88c3a8864357",
+      "lf_normalized_sha256": "d087d2d0a7fb923838acd619fe47257e663f4605f472ae6a08fb88c3a8864357"
+    },
+    "web-empty-inclusions-tests.log": {
+      "original_sha256": "2b61228ae49bed642308be0aba09b25e4de5a6723400e1c131ac91c3f15cab66",
+      "lf_normalized_sha256": "2b61228ae49bed642308be0aba09b25e4de5a6723400e1c131ac91c3f15cab66"
+    },
+    "web-empty-inclusions-typecheck.log": {
+      "original_sha256": "ee5bfd581a987571926d2b253846fd4546c9a0bdb841ce3ff2a01fad46a13cfe",
+      "lf_normalized_sha256": "ee5bfd581a987571926d2b253846fd4546c9a0bdb841ce3ff2a01fad46a13cfe"
+    },
+    "web-empty-inclusions-docs.log": {
+      "original_sha256": "18263868e4798ea9280c39eb96396067d58c29e4f36123e8407e2b180bd41f2f",
+      "lf_normalized_sha256": "18263868e4798ea9280c39eb96396067d58c29e4f36123e8407e2b180bd41f2f"
+    }
+  },
+  "limits": "Defect controls establish broken behavior, not acceptance passes. No new live radio/native OS fault schedules performed. Existing physical qualification boundaries remain unchanged. Current-head CI remains required."
+}

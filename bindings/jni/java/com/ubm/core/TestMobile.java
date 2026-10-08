@@ -22,7 +22,7 @@ public final class TestMobile {
 
     static final class Radio implements MobileCoreBridge.RadioHost {
         public void adapterState(long id) { MobileCoreBridge.nativeCompleteAdapter(id, "available", "granted", "on", null); }
-        public void startScan(long id, String[] services, String[] addresses, String mode, String callbackType, int legacy) {
+        public void startScan(long id, String[] services, String[] addresses, String mode, String callbackType, int legacy, long reportDelayMs, String phy) {
             check(services.length == 1 && services[0].equals("0000180d-0000-1000-8000-00805f9b34fb"), "scan filter reaches the radio canonicalized");
             MobileCoreBridge.nativeCompleteUnit(id);
         }
@@ -50,14 +50,21 @@ public final class TestMobile {
         public void disableNotifications(long id, String p, String s, long so, String c, long co) { MobileCoreBridge.nativeCompleteUnit(id); }
         public void readMtu(long id, String p) { MobileCoreBridge.nativeCompleteMtu(id, 247); }
         public void readWriteLimits(long id, String p) { MobileCoreBridge.nativeCompleteWriteLimits(id, 512, 20); }
+        public void readWriteReadiness(long id, String p) {
+            MobileCoreBridge.nativeCompleteFailure(id, "unsupported", -1, "Android reports no write-without-response readiness", false, null);
+        }
         public void requestMtu(long id, String p, int mtu) { MobileCoreBridge.nativeCompleteMtu(id, mtu); }
         public void readRssi(long id, String p) { MobileCoreBridge.nativeCompleteRssi(id, -60); }
         public void requestConnectionPriority(long id, String p, String priority) { MobileCoreBridge.nativeCompleteAccepted(id, true); }
+        public boolean subrateAvailable() { return false; }
+        public void requestSubrate(long id, String p, String mode) { MobileCoreBridge.nativeCompleteSubrateStatus(id, 0); }
         public void readPhy(long id, String p) { MobileCoreBridge.nativeCompletePhy(id, "le-2m", "le-2m"); }
         public void requestPhy(long id, String p, String tx, String rx) { MobileCoreBridge.nativeCompletePhyRequest(id, true, "le-2m", "le-2m"); }
         public void securityState(long id, String p) { MobileCoreBridge.nativeCompleteSecurity(id, "not-bonded", "unknown", "unknown", "unknown", 1); }
         public void createBond(long id, String p, String transport) { MobileCoreBridge.nativeCompleteSecurity(id, "bonded", "encrypted", "unknown", "unknown", -1); }
         public void cancelBond(long id, String p) { MobileCoreBridge.nativeCompleteUnit(id); }
+        public void resolvePeer(long id, String peerId) { MobileCoreBridge.nativeCompleteResolvedPeer(id, null, null); }
+        public void connectedPeers(long id, String[] services) { MobileCoreBridge.nativeCompleteConnectedPeers(id, new String[] {"AA:BB:CC:DD:EE:FF"}, new String[] {"foreign link"}); }
         public void bondedPeers(long id) { MobileCoreBridge.nativeCompleteBondedPeers(id, new String[] {"AA:BB:CC:DD:EE:FF"}, new String[] {null}); }
         public void acquireBackground(long id, String kind, String reason) { MobileCoreBridge.nativeCompleteLease(id, "lease-1"); }
         public void releaseBackground(long id, String lease) { backgroundReleases.incrementAndGet(); MobileCoreBridge.nativeCompleteUnit(id); }
@@ -95,7 +102,7 @@ public final class TestMobile {
 
     public static void main(String[] args) throws Exception {
         BlockingQueue<Long> wakes = new ArrayBlockingQueue<>(16);
-        check(MobileCoreBridge.nativeWireRevision().equals("ubm-mobile-wire/1"), "wire revision");
+        check(MobileCoreBridge.nativeWireRevision().equals("ubm-mobile-wire/2"), "wire revision");
         check(MobileCoreBridge.nativeBuildIdentityJson().contains("\"schema\":\"ubm-native-build-identity/1\""), "build identity");
         check(MobileCoreBridge.nativeCompleteUnit(1) == MobileCoreBridge.STATUS_NO_HOST, "no host before install");
         java.nio.file.Path recordingDirectory = java.nio.file.Files.createTempDirectory("ubm-jni-offline-");
@@ -117,8 +124,8 @@ public final class TestMobile {
         } catch (MobileCoreBridge.MobileCoreException expected) {
             check(expected.code.equals("protocol.incompatible"), "foreign wire revision refused");
         }
-        String open = MobileCoreBridge.nativeOpenSession("rn", "ubm-mobile-wire/1", "jvm-module");
-        check(open.contains("\"wireRevision\":\"ubm-mobile-wire/1\""), "admission record");
+        String open = MobileCoreBridge.nativeOpenSession("rn", "ubm-mobile-wire/2", "jvm-module");
+        check(open.contains("\"wireRevision\":\"ubm-mobile-wire/2\""), "admission record");
         long session = Long.parseLong(open.replaceAll(".*\"sessionId\":(\\d+).*", "$1"));
         String adapter = call(session, "adapter.state", "{}");
         check(adapter.contains("\"ok\":true") && adapter.contains("\"power\":\"on\""), "adapter.state through the RadioHost");
@@ -126,12 +133,12 @@ public final class TestMobile {
         check(scan.contains("\"ok\":true"), "scan.start");
         int status = MobileCoreBridge.nativeIngestAdvertisement("AA:BB:CC:DD:EE:FF", "AA:BB:CC:DD:EE:FF", "Polar H10", -58,
             MobileCoreBridge.ABSENT_INT, new String[] {"180D"}, new int[] {0x006b}, new byte[][] {{0, (byte) 0x80, (byte) 0xff}},
-            new String[0], new byte[0][], 1, null, new String[0], 0x0341, new byte[] {2, 1, 6});
+            new String[0], new byte[0][], 1, null, new String[0], 0x0341, new byte[] {2, 1, 6}, "cached display", 1234L);
         check(status == MobileCoreBridge.STATUS_ACCEPTED, "advertisement accepted");
         Long woken = wakes.poll(5, TimeUnit.SECONDS);
         check(woken != null && woken == session, "wake for the scanning session");
         String drained = MobileCoreBridge.nativeDrain(session, 256, 65536);
-        check(drained.contains("\"t\":\"adv\"") && drained.contains("\"payloadB64\":\"AID/\"") && drained.contains("\"appearance\":833") && drained.contains("\"rawRecordB64\":\"AgEG\""), "drain carries the advertisement");
+        check(drained.contains("\"t\":\"adv\"") && drained.contains("\"payloadB64\":\"AID/\"") && drained.contains("\"appearance\":833") && drained.contains("\"rawRecordB64\":\"AgEG\"") && drained.contains("\"sourceTimestampMs\":1234"), "drain carries the advertisement");
         String connect = call(session, "connection.connect", "{\"peerId\":\"AA:BB:CC:DD:EE:FF\",\"lease\":\"l1\",\"operationId\":\"c1\",\"preferredPhy\":[\"le-2m\",\"le-1m\"]}");
         check(connect.contains("\"connectionGeneration\""), "connect through the RadioHost");
         check("le-2m,le-1m".equals(lastPreferredPhy), "preferred PHYs reach the RadioHost: " + lastPreferredPhy);

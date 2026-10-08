@@ -1,0 +1,11 @@
+
+> unified-ble-manager@5.0.0-rc.21 native:refresh /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> node scripts/native/native-refresh.js --only desktop,android,apple
+
+build-napi-addon: platform=darwin arch=arm64 toolchain=1.98.1 profile=release target=host sourceDigest=81f597ddc8bfd9f40b7d329ee115e34aa4d972d04cbc4b10af1375eb7f3d89e5
+   Compiling btleplug v0.12.0 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/vendor/btleplug)
+   Compiling ubm5_napi_echo v0.1.0 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/bindings/napi)
+   Compiling ubm-desktop v0.1.0 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/crates/ubm-desktop)
+    Finished `release` profile [optimized] target(s) in 43.85s
+build-napi-addon: OK /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/native/desktop-core/prebuilds/darwin-arm64/ubm_desktop_core.node (10885344 bytes) identity={"schema":"ubm-native-build-identity/1","binding":"napi","contractRevision":"C-UBM.0.1.2-DRAFT","sourceDigest":"81f597ddc8bfd9f40b7d329ee115e34aa4d972d04cbc4b10af1375eb7f3d89e5","bindingSchema":"85e35476b3baeffc7678cd83ec25aa77f3c7a17293559bfc91fb684e93b866b3","target":"aarch64-apple-darwin","profile":"release","features":[],"rustc":"rustc 1.98.1 (48a229cea 2026-09-01)"}
+native:refresh: desktop rebuilt (sourceDigest db67d74d40a2e0137d7284abda8d1f69799366f02d6287d36bfea92145177a55 -> 81f597ddc8bfd9f40b7d329ee115e34aa4d972d04cbc4b10af1375eb7f3d89e5; bindingSchema 85e35476b3baeffc7678cd83ec25aa77f3c7a17293559bfc91fb684e93b866b3 -> 85e35476b3baeffc7678cd83ec25aa77f3c7a17293559bfc91fb684e93b866b3)

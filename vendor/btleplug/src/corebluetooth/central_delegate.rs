@@ -35,6 +35,7 @@ use objc2_foundation::{
     NSArray, NSData, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSString,
 };
 use std::{
+    cell::RefCell,
     collections::HashMap,
     fmt::{self, Debug, Formatter},
     ops::Deref,
@@ -91,24 +92,38 @@ fn position<T: objc2::Message>(items: &NSArray<T>, item: &T) -> Option<u64> {
         .and_then(|index| u64::try_from(index).ok())
 }
 
-/// The key of one service of `peripheral`. `None` for a service that is not
-/// one of the peripheral's own (an included service), which upstream never
-/// exposed either.
-fn service_key(peripheral: &CBPeripheral, service: &CBService) -> Option<AttrKey> {
-    let services = unsafe { peripheral.services() }?;
+/// Stable position of one service object in this discovery's graph. Included
+/// objects append once; duplicate UUIDs and cycles do not change earlier keys.
+fn object_identity<T: objc2::Message>(object: &T) -> usize {
+    std::ptr::from_ref(object).addr()
+}
+
+fn service_key(
+    delegate: &CentralDelegate,
+    peripheral: &CBPeripheral,
+    service: &CBService,
+) -> Option<AttrKey> {
+    let id = nsuuid_to_uuid(&*unsafe { peripheral.identifier() });
+    let tables = delegate.ivars().services.borrow();
+    let services = tables.get(&id)?;
     Some(AttrKey {
         uuid: cbuuid_to_uuid(&*unsafe { service.UUID() }),
-        instance: position(&services, service)?,
+        instance: services
+            .iter()
+            .position(|candidate| std::ptr::eq(&**candidate, service))?
+            .try_into()
+            .ok()?,
     })
 }
 
 /// The service and characteristic keys of one characteristic.
 fn characteristic_key(
+    delegate: &CentralDelegate,
     peripheral: &CBPeripheral,
     characteristic: &CBCharacteristic,
 ) -> Option<(AttrKey, AttrKey)> {
     let service = unsafe { characteristic.service() }?;
-    let service_key = service_key(peripheral, &service)?;
+    let service_key = service_key(delegate, peripheral, &service)?;
     let characteristics = unsafe { service.characteristics() }?;
     Some((
         service_key,
@@ -121,11 +136,13 @@ fn characteristic_key(
 
 /// The service, characteristic and descriptor keys of one descriptor.
 fn descriptor_key(
+    delegate: &CentralDelegate,
     peripheral: &CBPeripheral,
     descriptor: &CBDescriptor,
 ) -> Option<(AttrKey, AttrKey, AttrKey)> {
     let characteristic = unsafe { descriptor.characteristic() }?;
-    let (service_key, characteristic_key) = characteristic_key(peripheral, &characteristic)?;
+    let (service_key, characteristic_key) =
+        characteristic_key(delegate, peripheral, &characteristic)?;
     let descriptors = unsafe { characteristic.descriptors() }?;
     Some((
         service_key,
@@ -295,7 +312,19 @@ pub enum CentralDelegateEvent {
     ServicesModified {
         peripheral_uuid: Uuid,
     },
-    // DiscoveredIncludedServices(Uuid, HashMap<AttrKey, Retained<CBService>>),
+    DiscoveryFailed {
+        peripheral_uuid: Uuid,
+        error: crate::PlatformError,
+    },
+    DiscoveryDrained {
+        peripheral_uuid: Uuid,
+    },
+    DiscoveredIncludedServices {
+        peripheral_uuid: Uuid,
+        service_uuid: AttrKey,
+        added: HashMap<AttrKey, Retained<CBService>>,
+        result: Result<Vec<AttrKey>, crate::PlatformError>,
+    },
     DiscoveredCharacteristics {
         peripheral_uuid: Uuid,
         service_uuid: AttrKey,
@@ -433,6 +462,30 @@ impl Debug for CentralDelegateEvent {
                 .debug_struct("DiscoveredServices")
                 .field("peripheral_uuid", peripheral_uuid)
                 .field("services", &services.keys().collect::<Vec<_>>())
+                .finish(),
+            CentralDelegateEvent::DiscoveryDrained { peripheral_uuid } => f
+                .debug_struct("DiscoveryDrained")
+                .field("peripheral_uuid", peripheral_uuid)
+                .finish(),
+            CentralDelegateEvent::DiscoveryFailed {
+                peripheral_uuid,
+                error,
+            } => f
+                .debug_struct("DiscoveryFailed")
+                .field("peripheral_uuid", peripheral_uuid)
+                .field("error", error)
+                .finish(),
+            CentralDelegateEvent::DiscoveredIncludedServices {
+                peripheral_uuid,
+                service_uuid,
+                added,
+                result,
+            } => f
+                .debug_struct("DiscoveredIncludedServices")
+                .field("peripheral_uuid", peripheral_uuid)
+                .field("service_uuid", service_uuid)
+                .field("added", &added.keys().collect::<Vec<_>>())
+                .field("result", result)
                 .finish(),
             CentralDelegateEvent::DiscoveredCharacteristics {
                 peripheral_uuid,
@@ -637,6 +690,14 @@ impl Debug for CentralDelegateEvent {
     }
 }
 
+#[derive(Debug)]
+pub struct CentralDelegateIvars {
+    sender: Sender<CentralDelegateEvent>,
+    services: RefCell<HashMap<Uuid, Vec<Retained<CBService>>>>,
+    discoveries:
+        std::sync::Mutex<HashMap<Uuid, crate::discovery_reservations::DiscoveryReservations>>,
+}
+
 declare_class!(
     #[derive(Debug)]
     pub struct CentralDelegate;
@@ -648,7 +709,7 @@ declare_class!(
     }
 
     impl DeclaredClass for CentralDelegate {
-        type Ivars = Sender<CentralDelegateEvent>;
+        type Ivars = CentralDelegateIvars;
     }
 
     unsafe impl NSObjectProtocol for CentralDelegate {}
@@ -658,6 +719,10 @@ declare_class!(
         fn delegate_centralmanagerdidupdatestate(&self, central: &CBCentralManager) {
             trace!("delegate_centralmanagerdidupdatestate");
             let state = unsafe { central.state() };
+            if matches!(state, CBManagerState::PoweredOff | CBManagerState::Resetting | CBManagerState::Unsupported | CBManagerState::Unauthorized) {
+                self.ivars().discoveries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+                self.ivars().services.borrow_mut().clear();
+            }
             self.send_event(CentralDelegateEvent::DidUpdateState { state });
         }
 
@@ -696,6 +761,8 @@ declare_class!(
             );
             let id = unsafe { peripheral.identifier() };
             let peripheral_uuid = nsuuid_to_uuid(&id);
+            self.ivars().services.borrow_mut().remove(&peripheral_uuid);
+            self.ivars().discoveries.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&peripheral_uuid);
             self.send_event(CentralDelegateEvent::DisconnectedDevice { peripheral_uuid });
         }
 
@@ -851,123 +918,107 @@ declare_class!(
 
     unsafe impl CBPeripheralDelegate for CentralDelegate {
         #[method(peripheral:didDiscoverServices:)]
-        fn delegate_peripheral_diddiscoverservices(
-            &self,
-            peripheral: &CBPeripheral,
-            error: Option<&NSError>,
-        ) {
-            trace!(
-                "delegate_peripheral_diddiscoverservices {} {}",
-                peripheral_debug(peripheral),
-                localized_description(error)
-            );
-            if error.is_none() {
-                let services = unsafe { peripheral.services() }.unwrap_or_default();
-                let service_map = keyed(services, |s| cbuuid_to_uuid(&*unsafe { s.UUID() }));
-                for s in service_map.values() {
-                    // go ahead and ask for characteristics and other services
-                    unsafe {
-                        peripheral.discoverCharacteristics_forService(None, s);
-                        peripheral.discoverIncludedServices_forService(None, s);
-                    }
-                }
-                let id = unsafe { peripheral.identifier() };
-                let peripheral_uuid = nsuuid_to_uuid(&id);
-                self.send_event(CentralDelegateEvent::DiscoveredServices {
-                    peripheral_uuid,
-                    services: service_map,
-                });
+        fn delegate_peripheral_diddiscoverservices(&self, peripheral: &CBPeripheral, error: Option<&NSError>) {
+            let peer = nsuuid_to_uuid(&*unsafe { peripheral.identifier() });
+            let Some(halted) = self.consume_discovery(peer, |scope| scope.take_root()) else { return; };
+            if halted { self.finish_discovery(peer); return; }
+            if let Some(error) = error { self.fail_discovery(peer, nserror_platform(error)); return; }
+            let services = unsafe { peripheral.services() }.unwrap_or_default();
+            if !self.register_discovery(peer, |scope| scope.register_services(services.iter().map(|service| object_identity(&*service)))) {
+                self.fail_discovery(peer, crate::PlatformError::new("corebluetooth", "discovery-bound", "The service graph exceeds the owned callback bound"));
+                return;
             }
+            self.ivars().services.borrow_mut().insert(peer, services.iter().map(|service| service.retain()).collect());
+            let service_map = keyed(services, |service| cbuuid_to_uuid(&*unsafe { service.UUID() }));
+            self.send_event(CentralDelegateEvent::DiscoveredServices { peripheral_uuid: peer, services: service_map.clone() });
+            for service in service_map.values() {
+                unsafe {
+                    peripheral.discoverCharacteristics_forService(None, service);
+                    peripheral.discoverIncludedServices_forService(None, service);
+                }
+            }
+            self.finish_discovery(peer);
         }
 
         #[method(peripheral:didDiscoverIncludedServicesForService:error:)]
-        fn delegate_peripheral_diddiscoverincludedservicesforservice_error(
-            &self,
-            peripheral: &CBPeripheral,
-            service: &CBService,
-            error: Option<&NSError>,
-        ) {
-            trace!(
-                "delegate_peripheral_diddiscoverincludedservicesforservice_error {} {} {}",
-                peripheral_debug(peripheral),
-                service_debug(service),
-                localized_description(error)
-            );
-            if error.is_none() {
-                let includes = unsafe { service.includedServices() }.unwrap_or_default();
-                for s in includes {
-                    unsafe { peripheral.discoverCharacteristics_forService(None, &s) };
+        fn delegate_peripheral_diddiscoverincludedservicesforservice_error(&self, peripheral: &CBPeripheral, service: &CBService, error: Option<&NSError>) {
+            let peer = nsuuid_to_uuid(&*unsafe { peripheral.identifier() });
+            let Some(halted) = self.consume_discovery(peer, |scope| scope.take_includes(object_identity(service))) else { return; };
+            if halted { self.finish_discovery(peer); return; }
+            if let Some(error) = error { self.fail_discovery(peer, nserror_platform(error)); return; }
+            let Some(service_uuid) = service_key(self, peripheral, service) else {
+                self.fail_discovery(peer, crate::PlatformError::new("corebluetooth", "discovery-identity", "An admitted service callback lost its object identity"));
+                return;
+            };
+            let includes = unsafe { service.includedServices() }.unwrap_or_default();
+            let mut added = HashMap::new();
+            let mut keys = Vec::new();
+            {
+                let mut tables = self.ivars().services.borrow_mut();
+                let Some(table) = tables.get_mut(&peer) else { return; };
+                for target in includes.iter() {
+                    let mut inserted = false;
+                    let index = match table.iter().position(|candidate| std::ptr::eq(&**candidate, &*target)) {
+                        Some(index) => index,
+                        None => { let index = table.len(); table.push(target.retain()); inserted = true; index }
+                    };
+                    let key = AttrKey { uuid: cbuuid_to_uuid(&*unsafe { target.UUID() }), instance: index as u64 };
+                    if inserted { added.insert(key, target.retain()); }
+                    keys.push(key);
                 }
             }
+            if !self.register_discovery(peer, |scope| scope.register_services(added.values().map(|service| object_identity(&**service)))) {
+                self.fail_discovery(peer, crate::PlatformError::new("corebluetooth", "discovery-bound", "The included service graph exceeds the owned callback bound"));
+                return;
+            }
+            self.send_event(CentralDelegateEvent::DiscoveredIncludedServices {
+                peripheral_uuid: peer, service_uuid, added: added.clone(), result: Ok(keys),
+            });
+            for target in added.values() {
+                unsafe {
+                    peripheral.discoverCharacteristics_forService(None, target);
+                    peripheral.discoverIncludedServices_forService(None, target);
+                }
+            }
+            self.finish_discovery(peer);
         }
 
         #[method(peripheral:didDiscoverCharacteristicsForService:error:)]
-        fn delegate_peripheral_diddiscovercharacteristicsforservice_error(
-            &self,
-            peripheral: &CBPeripheral,
-            service: &CBService,
-            error: Option<&NSError>,
-        ) {
-            trace!(
-                "delegate_peripheral_diddiscovercharacteristicsforservice_error {} {} {}",
-                peripheral_debug(peripheral),
-                service_debug(service),
-                localized_description(error)
-            );
-            if error.is_none() {
-                // UBM patch (UBM_PATCHES.md #6): an included service is not
-                // one of the peripheral's own; upstream never exposed its
-                // characteristics either.
-                let Some(service_uuid) = service_key(peripheral, service) else {
-                    trace!("characteristics of an included service are not tracked");
-                    return;
-                };
-                let chars = unsafe { service.characteristics() }.unwrap_or_default();
-                let characteristics = keyed(chars, |c| cbuuid_to_uuid(&*unsafe { c.UUID() }));
-                for c in characteristics.values() {
-                    unsafe { peripheral.discoverDescriptorsForCharacteristic(c) };
-                }
-                let id = unsafe { peripheral.identifier() };
-                let peripheral_uuid = nsuuid_to_uuid(&id);
-                self.send_event(CentralDelegateEvent::DiscoveredCharacteristics {
-                    peripheral_uuid,
-                    service_uuid,
-                    characteristics,
-                });
+        fn delegate_peripheral_diddiscovercharacteristicsforservice_error(&self, peripheral: &CBPeripheral, service: &CBService, error: Option<&NSError>) {
+            let peer = nsuuid_to_uuid(&*unsafe { peripheral.identifier() });
+            let Some(halted) = self.consume_discovery(peer, |scope| scope.take_characteristics(object_identity(service))) else { return; };
+            if halted { self.finish_discovery(peer); return; }
+            if let Some(error) = error { self.fail_discovery(peer, nserror_platform(error)); return; }
+            let Some(service_uuid) = service_key(self, peripheral, service) else {
+                self.fail_discovery(peer, crate::PlatformError::new("corebluetooth", "discovery-identity", "An admitted characteristic callback lost its service identity"));
+                return;
+            };
+            let chars = unsafe { service.characteristics() }.unwrap_or_default();
+            if !self.register_discovery(peer, |scope| scope.register_descriptors(chars.iter().map(|characteristic| object_identity(&*characteristic)))) {
+                self.fail_discovery(peer, crate::PlatformError::new("corebluetooth", "discovery-bound", "The descriptor callback graph exceeds its bound"));
+                return;
             }
+            let characteristics = keyed(chars, |characteristic| cbuuid_to_uuid(&*unsafe { characteristic.UUID() }));
+            // Publish the parent before a descriptor completion can be routed.
+            self.send_event(CentralDelegateEvent::DiscoveredCharacteristics { peripheral_uuid: peer, service_uuid, characteristics: characteristics.clone() });
+            for characteristic in characteristics.values() { unsafe { peripheral.discoverDescriptorsForCharacteristic(characteristic) }; }
+            self.finish_discovery(peer);
         }
 
         #[method(peripheral:didDiscoverDescriptorsForCharacteristic:error:)]
-        fn delegate_peripheral_diddiscoverdescriptorsforcharacteristic_error(
-            &self,
-            peripheral: &CBPeripheral,
-            characteristic: &CBCharacteristic,
-            error: Option<&NSError>,
-        ) {
-            trace!(
-                "delegate_peripheral_diddiscoverdescriptorsforcharacteristic_error {} {} {}",
-                peripheral_debug(peripheral),
-                characteristic_debug(characteristic),
-                localized_description(error)
-            );
-            if error.is_none() {
-                let Some((service_uuid, characteristic_uuid)) =
-                    characteristic_key(peripheral, characteristic)
-                else {
-                    trace!("descriptors of an untracked characteristic are ignored");
-                    return;
-                };
-                let descs = unsafe { characteristic.descriptors() }.unwrap_or_default();
-                let descriptors = keyed(descs, |d| cbuuid_to_uuid(&*unsafe { d.UUID() }));
-                let id = unsafe { peripheral.identifier() };
-                let peripheral_uuid = nsuuid_to_uuid(&id);
-                self.send_event(CentralDelegateEvent::DiscoveredCharacteristicDescriptors {
-                    peripheral_uuid,
-                    service_uuid,
-                    characteristic_uuid,
-                    descriptors,
-                });
-            }
+        fn delegate_peripheral_diddiscoverdescriptorsforcharacteristic_error(&self, peripheral: &CBPeripheral, characteristic: &CBCharacteristic, error: Option<&NSError>) {
+            let peer = nsuuid_to_uuid(&*unsafe { peripheral.identifier() });
+            let Some(halted) = self.consume_discovery(peer, |scope| scope.take_descriptor(object_identity(characteristic))) else { return; };
+            if halted { self.finish_discovery(peer); return; }
+            if let Some(error) = error { self.fail_discovery(peer, nserror_platform(error)); return; }
+            let Some((service_uuid, characteristic_uuid)) = characteristic_key(self, peripheral, characteristic) else {
+                self.fail_discovery(peer, crate::PlatformError::new("corebluetooth", "discovery-identity", "An admitted descriptor callback lost its characteristic identity"));
+                return;
+            };
+            let descs = unsafe { characteristic.descriptors() }.unwrap_or_default();
+            let descriptors = keyed(descs, |descriptor| cbuuid_to_uuid(&*unsafe { descriptor.UUID() }));
+            self.send_event(CentralDelegateEvent::DiscoveredCharacteristicDescriptors { peripheral_uuid: peer, service_uuid, characteristic_uuid, descriptors });
+            self.finish_discovery(peer);
         }
 
         #[method(peripheral:didUpdateValueForCharacteristic:error:)]
@@ -988,7 +1039,7 @@ declare_class!(
                 let id = unsafe { peripheral.identifier() };
                 let peripheral_uuid = nsuuid_to_uuid(&id);
                 if let Some((service_uuid, characteristic_uuid)) =
-                    characteristic_key(peripheral, characteristic)
+                    characteristic_key(self, peripheral, characteristic)
                 {
                     self.send_event(CentralDelegateEvent::AttributeFailed {
                         peripheral_uuid,
@@ -1005,7 +1056,7 @@ declare_class!(
                 let id = unsafe { peripheral.identifier() };
                 let peripheral_uuid = nsuuid_to_uuid(&id);
                 let Some((service_uuid, characteristic_uuid)) =
-                    characteristic_key(peripheral, characteristic)
+                    characteristic_key(self, peripheral, characteristic)
                 else {
                     trace!("event for an untracked characteristic ignored");
                     return;
@@ -1038,7 +1089,7 @@ declare_class!(
                 let id = unsafe { peripheral.identifier() };
                 let peripheral_uuid = nsuuid_to_uuid(&id);
                 if let Some((service_uuid, characteristic_uuid)) =
-                    characteristic_key(peripheral, characteristic)
+                    characteristic_key(self, peripheral, characteristic)
                 {
                     self.send_event(CentralDelegateEvent::AttributeFailed {
                         peripheral_uuid,
@@ -1055,7 +1106,7 @@ declare_class!(
                 let id = unsafe { peripheral.identifier() };
                 let peripheral_uuid = nsuuid_to_uuid(&id);
                 let Some((service_uuid, characteristic_uuid)) =
-                    characteristic_key(peripheral, characteristic)
+                    characteristic_key(self, peripheral, characteristic)
                 else {
                     trace!("event for an untracked characteristic ignored");
                     return;
@@ -1081,7 +1132,7 @@ declare_class!(
                 let id = unsafe { peripheral.identifier() };
                 let peripheral_uuid = nsuuid_to_uuid(&id);
                 if let Some((service_uuid, characteristic_uuid)) =
-                    characteristic_key(peripheral, characteristic)
+                    characteristic_key(self, peripheral, characteristic)
                 {
                     self.send_event(CentralDelegateEvent::AttributeFailed {
                         peripheral_uuid,
@@ -1097,7 +1148,7 @@ declare_class!(
             let id = unsafe { peripheral.identifier() };
             let peripheral_uuid = nsuuid_to_uuid(&id);
             let Some((service_uuid, characteristic_uuid)) =
-                characteristic_key(peripheral, characteristic)
+                characteristic_key(self, peripheral, characteristic)
             else {
                 trace!("notification state of an untracked characteristic ignored");
                 return;
@@ -1157,7 +1208,7 @@ declare_class!(
                 let id = unsafe { peripheral.identifier() };
                 let peripheral_uuid = nsuuid_to_uuid(&id);
                 if let Some((service_uuid, characteristic_uuid, descriptor_uuid)) =
-                    descriptor_key(peripheral, descriptor)
+                    descriptor_key(self, peripheral, descriptor)
                 {
                     self.send_event(CentralDelegateEvent::AttributeFailed {
                         peripheral_uuid,
@@ -1174,7 +1225,7 @@ declare_class!(
                 let id = unsafe { peripheral.identifier() };
                 let peripheral_uuid = nsuuid_to_uuid(&id);
                 let Some((service_uuid, characteristic_uuid, descriptor_uuid)) =
-                    descriptor_key(peripheral, descriptor)
+                    descriptor_key(self, peripheral, descriptor)
                 else {
                     trace!("event for an untracked descriptor ignored");
                     return;
@@ -1208,7 +1259,7 @@ declare_class!(
                 let id = unsafe { peripheral.identifier() };
                 let peripheral_uuid = nsuuid_to_uuid(&id);
                 if let Some((service_uuid, characteristic_uuid, descriptor_uuid)) =
-                    descriptor_key(peripheral, descriptor)
+                    descriptor_key(self, peripheral, descriptor)
                 {
                     self.send_event(CentralDelegateEvent::AttributeFailed {
                         peripheral_uuid,
@@ -1225,7 +1276,7 @@ declare_class!(
                 let id = unsafe { peripheral.identifier() };
                 let peripheral_uuid = nsuuid_to_uuid(&id);
                 let Some((service_uuid, characteristic_uuid, descriptor_uuid)) =
-                    descriptor_key(peripheral, descriptor)
+                    descriptor_key(self, peripheral, descriptor)
                 else {
                     trace!("event for an untracked descriptor ignored");
                     return;
@@ -1256,6 +1307,8 @@ declare_class!(
             // NOTE: the list of modified services does not appear to be particularly useful; a full service rediscovery is needed.
             let id = unsafe { peripheral.identifier() };
             let peripheral_uuid = nsuuid_to_uuid(&id);
+            self.fail_discovery(peripheral_uuid, crate::PlatformError::new("corebluetooth", "services-modified", "CoreBluetooth invalidated the service graph during discovery"));
+            self.ivars().services.borrow_mut().remove(&peripheral_uuid);
             self.send_event(CentralDelegateEvent::ServicesModified {
                 peripheral_uuid,
             });
@@ -1281,12 +1334,117 @@ declare_class!(
 
 impl CentralDelegate {
     pub fn new(sender: Sender<CentralDelegateEvent>) -> Retained<Self> {
-        let this = CentralDelegate::alloc().set_ivars(sender);
+        let this = CentralDelegate::alloc().set_ivars(CentralDelegateIvars {
+            sender,
+            services: RefCell::new(HashMap::new()),
+            discoveries: std::sync::Mutex::new(HashMap::new()),
+        });
         unsafe { msg_send_id![super(this), init] }
     }
 
+    pub(crate) fn begin_discovery(&self, peer: Uuid) -> Result<(), crate::PlatformError> {
+        let mut scopes = self
+            .ivars()
+            .discoveries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if scopes.contains_key(&peer) {
+            return Err(crate::PlatformError::new(
+                "corebluetooth",
+                "discovery-in-progress",
+                "The previous discovery still owns native callbacks",
+            ));
+        }
+        if scopes.len() >= 4096 {
+            return Err(crate::PlatformError::new(
+                "corebluetooth",
+                "discovery-bound",
+                "The live discovery callback owner capacity is full",
+            ));
+        }
+        scopes.insert(
+            peer,
+            crate::discovery_reservations::DiscoveryReservations::default(),
+        );
+        Ok(())
+    }
+
+    fn consume_discovery(
+        &self,
+        peer: Uuid,
+        take: impl FnOnce(&mut crate::discovery_reservations::DiscoveryReservations) -> bool,
+    ) -> Option<bool> {
+        let mut scopes = self
+            .ivars()
+            .discoveries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let scope = scopes.get_mut(&peer)?;
+        take(scope).then(|| scope.halted())
+    }
+
+    fn register_discovery(
+        &self,
+        peer: Uuid,
+        register: impl FnOnce(&mut crate::discovery_reservations::DiscoveryReservations) -> bool,
+    ) -> bool {
+        self.ivars()
+            .discoveries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&peer)
+            .is_some_and(register)
+    }
+
+    fn fail_discovery(&self, peer: Uuid, error: crate::PlatformError) {
+        let failed = {
+            let mut scopes = self
+                .ivars()
+                .discoveries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match scopes.get_mut(&peer) {
+                Some(scope) if !scope.halted() => {
+                    scope.fail();
+                    true
+                }
+                _ => false,
+            }
+        };
+        if failed {
+            self.send_event(CentralDelegateEvent::DiscoveryFailed {
+                peripheral_uuid: peer,
+                error,
+            });
+        }
+        self.finish_discovery(peer);
+    }
+
+    fn finish_discovery(&self, peer: Uuid) {
+        let ended = {
+            let mut scopes = self
+                .ivars()
+                .discoveries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if scopes.get(&peer).is_some_and(|scope| scope.is_drained()) {
+                scopes.remove(&peer)
+            } else {
+                None
+            }
+        };
+        if let Some(scope) = ended {
+            if scope.halted() {
+                self.ivars().services.borrow_mut().remove(&peer);
+            }
+            self.send_event(CentralDelegateEvent::DiscoveryDrained {
+                peripheral_uuid: peer,
+            });
+        }
+    }
+
     fn send_event(&self, event: CentralDelegateEvent) {
-        let mut sender = self.ivars().clone();
+        let mut sender = self.ivars().sender.clone();
         futures::executor::block_on(async {
             if let Err(e) = sender.send(event).await {
                 error!("Error sending delegate event: {}", e);
@@ -1355,11 +1513,6 @@ fn peripheral_debug(peripheral: &CBPeripheral) -> String {
             format!("CBPeripheral({})", uuid)
         }
     }
-}
-
-fn service_debug(service: &CBService) -> String {
-    let uuid = unsafe { service.UUID().UUIDString() };
-    format!("CBService({})", uuid)
 }
 
 fn characteristic_debug(characteristic: &CBCharacteristic) -> String {

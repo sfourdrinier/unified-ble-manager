@@ -29,7 +29,7 @@ class FakeChannel {
 }
 
 function negotiated(axis) {
-  const selected = { axis, value: axis === 'ipc-protocol' ? 5 : 1 }
+  const selected = { axis, value: axis === 'ipc-protocol' ? 6 : 1 }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -202,16 +202,16 @@ function electronBootstrap() {
   }
   const version = axis => ({
     axis,
-    selected: { axis, value: axis === 'ipc-protocol' ? 5 : 1 },
+    selected: { axis, value: axis === 'ipc-protocol' ? 6 : 1 },
     localRange: {
       axis,
-      minimum: { axis, value: axis === 'ipc-protocol' ? 5 : 1 },
-      maximum: { axis, value: axis === 'ipc-protocol' ? 5 : 1 }
+      minimum: { axis, value: axis === 'ipc-protocol' ? 6 : 1 },
+      maximum: { axis, value: axis === 'ipc-protocol' ? 6 : 1 }
     },
     remoteRange: {
       axis,
-      minimum: { axis, value: axis === 'ipc-protocol' ? 5 : 1 },
-      maximum: { axis, value: axis === 'ipc-protocol' ? 5 : 1 }
+      minimum: { axis, value: axis === 'ipc-protocol' ? 6 : 1 },
+      maximum: { axis, value: axis === 'ipc-protocol' ? 6 : 1 }
     }
   })
   return {

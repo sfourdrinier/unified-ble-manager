@@ -5,6 +5,7 @@ import {
   type AdvertisementObservation,
   type OwnerScanOptions
 } from '../../backend-contract/advertisement'
+import { ScanEvidenceSession } from '../../backend-contract/scan-evidence'
 import {
   BUILT_IN_FEATURE_IDS,
   createBackendOperationCapabilityRegistration,
@@ -124,6 +125,7 @@ export interface ScanGroup {
   readonly ownerLeaseId: LeaseId<string, string>
   readonly shareToken: ScanShareToken<string, string> | null
   readonly consumers: Map<string, ScanConsumer>
+  readonly evidence: ScanEvidenceSession
 }
 
 const defaultStreamLimits = streamLimits(capacity(64), capacity(1024 * 1024), capacity(1))
@@ -412,10 +414,11 @@ export abstract class DeterministicBackendBase {
       return
     }
     for (const consumer of group.consumers.values()) {
-      if (!this.matchesScan(consumer.options, observation)) {
-        continue
-      }
       const sessionObservation = Object.freeze({ ...observation, scanSessionId: consumer.scanSessionId })
+      const matched = group.evidence.matchAdvertisement(sessionObservation, candidate =>
+        this.matchesScan(consumer.options, candidate)
+      )
+      if (matched === null) continue
       const peerKey = String(sessionObservation.device.id)
       const previousPayload = consumer.observedPayloads.get(peerKey)
       if (consumer.options.duplicatePolicy === 'first' && previousPayload !== undefined) {
@@ -436,9 +439,9 @@ export abstract class DeterministicBackendBase {
       }
       const outcome = this.pushWithinAggregateQuota(
         consumer.stream,
-        sessionObservation,
-        advertisementByteLength(sessionObservation),
-        String(sessionObservation.device.id)
+        matched,
+        advertisementByteLength(matched),
+        String(matched.device.id)
       )
       if (outcome.terminated) {
         this.recordTrace('stream', 'scan-overflow-terminal', outcome.quotaExceeded ? 'stream.quota' : 'stream.overflow')
@@ -511,7 +514,8 @@ export abstract class DeterministicBackendBase {
       signature: scanSignature(optionsValue),
       ownerLeaseId: created.consumer.leaseId,
       shareToken: created.consumer.shareToken,
-      consumers: new Map([[created.consumer.id, created.consumer]])
+      consumers: new Map([[created.consumer.id, created.consumer]]),
+      evidence: new ScanEvidenceSession()
     }
     await this.operations.run(
       'scan-start',

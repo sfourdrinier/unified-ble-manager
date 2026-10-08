@@ -6,8 +6,15 @@ reconfigures the system daemon. Application integration and deployment require
 separate review and explicit host action. Do not silently apply it, enable
 experimental APIs, grant privileges or upgrade a host.
 
-The current source deployment identity is `5.87-ubm.5`, with unchanged Linux
-authority contract `(1,2,1)`. Its optional revision-1 LE availability observer
+The current source deployment identity is `5.87-ubm.10`, with unchanged Linux
+authority contract `(1,3,1)`. A finished GATT characteristic or descriptor
+read or write holds the link only while that ATT operation is in flight.
+Connect, pair, StartNotify, and Acquire hold until the sender's bus
+connection dies. Arming auto-connect while probing profiles is daemon
+bookkeeping; on an exclusive link this process created, that bookkeeping is
+not another application's hold. Exclusive release of an untrusted device also
+stops kernel auto-connect, the same gate `Device1.Disconnect` uses. Its
+optional revision-1 LE availability observer
 implements scan-triggered initial `when-available` acquisition. Installing the
 npm package does not deploy this daemon; older `.4` deployments retain direct
 LE lease support but explicitly lack the optional availability observer.
@@ -26,9 +33,46 @@ after its watch was freed. IDs now remain exact on 64-bit hosts; registration
 and device owners retain the watch independently, retirement detaches its device,
 and reentrant callback cleanup cannot destroy currently executing user data.
 The older `.3` physical receipt retains that crash and is not a pass for `.4`.
-Native executable tests prove these boundaries; deploying and qualifying `.4`
-or `.5` remains an explicit, separate host action. A receipt for `.4` is not
-physical qualification of `.5` or its new initial-acquisition mechanism.
+Native executable tests prove these boundaries; deploying and qualifying `.4`,
+`.5`, `.6`, `.7`, `.8`, or `.9` remains an explicit, separate host action. A receipt for `.4`
+is not physical qualification of `.5` or its availability observer. A receipt
+for `.4` or `.5` is not qualification of `.6`. The installed `5.87-ubm.6`
+daemon returned `lease-released-indeterminate` for the bonded H10 session and
+left the link up. The installed `5.87-ubm.7` daemon returned
+`lease-released-protected` for that session: the controller had already
+initiated the link, auto-connect was armed, and no application interest was
+tracked, so the lease adopted it as borrowed. `.8` releases a locally
+initiated link when no other application hold remains. The installed
+`5.87-ubm.8` daemon's H10 session reported disconnect `released` and the link
+was down. A receipt for `.6` or `.7` is not qualification of `.8`. `.9` does
+not raise link security when an unbonded LE attribute returns Insufficient
+Encryption or Insufficient Authentication. That ATT operation fails and the
+ACL stays up. A paired link still retries so an existing key can encrypt it,
+and explicit Pair still raises security itself. Installing `5.87-ubm.9`,
+the unbonded H10 session completed that GATT exchange, reported disconnect
+`released`, and left the link down. The capture had no pairing request. A
+receipt for `.8` is not qualification of `.9`. That session does not change
+a platform evidence label. Source `5.87-ubm.10` does not treat the controller
+initiator bit as proof that this daemon owns the link. A rejected admission
+does not keep a hold. An AcquireNotify, StartNotify, or Connect that fails
+after early commit drops only that attempt. A StartNotify accepted while GATT
+is down keeps that message and drops only that admission if later registration
+fails. A dead owner's last in-flight
+operation schedules generation-fenced cleanup. Explicit pairing on the same
+attachment resumes ATT security retry. Those producer tests do not install a
+daemon and are not a physical-radio receipt.
+
+The rc.21 remediation also protects accepted pending Pair admissions, including
+Pair opening the link before the first lease. Refusal and cancellation roll back
+that admission. Foreign one-shot GATT operations are tracked before a lease peer
+exists and protect only their active lifetime. Pre-lease arrival and admission
+records retire with their physical generation; adopting a replacement generation
+does not adopt an older generation's foreign interest. Deferred acquired-FD
+failure retires the exact pending admission and socket/notification resource;
+readiness failure, reply-delivery failure and cancellation do not retain a
+placeholder that blocks the next acquisition. These corrections are
+under verification in `docs/review/RC21_REMEDIATION.md`; they do not constitute a
+new installed-daemon or controller receipt.
 
 ## Provenance and license
 
@@ -114,7 +158,7 @@ failure into full client initialization. The graph fixture includes duplicate
 native Include declarations, whose exported unique targets follow stock BlueZ
 Includes semantics, as well as missing and stale targets.
 
-## Private authority contract 1, lease revision 2, GATT revision 1
+## Private authority contract 1, lease revision 3, GATT revision 1
 
 ### Optional LE availability observer revision 1
 
@@ -146,16 +190,21 @@ cleanup refusal. These are source/protocol tests, not physical-radio receipts.
 
 ### Existing lease and GATT authority
 
-The adapter's `LinuxAuthority1.GetContract` verifies the `(1,2,1)` lease and
+The adapter's `LinuxAuthority1.GetContract` verifies the `(1,3,1)` lease and
 GATT-observer contract before native lifecycle capability admission. `LELease1`
 owns reservation, read-only recovery, connection and exact-token release;
 `PhysicalLost(o,t,y)` retains actual physical generation and raw MGMT reason.
-`ReleaseLease` returns exactly `uttsby`: revision2, original token, physical
+`ReleaseLease` returns exactly `uttsby`: revision3, original token, physical
 generation, release scope, observed-reason presence, and raw MGMT reason byte.
 The reason is retained by the exact physical-loss callback and travels in the
 operation's own reply, independent of client signal/reply scheduling. An absent
 reason has canonical byte0; reservation/protected/indeterminate receipts never
-manufacture an observed physical cause. Revision1 scope-only daemons are refused.
+manufacture an observed physical cause. Revision1 scope-only and revision2
+non-reconciling protected-release daemons are refused. Protected logical release
+is acknowledged in revision3: the daemon retains cleanup under the exact physical
+generation before reclaiming the token, and reconciles when the final protecting
+interest ends without requiring sender death. A failed disconnect remains owned
+for retry. ACK and physical loss remain separate facts.
 The real daemon-table fixture tests retained ownership, accepted late work,
 protected versus exclusive release, asynchronous MGMT refusal/retry, exact
 cancellation fences and more than 1024 interleaved completed sender cycles.
@@ -254,3 +303,11 @@ derivative daemon and its exact private API are an explicit deployment
 requirement for this discovery route. Stock 5.85/5.87 must not be described as
 exposing this extension. Compilation and private-bus tests cannot promote
 CoreBluetooth, WinRT, BlueZ or mobile physical evidence labels.
+
+Classic (`BDADDR_BREDR`) Pair requests do not admit, commit or roll back LE
+interests. Pair selects its actual bearer before LE admission; only an accepted
+LE Pair protects the LE attachment while pending and through its committed
+lifetime. The source-derived bearer controls exercise accepted, completed,
+refused and sender-death Classic requests alongside LE release and LE positive
+controls. These controlled daemon-function tests are separate from deployment
+and physical dual-bearer qualification of the exact regenerated patch.

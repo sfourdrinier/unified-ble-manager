@@ -61,8 +61,8 @@ test('Tauri security guidance distinguishes scoped IPC routing from native capab
 })
 
 test('desktop IPC guides require the option-aware protocol on both sides', () => {
-  expect(read('docs/TAURI.md')).toContain('IPC protocol 5')
-  expect(read('docs/ELECTRON.md')).toContain('exactly version 5')
+  expect(read('docs/TAURI.md')).toContain('IPC protocol 6')
+  expect(read('docs/ELECTRON.md')).toContain('exactly version 6')
   for (const file of ['docs/TAURI.md', 'docs/ELECTRON.md']) {
     const guide = read(file)
     expect(guide).toContain('targeting')

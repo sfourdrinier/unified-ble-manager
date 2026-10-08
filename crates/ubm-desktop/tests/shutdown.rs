@@ -47,6 +47,8 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
     central.boundary().set_services(
         "peer-1",
         vec![ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: HRM_SERVICE.to_owned(),
             occurrence: 0,
             characteristics: vec![CharacteristicSnapshot {
@@ -64,6 +66,7 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
                     occurrence: 0,
                 }],
             }],
+            access: std::default::Default::default(),
         }],
     );
     central

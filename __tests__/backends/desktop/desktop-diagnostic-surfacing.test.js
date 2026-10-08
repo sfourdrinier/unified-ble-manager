@@ -182,6 +182,53 @@ test('armed lifecycle failure intercepts a native read already in flight', async
 })
 
 describe('every desktop diagnostic warning reaches the public diagnostic trace', () => {
+  test.each([
+    [
+      'corebluetooth',
+      {
+        domain: 'corebluetooth',
+        code: '7',
+        message: 'notification callback failed',
+        metadata: { nsErrorDomain: 'CBATTErrorDomain' }
+      }
+    ],
+    [
+      'winrt',
+      { domain: 'winrt', code: 'hresult', message: 'notification buffer failed', metadata: { hresult: '0x80070005' } }
+    ]
+  ])('%s: native notification failures preserve their cause and retryable cleanup', async (platform, sourceFailure) => {
+    await withBackend(platform, async ({ backend, stage }) => {
+      const { database, measurement } = await connectAndDiscover(backend, stage)
+      const subscription = await database.subscribe(measurement.path, subscribeOptions())
+      const events = subscription.values[Symbol.asyncIterator]()
+      const target = {
+        peerId: 'peer-1',
+        serviceUuid: HRM_SERVICE,
+        serviceOccurrence: 0,
+        characteristicUuid: HRM_MEASUREMENT,
+        characteristicOccurrence: 0
+      }
+      await stage.stageNotification({ ...target, value: Buffer.from([42]) })
+      await stage.stageNotification({ ...target, value: Buffer.alloc(0), sourceFailure })
+      expect(await nextItem(events, 5000)).toMatchObject({ kind: 'value', value: { value: Uint8Array.from([42]) } })
+      expect(await nextItem(events, 5000)).toMatchObject({
+        kind: 'terminal',
+        reason: 'source-failed',
+        error: {
+          platform: {
+            domain: sourceFailure.domain,
+            code: sourceFailure.code,
+            safeMessage: sourceFailure.message,
+            metadata: sourceFailure.metadata
+          }
+        }
+      })
+      await stage.failNextRadioOp('unsubscribe', 'cleanup temporarily refused')
+      await expect(subscription.remove()).rejects.toMatchObject({ normalized: { code: 'gatt.subscribe-failed' } })
+      expect(await subscription.remove()).toMatchObject({ state: 'released' })
+    })
+  })
+
   test.each(PLATFORMS)('%s: reconciled lags of every core event stream', async platform => {
     const { manager, control } = await publicManager(platform)
     try {

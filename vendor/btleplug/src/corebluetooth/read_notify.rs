@@ -9,8 +9,8 @@
 // each with the provenance CoreBluetooth can honestly give it, and a value
 // that may be a notification still reaches the notification stream.
 
-use crate::api::ReadProvenance;
 use crate::PlatformError;
+use crate::api::ReadProvenance;
 
 /// The legacy addon's code for an enable that left the characteristic not
 /// notifying.

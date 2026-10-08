@@ -89,32 +89,41 @@ test('chooser sample proves actual HRS bytes on the same scoped connection and r
 test.each(['terminal', 'overflow', 'timeout', 'cancel'])(
   'sample reports %s rather than false success and releases subscription',
   async outcome => {
-    const f = fixture()
-    await connected(f)
-    if (outcome === 'terminal' || outcome === 'overflow')
-      f.deliver({
-        done: false,
-        value: {
-          kind: 'terminal',
-          reason: outcome === 'overflow' ? 'overflow' : 'source-failed',
-          error: { code: outcome === 'overflow' ? 'stream.overflow' : 'platform.transport' }
-        }
+    // The 15ms budget includes subscribe. A loaded runner can spend that
+    // budget before a queued terminal is read, so the clock stays fake.
+    jest.useFakeTimers()
+    try {
+      const f = fixture()
+      await connected(f)
+      if (outcome === 'terminal' || outcome === 'overflow')
+        f.deliver({
+          done: false,
+          value: {
+            kind: 'terminal',
+            reason: outcome === 'overflow' ? 'overflow' : 'source-failed',
+            error: { code: outcome === 'overflow' ? 'stream.overflow' : 'platform.transport' }
+          }
+        })
+      const sample = f.scenario.dispatch('sample-selected-hr', { timeoutMs: 15 })
+      const failed = expect(sample).rejects.toMatchObject({
+        code:
+          outcome === 'terminal' || outcome === 'overflow'
+            ? 'scenario.notification-terminal'
+            : outcome === 'timeout'
+              ? 'scenario.notification-timeout'
+              : 'operation.aborted'
       })
-    const sample = f.scenario.dispatch('sample-selected-hr', { timeoutMs: 15 })
-    const failed = expect(sample).rejects.toMatchObject({
-      code:
-        outcome === 'terminal' || outcome === 'overflow'
-          ? 'scenario.notification-terminal'
-          : outcome === 'timeout'
-            ? 'scenario.notification-timeout'
-            : 'operation.aborted'
-    })
-    if (outcome === 'cancel') {
-      await Promise.resolve()
-      await f.scenario.stop()
+      if (outcome === 'cancel') {
+        await jest.advanceTimersByTimeAsync(0)
+        await f.scenario.stop()
+      } else if (outcome === 'timeout') {
+        await jest.advanceTimersByTimeAsync(15)
+      }
+      await failed
+      expect(f.subscription.remove).toHaveBeenCalled()
+    } finally {
+      jest.useRealTimers()
     }
-    await failed
-    expect(f.subscription.remove).toHaveBeenCalled()
   }
 )
 

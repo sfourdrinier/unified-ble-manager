@@ -1,9 +1,15 @@
 # API Report — unified-ble-manager/expo
 
 ```ts
-export function createExpoBleManager(options?: BleManagerCreateOptions, runtimeConfiguration?: ExpoRuntimeConfiguration): Promise<ExpoBleManager>
+export function createExpoBleManager(
+  options?: BleManagerCreateOptions,
+  runtimeConfiguration?: ExpoRuntimeConfiguration
+): Promise<ExpoBleManager>
 export function createExpoBleManagerWithEnvironment(environment: ExpoBleManagerEnvironment): Promise<ExpoBleManager>
-export function getExpoBleReadiness(manager: Pick<BleManager, 'adapter'>, configuration?: ExpoRuntimeConfiguration): Promise<BleReadiness>
+export function getExpoBleReadiness(
+  manager: Pick<BleManager, 'adapter'>,
+  configuration?: ExpoRuntimeConfiguration
+): Promise<BleReadiness>
 export function mapExpoReadiness(adapter: BleAdapterState, configuration?: ExpoRuntimeConfiguration): BleReadiness
 
 export interface ExpoBleManager extends BleManager {
@@ -61,7 +67,7 @@ export interface ExpoBleManager extends BleManager {
 - `ExpoPresenceReleaseResult :: { readonly state: "idle" }`
 - `ExpoRestorationClaimResult :: { readonly outcome: "adopted" | "already-consumed" | "attachment-mismatch" | "backend-mismatch" | "namespace-mismatch" | "epoch-mismatch"; readonly replayRecordCount: number; readonly records: readonly ExpoRestoredRecord[] }`
 - `ExpoRestoredRecord :: { readonly kind: "adapter" | "connection"; readonly ordinal: number; readonly peerId: string | null }`
-- `ExpoRuntimeConfiguration :: { readonly platform?: "android" | "apple" | undefined; readonly executionEnvironment?: "production" | "expo-go" | "development-build" | undefined; readonly nativeModuleAvailable?: boolean | undefined; readonly nativeConfiguration?: { readonly digest: string; } | undefined; readonly expectedConfiguration?: { readonly digest: string; } | undefined; readonly androidApiLevel?: number | undefined; readonly permissions?: { readonly android?: { readonly legacyLocation?: "auto" | "required" | "none" | undefined; } | undefined; } | undefined; readonly settingsBridge?: ExpoSettingsBridge | undefined; readonly permissionBridge?: ExpoPermissionBridge | undefined }`
+- `ExpoRuntimeConfiguration :: { readonly platform?: "android" | "apple" | undefined; readonly executionEnvironment?: "production" | "expo-go" | "development-build" | undefined; readonly nativeModuleAvailable?: boolean | undefined; readonly nativeConfiguration?: { readonly digest: string; } | undefined; readonly expectedConfiguration?: { readonly digest: string; } | undefined; readonly androidApiLevel?: number | undefined; readonly permissions?: { readonly android?: { readonly legacyLocation?: "none" | "auto" | "required" | undefined; } | undefined; } | undefined; readonly settingsBridge?: ExpoSettingsBridge | undefined; readonly permissionBridge?: ExpoPermissionBridge | undefined }`
 - `ExpoSettingsBridge :: { (target: ExpoSettingsTarget) => Promise<void> }`
 - `ExpoSettingsTarget :: "app" | "bluetooth" | "location-services"`
 - `createExpoBleManager :: (options?: BleManagerCreateOptions, runtimeConfiguration?: ExpoRuntimeConfiguration | undefined) => Promise<ExpoBleManager>`

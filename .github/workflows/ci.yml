@@ -156,6 +156,16 @@ jobs:
         # failures diagnosable apart from jest.)
         run: node scripts/ci/build-napi-addon.js
 
+      - name: Bun 1.4.2 desktop host smoke
+        # The debug addon just built is the source-mode binary. Bun 1.4.2 must
+        # load it and run the synthetic central. Adapter listing stays a host
+        # receipt; GitHub runners have no radio for --list-adapters.
+        if: runner.os == 'Linux' && matrix.node == '22'
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.2"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+          UBM_NAPI_ADDON="$PWD/bindings/napi/ubm_echo.linux-x64.node" "$HOME/.bun/bin/bun" scripts/ci/bun-desktop-host-smoke.js
+
       - name: Build UniFFI mobile host for the Apple harness
         # AppleNativeProtocolV2.test.js executes the Apple harness, which links
         # the real Rust mobile host. Building it here, once, keeps the cold
@@ -303,6 +313,44 @@ jobs:
       - name: TCK test-only packaging proof
         if: runner.os == 'Linux' && matrix.node == '22'
         run: node scripts/ci/check-tck-test-only-packaging.js
+
+  # Packed Bun 1.4.2 and Node consume the sealed desktop prebuild through the
+  # public package. The source-mode smoke above does not cover this.
+  bun-desktop-packed:
+    name: Packed Node/Bun desktop acceptance (${{ matrix.os }})
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+        with:
+          prepack: 'true'
+          node-version: '22'
+
+      - name: Install pinned Rust
+        run: cargo --version
+
+      - name: Install Linux native build dependencies
+        if: runner.os == 'Linux'
+        run: bash scripts/ci/install-linux-native-system-dependencies.sh desktop-prebuild
+
+      - name: Install Bun 1.4.2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.4.2'
+
+      - name: Build the desktop-core prebuild
+        run: pnpm native-prebuild:build -- --backend desktop-core
+
+      - name: Packed Bun and Node public acceptance
+        run: node scripts/ci/bun-packed-desktop-acceptance.js
 
   # UBM 5.0 contract-freeze gate (U1): strict typecheck plus the frozen
   # contract suite. Runs on every CI invocation like `package`; see

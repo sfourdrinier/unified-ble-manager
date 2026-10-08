@@ -40,9 +40,12 @@ import type { BoundedAsyncStream } from '../backend-contract/streams'
 import type { RestorationAdoptionRequest, RestorationAdoptionResult } from '../backend-contract/restoration'
 import type { SecurityBackend } from '../backend-contract/security'
 import type {
+  ConnectionParametersMeasurement,
+  ConnectionParametersWatch,
   ConnectionPhyObservation,
   ConnectionPhyRequest,
   ConnectionPriority,
+  ConnectionSubrateMode,
   ConnectionWriteReadinessWatch,
   PhyPreference
 } from '../backend-contract/connection-controls'
@@ -700,6 +703,10 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
     return this.connection.requestPriority(priority, toPublicOperationOptions(options))
   }
 
+  requestSubrate(mode: ConnectionSubrateMode, options: PortableOperationOptions) {
+    return this.connection.requestSubrate(mode, toPublicOperationOptions(options))
+  }
+
   readPhy(options: PortableOperationOptions): Promise<ConnectionPhyObservation<Attachment, string>> {
     return this.connection.readPhy(toPublicOperationOptions(options))
   }
@@ -721,6 +728,14 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
     return this.connection.writeWithoutResponseReadiness(
       toPublicOperationOptions(options ?? { signal: null, deadline: null })
     )
+  }
+
+  parameters(options?: PortableOperationOptions): Promise<ConnectionParametersMeasurement<Attachment, string>> {
+    return this.connection.parameters(toPublicOperationOptions(options ?? { signal: null, deadline: null }))
+  }
+
+  parameterEvents(options?: PortableOperationOptions): Promise<ConnectionParametersWatch<Attachment>> {
+    return this.connection.parameterEvents(toPublicOperationOptions(options ?? { signal: null, deadline: null }))
   }
 }
 
@@ -774,6 +789,17 @@ export class DiscoveredGattDatabase<Attachment extends string, Identity extends 
     options: PortableWritePolicy
   ) {
     return this.database.writeWhenReady(this.resolveCharacteristicPath(path), bytes, toPublicWritePolicy(options))
+  }
+
+  async acquireWrite(path: PortableCurrentCharacteristicPath, options: PortableOperationOptions) {
+    return this.database.acquireWrite(this.resolveCharacteristicPath(path), toPublicOperationOptions(options))
+  }
+
+  async acquireNotifications(path: PortableCurrentCharacteristicPath, options: PortableSubscriptionOptions) {
+    return this.database.acquireNotifications(
+      this.resolveCharacteristicPath(path),
+      toPublicSubscriptionOptions(options)
+    )
   }
 
   async maximumWriteLength(path: PortableCurrentCharacteristicPath, mode: WriteMode) {

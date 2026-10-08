@@ -128,7 +128,7 @@ export const DESKTOP_RUST_CORE_PARITY: readonly DesktopRustCoreParityRow[] = Obj
   row(
     'connection.effective-mtu',
     ALL,
-    'OS-measured ATT MTU (connection:effective-mtu limited): macOS maximumWriteValueLength(.withResponse) + 3 (finding 217, same as Apple RN), Windows GattSession.MaxPduSize, Linux BlueZ characteristic MTU',
+    'ATT MTU when the OS observed one (connection:effective-mtu limited): macOS is unavailable (corebluetooth-att-mtu-not-observed; write length is not an ATT PDU), Windows GattSession.MaxPduSize, Linux BlueZ characteristic MTU',
     implemented('UbmCentral.readEffectiveMtu -> DesktopCentral::read_effective_mtu')
   ),
   row(
@@ -200,7 +200,7 @@ export const DESKTOP_RUST_CORE_PARITY: readonly DesktopRustCoreParityRow[] = Obj
     ['winrt'],
     'notify chosen over indicate when both are present',
     implemented(
-      'os::windows rewrites the CCCD to notify when no indication is required (delivery::plan_delivery AdapterSelects)'
+      'os::windows writes notify on the first CCCD write when no indication is required (delivery::plan_delivery AdapterSelects)'
     )
   ),
   row(

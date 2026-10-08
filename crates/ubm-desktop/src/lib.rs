@@ -19,6 +19,7 @@
 //! radio proof is boundary-fault receipts plus the open physical slice in
 //! `PARITY_GAPS.md`, never a claimed radio qualification.
 
+pub mod acquired_gatt;
 pub mod boundary;
 #[cfg(feature = "btleplug")]
 pub mod btleplug_backend;
@@ -29,21 +30,25 @@ pub mod continuation_journal;
 pub mod continuation_outbox;
 pub mod delivery;
 pub mod errors;
+mod gatt_admission;
+pub use gatt_admission::GattAdmission;
 pub mod executor;
 pub mod identity;
 pub mod op_control;
 pub mod os;
+#[cfg(all(feature = "btleplug", any(target_os = "windows", test)))]
+mod parameter_source;
 
 pub use boundary::bluez_bus_supported;
 pub use boundary::{
     ATT_DEFAULT_LE_MTU, ATT_MAX_ATTRIBUTE_VALUE, AdapterAuthorization, AdapterAvailability,
-    AdapterLossCause, AdapterPowerState, AddressType, AdmissionPolicy, AdvertisementExtras,
+    AdapterLossCause, AdapterPowerState, AddressType, AdmissionPolicy, AdvertisementExtras, BlePhy,
     BluezBus, BondState, CharacteristicAccess, CharacteristicRead, CharacteristicSnapshot,
     DeliveryMode, DescriptorKey, DescriptorSnapshot, DirectoryPeer, FakeRadio, FaultOp,
-    HostDeployment, InstanceKey, ManufacturerData, ObservationSource, ObservedDelivery,
-    PairOutcome, PeerSnapshot, PropertyFlags, RadioBoundary, RadioCloseFailure, RadioEvent,
-    ReadProvenance, ScanFilterSpec, SecurityState, ServiceData, ServiceSnapshot, UnpairOutcome,
-    WriteLimits,
+    HostDeployment, InstanceKey, ManufacturerData, ObservationSource, ObservedConnectionParameters,
+    ObservedConnectionPhy, ObservedDelivery, PairOutcome, PeerSnapshot, PropertyFlags,
+    RadioBoundary, RadioCloseFailure, RadioEvent, ReadProvenance, ScanFilterSpec, SecurityState,
+    ServiceAccess, ServiceData, ServiceSnapshot, UnpairOutcome, WriteLimits,
 };
 #[cfg(feature = "btleplug")]
 pub use btleplug_backend::BtleplugRadio;
@@ -54,16 +59,17 @@ pub use capabilities::{
     register_desktop_capabilities_with_pairing_generation,
 };
 pub use central::{
-    ADAPTER_INITIALIZATION_TIMED_OUT, ADAPTER_INITIALIZATION_TIMEOUT, AdapterEvent,
-    AdapterResetEvent, AdapterStatus, COMPLETED_SCAN_TICKET_CAPACITY, CentralObserver,
-    CentralProfile, CentralSignal, ConnectionHandle, DesktopCentral, DiscoveredPath,
-    DiscoveryReport, InvalidationCause, LIFECYCLE_EVENT_CAPACITY, LifecycleEvent, LifecycleKind,
-    LinkRelease, NotificationPoll, PeerRecord, ResourceCounters, ScanObservation, ScanSession,
-    ScanStop, ShutdownReport,
+    ADAPTER_INITIALIZATION_TIMED_OUT, ADAPTER_INITIALIZATION_TIMEOUT, AcquiredGattHandle,
+    AdapterEvent, AdapterResetEvent, AdapterStatus, COMPLETED_SCAN_TICKET_CAPACITY,
+    CentralObserver, CentralProfile, CentralSignal, ConnectionHandle, DesktopCentral,
+    DiscoveredPath, DiscoveryReport, InvalidationCause, LIFECYCLE_EVENT_CAPACITY, LifecycleEvent,
+    LifecycleKind, LinkRelease, NotificationPoll, PeerRecord, ResourceCounters, ScanObservation,
+    ScanSession, ScanStop, ShutdownReport,
 };
 pub use central::{
-    CancelPairingOutcome, PairRequest, PairingGeneration, PairingGenerationController,
-    ScanTerminalEvent, SecureConnections, SecurityEvent, WriteReadinessEvent,
+    CancelPairingOutcome, ConnectionParametersEvent, PairRequest, PairingGeneration,
+    PairingGenerationController, ScanTerminalEvent, SecureConnections, SecurityEvent,
+    WriteReadinessEvent,
 };
 pub use delivery::{BothPropertiesRule, DeliveryPlan, plan_delivery, platform_rule};
 pub use errors::{DesktopError, PlatformDetail, PlatformValue, Retryability};

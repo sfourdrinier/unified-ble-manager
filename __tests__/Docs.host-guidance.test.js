@@ -88,12 +88,16 @@ test('rc20 documents owned stream failure and Linux initial acquisition without 
   expect(node).toContain('GetLeAvailability')
   expect(node).toContain('not physical qualification')
   const deployment = read('docs/BLUEZ_DEPLOYMENT.md')
-  expect(deployment).toContain('5.87-ubm.5')
+  expect(deployment).toContain('5.87-ubm.10')
   expect(deployment).toContain('GetLeAvailability')
   expect(deployment).not.toContain('### Deferred LE availability remains an explicit mechanism gap')
   expect(read('docs/BLUEZ_LE_GATT.md')).toContain('GetLeAvailability')
   expect(read('docs/BONDING.md')).toContain('source-failed')
-  expect(read('docs/UNIFIED_SEMANTICS.md')).toContain('Security and write-readiness watches')
+  const semantics = read('docs/UNIFIED_SEMANTICS.md').replace(/\s+/g, ' ')
+  expect(semantics).toContain('Security, parameter and write-readiness watches')
+  expect(semantics).toContain('iterator return aborts pending admission before waiting for its settlement')
+  expect(semantics).toContain('closing that stream aborts its pending subscription admission')
+  expect(semantics).toContain('failed release remains owned and retryable')
 })
 
 test('release notes distinguish new desktop acquisition mechanisms from remaining platform gaps', () => {

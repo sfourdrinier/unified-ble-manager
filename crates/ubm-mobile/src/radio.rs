@@ -25,6 +25,11 @@ pub type RequestId = u64;
 /// The native radio adapter. Implementations must not block: `submit`
 /// enqueues the work on the adapter's own thread/queue and returns.
 pub trait PlatformRadio: Send + Sync + 'static {
+    /// Availability of the public subrate request API on this native host.
+    /// Entitlements are checked by the OS when the request is submitted.
+    fn connection_subrate_available(&self) -> bool {
+        false
+    }
     /// Start one request. The adapter answers it exactly once through
     /// [`crate::MobileHost::complete`], possibly before `submit` returns.
     fn submit(&self, request: RadioRequest);
@@ -45,6 +50,27 @@ pub use ubm_desktop::continuation_outbox::WakeSink;
 pub enum MobilePlatform {
     Android,
     Apple,
+}
+
+/// Portable intent mapped to Android's public OFF/LOW/BALANCED/HIGH presets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubrateMode {
+    Default,
+    LowLatency,
+    LowPower,
+    HighThroughput,
+}
+
+impl SubrateMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::LowLatency => "low-latency",
+            Self::LowPower => "low-power",
+            Self::HighThroughput => "high-throughput",
+        }
+    }
 }
 
 impl MobilePlatform {
@@ -115,13 +141,34 @@ impl ScanCallbackType {
     }
 }
 
-/// Android-only scan settings (legacy `scanOptions` fields 3–5). `None`
+/// Android scan PHY selection; only nonlegacy scans can select a PHY.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScanPhy {
+    AllSupported,
+    Le1m,
+    LeCoded,
+}
+
+impl ScanPhy {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AllSupported => "all-supported",
+            Self::Le1m => "1m",
+            Self::LeCoded => "coded",
+        }
+    }
+}
+
+/// Android-only scan settings. `None`
 /// fields keep the platform default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct AndroidScanOptions {
     pub mode: Option<ScanMode>,
     pub callback_type: Option<ScanCallbackType>,
     pub legacy: Option<bool>,
+    pub report_delay_ms: Option<u32>,
+    pub phy: Option<ScanPhy>,
 }
 
 /// One physical scan. Duplicates are always reported (legacy
@@ -294,6 +341,20 @@ pub struct AdapterSnapshot {
 /// One bonded peer from the system bond table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BondedPeer {
+    pub peer_id: String,
+    pub name: Option<String>,
+}
+
+/// A current system LE connection, independent of this owner's leases or bonds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectedPeer {
+    pub peer_id: String,
+    pub name: Option<String>,
+}
+
+/// Native identifier lookup. Existence grants neither a connection nor ownership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPeer {
     pub peer_id: String,
     pub name: Option<String>,
 }
@@ -578,6 +639,35 @@ impl PlatformFailure {
                     None => kind.android_native_code(),
                 };
                 let detail = PlatformDetail::new("android", code);
+                let detail = if self.native_domain.as_deref()
+                    == Some("android.bluetooth.BluetoothStatusCodes")
+                {
+                    match self.native_code {
+                        Some(status) => detail
+                            .with_metadata("androidBluetoothStatus", PlatformValue::Int(status))
+                            .with_metadata(
+                                "nativeDomain",
+                                PlatformValue::Text(
+                                    "android.bluetooth.BluetoothStatusCodes".into(),
+                                ),
+                            ),
+                        None => detail,
+                    }
+                } else if self.native_domain.as_deref()
+                    == Some("android.bluetooth.HciEncryptionChange")
+                {
+                    match self.native_code {
+                        Some(status) => detail
+                            .with_metadata("androidEncryptionStatus", PlatformValue::Int(status))
+                            .with_metadata(
+                                "nativeDomain",
+                                PlatformValue::Text("android.bluetooth.HciEncryptionChange".into()),
+                            ),
+                        None => detail,
+                    }
+                } else {
+                    detail
+                };
                 match self.gatt_status {
                     Some(status) => detail
                         .with_metadata("androidGattStatus", PlatformValue::Int(i64::from(status))),
@@ -594,6 +684,39 @@ impl PlatformFailure {
         };
         detail.with_message(self.detail.clone())
     }
+}
+
+/// The public Android API returns BluetoothStatusCodes, not ATT/GATT status.
+/// SUCCESS acknowledges submission; it does not report negotiated subrate.
+#[must_use]
+pub fn subrate_status_completion(status: i32) -> RadioCompletion {
+    if status == 0 {
+        return RadioCompletion::Accepted(true);
+    }
+    let (kind, name) = match status {
+        1 => (FailureKind::AdapterOff, "ERROR_BLUETOOTH_NOT_ENABLED"),
+        2 => (
+            FailureKind::PermissionRestricted,
+            "ERROR_BLUETOOTH_NOT_ALLOWED",
+        ),
+        3 => (FailureKind::Platform, "ERROR_DEVICE_NOT_BONDED"),
+        6 => (
+            FailureKind::PermissionDenied,
+            "ERROR_MISSING_BLUETOOTH_CONNECT_PERMISSION",
+        ),
+        11 => (FailureKind::Unsupported, "FEATURE_NOT_SUPPORTED"),
+        i32::MAX => (FailureKind::Platform, "ERROR_UNKNOWN"),
+        _ => (FailureKind::Platform, "UNRECOGNIZED_BLUETOOTH_STATUS"),
+    };
+    RadioCompletion::Failed(PlatformFailure {
+        kind,
+        gatt_status: None,
+        native_domain: Some("android.bluetooth.BluetoothStatusCodes".into()),
+        native_code: Some(i64::from(status)),
+        native_name: Some(name.into()),
+        detail: format!("BluetoothGatt.requestSubrateMode returned {name} ({status})"),
+        dispatched: false,
+    })
 }
 
 /// Android `GATT_CONN_TIMEOUT` (0x13): legacy reported it as a link loss.
@@ -620,15 +743,19 @@ pub enum RequestKind {
     DisableNotifications,
     ReadMtu,
     ReadWriteLimits,
+    ReadWriteReadiness,
     RequestMtu,
     ReadRssi,
     RequestConnectionPriority,
+    RequestSubrate,
     ReadPhy,
     RequestPhy,
     SecurityState,
     CreateBond,
     CancelBond,
     BondedPeers,
+    ConnectedPeers,
+    ResolvePeer,
     AcquireBackground,
     ReleaseBackground,
     UpdateBackgroundNotification,
@@ -659,15 +786,19 @@ impl RequestKind {
             Self::DisableNotifications => "gatt.unsubscribe",
             Self::ReadMtu => "connection.effective-mtu",
             Self::ReadWriteLimits => "gatt.write-limits",
+            Self::ReadWriteReadiness => "gatt.write-readiness",
             Self::RequestMtu => "connection.request-mtu",
             Self::ReadRssi => "connection.rssi",
             Self::RequestConnectionPriority => "connection.request-priority",
+            Self::RequestSubrate => "connection.request-subrate",
             Self::ReadPhy => "connection.read-phy",
             Self::RequestPhy => "connection.request-phy",
             Self::SecurityState => "security.state",
             Self::CreateBond => "security.pair",
             Self::CancelBond => "security.cancel-pairing",
             Self::BondedPeers => "peers.bonded",
+            Self::ConnectedPeers => "peers.connected",
+            Self::ResolvePeer => "peers.resolve",
             Self::AcquireBackground => "background.acquire",
             Self::ReleaseBackground => "background.release",
             Self::UpdateBackgroundNotification => "background.update-notification",
@@ -695,10 +826,11 @@ impl RequestKind {
             Self::ReadDescriptor => "readDescriptorFailed",
             Self::WriteDescriptor => "writeDescriptorFailed",
             Self::EnableNotifications | Self::DisableNotifications => "subscriptionFailed",
-            Self::ReadMtu | Self::ReadWriteLimits => "readMtuFailed",
+            Self::ReadMtu | Self::ReadWriteLimits | Self::ReadWriteReadiness => "readMtuFailed",
             Self::RequestMtu => "requestMtuFailed",
             Self::ReadRssi => "readRssiFailed",
             Self::RequestConnectionPriority => "requestPriorityFailed",
+            Self::RequestSubrate => "requestSubrateFailed",
             Self::ReadPhy => "readPhyFailed",
             Self::RequestPhy => "requestPhyFailed",
             Self::CreateBond => "pairRejected",
@@ -707,6 +839,8 @@ impl RequestKind {
             | Self::SecurityState
             | Self::CancelBond
             | Self::BondedPeers
+            | Self::ConnectedPeers
+            | Self::ResolvePeer
             | Self::AcquireBackground
             | Self::ReleaseBackground
             | Self::UpdateBackgroundNotification
@@ -737,8 +871,10 @@ impl RequestKind {
             Self::Close => "destroyFailed",
             Self::ReadMtu
             | Self::ReadWriteLimits
+            | Self::ReadWriteReadiness
             | Self::RequestMtu
             | Self::RequestConnectionPriority
+            | Self::RequestSubrate
             | Self::ReadPhy
             | Self::RequestPhy
             | Self::AdapterState
@@ -746,6 +882,8 @@ impl RequestKind {
             | Self::CreateBond
             | Self::CancelBond
             | Self::BondedPeers
+            | Self::ConnectedPeers
+            | Self::ResolvePeer
             | Self::AcquireBackground
             | Self::ReleaseBackground
             | Self::UpdateBackgroundNotification
@@ -775,15 +913,19 @@ impl RequestKind {
             Self::DisableNotifications => "disable-notifications",
             Self::ReadMtu => "read-mtu",
             Self::ReadWriteLimits => "read-write-limits",
+            Self::ReadWriteReadiness => "read-write-readiness",
             Self::RequestMtu => "request-mtu",
             Self::ReadRssi => "read-rssi",
             Self::RequestConnectionPriority => "request-connection-priority",
+            Self::RequestSubrate => "request-subrate",
             Self::ReadPhy => "read-phy",
             Self::RequestPhy => "request-phy",
             Self::SecurityState => "security-state",
             Self::CreateBond => "create-bond",
             Self::CancelBond => "cancel-bond",
             Self::BondedPeers => "bonded-peers",
+            Self::ConnectedPeers => "connected-peers",
+            Self::ResolvePeer => "resolve-peer",
             Self::AcquireBackground => "acquire-background",
             Self::ReleaseBackground => "release-background",
             Self::UpdateBackgroundNotification => "update-background-notification",
@@ -804,11 +946,18 @@ impl RequestKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RadioRequest {
     /// Current adapter facts. → [`RadioCompletion::Adapter`].
-    AdapterState { id: RequestId },
+    AdapterState {
+        id: RequestId,
+    },
     /// Start the one physical scan. → [`RadioCompletion::Unit`].
-    StartScan { id: RequestId, scan: ScanRequest },
+    StartScan {
+        id: RequestId,
+        scan: ScanRequest,
+    },
     /// Stop the physical scan. → [`RadioCompletion::Unit`].
-    StopScan { id: RequestId },
+    StopScan {
+        id: RequestId,
+    },
     /// Connect (`auto_connect` = Android `autoConnect`, the legacy
     /// `when-available` intent; always false on Apple). A peer the OS
     /// already holds connected (restored) completes at once.
@@ -825,12 +974,21 @@ pub enum RadioRequest {
         preferred_phy: Vec<Phy>,
     },
     /// Release the link. → [`RadioCompletion::Unit`] once the OS confirms.
-    Disconnect { id: RequestId, peer_id: String },
+    Disconnect {
+        id: RequestId,
+        peer_id: String,
+    },
     /// Full service discovery with occurrence indices.
     /// → [`RadioCompletion::Discovered`].
-    Discover { id: RequestId, peer_id: String },
+    Discover {
+        id: RequestId,
+        peer_id: String,
+    },
     /// → [`RadioCompletion::Read`].
-    Read { id: RequestId, instance: Instance },
+    Read {
+        id: RequestId,
+        instance: Instance,
+    },
     /// → [`RadioCompletion::Unit`] (with-response: after the ATT response;
     /// without-response: after the stack accepted the packet).
     Write {
@@ -866,17 +1024,36 @@ pub enum RadioRequest {
         preferred: Option<DeliveryMode>,
     },
     /// Disable (clear the CCCD). → [`RadioCompletion::Unit`].
-    DisableNotifications { id: RequestId, instance: Instance },
-    /// OS-reported ATT MTU (Apple: `maximumWriteValueLength(.withResponse)
-    /// + 3`). → [`RadioCompletion::Mtu`] (`None` when not measured).
-    ReadMtu { id: RequestId, peer_id: String },
+    DisableNotifications {
+        id: RequestId,
+        instance: Instance,
+    },
+    /// OS-reported ATT MTU. Apple does not observe one: a CoreBluetooth
+    /// write length can include a long write, so the session answers
+    /// `None` without issuing this request. → [`RadioCompletion::Mtu`]
+    /// (`None` when not measured).
+    ReadMtu {
+        id: RequestId,
+        peer_id: String,
+    },
     /// The largest single write the OS accepts on the link, per mode.
     /// Android: with-response is the ATT maximum attribute value (512; the
     /// stack performs the long write), without-response is one ATT payload
     /// of the reported MTU, or of the ATT default MTU 23 before any MTU
     /// exchange. Apple: `maximumWriteValueLength(for:)` per type.
     /// → [`RadioCompletion::WriteLimits`].
-    ReadWriteLimits { id: RequestId, peer_id: String },
+    ReadWriteLimits {
+        id: RequestId,
+        peer_id: String,
+    },
+    /// Whether the link can take a write without response now
+    /// (CoreBluetooth `canSendWriteWithoutResponse`). Android has no
+    /// equivalent signal and answers unsupported. Later changes arrive as
+    /// [`RadioIngress::WriteReadiness`]. → [`RadioCompletion::Ready`].
+    ReadWriteReadiness {
+        id: RequestId,
+        peer_id: String,
+    },
     /// → [`RadioCompletion::Mtu`] with the negotiated MTU.
     RequestMtu {
         id: RequestId,
@@ -884,15 +1061,27 @@ pub enum RadioRequest {
         mtu: u16,
     },
     /// Connected RSSI. → [`RadioCompletion::Rssi`].
-    ReadRssi { id: RequestId, peer_id: String },
+    ReadRssi {
+        id: RequestId,
+        peer_id: String,
+    },
     /// → [`RadioCompletion::Accepted`] (dispatch acceptance only).
     RequestConnectionPriority {
         id: RequestId,
         peer_id: String,
         priority: ConnectionPriority,
     },
+    /// Request acceptance only; never an observed subrate factor.
+    RequestSubrate {
+        id: RequestId,
+        peer_id: String,
+        mode: SubrateMode,
+    },
     /// → [`RadioCompletion::Phy`].
-    ReadPhy { id: RequestId, peer_id: String },
+    ReadPhy {
+        id: RequestId,
+        peer_id: String,
+    },
     /// At least one of `tx`/`rx` is set. → [`RadioCompletion::PhyRequest`].
     RequestPhy {
         id: RequestId,
@@ -901,7 +1090,10 @@ pub enum RadioRequest {
         rx: Option<Phy>,
     },
     /// → [`RadioCompletion::Security`].
-    SecurityState { id: RequestId, peer_id: String },
+    SecurityState {
+        id: RequestId,
+        peer_id: String,
+    },
     /// Create a bond. → [`RadioCompletion::Security`] with the resulting
     /// state (not bonded = rejected).
     CreateBond {
@@ -910,9 +1102,23 @@ pub enum RadioRequest {
         transport: PairTransport,
     },
     /// Cancel an in-progress bond. → [`RadioCompletion::Unit`].
-    CancelBond { id: RequestId, peer_id: String },
+    CancelBond {
+        id: RequestId,
+        peer_id: String,
+    },
     /// System bond table. → [`RadioCompletion::BondedPeers`].
-    BondedPeers { id: RequestId },
+    BondedPeers {
+        id: RequestId,
+    },
+    /// Current OS LE inventory. Apple requires services; Android requires none.
+    ConnectedPeers {
+        id: RequestId,
+        services: Vec<String>,
+    },
+    ResolvePeer {
+        id: RequestId,
+        peer_id: String,
+    },
     /// Hold the process in the background for BLE work (Android:
     /// `connectedDevice` foreground service). → [`RadioCompletion::Lease`].
     AcquireBackground {
@@ -921,7 +1127,10 @@ pub enum RadioRequest {
         reason: String,
     },
     /// Release one background lease. → [`RadioCompletion::Unit`].
-    ReleaseBackground { id: RequestId, lease_id: String },
+    ReleaseBackground {
+        id: RequestId,
+        lease_id: String,
+    },
     /// Update the foreground-service notification of one lease.
     /// → [`RadioCompletion::Unit`].
     UpdateBackgroundNotification {
@@ -941,21 +1150,34 @@ pub enum RadioRequest {
     /// This app's `CompanionDeviceManager` associations (finding 236: the
     /// record a duplicate check and the cleanup UI read).
     /// → [`RadioCompletion::CompanionList`].
-    ListCompanion { id: RequestId },
+    ListCompanion {
+        id: RequestId,
+    },
     /// Android `CompanionDeviceManager.disassociate` for one association id.
     /// → [`RadioCompletion::Unit`].
-    DisassociateCompanion { id: RequestId, association_id: i64 },
+    DisassociateCompanion {
+        id: RequestId,
+        association_id: i64,
+    },
     /// Arms Companion Device Manager device presence for one associated peer
     /// (Android API 31+; the session refuses it on Apple).
     /// → [`RadioCompletion::Unit`].
-    ObservePresence { id: RequestId, peer_id: String },
+    ObservePresence {
+        id: RequestId,
+        peer_id: String,
+    },
     /// Disarms device presence for one peer (idle when none is armed).
     /// → [`RadioCompletion::Unit`].
-    StopPresence { id: RequestId, peer_id: String },
+    StopPresence {
+        id: RequestId,
+        peer_id: String,
+    },
     /// Teardown: disable every live notification this radio enabled.
     /// → [`RadioCompletion::Closed`] naming every scope that did not
     /// release (empty = all released).
-    Close { id: RequestId },
+    Close {
+        id: RequestId,
+    },
 }
 
 impl RadioRequest {
@@ -976,15 +1198,19 @@ impl RadioRequest {
             | Self::DisableNotifications { id, .. }
             | Self::ReadMtu { id, .. }
             | Self::ReadWriteLimits { id, .. }
+            | Self::ReadWriteReadiness { id, .. }
             | Self::RequestMtu { id, .. }
             | Self::ReadRssi { id, .. }
             | Self::RequestConnectionPriority { id, .. }
+            | Self::RequestSubrate { id, .. }
             | Self::ReadPhy { id, .. }
             | Self::RequestPhy { id, .. }
             | Self::SecurityState { id, .. }
             | Self::CreateBond { id, .. }
             | Self::CancelBond { id, .. }
             | Self::BondedPeers { id }
+            | Self::ConnectedPeers { id, .. }
+            | Self::ResolvePeer { id, .. }
             | Self::AcquireBackground { id, .. }
             | Self::ReleaseBackground { id, .. }
             | Self::UpdateBackgroundNotification { id, .. }
@@ -1014,15 +1240,19 @@ impl RadioRequest {
             Self::DisableNotifications { .. } => RequestKind::DisableNotifications,
             Self::ReadMtu { .. } => RequestKind::ReadMtu,
             Self::ReadWriteLimits { .. } => RequestKind::ReadWriteLimits,
+            Self::ReadWriteReadiness { .. } => RequestKind::ReadWriteReadiness,
             Self::RequestMtu { .. } => RequestKind::RequestMtu,
             Self::ReadRssi { .. } => RequestKind::ReadRssi,
             Self::RequestConnectionPriority { .. } => RequestKind::RequestConnectionPriority,
+            Self::RequestSubrate { .. } => RequestKind::RequestSubrate,
             Self::ReadPhy { .. } => RequestKind::ReadPhy,
             Self::RequestPhy { .. } => RequestKind::RequestPhy,
             Self::SecurityState { .. } => RequestKind::SecurityState,
             Self::CreateBond { .. } => RequestKind::CreateBond,
             Self::CancelBond { .. } => RequestKind::CancelBond,
             Self::BondedPeers { .. } => RequestKind::BondedPeers,
+            Self::ConnectedPeers { .. } => RequestKind::ConnectedPeers,
+            Self::ResolvePeer { .. } => RequestKind::ResolvePeer,
             Self::AcquireBackground { .. } => RequestKind::AcquireBackground,
             Self::ReleaseBackground { .. } => RequestKind::ReleaseBackground,
             Self::UpdateBackgroundNotification { .. } => RequestKind::UpdateBackgroundNotification,
@@ -1056,6 +1286,8 @@ pub enum RadioCompletion {
     Mtu(Option<u16>),
     /// Per-mode single-write limits; both are at least one byte.
     WriteLimits(WriteLimits),
+    /// `canSendWriteWithoutResponse` for [`RequestKind::ReadWriteReadiness`].
+    Ready(bool),
     Rssi(i16),
     Accepted(bool),
     Phy(PhyObservation),
@@ -1065,6 +1297,8 @@ pub enum RadioCompletion {
     },
     Security(SecurityState),
     BondedPeers(Vec<BondedPeer>),
+    ConnectedPeers(Vec<ConnectedPeer>),
+    ResolvedPeer(Option<ResolvedPeer>),
     /// Background lease id.
     Lease(String),
     Companion {
@@ -1128,13 +1362,17 @@ impl RadioCompletion {
                 | (Self::NotifyEnabled(_), K::EnableNotifications)
                 | (Self::Mtu(_), K::ReadMtu)
                 | (Self::WriteLimits(_), K::ReadWriteLimits)
+                | (Self::Ready(_), K::ReadWriteReadiness)
                 | (Self::Mtu(Some(_)), K::RequestMtu)
                 | (Self::Rssi(_), K::ReadRssi)
                 | (Self::Accepted(_), K::RequestConnectionPriority)
+                | (Self::Accepted(_), K::RequestSubrate)
                 | (Self::Phy(_), K::ReadPhy)
                 | (Self::PhyRequest { .. }, K::RequestPhy)
                 | (Self::Security(_), K::SecurityState | K::CreateBond)
                 | (Self::BondedPeers(_), K::BondedPeers)
+                | (Self::ConnectedPeers(_), K::ConnectedPeers)
+                | (Self::ResolvedPeer(_), K::ResolvePeer)
                 | (Self::Closed(_), K::Close)
         )
     }
@@ -1147,6 +1385,8 @@ pub use ubm_desktop::{ManufacturerData, ServiceData, WriteLimits};
 /// One advertisement as the platform observed it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Advertisement {
+    pub capture_timestamp_ms: Option<u64>,
+    pub cached_name: Option<String>,
     pub peer_id: String,
     /// BLE address when the OS exposes one (Android); `None` on Apple.
     pub address: Option<String>,
@@ -1204,6 +1444,17 @@ pub enum RadioIngress {
     SecurityChanged {
         peer_id: String,
         state: SecurityState,
+    },
+    SecurityFailed {
+        peer_id: Option<String>,
+        failure: PlatformFailure,
+    },
+    /// CoreBluetooth `peripheralIsReady(toSendWriteWithoutResponse:)`.
+    /// `ready` is the queue state after that callback, which Apple documents
+    /// as able to accept another write without response.
+    WriteReadiness {
+        peer_id: String,
+        ready: bool,
     },
     /// Peers the OS handed back through state restoration.
     Restored {

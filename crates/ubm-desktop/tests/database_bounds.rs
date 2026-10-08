@@ -44,6 +44,8 @@ fn uuid(index: usize) -> String {
 fn database(services: usize, characteristics: usize) -> Vec<ServiceSnapshot> {
     (0..services)
         .map(|service| ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: uuid(0x1000 + service),
             occurrence: 0,
             characteristics: (0..characteristics)
@@ -54,6 +56,7 @@ fn database(services: usize, characteristics: usize) -> Vec<ServiceSnapshot> {
                     descriptors: Vec::new(),
                 })
                 .collect(),
+            access: std::default::Default::default(),
         })
         .collect()
 }

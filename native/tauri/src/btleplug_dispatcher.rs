@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     future::Future,
     pin::Pin,
     sync::{
@@ -17,10 +17,10 @@ use tokio::sync::{broadcast, watch, Mutex};
 use ubm_core::contracts::{AttachmentTuple, BleErrorCode, CommitState};
 use ubm_desktop::{
     AdapterAuthorization, AdapterAvailability, AdapterPowerState, Budget, CancelAck, CancelRequest,
-    CentralProfile, CompletionOutcome, DeliveryMode, DesktopCentral, DesktopError,
+    CentralProfile, CompletionOutcome, DeliveryMode, DesktopCentral, DesktopError, DiscoveredPath,
     InvalidationCause, LifecycleEvent, LifecycleKind, NotificationPoll, ObservedDelivery,
     OpControl, OpTicket, OperationId, PlatformDetail, PlatformValue, Retryability,
-    ScanTerminalEvent, ShutdownReport,
+    ScanTerminalEvent, ServiceAccess, ShutdownReport,
 };
 use uuid::Uuid;
 
@@ -31,10 +31,57 @@ use crate::ATTACH_REQUEST_KIND;
 use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, IpcValue};
 
 const MAX_PENDING_EVENTS: usize = 256;
+
+/// Successful watch closes are replay metadata, not live resources. Retain
+/// recent handles in insertion order; older unknown handles fail ownership
+/// checks. Renderers must mint a fresh handle for every acquisition.
+#[derive(Default)]
+struct WatchReleaseHistory {
+    handles: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl WatchReleaseHistory {
+    fn insert(&mut self, handle: String) {
+        if self.handles.insert(handle.clone()) {
+            self.order.push_back(handle);
+            if self.order.len() > MAX_PENDING_EVENTS {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.handles.remove(&oldest);
+                }
+            }
+        }
+    }
+
+    fn contains(&self, handle: &str) -> bool {
+        self.handles.contains(handle)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.handles.len()
+    }
+}
+
+impl Extend<String> for WatchReleaseHistory {
+    fn extend<T: IntoIterator<Item = String>>(&mut self, handles: T) {
+        for handle in handles {
+            self.insert(handle);
+        }
+    }
+}
+#[path = "acquired_gatt.rs"]
+mod acquired_gatt;
+#[path = "connection_parameters.rs"]
+mod connection_parameters;
+#[path = "connection_phy.rs"]
+mod connection_phy;
 #[path = "peer_directory.rs"]
 mod peer_directory;
 #[path = "security.rs"]
 mod security;
+#[path = "write_readiness.rs"]
+mod write_readiness;
 const MAX_CORRELATIONS: usize = 256;
 const COMPLETED_CORRELATION_TTL: Duration = Duration::from_secs(30);
 /// Delivery pacing between core polls (scan observations and notification
@@ -153,9 +200,15 @@ struct CallerState {
     connections: HashMap<String, CoreConnection>,
     databases: HashMap<String, CoreDatabase>,
     subscriptions: HashMap<String, CoreSubscription>,
+    acquired_writers: HashMap<String, acquired_gatt::CoreAcquiredWriter>,
+    acquired_releases: WatchReleaseHistory,
     connection_events: HashMap<String, ConnectionEventResource>,
     security_watches: HashMap<String, security::SecurityWatch>,
     security_watch_releases: HashSet<String>,
+    write_readiness_watches: HashMap<String, write_readiness::WriteReadinessWatch>,
+    write_readiness_releases: WatchReleaseHistory,
+    parameter_watches: HashMap<String, connection_parameters::ConnectionParameterWatch>,
+    parameter_releases: WatchReleaseHistory,
     operations: HashMap<String, TrackedOperation>,
     completed_correlations: HashMap<String, Instant>,
     pending_events: HashSet<String>,
@@ -255,11 +308,13 @@ struct CoreDatabase {
 /// verbatim notification forwarder.
 struct CoreSubscription {
     connection_handle: String,
+    database_handle: String,
     peer_id: String,
     selector: CoreSelector,
     consumer: String,
     /// The delivery mode the radio reported for this enablement.
     delivery: ObservedDelivery,
+    acquired: Option<(String, String)>,
     task: Option<TauriJoinHandle<()>>,
     phase: ReleasePhase,
     /// A terminal accepted by the channel has already ended this stream.
@@ -414,6 +469,10 @@ impl OrphanFailure {
 #[derive(Clone, Debug)]
 enum OrphanResource {
     Scan(OperationId),
+    Acquired {
+        handle: String,
+        lease: String,
+    },
     Link {
         peer_id: String,
         lease: String,
@@ -429,6 +488,7 @@ impl OrphanResource {
     fn kind(&self) -> &'static str {
         match self {
             Self::Scan(_) => "scan",
+            Self::Acquired { .. } => "acquired-gatt",
             Self::Link { .. } => "connection",
             Self::Subscription { .. } => "subscription",
         }
@@ -1316,9 +1376,15 @@ impl BtleplugDispatcher {
                 connections: HashMap::new(),
                 databases: HashMap::new(),
                 subscriptions: HashMap::new(),
+                acquired_writers: HashMap::new(),
+                acquired_releases: WatchReleaseHistory::default(),
                 connection_events: HashMap::new(),
                 security_watches: HashMap::new(),
                 security_watch_releases: HashSet::new(),
+                write_readiness_watches: HashMap::new(),
+                write_readiness_releases: WatchReleaseHistory::default(),
+                parameter_watches: HashMap::new(),
+                parameter_releases: WatchReleaseHistory::default(),
                 operations: HashMap::new(),
                 completed_correlations: HashMap::new(),
                 pending_events: HashSet::new(),
@@ -1420,6 +1486,48 @@ impl BtleplugDispatcher {
         }
 
         let control = OpControl::new(budget, OpTicket::new());
+        // Once the authenticated target is admitted, reserve the physical
+        // connection queue before starting the asynchronous worker.
+        let gatt_peer = match command.as_str() {
+            "gatt.write"
+            | "gatt.write-when-ready"
+            | "gatt.read"
+            | "gatt.subscribe"
+            | "gatt.acquire-write"
+            | "gatt.acquire-notifications" => {
+                Some(self.gatt_target(&caller, &payload).await?.peer_id)
+            }
+            "gatt.acquired-write" => Some(self.acquired_writer(&caller, &payload).await?.peer_id),
+            "gatt.descriptor.read" | "gatt.descriptor.write" => Some(
+                self.descriptor_target(&caller, &payload, "tauri.gatt-admission")
+                    .await?
+                    .0,
+            ),
+            "gatt.discover" => Some(
+                self.connection(&caller, &payload, "tauri.gatt-admission")
+                    .await?
+                    .peer_id,
+            ),
+            "gatt.unsubscribe" => {
+                let handle =
+                    required_string(&payload, "subscriptionHandle", "tauri.gatt-admission")?;
+                let state = self.inner.lock().await;
+                state
+                    .callers
+                    .get(&caller_key(&caller))
+                    .and_then(|owner| owner.subscriptions.get(&handle))
+                    .map(|subscription| subscription.peer_id.clone())
+            }
+            _ => None,
+        };
+        let control = if let Some(peer_id) = gatt_peer {
+            self.ensure_authority()
+                .await?
+                .bind_gatt_admission(&peer_id, control)
+                .map_err(|error| DispatchError::from_core(&error))?
+        } else {
+            control
+        };
         {
             let mut state = self.inner.lock().await;
             let caller_state = state.callers.get_mut(&caller_key(&caller)).ok_or_else(|| {
@@ -1766,15 +1874,43 @@ impl BtleplugDispatcher {
                 self.unsubscribe_connection_events(caller, payload).await
             }
             "connection.rssi" => self.read_rssi(caller, payload, ctl).await,
+            "connection.request-priority" => self.request_priority(caller, payload, ctl).await,
             "connection.effective-mtu" => self.read_effective_mtu(caller, payload, ctl).await,
             "connection.maximum-write-length" => {
                 self.maximum_write_length(caller, payload, ctl).await
             }
+            "connection.write-readiness.subscribe" => {
+                self.subscribe_write_readiness(caller, payload, ctl).await
+            }
+            "connection.write-readiness.unsubscribe" => {
+                self.unsubscribe_write_readiness(caller, payload).await
+            }
+            "connection.parameters" => self.read_connection_parameters(caller, payload, ctl).await,
+            "connection.phy" => self.read_connection_phy(caller, payload, ctl).await,
+            "connection.parameters.subscribe" => {
+                self.subscribe_connection_parameters(caller, payload, ctl)
+                    .await
+            }
+            "connection.parameters.unsubscribe" => {
+                self.unsubscribe_connection_parameters(caller, payload)
+                    .await
+            }
             "gatt.discover" => self.discover(caller, payload, ctl).await,
             "gatt.database.release" => self.release_database(caller, payload).await,
             "gatt.read" => self.read(caller, payload, ctl).await,
-            "gatt.write" => self.write(caller, payload, binary_payload, ctl).await,
-            "gatt.subscribe" => self.subscribe(caller, payload, ctl).await,
+            "gatt.write" => {
+                self.write(caller, payload, binary_payload, ctl, false)
+                    .await
+            }
+            "gatt.write-when-ready" => self.write(caller, payload, binary_payload, ctl, true).await,
+            "gatt.acquire-write" => self.acquire_writer(caller, payload, ctl).await,
+            "gatt.acquired-write" => {
+                self.write_acquired(caller, payload, binary_payload, ctl)
+                    .await
+            }
+            "gatt.acquired-write.close" => self.close_acquired_writer(caller, payload, ctl).await,
+            "gatt.acquire-notifications" => self.subscribe(caller, payload, ctl, true).await,
+            "gatt.subscribe" => self.subscribe(caller, payload, ctl, false).await,
             "gatt.unsubscribe" => self.unsubscribe(caller, payload, ctl).await,
             "gatt.descriptor.read" => self.read_descriptor(caller, payload, ctl).await,
             "gatt.descriptor.write" => {
@@ -2003,10 +2139,7 @@ impl BtleplugDispatcher {
         payload: BTreeMap<String, IpcValue>,
         ctl: OpControl,
     ) -> Result<IpcValue, DispatchError> {
-        if payload.contains_key("platform") {
-            return Err(DispatchError::new(BleErrorCode::CapabilityUnsupported, "capability", "scan.start.platform-options")
-                .platform("The instantiated desktop authority has no platform scan-options implementation; options are never silently discarded"));
-        }
+        let windows = decode_windows_scan_options(payload.get("platform"))?;
         let query_value = payload.get("query").ok_or_else(|| {
             DispatchError::new(
                 BleErrorCode::ProtocolViolation,
@@ -2062,7 +2195,7 @@ impl BtleplugDispatcher {
         let service_uuid_strings: Vec<String> =
             service_uuids.iter().map(|uuid| uuid.to_string()).collect();
         let scan_id = authority
-            .start_scan(&key, &service_uuid_strings, ctl)
+            .start_scan_platform(&key, &service_uuid_strings, windows, ctl)
             .await
             .map_err(|error| DispatchError::from_core(&error))?;
         let handle = self.id("scan");
@@ -2777,6 +2910,17 @@ impl BtleplugDispatcher {
                     .map(|subscription| (subscription_handle, subscription))
             })
             .collect::<Vec<_>>();
+        let writer_handles = caller_state
+            .acquired_writers
+            .iter()
+            .filter_map(|(handle, writer)| {
+                (writer.connection_handle == connection_handle).then_some(handle.clone())
+            })
+            .collect::<Vec<_>>();
+        for handle in writer_handles {
+            caller_state.acquired_writers.remove(&handle);
+            caller_state.acquired_releases.insert(handle);
+        }
         caller_state
             .databases
             .retain(|_, database| database.connection_handle != connection_handle);
@@ -3066,6 +3210,18 @@ impl BtleplugDispatcher {
                 caller_state.security_watch_releases.extend(
                     caller_state
                         .security_watches
+                        .drain()
+                        .map(|(handle, _watch)| handle),
+                );
+                caller_state.write_readiness_releases.extend(
+                    caller_state
+                        .write_readiness_watches
+                        .drain()
+                        .map(|(handle, _watch)| handle),
+                );
+                caller_state.parameter_releases.extend(
+                    caller_state
+                        .parameter_watches
                         .drain()
                         .map(|(handle, _watch)| handle),
                 );
@@ -3388,6 +3544,27 @@ impl BtleplugDispatcher {
     ) -> Result<IpcValue, DispatchError> {
         let connection_handle = required_string(&payload, "connectionHandle", "tauri.discover")?;
         let connection = self.connection(caller, &payload, "tauri.discover").await?;
+        let key = caller_key(caller);
+        let old_databases = self
+            .inner
+            .lock()
+            .await
+            .callers
+            .get(&key)
+            .map(|owner| {
+                owner
+                    .databases
+                    .iter()
+                    .filter_map(|(handle, database)| {
+                        (database.connection_handle == connection_handle).then_some(handle.clone())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for database in old_databases {
+            self.release_acquired_database(&key, &database, "service-changed")
+                .await?;
+        }
         // Core first: discovery runs in the core and registers the whole
         // tree there or fails whole (finding 95); the dispatcher only
         // renders the registered paths into the IPC wire shape.
@@ -3420,16 +3597,16 @@ impl BtleplugDispatcher {
         let mut characteristic_handles = HashMap::new();
         for path in &paths {
             if seen_services.insert((path.service_uuid.clone(), path.service_occurrence)) {
-                service_records.push(object([
-                    ("uuid", string(path.service_uuid.clone())),
-                    ("occurrence", string(path.service_occurrence.to_string())),
-                    // The core does not model primary/secondary services, so
-                    // the key carries the only truthful contract value the
-                    // wire allows; the gap is a documented radio-seam
-                    // follow-up (surface `primary` through the boundary).
-                    ("primary", IpcValue::Bool(true)),
-                    ("includedServices", IpcValue::Array(Vec::new())),
-                ]));
+                service_records.push(ipc_service_record(
+                    &path.service_uuid,
+                    path.service_occurrence,
+                    service_level_access(&paths, &path.service_uuid, path.service_occurrence),
+                    paths.iter().find(|service| {
+                        service.characteristic_uuid.is_none()
+                            && service.service_uuid == path.service_uuid
+                            && service.service_occurrence == path.service_occurrence
+                    }),
+                ));
             }
         }
         // Characteristic rows render only from characteristic-level core
@@ -3582,12 +3759,21 @@ impl BtleplugDispatcher {
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
     ) -> Result<IpcValue, DispatchError> {
-        // Mapping-only: discovery trees live in the core, so releasing is
-        // dropping the transport mapping — nothing native can fail, and the
-        // caller is validated before anything is removed. Unknown handle
-        // with a live caller is idempotent release.
+        // Acquired children must settle before their retry identity is removed.
         let handle = required_string(&payload, "databaseHandle", "tauri.database-release")?;
         let key = caller_key(caller);
+        {
+            let state = self.inner.lock().await;
+            if !state.callers.contains_key(&key) {
+                return Err(DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "gatt",
+                    "tauri.database-release-owner",
+                ));
+            }
+        }
+        self.release_acquired_database(&key, &handle, "owner-released")
+            .await?;
         let mut state = self.inner.lock().await;
         let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
             DispatchError::new(
@@ -3628,6 +3814,7 @@ impl BtleplugDispatcher {
         payload: BTreeMap<String, IpcValue>,
         bytes: Option<Vec<u8>>,
         ctl: OpControl,
+        wait_ready: bool,
     ) -> Result<IpcValue, DispatchError> {
         let bytes = bytes.ok_or_else(|| {
             DispatchError::new(BleErrorCode::BytesInvalid, "gatt", "tauri.gatt-write-bytes")
@@ -3640,19 +3827,38 @@ impl BtleplugDispatcher {
                 "tauri.gatt-write-mode",
             ));
         }
+        if wait_ready && mode != "without-response" {
+            return Err(DispatchError::new(
+                BleErrorCode::ArgumentInvalid,
+                "gatt",
+                "tauri.gatt-write-when-ready.mode",
+            ));
+        }
         let target = self.gatt_target(caller, &payload).await?;
         // Core first: MTU, properties, and the deadline are all core-owned.
         let authority = self.ensure_authority().await?;
-        authority
-            .write(
-                &target.peer_id,
-                &target.characteristic.selector,
-                bytes.clone(),
-                &mode,
-                ctl.with_connection_lease(target.lease),
-            )
-            .await
-            .map_err(|error| DispatchError::from_core(&error))?;
+        let control = ctl.with_connection_lease(target.lease);
+        if wait_ready {
+            authority
+                .write_when_ready(
+                    &target.peer_id,
+                    &target.characteristic.selector,
+                    bytes.clone(),
+                    control,
+                )
+                .await
+        } else {
+            authority
+                .write(
+                    &target.peer_id,
+                    &target.characteristic.selector,
+                    bytes.clone(),
+                    &mode,
+                    control,
+                )
+                .await
+        }
+        .map_err(|error| DispatchError::from_core(&error))?;
         let write_correlation = self.id("write-operation");
         // The contract `WriteReceipt` allows only `confirmed`/`unknown`: an
         // unconfirmed write reports `unknown` on every host (findings F1/F2).
@@ -3689,7 +3895,15 @@ impl BtleplugDispatcher {
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
         ctl: OpControl,
+        acquired: bool,
     ) -> Result<IpcValue, DispatchError> {
+        if acquired && !matches!(payload.get("deliveryMode"), None | Some(IpcValue::Null)) {
+            return Err(DispatchError::new(
+                BleErrorCode::ArgumentInvalid,
+                "gatt",
+                "tauri.acquire-notifications.delivery-mode",
+            ));
+        }
         let requirement = match payload.get("deliveryMode") {
             None | Some(IpcValue::Null) => None,
             Some(value) => match as_string(value) {
@@ -3705,6 +3919,12 @@ impl BtleplugDispatcher {
                 }
             },
         };
+        let preference = match payload.get("deliveryMode").and_then(as_string) {
+            Some("prefer-notification") => Some(DeliveryMode::Notification),
+            Some("prefer-indication") => Some(DeliveryMode::Indication),
+            _ => None,
+        };
+        let ctl = ctl.with_delivery_preference(preference);
         let target = self.gatt_target(caller, &payload).await?;
         if let Some(required) = requirement {
             let (property, operation) = match required {
@@ -3733,16 +3953,40 @@ impl BtleplugDispatcher {
         // The core consumer is internal: it takes no number from the 4.x counter.
         let consumer = self.internal_id("consumer");
         let selector = target.characteristic.selector.clone();
-        let delivery = authority
-            .subscribe(
-                &target.peer_id,
-                &selector,
-                &consumer,
-                requirement,
-                ctl.with_connection_lease(target.lease),
+        // The requirement reaches the core on every host. Mac and Linux write
+        // notification when both properties exist, so a hard indication
+        // requirement is `capability.limited` before any radio effect. Windows
+        // can write the requested mode. Dropping the requirement would let
+        // that indication subscribe as a notification.
+        let acquired_handle = if acquired {
+            Some(
+                authority
+                    .acquire_gatt(
+                        &target.peer_id,
+                        &selector,
+                        ubm_desktop::acquired_gatt::AcquisitionKind::Notify,
+                        ctl.clone().with_connection_lease(target.lease.clone()),
+                    )
+                    .await
+                    .map_err(|error| DispatchError::from_core(&error))?,
             )
-            .await
-            .map_err(|error| DispatchError::from_core(&error))?;
+        } else {
+            None
+        };
+        let delivery = if acquired_handle.is_some() {
+            ObservedDelivery::Unknown
+        } else {
+            authority
+                .subscribe(
+                    &target.peer_id,
+                    &selector,
+                    &consumer,
+                    requirement,
+                    ctl.with_connection_lease(target.lease.clone()),
+                )
+                .await
+                .map_err(|error| DispatchError::from_core(&error))?
+        };
         let handle = self.id("subscription");
         // Publication is one decision under the dispatcher lock, and the
         // pump spawns only once its entry exists (PR210-07). An enablement
@@ -3784,10 +4028,18 @@ impl BtleplugDispatcher {
                         handle.clone(),
                         CoreSubscription {
                             connection_handle: target.connection_handle.clone(),
+                            database_handle: required_string(
+                                &payload,
+                                "databaseHandle",
+                                "tauri.subscribe.database",
+                            )?,
                             peer_id: target.peer_id.clone(),
                             selector: selector.clone(),
                             consumer: consumer.clone(),
                             delivery,
+                            acquired: acquired_handle
+                                .as_ref()
+                                .map(|native| (native.handle.clone(), target.lease.clone())),
                             task: None,
                             phase: ReleasePhase::Active,
                             terminal_sent: false,
@@ -3810,19 +4062,29 @@ impl BtleplugDispatcher {
             self.compensate(
                 &authority,
                 &key,
-                OrphanResource::Subscription {
-                    peer_id: target.peer_id,
-                    selector,
-                    consumer,
+                match &acquired_handle {
+                    Some(native) => OrphanResource::Acquired {
+                        handle: native.handle.clone(),
+                        lease: target.lease.clone(),
+                    },
+                    None => OrphanResource::Subscription {
+                        peer_id: target.peer_id,
+                        selector,
+                        consumer,
+                    },
                 },
             )
             .await;
             return Err(refusal);
         }
-        Ok(object([
+        let mut fields = vec![
             ("handle", string(handle)),
             ("observedDelivery", string(delivery.as_str())),
-        ]))
+        ];
+        if let Some(native) = acquired_handle {
+            fields.push(("mtuBytes", number(i64::from(native.mtu))));
+        }
+        Ok(object(fields))
     }
 
     /// Verbatim notification delivery: the pump polls the core with a
@@ -3855,11 +4117,23 @@ impl BtleplugDispatcher {
                     }
                     (Delivery::Active, Some(target)) => target,
                 };
-                let (peer_id, selector, consumer, delivery) = target;
-                let ending = match authority
-                    .poll_notification(&peer_id, &selector, &consumer)
-                    .await
-                {
+                let (peer_id, selector, consumer, delivery, acquired) = target;
+                let acquired_transport = acquired.is_some();
+                let polled = match acquired {
+                    Some((native_handle, native_lease)) => authority
+                        .acquired_receive(
+                            &native_handle,
+                            OpControl::unbounded().with_connection_lease(native_lease),
+                        )
+                        .await
+                        .map(NotificationPoll::Value),
+                    None => {
+                        authority
+                            .poll_notification(&peer_id, &selector, &consumer)
+                            .await
+                    }
+                };
+                let ending = match polled {
                     Ok(NotificationPoll::Value(value)) => {
                         sequence = sequence.saturating_add(1);
                         let observed_at_monotonic_ms =
@@ -3933,6 +4207,22 @@ impl BtleplugDispatcher {
                         )
                         .await
                     {
+                        Ok(true) if acquired_transport => {
+                            // A terminal ends delivery; native cleanup remains owned until confirmed.
+                            loop {
+                                match dispatcher
+                                    .release_subscription(&key, &handle, OpControl::unbounded())
+                                    .await
+                                {
+                                    Ok(()) => return,
+                                    Err(error) => eprintln!(
+                                        "tauri: terminal subscription cleanup remains owned: {}",
+                                        error.describe()
+                                    ),
+                                }
+                                tokio::time::sleep(FORWARD_POLL_INTERVAL).await;
+                            }
+                        }
                         Ok(true) => return,
                         // A requested release took admission while this
                         // poll was in flight. Let that release own the
@@ -3965,7 +4255,13 @@ impl BtleplugDispatcher {
         lease: &(String, String),
     ) -> (
         Delivery,
-        Option<(String, CoreSelector, String, ObservedDelivery)>,
+        Option<(
+            String,
+            CoreSelector,
+            String,
+            ObservedDelivery,
+            Option<(String, String)>,
+        )>,
     ) {
         let state = self.inner.lock().await;
         let Some(caller_state) = state
@@ -3992,6 +4288,7 @@ impl BtleplugDispatcher {
                 subscription.selector.clone(),
                 subscription.consumer.clone(),
                 subscription.delivery,
+                subscription.acquired.clone(),
             )),
         )
     }
@@ -4043,18 +4340,23 @@ impl BtleplugDispatcher {
                 subscription.peer_id.clone(),
                 subscription.selector.clone(),
                 subscription.consumer.clone(),
+                subscription.acquired.clone(),
             )
         };
-        let (sender, peer_id, selector, consumer) = match step {
+        let (sender, peer_id, selector, consumer, acquired) = match step {
             (ReleaseStep::Join(receiver), ..) => return join_release(receiver).await,
-            (ReleaseStep::Lead(sender), peer_id, selector, consumer) => {
-                (sender, peer_id, selector, consumer)
+            (ReleaseStep::Lead(sender), peer_id, selector, consumer, acquired) => {
+                (sender, peer_id, selector, consumer, acquired)
             }
         };
         let result = match self.ensure_authority().await {
-            Ok(authority) => {
-                release_consumer(&authority, &peer_id, &selector, &consumer, ctl).await
-            }
+            Ok(authority) => match acquired {
+                Some((native, lease)) => authority
+                    .close_acquired(&native, ctl.with_connection_lease(lease))
+                    .await
+                    .map_err(|error| DispatchError::from_core(&error)),
+                None => release_consumer(&authority, &peer_id, &selector, &consumer, ctl).await,
+            },
             Err(error) => Err(error),
         };
         let finished = {
@@ -4149,6 +4451,43 @@ impl BtleplugDispatcher {
     }
 
     /// Connected RSSI through the core, for the lease holding the link: the
+    async fn request_priority(
+        &self,
+        caller: &AuthenticatedCaller,
+        payload: BTreeMap<String, IpcValue>,
+        ctl: OpControl,
+    ) -> Result<IpcValue, DispatchError> {
+        use ubm_desktop::boundary::ConnectionPriority;
+        let operation = "tauri.request-priority";
+        let priority = match required_string(&payload, "priority", operation)?.as_str() {
+            "balanced" => ConnectionPriority::Balanced,
+            "low-power" => ConnectionPriority::LowPower,
+            "high-throughput" => ConnectionPriority::HighThroughput,
+            _ => {
+                return Err(DispatchError::new(
+                    BleErrorCode::ArgumentInvalid,
+                    "connection",
+                    operation,
+                ))
+            }
+        };
+        let connection = self.connection(caller, &payload, operation).await?;
+        let accepted = self
+            .ensure_authority()
+            .await?
+            .request_priority(&connection.peer_id, &connection.lease, priority, ctl)
+            .await
+            .map_err(|error| DispatchError::from_core(&error))?;
+        Ok(object([
+            ("accepted", IpcValue::Bool(accepted)),
+            ("connectionId", string(&connection.connection_id)),
+            (
+                "connectionGeneration",
+                string(&connection.connection_generation),
+            ),
+        ]))
+    }
+
     /// OS measurement, never a cached advertisement value. A radio that
     /// cannot measure it answers `capability.unsupported` verbatim.
     async fn read_rssi(
@@ -4166,12 +4505,10 @@ impl BtleplugDispatcher {
         Ok(object([("rssi", number(i64::from(rssi)))]))
     }
 
-    /// Effective ATT MTU of the link held under the caller's lease, as the
-    /// OS reports it (finding 217 follow-up): macOS derives
-    /// `maximumWriteValueLength(.withResponse) + 3`, Windows reads
-    /// `GattSession.MaxPduSize`, Linux reads the BlueZ characteristic MTU.
-    /// A withheld measurement answers `capability.unsupported` verbatim,
-    /// never a guessed 23.
+    /// Effective ATT MTU of the link held under the caller's lease, when
+    /// the OS observed one. Windows reads `GattSession.MaxPduSize`. Linux
+    /// reads the BlueZ characteristic MTU. macOS sends null: CoreBluetooth
+    /// write length is not an ATT MTU. Null is unobserved, not a link failure.
     async fn read_effective_mtu(
         &self,
         caller: &AuthenticatedCaller,
@@ -4186,7 +4523,11 @@ impl BtleplugDispatcher {
             .read_effective_mtu(&connection.peer_id, &connection.lease, ctl)
             .await
             .map_err(|error| DispatchError::from_core(&error))?;
-        Ok(object([("mtu", number(i64::from(mtu)))]))
+        let mtu_value = match mtu {
+            Some(value) => number(i64::from(value)),
+            None => IpcValue::Null,
+        };
+        Ok(object([("mtu", mtu_value)]))
     }
 
     /// The largest single write the OS accepts on this link for the
@@ -4815,6 +5156,18 @@ impl BtleplugDispatcher {
                             .drain()
                             .map(|(handle, _watch)| handle),
                     );
+                    caller_state.write_readiness_releases.extend(
+                        caller_state
+                            .write_readiness_watches
+                            .drain()
+                            .map(|(handle, _watch)| handle),
+                    );
+                    caller_state.parameter_releases.extend(
+                        caller_state
+                            .parameter_watches
+                            .drain()
+                            .map(|(handle, _watch)| handle),
+                    );
                     true
                 }
                 None => false,
@@ -4916,6 +5269,26 @@ impl BtleplugDispatcher {
             )
         };
         let mut failures = Vec::new();
+        let writers = self
+            .inner
+            .lock()
+            .await
+            .callers
+            .get(key)
+            .map(|owner| owner.acquired_writers.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for handle in writers {
+            if let Err(error) = self
+                .release_acquired_writer(key, &handle, OpControl::unbounded())
+                .await
+            {
+                failures.push(cleanup_failure(
+                    "acquired-gatt-writer",
+                    "tauri.release.acquired",
+                    error.describe(),
+                ));
+            }
+        }
         for ticket in tickets {
             if let Err(error) = self.cancel_ticket(&ticket).await {
                 failures.push(cleanup_failure(
@@ -5024,6 +5397,13 @@ async fn release_orphan(
     resource: &OrphanResource,
 ) -> Result<(), DispatchError> {
     match resource {
+        OrphanResource::Acquired { handle, lease } => authority
+            .close_acquired(
+                handle,
+                OpControl::unbounded().with_connection_lease(lease.clone()),
+            )
+            .await
+            .map_err(|error| DispatchError::from_core(&error)),
         OrphanResource::Scan(scan_id) => authority
             .stop_scan(scan_id, OpControl::unbounded())
             .await
@@ -5106,8 +5486,10 @@ fn is_release_command(command: &str) -> bool {
             | "scan.stop"
             | "gatt.unsubscribe"
             | "gatt.database.release"
+            | "gatt.acquired-write.close"
             | "connection.disconnect"
             | "connection.events.unsubscribe"
+            | "connection.write-readiness.unsubscribe"
             | "security.watch.unsubscribe"
     )
 }
@@ -5312,6 +5694,10 @@ async fn typed_core_scan_observation(
 ) -> Result<IpcValue, DispatchError> {
     let kind = if snapshot.address.is_none() {
         None
+    } else if let Some(kind) = snapshot.extras.address_type {
+        // Production BlueZ and WinRT reports capture this alongside the
+        // sighting. A later peripheral lookup must not revise its identity.
+        Some(kind)
     } else if let Some(kind) = cache.get(&snapshot.id) {
         *kind
     } else {
@@ -5724,7 +6110,7 @@ fn adapter_state_payload_live(attachment: &Attachment, reading: &AdapterReading)
 /// deadline as a relative `budgetMs`, `commit` on every normalized error,
 /// `delivery` on subscriptions and connection-lifecycle events; a webview
 /// offering only 2 is refused at bootstrap as `protocol.incompatible`.
-pub(crate) const IPC_PROTOCOL_VERSION: i64 = 5;
+pub(crate) const IPC_PROTOCOL_VERSION: i64 = 6;
 
 /// The reserved stream of attachment rebinds (IPC protocol 4; TypeScript
 /// `IPC_ATTACHMENT_STREAM_ID`).
@@ -5936,7 +6322,85 @@ fn is_released(value: &IpcValue) -> bool {
     )
 }
 
-fn object<const N: usize>(entries: [(&str, IpcValue); N]) -> IpcValue {
+/// Service-level restriction from the service row, not from a
+/// characteristic or descriptor row (those carry `None`).
+fn service_level_access(
+    paths: &[DiscoveredPath],
+    uuid: &str,
+    occurrence: u64,
+) -> Option<ServiceAccess> {
+    paths.iter().find_map(|path| {
+        if path.characteristic_uuid.is_none()
+            && path.service_uuid == uuid
+            && path.service_occurrence == occurrence
+        {
+            path.service_access
+        } else {
+            None
+        }
+    })
+}
+
+/// IPC service record. `Open` and a missing note stay unrestricted, matching
+/// the Electron serializer.
+fn ipc_service_record(
+    uuid: &str,
+    occurrence: u64,
+    access: Option<ServiceAccess>,
+    metadata: Option<&DiscoveredPath>,
+) -> IpcValue {
+    let mut record = match object([
+        ("uuid", string(uuid)),
+        ("occurrence", string(occurrence.to_string())),
+        (
+            "primary",
+            metadata
+                .and_then(|path| path.service_primary)
+                .map_or(IpcValue::Null, IpcValue::Bool),
+        ),
+        (
+            "includedServices",
+            metadata
+                .and_then(|path| path.included_services.as_ref())
+                .map_or(IpcValue::Null, |references| {
+                    IpcValue::Array(
+                        references
+                            .iter()
+                            .map(|reference| {
+                                object([
+                                    ("uuid", string(&reference.uuid)),
+                                    ("occurrence", string(reference.occurrence.to_string())),
+                                ])
+                            })
+                            .collect(),
+                    )
+                }),
+        ),
+    ]) {
+        IpcValue::Object(record) => record,
+        _ => unreachable!("service record is an object"),
+    };
+    if let Some(restriction) = service_restriction(access) {
+        record.insert("restriction".to_owned(), restriction);
+    }
+    IpcValue::Object(record)
+}
+
+fn service_restriction(access: Option<ServiceAccess>) -> Option<IpcValue> {
+    let (reason, gatt_status) = match access {
+        Some(ServiceAccess::OsReserved) => ("os-reserved", IpcValue::Null),
+        Some(ServiceAccess::AccessDenied) => ("access-denied", string("access-denied")),
+        Some(ServiceAccess::Open) | None => return None,
+    };
+    Some(object([
+        ("state", string("restricted")),
+        ("reason", string(reason)),
+        ("gattStatus", gatt_status),
+        ("attError", IpcValue::Null),
+    ]))
+}
+
+fn object<'a>(entries: impl IntoIterator<Item = (&'a str, IpcValue)>) -> IpcValue {
     IpcValue::Object(
         entries
             .into_iter()
@@ -6059,6 +6523,68 @@ fn required_value<'a>(
     object
         .get(key)
         .ok_or_else(|| DispatchError::new(BleErrorCode::ProtocolMalformed, "ipc", operation))
+}
+
+fn decode_windows_scan_options(
+    value: Option<&IpcValue>,
+) -> Result<Option<ubm_desktop::boundary::WindowsScanOptions>, DispatchError> {
+    use ubm_desktop::boundary::{WindowsScanOptions, WindowsScanningMode};
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let operation = "scan.start.platform-options";
+    let IpcValue::Object(fields) = value else {
+        return Err(DispatchError::new(
+            BleErrorCode::ArgumentInvalid,
+            "scan",
+            operation,
+        ));
+    };
+    if required_string(fields, "kind", operation)? != "winrt" {
+        return Err(DispatchError::new(
+            BleErrorCode::CapabilityUnsupported,
+            "capability",
+            operation,
+        ));
+    }
+    if fields
+        .keys()
+        .any(|key| !["kind", "mode", "allowExtendedAdvertisements"].contains(&key.as_str()))
+    {
+        return Err(DispatchError::new(
+            BleErrorCode::ArgumentInvalid,
+            "scan",
+            operation,
+        ));
+    }
+    let mode = match fields.get("mode") {
+        None => WindowsScanningMode::Active,
+        Some(IpcValue::String(mode)) if mode == "active" => WindowsScanningMode::Active,
+        Some(IpcValue::String(mode)) if mode == "passive" => WindowsScanningMode::Passive,
+        Some(IpcValue::String(mode)) if mode == "none" => WindowsScanningMode::None,
+        _ => {
+            return Err(DispatchError::new(
+                BleErrorCode::ArgumentInvalid,
+                "scan",
+                operation,
+            ))
+        }
+    };
+    let allow_extended_advertisements = match fields.get("allowExtendedAdvertisements") {
+        None => false,
+        Some(IpcValue::Bool(value)) => *value,
+        _ => {
+            return Err(DispatchError::new(
+                BleErrorCode::ArgumentInvalid,
+                "scan",
+                operation,
+            ))
+        }
+    };
+    Ok(Some(WindowsScanOptions {
+        mode,
+        allow_extended_advertisements,
+    }))
 }
 
 fn required_string(
@@ -6380,21 +6906,21 @@ mod tests {
     // protocol-4 host could ignore those fields and silently substitute its
     // defaults; exact negotiation prevents that before any radio operation.
     #[test]
-    fn version_offer_requires_ipc_protocol_5_and_refuses_an_old_webview() {
-        assert_eq!(super::IPC_PROTOCOL_VERSION, 5);
+    fn version_offer_requires_ipc_protocol_6_and_refuses_an_old_webview() {
+        assert_eq!(super::IPC_PROTOCOL_VERSION, 6);
         let mut old = current_offer();
-        old.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 4));
+        old.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 5));
         let error = negotiate_ipc_versions(&old).expect_err("an old webview must be refused");
         assert_eq!(error.code, BleErrorCode::ProtocolIncompatible);
 
         let mut newer = current_offer();
-        newer.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 6));
+        newer.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 7));
         let error =
             negotiate_ipc_versions(&newer).expect_err("a newer-only webview must be refused");
         assert_eq!(error.code, BleErrorCode::ProtocolIncompatible);
 
         let super::IpcValue::Object(versions) =
-            negotiate_ipc_versions(&current_offer()).expect("protocol 5 must negotiate")
+            negotiate_ipc_versions(&current_offer()).expect("protocol 6 must negotiate")
         else {
             panic!("the negotiated versions must be an object");
         };
@@ -6752,9 +7278,15 @@ mod tests {
                 connections: std::collections::HashMap::new(),
                 databases: std::collections::HashMap::new(),
                 subscriptions: std::collections::HashMap::new(),
+                acquired_writers: std::collections::HashMap::new(),
+                acquired_releases: Default::default(),
                 connection_events: std::collections::HashMap::new(),
                 security_watches: std::collections::HashMap::new(),
                 security_watch_releases: std::collections::HashSet::new(),
+                write_readiness_watches: std::collections::HashMap::new(),
+                write_readiness_releases: Default::default(),
+                parameter_watches: std::collections::HashMap::new(),
+                parameter_releases: Default::default(),
                 operations: std::collections::HashMap::new(),
                 completed_correlations: std::collections::HashMap::new(),
                 pending_events: std::collections::HashSet::new(),
@@ -7052,6 +7584,105 @@ mod tests {
             assert_eq!(domain, "adapter");
             assert_eq!(operation, "tauri.core-shutdown");
         }
+    }
+}
+
+#[cfg(test)]
+mod service_restriction_tests {
+    use super::{ipc_service_record, service_level_access, string};
+    use crate::IpcValue;
+    use ubm_desktop::{DiscoveredPath, ServiceAccess};
+
+    fn path(
+        service_uuid: &str,
+        characteristic_uuid: Option<&str>,
+        access: Option<ServiceAccess>,
+    ) -> DiscoveredPath {
+        DiscoveredPath {
+            service_primary: None,
+            included_services: None,
+            service_uuid: service_uuid.to_owned(),
+            service_occurrence: 0,
+            characteristic_uuid: characteristic_uuid.map(str::to_owned),
+            characteristic_occurrence: characteristic_uuid.map(|_| 0),
+            descriptor_uuid: None,
+            descriptor_occurrence: None,
+            properties: 0,
+            access: None,
+            service_access: access,
+        }
+    }
+
+    #[test]
+    fn characteristic_rows_do_not_hide_a_service_restriction() {
+        let paths = vec![
+            path("180f", Some("2a19"), None),
+            path("180f", None, Some(ServiceAccess::AccessDenied)),
+        ];
+        assert_eq!(
+            service_level_access(&paths, "180f", 0),
+            Some(ServiceAccess::AccessDenied)
+        );
+        let record = ipc_service_record("180f", 0, service_level_access(&paths, "180f", 0), None);
+        let IpcValue::Object(fields) = record else {
+            panic!("service record");
+        };
+        let expected = super::object([
+            ("state", string("restricted")),
+            ("reason", string("access-denied")),
+            ("gattStatus", string("access-denied")),
+            ("attError", IpcValue::Null),
+        ]);
+        assert_eq!(fields.get("restriction"), Some(&expected));
+    }
+
+    #[test]
+    fn an_open_service_omits_restriction() {
+        let record = ipc_service_record("180d", 1, Some(ServiceAccess::Open), None);
+        let IpcValue::Object(fields) = record else {
+            panic!("service record");
+        };
+        assert!(fields.get("restriction").is_none());
+        assert_eq!(fields.get("primary"), Some(&IpcValue::Null));
+        assert_eq!(fields.get("includedServices"), Some(&IpcValue::Null));
+        assert_eq!(fields.get("occurrence"), Some(&string("1")));
+    }
+
+    #[test]
+    fn os_reserved_restriction_has_no_gatt_status() {
+        let record = ipc_service_record("1800", 0, Some(ServiceAccess::OsReserved), None);
+        let IpcValue::Object(fields) = record else {
+            panic!("service record");
+        };
+        let restriction = fields.get("restriction").expect("restriction");
+        let IpcValue::Object(restriction) = restriction else {
+            panic!("restriction object");
+        };
+        assert_eq!(restriction.get("reason"), Some(&string("os-reserved")));
+        assert_eq!(restriction.get("gattStatus"), Some(&IpcValue::Null));
+        assert_eq!(restriction.get("attError"), Some(&IpcValue::Null));
+    }
+
+    #[test]
+    fn service_graph_keeps_observed_secondary_and_inclusion_occurrence() {
+        let mut metadata = path("180d", None, Some(ServiceAccess::Open));
+        metadata.service_primary = Some(false);
+        metadata.included_services = Some(vec![ubm_desktop::boundary::IncludedServiceReference {
+            uuid: "180d".to_owned(),
+            occurrence: 1,
+        }]);
+        let record = ipc_service_record("180d", 0, Some(ServiceAccess::Open), Some(&metadata));
+        let IpcValue::Object(fields) = record else {
+            panic!("service record");
+        };
+        assert_eq!(fields.get("primary"), Some(&IpcValue::Bool(false)));
+        assert_eq!(
+            fields.get("includedServices"),
+            Some(&IpcValue::Array(vec![super::object([
+                ("uuid", string("180d")),
+                ("occurrence", string("1")),
+            ])]))
+        );
     }
 }
 

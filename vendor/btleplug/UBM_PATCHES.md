@@ -1,5 +1,43 @@
 # UBM patches to btleplug 0.12.0
 
+## Scoped native notification failures and observed WinRT PHY
+
+`ValueNotification.source_failure` retains the native structured callback error
+with the exact service/characteristic instance. CoreBluetooth reports failed
+value callbacks without a pending read owner; WinRT reports getter and buffer
+copy failures. The desktop relay preserves accepted FIFO values and preceding
+loss before delivering that original failure once, followed by closed. Other
+attributes remain live, and failed native unsubscribe retains its cleanup owner.
+
+WinRT `GetConnectionPhy` reports transmit and receive flags separately. The
+runtime checks API presence (Windows 11 build 22000 floor); all-false flags are
+lost-link evidence, contradictory flags are explicit failures, and neither a
+preference nor a default substitutes for observation. Read support does not
+advertise PHY selection. Exact device owners also survive physical loss until
+their pending discovery/native close confirms release; failed retirement cannot
+be overwritten by a new connection.
+
+These changes require combined boundary/public-route verification; this source
+record does not establish physical-radio qualification.
+
+## Observed service graph metadata
+
+Services carry nullable primary status and inclusion identities keyed by UUID
+and native instance. BlueZ reads `Primary` and the optional `Includes` property
+without filtering unresolved edges. Missing inclusion metadata stays unknown;
+malformed metadata and absent targets fail discovery. CoreBluetooth retains a
+stable service-object registry for a discovery, appends included objects once,
+and waits for their callbacks before publishing. Discovery callback errors
+retain their NSError detail. WinRT queries uncached included services, retains
+ATT/status failures, and visits included objects by UUID/attribute handle.
+WinRT primary status remains unknown where its API does not report that fact.
+
+The desktop mapper translates native inclusion identities to the published
+per-UUID occurrences; the central translates source occurrences to its own
+registered paths. Inclusion metadata is cleared with the database generation.
+Tests and source changes are pending the complete rc.21 batch verification;
+none of this text establishes physical-radio qualification.
+
 ## Explicit BlueZ LE-bearer lifecycle
 
 The Linux peripheral and adapter expose narrow LE lifecycle methods backed by
@@ -216,7 +254,7 @@ core-emulated long write had no replacement.
   - New message `CoreBluetoothMessage::GetWriteLengths`, handled on the
     CoreBluetooth thread that owns the `CBPeripheral`.
   - New reply `CoreBluetoothReply::WriteLengths { with_response,
-    without_response }`, read from `maximumWriteValueLengthForType:` for
+without_response }`, read from `maximumWriteValueLengthForType:` for
     both write types.
 - `src/corebluetooth/peripheral.rs`:
   - New inherent method `Peripheral::maximum_write_value_lengths()`, which
@@ -369,7 +407,7 @@ advertisement was delivered once per earlier scan.
 
 - `src/winrtble/ble/watcher.rs`:
   - A `Stopped` handler is registered once and broadcasts `ScanStopped
-    { error, error_name }` with the raw `BluetoothError` (0 = `Success`).
+{ error, error_name }` with the raw `BluetoothError` (0 = `Success`).
   - The `Received` registration token is kept and removed on `stop()` and
     before the next `start()`.
 - `src/winrtble/adapter.rs` adds `Adapter::scan_stopped_events()`.
@@ -536,7 +574,7 @@ fields unset, so the WinRT backend did not compile.
   to the object a later discovery returns for the same (UUID, handle). The
   notify handler is an `Arc<dyn Fn + Send + Sync>` so it can move.
 - `ble/service.rs`: `BLEService { uuid, instance, characteristics:
-  HashMap<AttributeKey, _> }`; `to_service` fills `instance`.
+HashMap<AttributeKey, _> }`; `to_service` fills `instance`.
 - `peripheral.rs`: `ble_services: DashMap<AttributeKey, BLEService>`.
   `read`, `write`, `subscribe`, `unsubscribe`, `read_descriptor`,
   `write_descriptor` look up (service UUID, service instance) → (UUID,
@@ -544,7 +582,11 @@ fields unset, so the WinRT backend did not compile.
   `NotSupported("<kind> <uuid> (instance <n>) not found for <op>")`.
   Every `ValueNotification` carries `instance` and `service_instance`. A
   failed subscribe CCCD write removes its handler and reports a rollback
-  failure together with the write failure.
+  failure together with the write failure using `Error::WithCleanup`, which
+  retains both typed errors. A failed handler removal restores the registration
+  token; the desktop owner's original notification target and cleanup debt remain
+  retryable. Its public error preserves the primary platform fields and carries
+  the independent cleanup fields under `cleanup.platform.*` metadata.
 
 **Tests.**
 
@@ -578,14 +620,29 @@ and connect confirmation ~898) queried every level `Uncached`, required
 **Change.**
 
 - `ble/device.rs`: `GATT_CACHE_TIMEOUT` and the cached fallback removed.
-  Services, characteristics and descriptors are queried `Uncached` every
-  time. Any non-success status is `Err("<stage> failed with
-  GattCommunicationStatus <Name> (<raw>)")`; a status that cannot be read is
-  an error too. `discover_services` returns the fresh service list.
+  Services, characteristics, and descriptors are queried `Uncached` every
+  time. Descriptor discovery calls `GetDescriptorsWithCacheModeAsync(Uncached)`.
+  Success returns the list Windows returned, which is empty only when the
+  peer listed none. Any other status is a platform error and keeps the ATT
+  byte when the result had one. Dropping the future cancels the WinRT
+  operation. The call does not pair and does not read descriptor values.
+  `discover_services` returns the fresh service list.
+  Services Windows keeps for itself (HID, the LE Audio services,
+  Microphone Control `0x184D`, Ranging) are left out before
+  `GetCharacteristics`. An ordinary `AccessDenied` with no ATT byte stays
+  in the table as a restricted service. A `ProtocolError`, or an
+  `AccessDenied` that still carries an ATT byte, fails discovery.
+  Subscribe writes the Client Characteristic Configuration descriptor
+  through `WriteClientCharacteristicConfigurationDescriptorWithResultAsync`
+  and keeps the protocol byte. This WinRT path has not been compiled on
+  macOS and has not been run on a Windows radio.
+  `ProtocolError`, `AccessDenied` that still carries an ATT byte, and
+  `Unreachable` still fail the whole discovery.
 - `peripheral.rs` `discover_services`: builds the complete table first
-  (any failed service/characteristic/descriptor query fails the whole
-  discovery, with the service and characteristic UUID and handle in the
-  message, leaving the previous table untouched), then REPLACES the table:
+  (a query the peer or the link refuses fails the whole discovery, with
+  the service and characteristic UUID and handle in the message, leaving
+  the previous table untouched; a service Windows itself will not open is
+  omitted and the other services continue), then REPLACES the table:
   services absent from the new database are removed, changed ones replaced.
   A live subscription whose (service, characteristic) UUID and handle
   survive is moved to the new GATT object (new registration made before the
@@ -597,9 +654,11 @@ and connect confirmation ~898) queried every level `Uncached`, required
 WinRT objects: type-check-only.
 
 **Windows host check still to run.** (1) A peripheral that answers a GATT
-query with an error (e.g. an encrypted service while unpaired):
-`discover_services` fails naming `AccessDenied`/`ProtocolError`, never
-succeeds with a missing service. (2) With a device whose firmware can change
+query with a protocol error (an encrypted service while unpaired reports
+`ProtocolError` and the ATT byte): `discover_services` fails naming that
+status, never succeeds with the service missing. A service Windows
+reserves (`AccessDenied`, no ATT byte) is absent from the table and the
+other services are still discovered. (2) With a device whose firmware can change
 its GATT table: discover, change the table, observe `ServicesChanged`,
 discover again: removed services are gone and new/changed ones appear with
 their new handles. (3) Discover twice while subscribed: notifications keep
@@ -714,18 +773,26 @@ watcher's defaults: passive, no extended advertisements
 advertiser, which costs radio traffic and power (finding 86, N7). No public
 scan option chooses active or passive, so the legacy default applies.
 
-**Change.** `BLEWatcher::configure_for_scan` (called by `start`) clears the
-OS service filter as before and sets `Passive`. Nothing sets extended
-advertisements, so they stay at the watcher default (off). As with the
-legacy addon, a peer's scan-response data (often its name) is not
-requested.
+**Change.** `BLEWatcher::configure_for_scan` (called by `start`) sets
+`Active` and does not enable extended advertisements, so those stay at the
+watcher default (off). Active scanning is required for the same discovery
+result as BlueZ and CoreBluetooth: a legacy advertiser puts its complete
+local name in the scan response (the Polar H10 simulator's advertisement
+is 9 bytes of flags plus service UUIDs, and the name is only in the scan
+response). A passive watcher never sends `SCAN_REQ`, so that name is
+absent and a scan that selects the peer by name cannot see it. The
+software service filter still requires every requested UUID on the
+advertising packet. A later scan response from an address that already
+matched is delivered too, because that packet does not repeat the UUIDs
+and it is the one that carries the name. The OS service-UUID filter stays
+empty so Windows delivers that scan response (patch 16).
 
 **Tests.** `winrtble::ble::watcher::ubm_scan_mode_tests`
 (`cargo test -p btleplug --lib` on Windows): a configured watcher reads back
-`Passive` and extended advertisements off. On macOS and Linux this is only
-compile-checked for the Windows targets. Physical check, not yet run: on
-Windows, a scan of a peer that answers scan requests shows no
-`SCAN_REQ` in an air trace.
+`Active` and extended advertisements off. On macOS and Linux this is only
+compile-checked for the Windows targets. Physical check: the Bun Polar H10
+session on Windows, which connects only when the local name is exactly
+`SIM Polar H10 0001`.
 
 ## Patch 12: `bluez-name-pattern`
 
@@ -769,8 +836,7 @@ broadcasts. Loss past it is still reported (patch 10).
 
 **Tests.** `common::adapter_manager::ubm_lag_tests` (`cargo test -p
 btleplug --lib`): `EVENT_CAPACITY + 4` events before the reader reads
-report exactly 4 lost. The test also asserts the capacity is at least
-256.
+report exactly 4 lost. The test also asserts the capacity is at least 256.
 
 ## Patch 14: `corebluetooth-read-notify`
 
@@ -793,6 +859,7 @@ with the same application code as Android (the Polar H10 PMD control point
 is subscribed, then read).
 
 **Change.**
+
 - `api::ReadProvenance` (`ReadResponse`, `ReadOrNotification`) says what a
   characteristic read value is.
 - `corebluetooth::Peripheral::read_with_provenance` (inherent) returns the
@@ -829,17 +896,20 @@ subscription keeps receiving values.
 ## Patch 15: `platform-errors`
 
 **Problem.** Every platform failure reached hosts as text:
+
 - CoreBluetooth replies were `Err(String)`;
 - WinRT statuses and HRESULTs were `Error::Other(format!(..))`;
 - BlueZ D-Bus errors were `Error::Other(Box<BluetoothError>)`.
 
 The legacy backends reported typed identities, and applications branched
 on them (finding 113):
+
 - CoreBluetooth `{domain:"corebluetooth", code:<NSError code>}`;
 - WinRT `{domain:"winrt", code:"gatt-status"|"hresult", metadata:{gattStatus|hresult}}`;
 - BlueZ `{domain:"bluez-dbus", code:<D-Bus error name>}`.
 
 **Change.**
+
 - New `btleplug::PlatformError { domain, code, message, metadata }` and
   `Error::Platform`.
 - CoreBluetooth:
@@ -858,19 +928,29 @@ on them (finding 113):
   - a connect whose `GetGattServicesAsync` answers `Unreachable` fails with
     that answer (`gatt-status` `unreachable`) instead of
     `Error::NotConnected`; the other connect statuses keep upstream's
-    mapping;
+    mapping. Before that query, `connect` sets this device's
+    `GattSession.MaintainConnection` so Windows keeps the link the query
+    establishes, the same as a BlueZ or CoreBluetooth connect. If that
+    query answers `Unreachable` while `ConnectionStatus` is already
+    `Connected`, one more uncached query runs on the held session. A
+    second query while the link is still down is not started: that call
+    can sit until the caller gives up. `Drop`
+    clears that hold before it closes the device, including when the query
+    fails. A query that is still `Unreachable` after the hold is the
+    failure above;
   - a `windows::core::Error` is `code:"hresult"` with `hresult` as
     `0xXXXXXXXX`;
   - the helpers `gatt_status_code` and `hresult_code` live in the pure
     `winrtble/gatt_model.rs`, and `btleplug::ubm::hresult_code` exposes the
     HRESULT format on Windows.
 - BlueZ: `BluetoothError::DbusError` is `PlatformError::bluez_dbus(name,
-  message)`, with `org.bluez.Error.Failed` when D-Bus gave no name.
+message)`, with `org.bluez.Error.Failed` when D-Bus gave no name.
 - ubm-desktop copies the answer into `DesktopError::platform()`
   (`PlatformDetail`). A BlueZ D-Bus failure takes the legacy BlueZ identity
   `platform.failure`.
 
 **Tests.**
+
 - `ubm_platform_error_tests` (btleplug lib): BlueZ names.
 - `crates/ubm-desktop/tests/winrt_gatt_model.rs` runs on every host: the
   legacy WinRT codes.
@@ -892,26 +972,38 @@ on them (finding 113):
 watcher's OS filter (`winrt-boundary.inc`:
 `AdvertisementFilter().Advertisement().ServiceUuids().Append`). Upstream
 btleplug cleared that filter and matched service UUIDs in software only
-(finding 117). That meant more radio and CPU work. It also changed behaviour
-for advertisements that carry the UUID only in a scan response.
+(finding 117). Putting the UUIDs on the OS filter drops scan responses:
+those packets carry the complete local name and do not repeat the service
+UUIDs. An active watcher then reports the advertising packet, whose local
+name is empty, and the peer cannot be selected by name. BlueZ and
+CoreBluetooth both return that name. A live WinRT watcher with the
+heart-rate UUID on the OS filter received the simulator address and a real
+Polar H10 with an empty name, and received no scan responses; the same
+watcher with an empty OS filter received `SIM Polar H10 0001` on the scan
+response.
 
-**Change.** `BLEWatcher::configure_for_scan(services)` clears the OS filter
-from the previous scan, then appends each requested service UUID, as the
-legacy addon did. The software predicate in the `Received` handler stays as
-the final gate. Upstream's reason for dropping the OS filter was that some
-Windows drivers drop matching 128-bit advertisements. That is legacy WinRT
-behaviour too, so the 4.x behaviour is kept.
+**Change.** `BLEWatcher::configure_for_scan` clears the OS service-UUID
+filter and leaves it empty. `Received` forwards every packet to the shared
+bounded evidence matcher. A name can arrive before its service packet, and
+different packets can carry different required UUIDs, so native ingress
+cannot require a complete conjunction or keep an address-only admission
+set. Filtering runs on complete peer identity with per-fact freshness in
+the shared scan pipeline.
 
-**Tests.** `winrtble::ble::watcher::ubm_scan_mode_tests::the_service_filter_reaches_the_os_watcher`
-(Windows, `cargo test -p btleplug --lib`) reads the watcher's filter back:
-the requested UUIDs, in order, and an empty filter after a later scan
-without services. On macOS and Linux this is compile-checked for the
-Windows targets only. Physical check, not yet run: on Windows, a filtered
-scan reports only advertisers of the requested services.
+**Tests.** `winrtble::ble::watcher::ubm_scan_mode_tests::the_service_filter_stays_off_the_os_watcher`
+(Windows, `cargo test -p btleplug --lib`) reads the watcher's filter back
+after a scan that requested the heart-rate and battery UUIDs, and after a
+later scan with no services: the OS filter is empty both times. On macOS
+and Linux this is compile-checked for the Windows targets only. Physical
+check retained from the earlier implementation: the Bun Polar H10 session
+on Windows, which connects only when the local name is exactly
+`SIM Polar H10 0001`. The rc.21 correction still requires same-head
+qualification; that earlier receipt does not verify the new ingress.
 
 ## Patch 17: `advertisement-reports`
 
 **Problem (findings 120, 122).**
+
 - Upstream raised events for only some sightings, and listeners read the
   peripheral's merged properties afterwards:
   - **CoreBluetooth:** `DeviceUpdated` fired only for peripherals with a
@@ -932,6 +1024,7 @@ scan reports only advertisers of the requested services.
     every known device when a scan starts.
 
 **Change.**
+
 - New `api::AdvertisementReport` holds `source`, name, RSSI, TX power,
   manufacturer data, service data, services and the CoreBluetooth extras.
 - New `ReportSource` values: `Advertisement` (this advertisement's own data)
@@ -978,9 +1071,10 @@ scan reports only advertisers of the requested services.
   - On Linux, every device BlueZ knows is reported when a scan starts, as
     the legacy backend did.
   - Unreadable sightings are counted (`os_adapter_failures()
-    .advertisement_read_failures`) and logged.
+.advertisement_read_failures`) and logged.
 
 **Tests.**
+
 - `winrtble::gatt_model` `service_data_sections_parse_by_uuid_width` runs on
   every host through `crates/ubm-desktop/tests/winrt_gatt_model.rs`.
 - `bluez::adapter::ubm_sighting_tests` (Linux) checks that a BlueZ sighting
@@ -989,7 +1083,7 @@ scan reports only advertisers of the requested services.
   checks the observation carries the report's data and label.
 - `corebluetooth::peripheral::ubm_fold_name_tests` and
   `corebluetooth::internal::ubm_fold_sighting_tests` (`cargo test -p
-  btleplug --lib`, macOS): first sightings, renames, GAP seeding, the
+btleplug --lib`, macOS): first sightings, renames, GAP seeding, the
   finding-205 merged case (a nameless rediscovery keeps the advertised
   name despite the GAP name) and the sighting case (a nameless packet is
   labelled from the stash).
@@ -1015,6 +1109,7 @@ once on every `Device1` `PropertiesChanged` signal
 (`bluez-backend-runtime.ts:345-349,380-384`).
 
 **Change.**
+
 - `vendor/bluez-async`: new
   `DeviceEvent::PropertiesChanged { properties }`. It is raised once per
   `Device1` `PropertiesChanged` signal, after the specific events, with the
@@ -1030,6 +1125,7 @@ once on every `Device1` `PropertiesChanged` signal
 - `build.rs` lists `bluez-device-changes`.
 
 **Tests.**
+
 - `vendor/bluez-async/src/events.rs`:
   - `device_name_alias_and_other_changes_are_reported`: a name-only change,
     an alias-only change and a mixed change with an invalidated property
@@ -1048,6 +1144,7 @@ once on every `Device1` `PropertiesChanged` signal
 ## Patch 19: `disconnect-lifecycle` (vendored btleplug + bluez-async)
 
 **Problem.**
+
 - **The peripheral is forgotten at disconnect.** `AdapterManager::emit`
   removed a peripheral on `DeviceDisconnected`. After any disconnect on
   macOS and Windows, a reconnect by the same id answered `peer.not-found`
@@ -1066,6 +1163,7 @@ once on every `Device1` `PropertiesChanged` signal
   connect reported a service-discovery timeout 5 s later.
 
 **Change.**
+
 - `common/adapter_manager.rs`: a disconnect no longer removes the
   peripheral. Only a power-off drops the CoreBluetooth side's own state.
   `replace_peripheral` overwrites an entry that the OS resolved again.
@@ -1083,6 +1181,7 @@ once on every `Device1` `PropertiesChanged` signal
 
     It then clears the attribute database, and a reconnect discovers it
     again.
+
 - WinRT: `Central::add_peripheral(address)` returns the known peripheral, or
   opens a new one by Bluetooth address.
 - `vendor/bluez-async`: `service_discovery_outcome` ends a pending discovery
@@ -1108,6 +1207,7 @@ once on every `Device1` `PropertiesChanged` signal
 - `build.rs` lists `disconnect-lifecycle`.
 
 **Tests.**
+
 - `common/adapter_manager.rs` `a_disconnected_peripheral_stays_known`
   (Apple): a real CoreBluetooth `Peripheral` survives a
   `DeviceDisconnected` emit.
@@ -1128,6 +1228,7 @@ once on every `Device1` `PropertiesChanged` signal
 
   These are type-checked for `x86_64-unknown-linux-gnu` only (no libdbus on
   macOS).
+
 - ubm-desktop `f127_a_peer_id_names_its_os_identity`: a peer id parses to
   the platform identifier.
 - ubm-desktop `f127_a_listed_identity_resolves_without_a_scan`,
@@ -1162,6 +1263,7 @@ while every other host maps those bytes there (finding 156). The
 fixable bug, not a genuine limit.
 
 **Change.**
+
 - `src/winrtble/gatt_model.rs` (std only): new `att_error_metadata`,
   the ATT error byte as platform metadata — key `attError`, the byte as
   decimal text (the base the host's ATT code table uses). The radio
@@ -1204,6 +1306,7 @@ fixable bug, not a genuine limit.
   code on Windows (no ATT error exists on that wire path).
 
 **Tests.**
+
 - `gatt_model.rs`
   `the_att_error_byte_rides_the_platform_detail_as_decimal_text` (runs
   on every host through
@@ -1224,3 +1327,48 @@ fixable bug, not a genuine limit.
   operation reports `platform.security` with `attError` 5 or 15 in the
   platform detail; an unpaired write without response and a CCCD write
   keep their GATT code.
+
+### rc.21 review: observed GATT graph and callback ownership (draft)
+
+Desktop CoreBluetooth records primary status and included-service object
+identities instead of fabricating a primary, empty-inclusion graph. Included
+objects append once and retain stable native occurrence keys. Exact native
+callback reservations remain owned after discovery failure; a replacement is
+refused until an ordered `DiscoveryDrained` event retires the previous callback
+owner. Duplicate/foreign callbacks cannot retire another reservation. Descriptor
+parents are published before descriptor requests. Service invalidation fails the
+current discovery and drains its reservations; link loss or adapter reset retires
+them. The portable reservation controls and structured public-refusal mappings
+are unexecuted draft regressions, not physical CoreBluetooth qualification.
+
+WinRT scan source controls use the option-aware watcher configuration and seed a stale native UUID filter to prove it is cleared. Obsolete unused address-only construction and unstructured status-only mapping are removed; all live device construction retains complete identity and error routes retain structured native status/ATT details. Cross-target compilation is not a Windows runtime or physical receipt.
+
+The rc.21 parameter getter interprets Microsoft's documented all-zero disconnected
+answer before snapshot or callback projection. It retains the three raw getter
+fields under the WinRT platform detail; the shared public classifier reports
+`connection.lost`. Zero latency alone is not a loss. The exact portable getter
+mapper and callback mapper have joined classifier regressions; verification of
+this source batch is pending, and no Windows physical receipt is claimed.
+
+### rc.21 live Windows discovery retirement (unverified follow-up)
+
+The actual Windows Bun reproduction times out native discovery, then blocks
+inside `GattDeviceService.Close` during disconnect. Discovery queries now share
+one operation owner: service, characteristic, inclusion and descriptor awaits
+retain each exact hot native operation when its public await is interrupted.
+The f0d0a3e8 live rerun showed that calling WinRT `Cancel` can expose a terminal
+`Canceled` status while `CompleteGetCharacteristics` still initializes a
+characteristic's user description. Service close then blocks on its critical
+section. Discovery therefore stops the public wait without calling native
+`Cancel`; a pending original query refuses close and allows retry after natural
+completion. The portable retirement regression covers repeated cleanup attempts
+without premature cancellation or release. Replacement discovery
+and native device replacement pass through the same retirement barrier. Connect
+publishes its device owner before awaiting native service discovery so a deadline
+cannot discard its cleanup lifetime. Explicit disconnect checks the barrier before
+closing native services. Portable lifetime regressions precede these changes;
+The f0d0a3e8 combined canonical candidate passed every workflow gate, but its
+live Bun discovery/cleanup failed, so final closure remains open. Node completes
+the same scenario, and independent foreign-directory retrieval and resolution
+pass under both Node and Bun. The follow-up batch and live replay are pending.
+No COM initialization cause or physical-peripheral qualification is inferred.

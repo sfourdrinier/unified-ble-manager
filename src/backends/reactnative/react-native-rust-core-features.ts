@@ -32,6 +32,8 @@ export interface ReactNativeRustCoreRuntimeFacts {
   readonly continuationBindingAvailable?: boolean
   /** Android API level (`Platform.Version`); LE PHY control needs API 26+. */
   readonly androidApiLevel: number | null
+  /** Native minor-version and public-method probe, never Platform.Version alone. */
+  readonly androidSubrateAvailable?: boolean
   /** Whether this Apple host has a configured native restoration authority. */
   readonly appleRestorationConfigured?: boolean
   readonly systemChooserAvailable?: boolean
@@ -65,31 +67,38 @@ function operationRegistration(
   })
 }
 
-function phyRegistration(implementationVersion: string, available: boolean) {
+function runtimeLinkControlRegistration(implementationVersion: string, available: boolean, kind: 'phy' | 'subrate') {
+  const id = kind === 'phy' ? BUILT_IN_FEATURE_IDS.connectionPhy : BUILT_IN_FEATURE_IDS.connectionSubrate
   const limitations = Object.freeze([
-    available
-      ? Object.freeze({
-          code: 'live-radio-qualification-pending',
-          explanation:
-            'LE PHY read/request has deterministic Rust-owner coverage but no reliability-qualified live-radio receipt.',
-          affectedGuarantee: 'reliability-qualified physical-radio interoperability'
-        })
-      : Object.freeze({
-          code: 'android-phy-api-level',
-          explanation: `Android exposes LE PHY read/request from API ${ANDROID_PHY_API_LEVEL}; this device runs an older API level.`,
-          affectedGuarantee: 'caller-directed LE PHY control'
-        })
+    Object.freeze({
+      code: available ? 'live-radio-qualification-pending' : `android-${kind}-api-level`,
+      explanation: available
+        ? kind === 'phy'
+          ? 'LE PHY read/request has deterministic Rust-owner coverage but no reliability-qualified live-radio receipt.'
+          : 'Subrate requests have a native owned route; physical SDK 36.1 qualification remains pending. BLUETOOTH_CONNECT and companion association or BLUETOOTH_PRIVILEGED are required at dispatch.'
+        : kind === 'phy'
+          ? `Android exposes LE PHY read/request from API ${ANDROID_PHY_API_LEVEL}; this device runs an older API level.`
+          : 'This instantiated native host does not expose the Android SDK 36.1 public integer-status subrate request API.',
+      affectedGuarantee: available
+        ? 'reliability-qualified physical-radio interoperability'
+        : `caller-directed LE ${kind} control`
+    })
   ])
   const evidenceLevel = available ? ('deterministic' as const) : ('blocked' as const)
-  const sourceDigest = available ? 'react-native-rust-core-android-phy-v1' : 'react-native-rust-core-android-phy-api-v1'
+  const sourceDigest = `react-native-rust-core-android-${kind}${available ? '' : '-api'}-v1`
+  const limits = Object.freeze({
+    maximum: available ? (kind === 'phy' ? 3 : 4) : 0,
+    minimum: available ? 1 : null,
+    unit: 'modes'
+  })
   return Object.freeze({
-    id: BUILT_IN_FEATURE_IDS.connectionPhy,
+    id,
     state: available ? ('limited' as const) : ('unsupported' as const),
     selectedSchemaRange: capabilitySchemaRange,
     implementationOrigin: 'backend-native' as const,
     implementation: Object.freeze({
       async invoke(): Promise<never> {
-        throw contractError('lifecycle.invalid-state', 'capability', 'connection:phy.invoke-without-connection')
+        throw contractError('lifecycle.invalid-state', 'capability', `${id}.invoke-without-connection`)
       }
     }),
     tck: Object.freeze({
@@ -106,9 +115,7 @@ function phyRegistration(implementationVersion: string, available: boolean) {
       limitations
     }),
     limitations,
-    limits: Object.freeze({
-      phyModes: Object.freeze({ maximum: available ? 3 : 0, minimum: available ? 1 : null, unit: 'modes' })
-    })
+    limits: Object.freeze({ [kind === 'phy' ? 'phyModes' : 'subratePresets']: limits })
   })
 }
 
@@ -213,11 +220,10 @@ export function createReactNativeRustCoreFeatureRegistry(
     'discovery:continuous-scan.invoke-without-scan'
   )
   const common = [
-    // Finding 217: the Rust owner answers Apple effective MTU per link as
-    // `maximumWriteValueLength(.withResponse) + 3`; the legacy Apple
-    // reference route keeps the frozen unsupported registration.
+    // Apple effective MTU stays limited and unavailable: CoreBluetooth does
+    // not observe an ATT MTU. Write capacity stays on maximumWriteValueLength.
     createReactNativeConnectionControlFeatureRegistry(platform, implementationVersion, {
-      appleEffectiveMtu: 'derived'
+      appleEffectiveMtu: 'unobserved'
     }),
     createReactNativeDescriptorFeatureRegistry(platform, implementationVersion),
     createReactNativeRestorationFeatureRegistry(platform, implementationVersion),
@@ -232,6 +238,11 @@ export function createReactNativeRustCoreFeatureRegistry(
       Object.freeze([
         direct,
         continuousScan,
+        runtimeLinkControlRegistration(
+          implementationVersion,
+          platform === 'android' && facts.androidSubrateAvailable === true,
+          'subrate'
+        ),
         ...(facts.systemChooserAvailable === true
           ? [
               operationRegistration(
@@ -266,12 +277,104 @@ export function createReactNativeRustCoreFeatureRegistry(
               )
             ]
           : []),
+        createBackendOperationCapabilityRegistration({
+          id: BUILT_IN_FEATURE_IDS.peerKnown,
+          implementationVersion,
+          sourceDigest: `react-native-rust-core-${platform}-peer-known-v1`,
+          tckSuiteId: 'capability.catalog-v2',
+          requiredScenarioIds: [...catalogScenarioIds],
+          operation: 'peer:known.invoke-without-peer-directory',
+          limitations: [
+            {
+              code: 'manager-observed-directory',
+              explanation:
+                "Known peers are this owner's observed/restored cache; this is not unrestricted OS known-device enumeration.",
+              affectedGuarantee: 'system-wide known inventory'
+            }
+          ]
+        }),
+        createBackendOperationCapabilityRegistration({
+          id: BUILT_IN_FEATURE_IDS.peerSystemConnected,
+          implementationVersion,
+          sourceDigest: `react-native-rust-core-${platform}-system-connected-v1`,
+          tckSuiteId: 'capability.catalog-v2',
+          requiredScenarioIds: [...catalogScenarioIds],
+          operation: 'peer:system-connected.invoke-without-peer-directory',
+          limitations: [
+            {
+              code: platform === 'apple' ? 'corebluetooth-services-required' : 'android-system-gatt-only',
+              explanation:
+                platform === 'apple'
+                  ? 'CoreBluetooth requires nonempty service UUID criteria; retrieval assigns no local connection ownership.'
+                  : 'Android returns system GATT connections without service filtering; retrieval assigns no local connection ownership.',
+              affectedGuarantee: 'directory query scope'
+            },
+            {
+              code: 'live-radio-qualification-pending',
+              explanation:
+                'Native system inventory routing has scripted boundary coverage; physical-radio qualification remains separate.',
+              affectedGuarantee: 'reliability-qualified physical-radio interoperability'
+            }
+          ]
+        }),
         maximumWriteLengthRegistration(platform, implementationVersion, maximumWriteLength)
       ])
     )
   ]
   if (platform === 'apple') {
-    return combineReactNativeFeatureRegistries(...common)
+    // Pending initial acquisition for a known peer. CoreBluetooth keeps
+    // `connect` outstanding until that peripheral is available. This is not
+    // Android `autoConnect` and it does not reconnect after the link drops.
+    const whenAvailable = createBackendOperationCapabilityRegistration({
+      id: BUILT_IN_FEATURE_IDS.connectionWhenAvailable,
+      implementationVersion,
+      sourceDigest: 'react-native-rust-core-apple-connection-when-available-v1',
+      tckSuiteId: 'capability.catalog-v2',
+      requiredScenarioIds: [...catalogScenarioIds],
+      operation: 'connection:when-available.invoke-without-connection',
+      limitations: [
+        {
+          code: 'corebluetooth-pending-connect',
+          explanation:
+            'CoreBluetooth keeps a connect to a known peripheral outstanding until that peripheral is available. The caller deadline and cancellation still apply. This is pending initial acquisition, not Android autoConnect, and it does not reconnect after the link is lost.',
+          affectedGuarantee: 'pending initial connection to a known peer'
+        },
+        {
+          code: 'live-radio-qualification-pending',
+          explanation:
+            'The backend operation has deterministic contract coverage; physical-radio qualification remains separate.',
+          affectedGuarantee: 'reliability-qualified physical-radio interoperability'
+        }
+      ]
+    })
+    // Queue readiness is CoreBluetooth's own flag plus the ready callback.
+    // Android has no equivalent signal, so it stays unregistered.
+    const writeReadiness = createBackendOperationCapabilityRegistration({
+      id: BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness,
+      implementationVersion,
+      sourceDigest: 'react-native-rust-core-apple-write-readiness-v1',
+      tckSuiteId: 'capability.catalog-v2',
+      requiredScenarioIds: [...catalogScenarioIds],
+      operation: 'gatt:write-without-response-readiness.invoke-without-connection',
+      limitations: [
+        {
+          code: 'corebluetooth-write-without-response-readiness',
+          explanation:
+            'CoreBluetooth reports write-without-response readiness through canSendWriteWithoutResponse and peripheralIsReady(toSendWriteWithoutResponse:). This is not Android auto-ready and it is not a measured ATT MTU.',
+          affectedGuarantee: 'write-without-response queue readiness'
+        },
+        {
+          code: 'live-radio-qualification-pending',
+          explanation:
+            'The backend operation has deterministic contract coverage; physical-radio qualification remains separate.',
+          affectedGuarantee: 'reliability-qualified physical-radio interoperability'
+        }
+      ]
+    })
+    return combineReactNativeFeatureRegistries(
+      ...common,
+      createFeatureRegistry(Object.freeze([whenAvailable, writeReadiness]))
+    )
   }
   const phyAvailable = facts.androidApiLevel !== null && facts.androidApiLevel >= ANDROID_PHY_API_LEVEL
   const android = createFeatureRegistry(
@@ -284,7 +387,7 @@ export function createReactNativeRustCoreFeatureRegistry(
         connectionControlScenarioIds,
         'connection:priority.invoke-without-connection'
       ),
-      phyRegistration(implementationVersion, phyAvailable),
+      runtimeLinkControlRegistration(implementationVersion, phyAvailable, 'phy'),
       operationRegistration(
         BUILT_IN_FEATURE_IDS.scanPlatformOptions,
         implementationVersion,

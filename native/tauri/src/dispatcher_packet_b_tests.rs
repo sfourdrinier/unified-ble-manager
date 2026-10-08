@@ -17,11 +17,11 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use tokio::sync::Notify;
 use ubm_core::contracts::{BleErrorCode, CommitState};
 use ubm_desktop::{
-    AdapterAuthorization, AdapterPowerState, AdapterResetEvent, AdmissionPolicy,
-    CharacteristicSnapshot, DeliveryMode, DescriptorSnapshot, DesktopCentral, FakeRadio, FaultOp,
-    LifecycleEvent, LifecycleKind, ObservedDelivery, OpControl, OpTicket, OperationId,
-    PeerSnapshot, PlatformDetail, PlatformValue, PropertyFlags, RadioEvent, Retryability,
-    ServiceSnapshot, WriteLimits,
+    AdapterAuthorization, AdapterPowerState, AdapterResetEvent, AdmissionPolicy, CentralProfile,
+    CharacteristicSnapshot, DeliveryMode, DescriptorSnapshot, DesktopCentral, DesktopError,
+    FakeRadio, FaultOp, LifecycleEvent, LifecycleKind, ObservedDelivery, OpControl, OpTicket,
+    OperationId, PeerSnapshot, PlatformDetail, PlatformValue, PropertyFlags, RadioEvent,
+    Retryability, ServiceSnapshot, WriteLimits,
 };
 
 use super::{
@@ -548,6 +548,411 @@ async fn scan_projection_preserves_authoritative_address_types_and_unknown() {
     harness.central.shutdown().await;
 }
 
+#[tokio::test]
+async fn scan_projection_prefers_captured_identity_over_a_mutated_native_cache() {
+    let harness = Harness::new().await;
+    let RadioEvent::Advertisement(mut snapshot) = advertisement("captured-peer") else {
+        unreachable!()
+    };
+    snapshot.address = Some("AA:BB:CC:DD:EE:FF".into());
+    let mut cache = HashMap::new();
+    cache.insert(snapshot.id.clone(), Some(ubm_desktop::AddressType::Public));
+    for kind in [
+        ubm_desktop::AddressType::Random,
+        ubm_desktop::AddressType::Public,
+    ] {
+        snapshot.extras.address_type = Some(kind);
+        let value = super::typed_core_scan_observation(&harness.central, &snapshot, &mut cache)
+            .await
+            .unwrap();
+        assert_eq!(
+            field(&value, "addressType"),
+            &IpcValue::String(kind.as_str().into())
+        );
+    }
+    assert_eq!(count(&harness.radio().calls(), "address_type"), 0);
+    harness.central.shutdown().await;
+}
+
+#[tokio::test]
+async fn parameter_gap_reconciles_the_live_native_answer_and_getter_failure_ends_the_watch() {
+    let harness = Harness::new().await;
+    let link = harness.connect("parameter-gap-peer").await;
+    harness.radio().set_connection_parameters(
+        "parameter-gap-peer",
+        ubm_desktop::boundary::ObservedConnectionParameters {
+            interval_us: 30_000,
+            latency: 1,
+            supervision_timeout_us: 4_000_000,
+        },
+    );
+    let mut entries = Harness::link_entries(&link);
+    entries.push(("parameterEventsHandle", string("parameter-gap-stream")));
+    harness
+        .execute(
+            "connection.parameters.subscribe",
+            entries,
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness.wait_items("parameter-gap-stream", 1).await;
+    harness.radio().set_connection_parameters(
+        "parameter-gap-peer",
+        ubm_desktop::boundary::ObservedConnectionParameters {
+            interval_us: 90_000,
+            latency: 4,
+            supervision_timeout_us: 6_000_000,
+        },
+    );
+    harness
+        .radio()
+        .push_event(RadioEvent::ConnectionParameterGap {
+            peer_id: "parameter-gap-peer".into(),
+            missed: 3,
+        });
+    let values = harness.wait_items("parameter-gap-stream", 2).await;
+    assert_eq!(values[1]["value"]["intervalUs"], 90_000);
+    assert_eq!(count(&harness.radio().calls(), "connection_parameters"), 2);
+    harness
+        .radio()
+        .fail_next(FaultOp::ConnectionParameters, "gap re-read refused");
+    harness
+        .radio()
+        .push_event(RadioEvent::ConnectionParameterGap {
+            peer_id: "parameter-gap-peer".into(),
+            missed: 1,
+        });
+    let values = harness.wait_items("parameter-gap-stream", 3).await;
+    assert_eq!(values[2]["kind"], "terminal");
+    assert_eq!(values[2]["reason"], "source-failed");
+    harness
+        .execute(
+            "connection.parameters.unsubscribe",
+            vec![("parameterEventsHandle", string("parameter-gap-stream"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness.central.shutdown().await;
+}
+
+#[tokio::test]
+async fn delayed_initial_parameter_probe_cannot_overtake_a_newer_native_event() {
+    let harness = Harness::new().await;
+    let link = harness.connect("parameter-opening-peer").await;
+    harness.radio().set_connection_parameters(
+        "parameter-opening-peer",
+        ubm_desktop::ObservedConnectionParameters {
+            interval_us: 30_000,
+            latency: 1,
+            supervision_timeout_us: 4_000_000,
+        },
+    );
+    harness.radio().block_op(FaultOp::ConnectionParameters);
+    let mut observed = harness.central.connection_parameter_events();
+    let mut entries = Harness::link_entries(&link);
+    entries.push(("parameterEventsHandle", string("parameter-opening-stream")));
+    let opening = harness.execute(
+        "connection.parameters.subscribe",
+        entries,
+        None,
+        OpControl::unbounded(),
+    );
+    tokio::pin!(opening);
+    tokio::select! {
+        answer = &mut opening => panic!("probe must be held: {answer:?}"),
+        _ = harness.wait_calls("connection_parameters", 1) => {}
+    }
+    harness
+        .radio()
+        .push_event(RadioEvent::ConnectionParameters {
+            peer_id: "parameter-opening-peer".into(),
+            interval_us: 60_000,
+            latency: 2,
+            supervision_timeout_us: 5_000_000,
+        });
+    tokio::time::timeout(WAIT, observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    harness
+        .radio()
+        .push_event(RadioEvent::ConnectionParameters {
+            peer_id: "parameter-opening-peer".into(),
+            interval_us: 90_000,
+            latency: 3,
+            supervision_timeout_us: 6_000_000,
+        });
+    tokio::time::timeout(WAIT, observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    harness.radio().unblock_op(FaultOp::ConnectionParameters);
+    opening.await.unwrap();
+    let items = harness.wait_items("parameter-opening-stream", 2).await;
+    assert_eq!(items[0]["value"]["intervalUs"], 60_000);
+    assert_eq!(items[1]["value"]["intervalUs"], 90_000);
+    assert_eq!(
+        items.len(),
+        2,
+        "buffered native observations keep order and the stale initial probe stays absent"
+    );
+    harness
+        .execute(
+            "connection.parameters.unsubscribe",
+            vec![("parameterEventsHandle", string("parameter-opening-stream"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness.central.shutdown().await;
+}
+
+#[tokio::test]
+async fn acquired_routes_use_the_native_lease_and_retire_both_children_on_disconnect() {
+    fn linux(core: &mut ubm_core::central::Central) -> Result<(), ubm_core::contracts::CoreError> {
+        ubm_desktop::register_desktop_capabilities_for(
+            core,
+            Some(ubm_desktop::DesktopOs::Linux),
+            false,
+        )
+    }
+    let mut profile = CentralProfile::desktop("tauri-acquired-test");
+    profile.directory_os = ubm_desktop::DesktopOs::Linux;
+    profile.register_capabilities = linux;
+    let central = DesktopCentral::open_with(FakeRadio::new(), profile)
+        .await
+        .unwrap();
+    let harness = Harness::over(central).await;
+    let link = harness.connect("acquired-peer").await;
+    harness
+        .radio()
+        .acquired_gatt()
+        .configure(
+            "acquired-peer",
+            ubm_desktop::acquired_gatt::synthetic::SyntheticAcquisition {
+                write: true,
+                notify: true,
+                mtu: 23,
+            },
+        )
+        .unwrap();
+    // AcquireWrite requires the native write-without-response property.
+    let mut service = hrm_service();
+    service
+        .characteristics
+        .iter_mut()
+        .find(|value| value.uuid == CONTROL_POINT)
+        .unwrap()
+        .properties
+        .write_without_response = true;
+    harness.radio().set_services("acquired-peer", vec![service]);
+    let database = harness
+        .execute(
+            "gatt.discover",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let rows = match field(&database, "characteristics") {
+        IpcValue::Array(rows) => rows,
+        _ => panic!("characteristics"),
+    };
+    let characteristic_handle = |uuid: &str| {
+        rows.iter()
+            .find(|row| text(row, "characteristicUuid") == uuid)
+            .map(|row| text(row, "handle"))
+            .unwrap()
+    };
+    let target = |uuid: &str| {
+        let mut entries = Harness::link_entries(&link);
+        entries.extend([
+            ("databaseHandle", string(text(&database, "handle"))),
+            ("databaseId", field(&database, "databaseId").clone()),
+            (
+                "databaseGeneration",
+                field(&database, "databaseGeneration").clone(),
+            ),
+            ("characteristicHandle", string(characteristic_handle(uuid))),
+        ]);
+        entries
+    };
+    let writer = harness
+        .execute(
+            "gatt.acquire-write",
+            target(CONTROL_POINT),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(field(&writer, "mtuBytes"), &number(23));
+    let writer_handle = text(&writer, "handle");
+    let mut write = target(CONTROL_POINT);
+    write.push(("acquiredHandle", string(&writer_handle)));
+    let receipt = harness
+        .execute(
+            "gatt.acquired-write",
+            write,
+            Some(vec![42]),
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text(&receipt, "commitState"), "unknown");
+    assert_eq!(harness.radio().acquired_gatt().writes(), vec![vec![42]]);
+    let notifications = harness
+        .execute(
+            "gatt.acquire-notifications",
+            target(NOTIFY_ONLY),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let stream_handle = text(&notifications, "handle");
+    harness.radio().acquired_gatt().notify(vec![7, 8]);
+    let values = harness.wait_items(&stream_handle, 1).await;
+    assert_eq!(value_bytes(&values[0]), vec![7, 8]);
+    let other = harness.other_caller().await;
+    let foreign = other
+        .execute(
+            "gatt.acquired-write.close",
+            vec![("acquiredHandle", string(&writer_handle))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(foreign.code, BleErrorCode::OwnershipDenied);
+    harness
+        .execute(
+            "connection.disconnect",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        harness
+            .central
+            .resource_counters()
+            .await
+            .acquired_gatt_transports,
+        0
+    );
+    harness
+        .execute(
+            "gatt.acquired-write.close",
+            vec![("acquiredHandle", string(&writer_handle))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness
+        .execute(
+            "gatt.unsubscribe",
+            vec![("subscriptionHandle", string(&stream_handle))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness.central.shutdown().await;
+}
+
+#[tokio::test]
+async fn parameter_source_failure_survives_for_a_later_watch_until_native_recovery() {
+    let harness = Harness::new().await;
+    let link = harness.connect("parameter-health-peer").await;
+    harness.radio().set_connection_parameters(
+        "parameter-health-peer",
+        ubm_desktop::ObservedConnectionParameters {
+            interval_us: 30_000,
+            latency: 1,
+            supervision_timeout_us: 4_000_000,
+        },
+    );
+    let mut observed = harness.central.connection_parameter_events();
+    harness
+        .radio()
+        .push_event(RadioEvent::ConnectionParameterSourceFailed {
+            peer_id: "parameter-health-peer".into(),
+            error: DesktopError::new(
+                BleErrorCode::StreamClosed,
+                ubm_core::contracts::BleErrorDomain::Stream,
+                "native.parameter-source",
+            ),
+        });
+    tokio::time::timeout(WAIT, observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut entries = Harness::link_entries(&link);
+    entries.push(("parameterEventsHandle", string("parameter-health-stream")));
+    let denied = harness
+        .execute(
+            "connection.parameters.subscribe",
+            entries.clone(),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code, BleErrorCode::StreamClosed);
+    assert_eq!(denied.operation, "native.parameter-source");
+    assert_eq!(count(&harness.radio().calls(), "connection_parameters"), 0);
+    harness.radio().set_connection_parameters(
+        "parameter-health-peer",
+        ubm_desktop::ObservedConnectionParameters {
+            interval_us: 60_000,
+            latency: 2,
+            supervision_timeout_us: 5_000_000,
+        },
+    );
+    harness
+        .radio()
+        .push_event(RadioEvent::ConnectionParameters {
+            peer_id: "parameter-health-peer".into(),
+            interval_us: 60_000,
+            latency: 2,
+            supervision_timeout_us: 5_000_000,
+        });
+    tokio::time::timeout(WAIT, observed.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    harness
+        .execute(
+            "connection.parameters.subscribe",
+            entries,
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    let items = harness.wait_items("parameter-health-stream", 1).await;
+    assert_eq!(items[0]["value"]["intervalUs"], 60_000);
+    harness
+        .execute(
+            "connection.parameters.unsubscribe",
+            vec![("parameterEventsHandle", string("parameter-health-stream"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    harness.central.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scan_stream_serializes_native_public_random_and_unknown_address_types() {
     let harness = Harness::new().await;
@@ -674,7 +1079,6 @@ async fn process_shutdown_retains_native_claim_and_retry_owner() {
         .continuation_execute(peer, &declaration)
         .await
         .unwrap();
-    let mut wakes = harness.central.native_wakes();
     harness.radio().push_event(RadioEvent::Notification {
         peer_id: peer.into(),
         service_uuid: HRM_SERVICE.into(),
@@ -684,10 +1088,25 @@ async fn process_shutdown_retains_native_claim_and_retry_owner() {
         value: vec![0, 75],
         epoch: harness.central.routing_epoch(peer).await,
     });
-    tokio::time::timeout(WAIT, wakes.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    // A central wake only proves native ingress, not collection into the
+    // continuation outbox. Prove the retained value before racing shutdown;
+    // the post-shutdown claim below must still contain that exact value.
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let backlog = harness
+                .dispatcher
+                .continuation_describe_backlog()
+                .await
+                .unwrap();
+            assert!(backlog["lastError"].is_null(), "{backlog}");
+            if backlog["queuedData"] == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("notification must enter the continuation outbox before shutdown");
     harness
         .radio()
         .fail_next(FaultOp::Disconnect, "retained cleanup");
@@ -761,6 +1180,7 @@ fn directory_mac_profile(
 async fn directory_harness() -> Harness {
     let mut profile = ubm_desktop::CentralProfile::desktop("tauri-directory-test");
     profile.register_capabilities = directory_mac_profile;
+    profile.directory_os = ubm_desktop::DesktopOs::MacOs;
     Harness::over(
         DesktopCentral::open_with(os_radio(AdmissionPolicy::LifecycleOnly), profile)
             .await
@@ -802,19 +1222,14 @@ async fn peer_directory_bonded_preserves_native_fact_without_link_ownership() {
     }
     let mut profile = ubm_desktop::CentralProfile::desktop("tauri-bonded-test");
     profile.register_capabilities = bonded_profile;
+    profile.directory_os = ubm_desktop::DesktopOs::Windows;
     let harness = Harness::over(
         DesktopCentral::open_with(os_radio(AdmissionPolicy::LifecycleOnly), profile)
             .await
             .unwrap(),
     )
     .await;
-    let id = if cfg!(target_os = "windows") {
-        "AA:BB:CC:DD:EE:FF"
-    } else if cfg!(target_os = "linux") {
-        "hci0/dev_AA_BB_CC_DD_EE_FF"
-    } else {
-        "00112233-4455-6677-8899-aabbccddeeff"
-    };
+    let id = "public:AA:BB:CC:DD:EE:FF";
     harness
         .radio()
         .set_bonded_directory_peers(vec![ubm_desktop::DirectoryPeer {
@@ -822,13 +1237,14 @@ async fn peer_directory_bonded_preserves_native_fact_without_link_ownership() {
             name: Some("bonded native peer".into()),
             connection: "disconnected",
         }]);
-    let backend = if cfg!(target_os = "windows") {
-        "unified-ble:winrt"
-    } else if cfg!(target_os = "linux") {
-        "unified-ble:bluez-dbus"
-    } else {
-        "unified-ble:corebluetooth"
-    };
+    harness
+        .radio()
+        .set_known_directory_peers(vec![ubm_desktop::DirectoryPeer {
+            peer_id: id.into(),
+            name: Some("unbonded cached observation".into()),
+            connection: "unknown",
+        }]);
+    let backend = "unified-ble:winrt";
     let foreign_backend = if backend == "unified-ble:corebluetooth" {
         "unified-ble:winrt"
     } else {
@@ -889,10 +1305,10 @@ async fn peer_directory_bonded_preserves_native_fact_without_link_ownership() {
         .expect("bonded reference roundtrip")
         .into_wire();
     assert_eq!(resolved["peer"]["peerId"], id);
-    assert_eq!(resolved["peer"]["source"], "system-bonded");
-    assert_eq!(resolved["peer"]["state"]["bond"], "bonded");
-    assert_eq!(count(&harness.radio().calls(), "bonded_peers"), before + 2);
-    assert_eq!(count(&harness.radio().calls(), "resolve_peer"), 0);
+    assert_eq!(resolved["peer"]["source"], "app-reference");
+    assert_eq!(resolved["peer"]["state"]["bond"], "unknown");
+    assert_eq!(count(&harness.radio().calls(), "bonded_peers"), before + 1);
+    assert_eq!(count(&harness.radio().calls(), "resolve_peer"), 1);
     assert!(
         harness.dispatcher.inner.lock().await.callers[&harness.key()]
             .connections
@@ -914,6 +1330,7 @@ async fn peer_directory_bonded_preserves_native_fact_without_link_ownership() {
         .expect("explicit resolved identity connection");
     assert_eq!(text(&connected, "peerId"), id);
     harness.radio().set_bonded_directory_peers(Vec::new());
+    harness.radio().set_known_directory_peers(Vec::new());
     let removed = harness
         .route(
             "peers.resolve",
@@ -925,6 +1342,103 @@ async fn peer_directory_bonded_preserves_native_fact_without_link_ownership() {
         .unwrap()
         .into_wire();
     assert_eq!(removed["peer"], Value::Null);
+}
+
+#[tokio::test]
+async fn peer_directory_native_inventory_keeps_backend_scope_and_foreign_link_unowned() {
+    let cases: [(
+        ubm_desktop::DesktopOs,
+        &str,
+        &str,
+        fn(&mut ubm_core::central::Central) -> Result<(), ubm_core::contracts::CoreError>,
+    ); 2] = [
+        (
+            ubm_desktop::DesktopOs::Windows,
+            "unified-ble:winrt",
+            "random:AA:BB:CC:DD:EE:FF",
+            windows_directory_profile,
+        ),
+        (
+            ubm_desktop::DesktopOs::Linux,
+            "unified-ble:bluez-dbus",
+            "hci0/dev_AA_BB_CC_DD_EE_FF",
+            linux_directory_profile,
+        ),
+    ];
+    for (os, backend, id, registration) in cases {
+        let mut profile = ubm_desktop::CentralProfile::desktop("native-directory");
+        profile.register_capabilities = registration;
+        profile.directory_os = os;
+        let harness = Harness::over(
+            DesktopCentral::open_with(os_radio(AdmissionPolicy::LifecycleOnly), profile)
+                .await
+                .unwrap(),
+        )
+        .await;
+        let peer = ubm_desktop::DirectoryPeer {
+            peer_id: id.into(),
+            name: Some("foreign unbonded peer".into()),
+            connection: "connected",
+        };
+        harness
+            .radio()
+            .set_known_directory_peers(vec![peer.clone()]);
+        harness.radio().set_directory_peers(vec![peer]);
+        for command in ["peers.known", "peers.connected"] {
+            let result = harness
+                .route(command, command, vec![("query", object([]))], None)
+                .await
+                .unwrap()
+                .into_wire();
+            assert_eq!(result["peers"][0]["reference"]["backendId"], backend);
+            assert_eq!(result["peers"][0]["peerId"], id);
+            assert_eq!(result["peers"][0]["state"]["bond"], "unknown");
+        }
+        let reference = object([
+            ("version", IpcValue::Number(1.into())),
+            ("backendId", string(backend)),
+            ("scope", string("application")),
+            ("opaqueId", string(id)),
+        ]);
+        let resolved = harness
+            .route(
+                "peers.resolve",
+                "resolve-native",
+                vec![("reference", reference)],
+                None,
+            )
+            .await
+            .unwrap()
+            .into_wire();
+        assert_eq!(resolved["peer"]["peerId"], id);
+        assert_eq!(count(&harness.radio().calls(), "bonded_peers"), 0);
+        assert!(
+            harness.dispatcher.inner.lock().await.callers[&harness.key()]
+                .connections
+                .is_empty()
+        );
+        assert!(!harness
+            .radio()
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("connect:") || call.starts_with("start_scan:")));
+        harness.central.shutdown().await;
+    }
+}
+
+fn windows_directory_profile(
+    core: &mut ubm_core::central::Central,
+) -> Result<(), ubm_core::contracts::CoreError> {
+    ubm_desktop::register_desktop_capabilities_for(
+        core,
+        Some(ubm_desktop::DesktopOs::Windows),
+        false,
+    )
+}
+fn linux_directory_profile(
+    core: &mut ubm_core::central::Central,
+) -> Result<(), ubm_core::contracts::CoreError> {
+    ubm_desktop::register_desktop_capabilities_for(core, Some(ubm_desktop::DesktopOs::Linux), false)
 }
 
 #[tokio::test]
@@ -1248,12 +1762,12 @@ async fn peer_directory_unavailable_hosts_never_short_circuit_to_success_or_mac_
     ] {
         let mut profile = ubm_desktop::CentralProfile::desktop("directory-unsupported");
         profile.register_capabilities = registration;
-        let harness = Harness::over(
-            DesktopCentral::open_with(FakeRadio::new(), profile)
-                .await
-                .unwrap(),
-        )
-        .await;
+        let radio = FakeRadio::new();
+        radio.set_directory_capability_limitations(Ok((
+            Some("known-directory-unavailable"),
+            Some("connected-directory-unavailable"),
+        )));
+        let harness = Harness::over(DesktopCentral::open_with(radio, profile).await.unwrap()).await;
         for (command, query) in [
             ("peers.connected", object([])),
             (
@@ -1272,7 +1786,7 @@ async fn peer_directory_unavailable_hosts_never_short_circuit_to_success_or_mac_
                 .execute(command, vec![("query", query)], None, OpControl::default())
                 .await
                 .unwrap_err();
-            assert_eq!(error.code, BleErrorCode::CapabilityUnsupported);
+            assert_eq!(error.code, BleErrorCode::CapabilityUnavailable);
             assert_eq!(error.operation, command);
         }
         assert!(!harness
@@ -2067,6 +2581,8 @@ fn characteristic(uuid: &str, properties: PropertyFlags) -> CharacteristicSnapsh
 
 fn hrm_service() -> ServiceSnapshot {
     ServiceSnapshot {
+        primary: None,
+        included_services: None,
         uuid: HRM_SERVICE.to_owned(),
         occurrence: 0,
         characteristics: vec![
@@ -2074,6 +2590,7 @@ fn hrm_service() -> ServiceSnapshot {
             characteristic(INDICATE_ONLY, flags(false, false, false, true)),
             characteristic(CONTROL_POINT, flags(true, true, false, false)),
         ],
+        access: std::default::Default::default(),
     }
 }
 
@@ -2232,9 +2749,15 @@ impl Harness {
                     connections: HashMap::new(),
                     databases: HashMap::new(),
                     subscriptions: HashMap::new(),
+                    acquired_writers: HashMap::new(),
+                    acquired_releases: Default::default(),
                     connection_events: HashMap::new(),
                     security_watches: HashMap::new(),
                     security_watch_releases: std::collections::HashSet::new(),
+                    write_readiness_watches: HashMap::new(),
+                    write_readiness_releases: Default::default(),
+                    parameter_watches: HashMap::new(),
+                    parameter_releases: Default::default(),
                     operations: HashMap::new(),
                     completed_correlations: HashMap::new(),
                     pending_events: std::collections::HashSet::new(),
@@ -4201,6 +4724,37 @@ async fn pr210_13t_a_requirement_is_refused_only_where_the_property_is_missing()
     assert_eq!(items[0]["value"]["delivery"], "notification");
 }
 
+/// A hard indication requirement is carried through. The scripted radio
+/// records that request; it does not apply the platform CCCD rule. The
+/// real backend refuses it on macOS and Linux in `plan_delivery` before
+/// any effect when the characteristic also notifies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pr210_13t_a_dual_property_indication_requirement_is_not_dropped() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    let mut service = hrm_service();
+    service.characteristics.push(characteristic(
+        "00002a5d-0000-1000-8000-00805f9b34fb",
+        flags(false, false, true, true),
+    ));
+    harness.radio().set_services(&link.peer_id, vec![service]);
+    let database = harness.discover(&link).await;
+    harness
+        .subscribe(
+            &link,
+            &database,
+            "00002a5d-0000-1000-8000-00805f9b34fb",
+            Some("require-indication"),
+        )
+        .await
+        .expect("the scripted radio accepts the carried requirement");
+    assert_eq!(
+        harness.radio().delivery_requests(),
+        vec![Some(DeliveryMode::Indication)],
+        "require-indication is not replaced with the platform default"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pr210_13t_a_preference_reports_unknown_delivery_when_the_radio_says_nothing() {
     let harness = Harness::new().await;
@@ -4212,6 +4766,10 @@ async fn pr210_13t_a_preference_reports_unknown_delivery_when_the_radio_says_not
         .expect("a preference rides through");
     assert_eq!(field(&subscription, "observedDelivery"), &string("unknown"));
     assert_eq!(harness.radio().delivery_requests(), vec![None]);
+    assert_eq!(
+        harness.radio().delivery_preferences(),
+        vec![Some(DeliveryMode::Indication)]
+    );
 }
 
 // PR210-22 — retryability is the core's answer, never the code's.
@@ -4280,15 +4838,15 @@ async fn pr210_32_racing_first_calls_open_exactly_one_authority() {
     assert!(Arc::ptr_eq(&first, &second), "one shared central");
 }
 
-// Finding 217 follow-up — the effective ATT MTU the OS reports crosses the
-// dispatcher: macOS derives `maximumWriteValueLength(.withResponse) + 3`,
-// Windows reads `GattSession.MaxPduSize`, Linux reads the BlueZ
-// characteristic MTU. A withheld measurement is never synthesized.
+// The effective ATT MTU the OS observed crosses the dispatcher. An
+// unobserved link is null, not a synthesized length and not a link failure.
+// Windows reads `GattSession.MaxPduSize`. Linux reads the BlueZ
+// characteristic MTU. A scripted measurement still crosses as a number.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn connected_effective_mtu_reads_the_live_link_through_the_core() {
     let harness = Harness::new().await;
     let link = harness.connect("peer-a").await;
-    let error = harness
+    let unobserved = harness
         .execute(
             "connection.effective-mtu",
             Harness::link_entries(&link),
@@ -4296,8 +4854,8 @@ async fn connected_effective_mtu_reads_the_live_link_through_the_core() {
             OpControl::unbounded(),
         )
         .await
-        .expect_err("an unmeasured MTU is not synthesized");
-    assert_eq!(error.code, BleErrorCode::CapabilityUnsupported);
+        .expect("an unobserved MTU is null");
+    assert_eq!(field(&unobserved, "mtu"), &IpcValue::Null);
     harness.radio().set_effective_mtu("peer-a", 515);
     let mtu = harness
         .execute(
@@ -4337,6 +4895,132 @@ async fn connected_rssi_reads_the_live_link_through_the_core() {
         .await
         .expect("the OS measurement crosses");
     assert_eq!(field(&rssi, "rssi"), &number(-55));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn completed_control_watches_do_not_consume_live_watch_capacity() {
+    async fn acknowledge_initial(harness: &Harness, handle: &str) {
+        harness.wait_items(handle, 1).await;
+        let event_id = harness
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|event| event["streamId"] == handle)
+            .unwrap()["eventId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let request = BTreeMap::from([
+            ("eventId".to_owned(), string(event_id)),
+            (
+                "rendererLease".to_owned(),
+                object([
+                    ("leaseId", string(LEASE_ID)),
+                    ("generation", string(LEASE_GENERATION)),
+                ]),
+            ),
+        ]);
+        harness
+            .dispatcher
+            .acknowledge(harness.caller.clone(), request)
+            .await
+            .expect("event ACK");
+    }
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    harness.radio().set_write_readiness("peer-a", true);
+    harness.radio().set_connection_parameters(
+        "peer-a",
+        ubm_desktop::boundary::ObservedConnectionParameters {
+            interval_us: 30_000,
+            latency: 0,
+            supervision_timeout_us: 4_000_000,
+        },
+    );
+    for (subscribe, unsubscribe, handle_key, prefix) in [
+        (
+            "connection.write-readiness.subscribe",
+            "connection.write-readiness.unsubscribe",
+            "writeReadinessHandle",
+            "ready",
+        ),
+        (
+            "connection.parameters.subscribe",
+            "connection.parameters.unsubscribe",
+            "parameterEventsHandle",
+            "parameters",
+        ),
+    ] {
+        for ordinal in 0..600 {
+            let handle = format!("{prefix}-{ordinal}");
+            let mut entries = Harness::link_entries(&link);
+            entries.push((handle_key, string(&handle)));
+            harness
+                .execute(subscribe, entries, None, OpControl::unbounded())
+                .await
+                .expect("live capacity is reusable");
+            // Acknowledge the actual event delivered on this renderer channel.
+            acknowledge_initial(&harness, &handle).await;
+            for _ in 0..2 {
+                harness
+                    .execute(
+                        unsubscribe,
+                        vec![(handle_key, string(&handle))],
+                        None,
+                        OpControl::unbounded(),
+                    )
+                    .await
+                    .expect("recent release replay is idempotent");
+            }
+            let state = harness.dispatcher.inner.lock().await;
+            let owner = state.callers.get(&harness.key()).unwrap();
+            assert!(owner.write_readiness_watches.is_empty() && owner.parameter_watches.is_empty());
+            assert!(
+                owner.write_readiness_releases.len() <= 256
+                    && owner.parameter_releases.len() <= 256
+            );
+        }
+        // Repeated closes must not weaken the actual concurrent-resource bound.
+        for ordinal in 0..256 {
+            let handle = format!("{prefix}-active-{ordinal}");
+            let mut entries = Harness::link_entries(&link);
+            entries.push((handle_key, string(&handle)));
+            harness
+                .execute(subscribe, entries, None, OpControl::unbounded())
+                .await
+                .expect("live watch");
+            acknowledge_initial(&harness, &handle).await;
+        }
+        let mut overflow = Harness::link_entries(&link);
+        overflow.push((handle_key, string(format!("{prefix}-overflow"))));
+        let error = harness
+            .execute(subscribe, overflow, None, OpControl::unbounded())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, BleErrorCode::StreamQuota);
+        for ordinal in 0..256 {
+            harness
+                .execute(
+                    unsubscribe,
+                    vec![(handle_key, string(format!("{prefix}-active-{ordinal}")))],
+                    None,
+                    OpControl::unbounded(),
+                )
+                .await
+                .expect("release live watch");
+        }
+        let old = harness
+            .execute(
+                unsubscribe,
+                vec![(handle_key, string(format!("{prefix}-0")))],
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(old.code, BleErrorCode::OwnershipDenied);
+    }
 }
 
 /// U01: capability truth is checked at the actual bootstrap boundary, beside
@@ -4453,14 +5137,6 @@ async fn transport_only_restrictions_match_absent_routes_and_rebind_ownership() 
     for (id, command) in [
         ("discovery:advertisement-watch", "advertisement.watch"),
         ("gatt:reliable-write", "gatt.reliable-write"),
-        (
-            "gatt:write-without-response-readiness",
-            "gatt.write-readiness",
-        ),
-        (
-            "gatt:high-throughput-acquire",
-            "gatt.high-throughput-acquire",
-        ),
     ] {
         assert!(crate::capabilities::transport_restriction(id).is_some());
         let error = harness
@@ -4469,6 +5145,21 @@ async fn transport_only_restrictions_match_absent_routes_and_rebind_ownership() 
             .unwrap_err();
         assert_eq!(error.operation, "tauri.route-command");
     }
+    assert!(crate::capabilities::transport_restriction("gatt:high-throughput-acquire").is_none());
+    assert!(
+        crate::capabilities::transport_restriction("gatt:write-without-response-readiness")
+            .is_none()
+    );
+    let readiness = harness
+        .execute(
+            "connection.write-readiness.subscribe",
+            vec![],
+            None,
+            OpControl::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_ne!(readiness.operation, "tauri.route-command");
     assert!(crate::capabilities::transport_restriction("peer:origin-authorized").is_some());
     let error = harness
         .execute(
@@ -5565,6 +6256,8 @@ fn cccd() -> DescriptorSnapshot {
 fn h10_services() -> Vec<ServiceSnapshot> {
     vec![
         ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: "00001800-0000-1000-8000-00805f9b34fb".to_owned(),
             occurrence: 0,
             characteristics: vec![
@@ -5579,8 +6272,12 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                     Vec::new(),
                 ),
             ],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: "00001801-0000-1000-8000-00805f9b34fb".to_owned(),
             occurrence: 0,
             characteristics: vec![h10_characteristic(
@@ -5588,8 +6285,12 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                 flags(false, false, false, true),
                 Vec::new(),
             )],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: "0000180d-0000-1000-8000-00805f9b34fb".to_owned(),
             occurrence: 0,
             characteristics: vec![
@@ -5609,8 +6310,12 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                     Vec::new(),
                 ),
             ],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: "0000180a-0000-1000-8000-00805f9b34fb".to_owned(),
             occurrence: 0,
             characteristics: vec![
@@ -5628,8 +6333,12 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                     Vec::new(),
                 ),
             ],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: "0000180f-0000-1000-8000-00805f9b34fb".to_owned(),
             occurrence: 0,
             characteristics: vec![h10_characteristic(
@@ -5637,8 +6346,12 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                 flags(true, false, true, false),
                 vec![cccd()],
             )],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: "6217ff4b-fb31-1140-ad5a-a45545d7ecf3".to_owned(),
             occurrence: 0,
             characteristics: vec![h10_characteristic(
@@ -5646,8 +6359,12 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                 flags(true, true, false, false),
                 Vec::new(),
             )],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: "fb005c80-02e7-f387-1cad-8acd2d8df0c8".to_owned(),
             occurrence: 0,
             characteristics: vec![h10_characteristic(
@@ -5655,8 +6372,12 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                 flags(false, false, true, false),
                 vec![cccd()],
             )],
+
+            access: std::default::Default::default(),
         },
         ServiceSnapshot {
+            primary: None,
+            included_services: None,
             uuid: "0000feee-0000-1000-8000-00805f9b34fb".to_owned(),
             occurrence: 0,
             characteristics: vec![h10_characteristic(
@@ -5664,6 +6385,8 @@ fn h10_services() -> Vec<ServiceSnapshot> {
                 flags(true, false, false, false),
                 Vec::new(),
             )],
+
+            access: std::default::Default::default(),
         },
     ]
 }
@@ -5831,4 +6554,99 @@ async fn findings_f1_f2_write_receipt_commit_state_matches_the_contract_on_both_
         .expect("a with-response write succeeds");
     assert_eq!(text(&with_response, "mode"), "with-response");
     assert_eq!(text(&with_response, "commitState"), "confirmed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn readiness_write_uses_the_owned_native_route_and_reports_unconfirmed_acceptance() {
+    let harness = Harness::new().await;
+    let link = harness.connect("peer-a").await;
+    let database = harness.discover(&link).await;
+    harness.radio().set_write_readiness("peer-a", true);
+    let mut entries = Harness::gatt_entries(&link, &database, CONTROL_POINT);
+    entries.push(("mode", string("without-response")));
+    let result = harness
+        .route(
+            "gatt.write-when-ready",
+            "ready-write",
+            entries,
+            Some(vec![42]),
+        )
+        .await
+        .expect("ready write");
+    assert_eq!(field(&result, "commitState"), &string("unknown"));
+    assert_eq!(field(&result, "bytesSubmitted"), &number(1));
+    let mut invalid = Harness::gatt_entries(&link, &database, CONTROL_POINT);
+    invalid.push(("mode", string("with-response")));
+    let error = harness
+        .route(
+            "gatt.write-when-ready",
+            "ready-invalid",
+            invalid,
+            Some(vec![99]),
+        )
+        .await
+        .expect_err("wrong mode");
+    assert_eq!(error.code, BleErrorCode::ArgumentInvalid);
+}
+
+#[tokio::test]
+async fn phy_snapshot_dispatch_preserves_distinct_native_directions() {
+    let harness = Harness::new().await;
+    let link = harness.connect("observed-phy-peer").await;
+    harness.radio().set_connection_phy(
+        "observed-phy-peer",
+        ubm_desktop::boundary::ObservedConnectionPhy {
+            tx_phy: ubm_desktop::boundary::BlePhy::Le2M,
+            rx_phy: ubm_desktop::boundary::BlePhy::LeCoded,
+        },
+    );
+    let value = harness
+        .execute(
+            "connection.phy",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(text(&value, "txPhy"), "le-2m");
+    assert_eq!(text(&value, "rxPhy"), "le-coded");
+    assert_eq!(text(&value, "connectionId"), link.connection_id);
+    assert_eq!(count(&harness.radio().calls(), "connection_phy"), 1);
+}
+
+#[tokio::test]
+async fn phy_snapshot_preserves_native_refusal_and_stale_owner_admission() {
+    let harness = Harness::new().await;
+    let link = harness.connect("phy-unavailable-peer").await;
+    let error = harness
+        .execute(
+            "connection.phy",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, BleErrorCode::CapabilityUnsupported);
+    assert_eq!(count(&harness.radio().calls(), "connection_phy"), 1);
+    harness
+        .execute(
+            "connection.disconnect",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert!(harness
+        .execute(
+            "connection.phy",
+            Harness::link_entries(&link),
+            None,
+            OpControl::unbounded()
+        )
+        .await
+        .is_err());
+    assert_eq!(count(&harness.radio().calls(), "connection_phy"), 1);
 }

@@ -1,0 +1,44 @@
+[1mpreflight[0m FETCH_HEAD (f6bb34d74)
+  workspace: /home/sfourdrinier/.cache/ubm-preflight/tree-f6bb34d74
+  cargo target (shared): /home/sfourdrinier/.cache/ubm-preflight/cargo-target
+
+[1m▶ install (frozen lockfile)[0m
+  ✓ 7s
+[1m▶ cargo cache (locked, all targets)[0m
+[1m▶ package + tauri-plugin (parallel)[0m
+
+[1m── summary ──[0m
+[31m  ✗ package          52s  (exit 1)[0m
+      ✔ [commonjs] Wrote files to lib/commonjs
+      ✔ [typescript] Wrote definition files to lib/typescript
+      native-build-identity: staged jni artifacts were not built from these sources:
+        sourceDigest: staged "1bb2f641b0226c4f5e7e7a3dfa7d2bfb2ab6db807b6ef3b59e587b20de58551a", sources cd9ba4a5ecdbb787c9c8868046283b17e3fef99daed66c145e6a203786a980e1
+      Rebuild them:
+        sh /home/sfourdrinier/.cache/ubm-preflight/tree-f6bb34d74/android/refresh-prebuilt-jniLibs.sh   (maintainer step; commit the refreshed tree)
+      /home/sfourdrinier/.cache/ubm-preflight/tree-f6bb34d74/scripts/ci/build-package.js:24
+          throw new Error(`${command} ${args.join(' ')} failed with exit code ${String(result.status)}`)
+          ^
+      
+      Error: /usr/local/bin/node scripts/release/generate-build-fingerprint.js failed with exit code 1
+          at run (/home/sfourdrinier/.cache/ubm-preflight/tree-f6bb34d74/scripts/ci/build-package.js:24:11)
+          at Object.<anonymous> (/home/sfourdrinier/.cache/ubm-preflight/tree-f6bb34d74/scripts/ci/build-package.js:41:1)
+          at Module._compile (node:internal/modules/cjs/loader:1706:14)
+          at Object..js (node:internal/modules/cjs/loader:1839:10)
+          at Module.load (node:internal/modules/cjs/loader:1441:32)
+          at Function._load (node:internal/modules/cjs/loader:1263:12)
+          at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+          at wrapModuleLoad (node:internal/modules/cjs/loader:237:24)
+          at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)
+          at node:internal/main/run_main_module:36:49
+      
+      Node.js v22.21.1
+       ELIFECYCLE  Command failed with exit code 1.
+       ELIFECYCLE  Command failed with exit code 1.
+      full log: /home/sfourdrinier/.cache/ubm-preflight/package.log
+[32m  ✓ tauri-plugin     52s[0m
+[33m  – android          skipped (--fast; includes Expo reference typecheck)[0m
+  total 59s
+
+Not covered: windows/macos legs, the apple job, CoreBluetooth and WinRT
+boundaries, the Node matrix, and the runner OS. Push for those.
+workspace kept: /home/sfourdrinier/.cache/ubm-preflight/tree-f6bb34d74

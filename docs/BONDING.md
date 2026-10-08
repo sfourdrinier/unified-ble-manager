@@ -133,7 +133,10 @@ rejects with the same error the pairing rejected with.
 
 An abort or deadline on `cancelPairing()` itself is admitted before any native
 cancellation is issued and bounds the whole wait, acknowledgement and pairing
-result included. A timed-out or aborted wait reports `operation.timed-out` /
+result included. The same absolute deadline covers both phases; acknowledgement
+does not reset the remaining budget. Each cancellation waiter owns its abort
+listener and timer independently of the original pairing and other waiters.
+A timed-out or aborted wait reports `operation.timed-out` /
 `operation.aborted` rather than inventing `'cancelled'` from an acknowledgement,
 and the in-flight pairing stays owned so `state()`/`watch()` (and a later
 `cancelPairing()` that waits long enough) can still observe the pairing's own
@@ -230,3 +233,20 @@ against a physical peripheral, and nothing here should be read as physical-radio
 proof. The `security:pairing-generation` capability reports `limited` when a controller
 is supplied, never `supported`, and that label changes only when physical
 evidence says so — not because the code looks finished.
+
+Android API 36 encryption changes and SDK 36.1 LE encryption snapshots are
+observations independent of bond state. The native runtime controls their
+availability. Encryption never implies authenticated pairing or Secure
+Connections; unsupported facts remain explicit. Null encryption snapshots
+are ambiguous and remain unknown; a separate live-link query cannot resolve them
+atomically. Event-only peer broadcasts are not cached as current-link snapshots. Source failures
+preserve their controller status and terminate watches even when native
+cleanup fails. See [mobile encryption observations](MOBILE_RUST_WIRE.md#android-encryption-observations)
+for runtime floors, correlation, permissions and qualification limits.
+
+A transient Android security source failure ends the affected existing watches,
+but does not bar a later explicit `state()` or fresh `watch()` probe. A successful
+fresh answer retires the older fault in both provider and native reconciliation;
+a newer failure arriving during the probe remains authoritative. Recovery never
+reopens an already-terminal watch, and a still-refused native probe reports its
+own current error.

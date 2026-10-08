@@ -14,18 +14,21 @@ describe('Android scan and receiver ownership source guards', () => {
   const gradle = fs.readFileSync(gradlePath, 'utf8')
   const cmake = fs.readFileSync(cmakePath, 'utf8')
 
-  test('commits scanCallback only after startScan returns', () => {
+  test('owns the scan callback before native admission and retains failed compensation', () => {
     const startScan = radio.slice(radio.indexOf('fun startScan('), radio.indexOf('internal fun stopScan()'))
     const assign = startScan.indexOf('scanCallback = cb')
     const nativeStart = startScan.indexOf('scanner?.startScan')
     expect(nativeStart).toBeGreaterThan(-1)
-    expect(assign).toBeGreaterThan(nativeStart)
+    expect(assign).toBeGreaterThan(-1)
+    expect(assign).toBeLessThan(nativeStart)
+    expect(startScan).toContain('if (cleanupFailure == null)')
+    expect(startScan).toContain('scanCallback = null')
     expect(startScan).toMatch(/catch\s*\(/)
     expect(startScan).toMatch(/stopScan\(cb\)/)
     expect(startScan).toMatch(/setDeviceAddress/)
   })
 
-  test('commits adapter and bond receivers only after registerReceiver succeeds', () => {
+  test('commits adapter registration and retains the security receiver across partial admission', () => {
     const adapter = radio.slice(
       radio.indexOf('fun registerAdapterStateReceiver()'),
       radio.indexOf('internal fun unregisterAdapterStateReceiver()')
@@ -40,7 +43,10 @@ describe('Android scan and receiver ownership source guards', () => {
       radio.indexOf('internal fun unregisterBondStateReceiver()')
     )
     expect(bond.indexOf('context.registerReceiver')).toBeGreaterThan(-1)
-    expect(bond.indexOf('bondStateReceiver = receiver')).toBeGreaterThan(bond.indexOf('context.registerReceiver'))
+    expect(bond.indexOf('bondStateReceiver = receiver')).toBeGreaterThan(-1)
+    expect(bond.indexOf('bondStateReceiver = receiver')).toBeLessThan(bond.indexOf('context.registerReceiver'))
+    expect(bond).toContain('securityReceiverActive = false')
+    expect(bond).toContain('throw error')
   })
 
   test('native protocol shared object is linked at 16 KB page size', () => {

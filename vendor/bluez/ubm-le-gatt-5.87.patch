@@ -315,7 +315,7 @@
  #include "profile.h"
  #include "service.h"
  #include "dbus-common.h"
-@@ -115,6 +116,8 @@
+@@ -115,14 +116,20 @@
  	struct btd_bearer *bearer = user_data;
  	struct btd_device *device = bearer->device;
  	int err;
@@ -323,8 +323,29 @@
 +		return msg ? btd_error_in_progress(msg) : NULL;
  
  	if (btd_device_bdaddr_type_connected(device, bearer->type)) {
++		if (bearer->type != BDADDR_BREDR)
++			btd_ubm_le_commit(device, msg);
  		if (msg)
-@@ -143,7 +146,7 @@
+ 			return btd_error_already_connected(msg);
+ 		return NULL;
+ 	}
+ 
+ 	if (device_is_bonding(device, NULL)) {
++		if (bearer->type != BDADDR_BREDR)
++			btd_ubm_le_rollback(device, msg);
+ 		if (msg)
+ 			return btd_error_in_progress(msg);
+ 		return NULL;
+@@ -130,6 +137,8 @@
+ 
+ 	if (device_is_connecting(device) ||
+ 		bearer->connect) {
++		if (bearer->type != BDADDR_BREDR)
++			btd_ubm_le_rollback(device, msg);
+ 		if (msg)
+ 			return btd_error_in_progress(msg);
+ 		return NULL;
+@@ -143,7 +152,7 @@
  								msg, NULL);
  	else {
  		btd_device_set_temporary(device, false);
@@ -333,7 +354,16 @@
  		if (err < 0)
  			return btd_error_failed(msg, strerror(-err));
  	}
-@@ -360,6 +363,8 @@
+@@ -326,6 +335,8 @@
+ 	}
+ 
+ 	if (bearer->connect) {
++		if (bearer->type != BDADDR_BREDR)
++			btd_ubm_le_abandon(bearer->device, bearer->connect);
+ 		dbus_message_unref(bearer->connect);
+ 		bearer->connect = NULL;
+ 	}
+@@ -360,13 +371,17 @@
  
  	if (!bearer || !bearer->path)
  		return;
@@ -341,7 +371,18 @@
 +		btd_ubm_le_connect_failed(bearer->device, err);
  
  	if (bearer->connect) {
- 		if (err)
+-		if (err)
++		if (err) {
++			if (bearer->type != BDADDR_BREDR)
++				btd_ubm_le_abandon(bearer->device, bearer->connect);
+ 			reply = bearer->type == BDADDR_BREDR ?
+ 				btd_error_bredr_errno(bearer->connect, err) :
+ 				btd_error_le_errno(bearer->connect, err);
+-		else
++		} else
+ 			reply = dbus_message_new_method_return(
+ 							bearer->connect);
+ 
 --- a/src/device.c
 +++ b/src/device.c
 @@ -15,6 +15,7 @@
@@ -379,7 +420,7 @@
  
  	struct btd_gatt_client *client_dbus;
  
-@@ -306,8 +313,200 @@
+@@ -306,7 +313,199 @@
  
  	uint32_t	auth_failures;
  	guint		auth_retry_id;
@@ -425,7 +466,7 @@
 +	bool pending;
 +	bool refresh_failed;
 +	uint8_t att_error;
-+};
+ };
 +
 +static void ubm_emit(struct btd_device *device)
 +{
@@ -515,13 +556,13 @@
 +			{ "status", "s" }, { "error_stage", "s" }, { "errno", "i" },
 +			{ "att_error", "y" }), ubm_get_snapshot) },
 +	{ }
- };
++};
 +static const GDBusSignalTable ubm_gatt_signals[] = {
 +	{ GDBUS_SIGNAL("Invalidated", GDBUS_ARGS({ "attachment", "t" },
 +						{ "revision", "t" })) },
 +	{ }
 +};
- 
++
 +static struct ubm_client_watch *ubm_watch_ref(struct ubm_client_watch *watch)
 +{
 +	assert(watch && watch->refs > 0 && watch->refs < UINT_MAX);
@@ -576,10 +617,9 @@
 +	}
 +	ubm_emit(device);
 +}
-+
+ 
  static const uint16_t uuid_list[] = {
  	L2CAP_UUID,
- 	PNP_INFO_SVCLASS_ID,
 @@ -815,6 +1014,12 @@
  
  static void gatt_client_cleanup(struct btd_device *device)
@@ -614,7 +654,15 @@
  
  	btd_gatt_client_destroy(device->client_dbus);
  	device->client_dbus = NULL;
-@@ -2297,6 +2509,8 @@
+@@ -2066,6 +2278,7 @@
+ 			err_str = ERR_BREDR_CONN_KEY_MISSING;
+ 		else
+ 			err_str = ERR_BREDR_CONN_CANCELED;
++		btd_ubm_le_abandon(device, device->connect);
+ 		reply = btd_error_failed(device->connect, err_str);
+ 		g_dbus_send_message(dbus_conn, reply);
+ 		dbus_message_unref(device->connect);
+@@ -2297,6 +2510,8 @@
  		return;
  
  	/* Enabling auto connect */
@@ -623,16 +671,47 @@
  	adapter_auto_connect_add(device->adapter, device);
  
  	if (device->attrib) {
-@@ -2850,6 +3064,8 @@
+@@ -2305,6 +2520,17 @@
+ 	}
+ 
+ 	adapter_connect_list_add(device->adapter, device);
++}
++
++void btd_device_quiesce_untrusted_auto_connect(struct btd_device *device)
++{
++	/* Device1.Disconnect uses this gate. A trusted device keeps its stored
++	 * auto-connect policy. An untrusted bond must not reconnect after the
++	 * last exclusive owner releases the link. */
++	if (!device || !device->auto_connect || device->trusted)
++		return;
++	device->disable_auto_connect = TRUE;
++	device_set_auto_connect(device, FALSE);
+ }
+ 
+ static DBusMessage *dev_disconnect(DBusConnection *conn, DBusMessage *msg,
+@@ -2850,12 +3076,18 @@
  
  	if (bdaddr_type != BDADDR_BREDR) {
  		int err;
+-
+-		if (dev->connect)
 +		if (!btd_ubm_le_admit(dev, msg))
-+			return btd_error_in_progress(msg);
- 
- 		if (dev->connect)
  			return btd_error_in_progress(msg);
-@@ -2864,7 +3080,7 @@
+ 
+-		if (dev->le_state.connected)
++		if (dev->connect) {
++			btd_ubm_le_rollback(dev, msg);
++			return btd_error_in_progress(msg);
++		}
++
++		if (dev->le_state.connected) {
++			btd_ubm_le_commit(dev, msg);
+ 			return dbus_message_new_method_return(msg);
++		}
+ 
+ 		btd_device_set_temporary(dev, false);
+ 
+@@ -2864,7 +3096,7 @@
  			device_set_auto_connect(dev, TRUE);
  		}
  
@@ -641,16 +720,42 @@
  		if (err < 0)
  			return btd_error_failed(msg, strerror(-err));
  
-@@ -3352,6 +3568,8 @@
- 	struct bonding_req *bonding;
- 	enum mgmt_io_capability io_cap;
- 	int err;
-+	if (!btd_ubm_le_admit(device, msg))
+@@ -3380,11 +3612,18 @@
+ 	} else {
+ 		bdaddr_type = device->bdaddr_type;
+ 	}
++
++	/* Select the actual bearer before touching LE admission or provenance. */
++	if (bdaddr_type != BDADDR_BREDR && !btd_ubm_le_admit(device, msg))
 +		return btd_error_in_progress(msg);
  
- 	btd_device_set_temporary(device, false);
+ 	state = get_state(device, bdaddr_type);
  
-@@ -3831,6 +4049,9 @@
+-	if (state->bonded)
++	if (state->bonded) {
++		if (bdaddr_type != BDADDR_BREDR)
++			btd_ubm_le_rollback(device, msg);
+ 		return btd_error_already_exists(msg);
++	}
+ 
+ 	sender = dbus_message_get_sender(msg);
+ 
+@@ -3432,10 +3671,14 @@
+ 	}
+ 
+ 	if (err < 0) {
++		if (bdaddr_type != BDADDR_BREDR)
++			btd_ubm_le_rollback(device, msg);
+ 		bonding_request_free(device->bonding);
+ 		return btd_error_failed(msg, strerror(-err));
+ 	}
+ 
++	/* Only LE admission remains pending until its bonding completion.
++	 * Classic pairing never owns or classifies the independent LE bearer. */
+ 	return NULL;
+ }
+ 
+@@ -3831,6 +4074,9 @@
  		btd_bearer_connected(dev->bredr, 0);
  	} else {
  		device_set_le_support(dev, bdaddr_type);
@@ -660,7 +765,7 @@
  		btd_bearer_connected(dev->le, 0);
  	}
  
-@@ -3943,6 +4164,11 @@
+@@ -3943,6 +4189,11 @@
  {
  	struct bearer_state *state = get_state(device, bdaddr_type);
  	DBusMessage *reply;
@@ -672,7 +777,7 @@
  	bool remove_device = false;
  	bool paired_status_updated = false;
  
-@@ -3950,6 +4176,10 @@
+@@ -3950,6 +4201,10 @@
  		return;
  
  	state->connected = false;
@@ -683,7 +788,15 @@
  	state->initiator = false;
  	device->general_connect = FALSE;
  
-@@ -5009,6 +5239,11 @@
+@@ -3966,6 +4221,7 @@
+ 	 */
+ 	if (device->connect) {
+ 		DBG("connection removed while Connect() is waiting reply");
++		btd_ubm_le_abandon(device, device->connect);
+ 		reply = btd_error_failed(device->connect,
+ 						ERR_BREDR_CONN_CANCELED);
+ 		g_dbus_send_message(dbus_conn, reply);
+@@ -5009,6 +5265,11 @@
  	}
  
  	device->adapter = adapter;
@@ -695,7 +808,7 @@
  	device->sirks = queue_new();
  	device->temporary = true;
  
-@@ -6202,6 +6437,8 @@
+@@ -6202,6 +6463,8 @@
  static void att_disconnected_cb(int err, void *user_data)
  {
  	struct btd_device *device = user_data;
@@ -704,7 +817,7 @@
  
  	DBG("");
  
-@@ -6263,11 +6500,17 @@
+@@ -6263,11 +6526,17 @@
  static void gatt_client_ready_cb(bool success, uint8_t att_ecode,
  								void *user_data)
  {
@@ -723,7 +836,7 @@
  		device_svc_resolved(device, BROWSE_GATT, device->bdaddr_type,
  									-EIO);
  		return;
-@@ -6276,6 +6519,10 @@
+@@ -6276,6 +6545,10 @@
  	register_gatt_services(device);
  
  	btd_gatt_client_ready(device->client_dbus);
@@ -734,10 +847,12 @@
  
  	device_svc_resolved(device, BROWSE_GATT, device->bdaddr_type, 0);
  
-@@ -6298,22 +6545,47 @@
+@@ -6296,24 +6569,49 @@
+ static void gatt_debug(const char *str, void *user_data)
+ {
  	DBG_IDX(0xffff, "%s", str);
- }
- 
++}
++
 +/* The policy decision is separate from client allocation, and exercised
 + * without constructing a daemon adapter or opening an ATT connection. */
 +static bool ubm_gatt_init_allowed(struct btd_device *device)
@@ -753,8 +868,8 @@
 +		return false;
 +	}
 +	return true;
-+}
-+
+ }
+ 
 +static void ubm_gatt_registration_failed(struct btd_device *device)
 +{
 +	ubm_gatt_complete(&device->ubm_gatt, false, 0);
@@ -789,7 +904,7 @@
  	features =  BT_GATT_CHRC_CLI_FEAT_ROBUST_CACHING
  				| BT_GATT_CHRC_CLI_FEAT_NFY_MULTI;
  	if (btd_opts.gatt_channels > 1)
-@@ -6324,15 +6596,29 @@
+@@ -6324,15 +6622,29 @@
  		bt_att_set_security(device->att, BT_ATT_SECURITY_MEDIUM);
  	}
  
@@ -820,7 +935,7 @@
  
  	/*
  	 * If we have cache, notify existing service about the new connection
-@@ -6343,10 +6629,13 @@
+@@ -6343,10 +6655,13 @@
  
  	device->gatt_ready_id = bt_gatt_client_ready_register(device->client,
  							gatt_client_ready_cb,
@@ -835,7 +950,7 @@
  		return;
  	}
  
-@@ -6355,6 +6644,7 @@
+@@ -6355,6 +6670,7 @@
  						device, NULL)) {
  		DBG("Failed to set service changed handler");
  		gatt_client_cleanup(device);
@@ -843,7 +958,7 @@
  		return;
  	}
  
-@@ -6433,6 +6723,7 @@
+@@ -6433,6 +6749,7 @@
  	BtIOSecLevel sec_level;
  	uint16_t mtu;
  	uint16_t cid;
@@ -851,7 +966,7 @@
  	struct btd_gatt_database *database;
  	const bdaddr_t *dst;
  	char dstaddr[18];
-@@ -6440,6 +6731,7 @@
+@@ -6440,6 +6757,7 @@
  	bt_io_get(io, &gerr, BT_IO_OPT_SEC_LEVEL, &sec_level,
  						BT_IO_OPT_IMTU, &mtu,
  						BT_IO_OPT_CID, &cid,
@@ -859,7 +974,7 @@
  						BT_IO_OPT_INVALID);
  
  	if (gerr) {
-@@ -6455,6 +6747,8 @@
+@@ -6455,6 +6773,8 @@
  		}
  
  		if (!bt_att_attach_fd(dev->att, g_io_channel_unix_get_fd(io))) {
@@ -868,15 +983,35 @@
  			DBG("EATT channel connected");
  			g_io_channel_set_close_on_unref(io, FALSE);
  			return true;
-@@ -6488,6 +6782,7 @@
+@@ -6488,6 +6808,14 @@
  
  	dev->attrib = attrib;
  	dev->att = g_attrib_get_att(attrib);
 +	ubm_attach_primary(dev, dst_type);
++	/* No LE pairing record: do not let an unsolicited encrypted
++	 * attribute start pairing. That ATT operation fails and the ACL
++	 * stays up. Explicit Pair still raises security itself. A paired
++	 * link keeps the stock retry so an existing key can encrypt it.
++	 */
++	if (dst_type != BDADDR_BREDR && !dev->le_state.paired)
++		bt_att_set_security_retry(dev->att, false);
  
  	bt_att_ref(dev->att);
  
-@@ -6612,6 +6907,8 @@
+@@ -6594,9 +6922,10 @@
+ 		btd_bearer_connected(device->le, err);
+ 
+ 	if (device->connect) {
+-		if (err < 0)
++		if (err < 0) {
++			btd_ubm_le_abandon(device, device->connect);
+ 			reply = btd_error_le_errno(device->connect, err);
+-		else
++		} else
+ 			reply = dbus_message_new_method_return(device->connect);
+ 
+ 		g_dbus_send_message(dbus_conn, reply);
+@@ -6612,6 +6941,8 @@
  	GIOChannel *io;
  	GError *gerr = NULL;
  	char addr[18];
@@ -885,9 +1020,47 @@
  
  	/* There is one connection attempt going on */
  	if (dev->att_io || dev->att)
+@@ -7308,6 +7639,8 @@
+ 		agent_cancel(auth->agent);
+ 
+ 	if (status) {
++		if (bdaddr_type != BDADDR_BREDR && bonding && bonding->msg)
++			btd_ubm_le_rollback(device, bonding->msg);
+ 		device_cancel_authentication(device, TRUE);
+ 
+ 		/* Put the device back to the temporary state so that it will be
+@@ -7329,10 +7662,19 @@
+ 		device_set_wake_allowed(device, true, -1U);
+ 
+ 	/* If we're already paired nothing more is needed */
+-	if (state->paired)
++	if (state->paired) {
++		if (bdaddr_type != BDADDR_BREDR && bonding && bonding->msg)
++			btd_ubm_le_rollback(device, bonding->msg);
+ 		return;
++	}
+ 
+ 	device_set_paired(device, bdaddr_type);
++	/* Pairing finished on this attachment. An ATT channel opened while
++	 * unpaired suppressed security retries; resume them without reconnecting. */
++	if (bdaddr_type != BDADDR_BREDR && device->att)
++		bt_att_set_security_retry(device->att, true);
++	if (bdaddr_type != BDADDR_BREDR && bonding && bonding->msg)
++		btd_ubm_le_commit(device, bonding->msg);
+ 
+ 	/* If services are already resolved just reply to the pairing
+ 	 * request
 --- a/src/device.h
 +++ b/src/device.h
-@@ -182,6 +182,9 @@
+@@ -98,6 +98,7 @@
+ bool device_is_paired(struct btd_device *device, uint8_t bdaddr_type);
+ bool device_is_bonded(struct btd_device *device, uint8_t bdaddr_type);
+ bool btd_device_is_trusted(struct btd_device *device);
++void btd_device_quiesce_untrusted_auto_connect(struct btd_device *device);
+ bool device_is_cable_pairing(struct btd_device *device);
+ void device_set_paired(struct btd_device *dev, uint8_t bdaddr_type);
+ void device_set_unpaired(struct btd_device *dev, uint8_t bdaddr_type);
+@@ -182,6 +183,9 @@
  void device_set_appearance(struct btd_device *device, uint16_t value);
  
  struct btd_device *btd_device_ref(struct btd_device *device);
@@ -907,61 +1080,654 @@
  #include "src/shared/io.h"
  #include "src/shared/queue.h"
  #include "src/shared/att.h"
-@@ -478,6 +479,8 @@
+@@ -243,7 +244,13 @@
+ static void async_dbus_op_free(void *data)
+ {
+ 	struct async_dbus_op *op = data;
++	const struct queue_entry *entry;
+ 
++	/* A finished read or write is not a link holder. End before unref so
++	 * the registered message pointer is still this object. */
++	for (entry = queue_get_entries(op->msgs); entry; entry = entry->next)
++		btd_ubm_le_operation_end_message(entry->data);
++
+ 	queue_destroy(op->msgs, (void *)dbus_message_unref);
+ 
+ 	free(op);
+@@ -467,7 +474,23 @@
+ 		return op;
+ 
+ 	async_dbus_op_free(op);
++
++	return NULL;
++}
+ 
++static DBusMessage *ubm_gatt_finish(DBusMessage *msg, DBusMessage *reply)
++{
++	btd_ubm_le_operation_end_message(msg);
++	return reply;
++}
++
++static DBusMessage *ubm_gatt_async(struct btd_device *device, DBusMessage *msg)
++{
++	/* A failed attempt frees its op and ends the entry hold. Re-arm the
++	 * attempt that actually stays in flight. */
++	if (!btd_ubm_le_operation_pending(msg) &&
++				!btd_ubm_le_operation_begin(device, msg))
++		return btd_error_in_progress(msg);
+ 	return NULL;
+ }
+ 
+@@ -475,31 +498,35 @@
+ 					DBusMessage *msg, void *user_data)
+ {
+ 	struct descriptor *desc = user_data;
++	struct btd_device *device = desc->chrc->service->client->device;
  	struct bt_gatt_client *gatt = desc->chrc->service->client->gatt;
  	DBusMessageIter iter;
  	uint16_t offset = 0;
-+	if (!btd_ubm_le_admit(desc->chrc->service->client->device, msg))
++	if (!btd_ubm_le_operation_begin(device, msg))
 +		return btd_error_in_progress(msg);
  
  	if (!gatt)
- 		return btd_error_failed(msg, "Not connected");
-@@ -600,6 +603,8 @@
+-		return btd_error_failed(msg, "Not connected");
++		return ubm_gatt_finish(msg, btd_error_failed(msg, "Not connected"));
+ 
+ 	dbus_message_iter_init(msg, &iter);
+ 
+ 	if (parse_options(&iter, &offset, NULL))
+-		return btd_error_invalid_args(msg);
++		return ubm_gatt_finish(msg, btd_error_invalid_args(msg));
+ 
+ 	if (desc->read_op) {
+ 		if (desc->read_op->offset != offset)
+-			return btd_error_in_progress(msg);
++			return ubm_gatt_finish(msg, btd_error_in_progress(msg));
+ 		queue_push_tail(desc->read_op->msgs, dbus_message_ref(msg));
+-		return NULL;
++		return ubm_gatt_async(device, msg);
+ 	}
+ 
+ 	desc->read_op = read_value(gatt, msg, desc->handle, offset,
+ 							desc_read_cb, desc);
+ 	if (!desc->read_op)
+-		return btd_error_failed(msg, "Failed to send read request");
++		return ubm_gatt_finish(msg,
++				btd_error_failed(msg, "Failed to send read request"));
+ 
+-	return NULL;
++	return ubm_gatt_async(device, msg);
+ }
+ 
+ static void write_result_cb(bool success, bool reliable_error,
+@@ -595,27 +622,30 @@
+ 					DBusMessage *msg, void *user_data)
+ {
+ 	struct descriptor *desc = user_data;
++	struct btd_device *device = desc->chrc->service->client->device;
+ 	struct bt_gatt_client *gatt = desc->chrc->service->client->gatt;
+ 	DBusMessageIter iter;
  	uint8_t *value = NULL;
  	int value_len = 0;
  	uint16_t offset = 0;
-+	if (!btd_ubm_le_admit(desc->chrc->service->client->device, msg))
++	if (!btd_ubm_le_operation_begin(device, msg))
 +		return btd_error_in_progress(msg);
  
  	if (!gatt)
- 		return btd_error_failed(msg, "Not connected");
-@@ -987,6 +992,8 @@
+-		return btd_error_failed(msg, "Not connected");
++		return ubm_gatt_finish(msg, btd_error_failed(msg, "Not connected"));
+ 
+ 	if (desc->write_op)
+-		return btd_error_in_progress(msg);
++		return ubm_gatt_finish(msg, btd_error_in_progress(msg));
+ 
+ 	dbus_message_iter_init(msg, &iter);
+ 
+ 	if (parse_value_arg(&iter, &value, &value_len))
+-		return btd_error_invalid_args(msg);
++		return ubm_gatt_finish(msg, btd_error_invalid_args(msg));
+ 
+ 	dbus_message_iter_next(&iter);
+ 
+ 	if (parse_options(&iter, &offset, NULL))
+-		return btd_error_invalid_args(msg);
++		return ubm_gatt_finish(msg, btd_error_invalid_args(msg));
+ 
+ 	/*
+ 	 * Check if service was previously claimed by a plugin and if we shall
+@@ -623,7 +653,7 @@
+ 	 */
+ 	if (desc->chrc->service->claimed &&
+ 			btd_opts.gatt_export == BT_GATT_EXPORT_READ_ONLY)
+-		return btd_error_not_authorized(msg);
++		return ubm_gatt_finish(msg, btd_error_not_authorized(msg));
+ 
+ 	/*
+ 	 * Don't allow writing to Client Characteristic Configuration
+@@ -631,7 +661,8 @@
+ 	 * methods on GattCharacteristic1.
+ 	 */
+ 	if (uuid_cmp(&desc->uuid, GATT_CLIENT_CHARAC_CFG_UUID))
+-		return btd_error_not_permitted(msg, "Write not permitted");
++		return ubm_gatt_finish(msg,
++				btd_error_not_permitted(msg, "Write not permitted"));
+ 
+ 	/*
+ 	 * Based on the value length and the MTU, either use a write or a long
+@@ -649,9 +680,10 @@
+ 							desc_write_complete);
+ 
+ 	if (!desc->write_op)
+-		return btd_error_failed(msg, "Failed to initiate write");
++		return ubm_gatt_finish(msg,
++				btd_error_failed(msg, "Failed to initiate write"));
+ 
+-	return NULL;
++	return ubm_gatt_async(device, msg);
+ }
+ 
+ static const GDBusPropertyTable descriptor_properties[] = {
+@@ -984,31 +1016,35 @@
+ 					DBusMessage *msg, void *user_data)
+ {
+ 	struct characteristic *chrc = user_data;
++	struct btd_device *device = chrc->service->client->device;
  	struct bt_gatt_client *gatt = chrc->service->client->gatt;
  	DBusMessageIter iter;
  	uint16_t offset = 0;
-+	if (!btd_ubm_le_admit(chrc->service->client->device, msg))
++	if (!btd_ubm_le_operation_begin(device, msg))
 +		return btd_error_in_progress(msg);
  
  	if (!gatt)
- 		return btd_error_failed(msg, "Not connected");
-@@ -1035,6 +1042,8 @@
+-		return btd_error_failed(msg, "Not connected");
++		return ubm_gatt_finish(msg, btd_error_failed(msg, "Not connected"));
+ 
+ 	dbus_message_iter_init(msg, &iter);
+ 
+ 	if (parse_options(&iter, &offset, NULL))
+-		return btd_error_invalid_args(msg);
++		return ubm_gatt_finish(msg, btd_error_invalid_args(msg));
+ 
+ 	if (chrc->read_op) {
+ 		if (chrc->read_op->offset != offset)
+-			return btd_error_in_progress(msg);
++			return ubm_gatt_finish(msg, btd_error_in_progress(msg));
+ 		queue_push_tail(chrc->read_op->msgs, dbus_message_ref(msg));
+-		return NULL;
++		return ubm_gatt_async(device, msg);
+ 	}
+ 
+ 	chrc->read_op = read_value(gatt, msg, chrc->value_handle, offset,
+ 							chrc_read_cb, chrc);
+ 	if (!chrc->read_op)
+-		return btd_error_failed(msg, "Failed to send read request");
++		return ubm_gatt_finish(msg,
++				btd_error_failed(msg, "Failed to send read request"));
+ 
+-	return NULL;
++	return ubm_gatt_async(device, msg);
+ }
+ 
+ static bool chrc_write_complete(void *data)
+@@ -1028,6 +1064,7 @@
+ 					DBusMessage *msg, void *user_data)
+ {
+ 	struct characteristic *chrc = user_data;
++	struct btd_device *device = chrc->service->client->device;
+ 	struct bt_gatt_client *gatt = chrc->service->client->gatt;
+ 	DBusMessageIter iter;
+ 	uint8_t *value = NULL;
+@@ -1035,25 +1072,28 @@
  	bool supported = false;
  	uint16_t offset = 0;
  	const char *type = NULL;
-+	if (!btd_ubm_le_admit(chrc->service->client->device, msg))
++	if (!btd_ubm_le_operation_begin(device, msg))
 +		return btd_error_in_progress(msg);
  
  	if (!gatt)
- 		return btd_error_failed(msg, "Not connected");
-@@ -1308,6 +1317,8 @@
+-		return btd_error_failed(msg, "Not connected");
++		return ubm_gatt_finish(msg, btd_error_failed(msg, "Not connected"));
+ 
+ 	if (chrc->write_io)
+-		return btd_error_not_permitted(msg, "Write acquired");
++		return ubm_gatt_finish(msg,
++				btd_error_not_permitted(msg, "Write acquired"));
+ 
+ 	if (chrc->write_op)
+-		return btd_error_in_progress(msg);
++		return ubm_gatt_finish(msg, btd_error_in_progress(msg));
+ 
+ 	dbus_message_iter_init(msg, &iter);
+ 
+ 	if (parse_value_arg(&iter, &value, &value_len))
+-		return btd_error_invalid_args(msg);
++		return ubm_gatt_finish(msg, btd_error_invalid_args(msg));
+ 
+ 	dbus_message_iter_next(&iter);
+ 
+ 	if (parse_options(&iter, &offset, &type))
+-		return btd_error_invalid_args(msg);
++		return ubm_gatt_finish(msg, btd_error_invalid_args(msg));
+ 
+ 	/*
+ 	 * Check if service was previously claimed by a plugin and if we shall
+@@ -1061,7 +1101,7 @@
+ 	 */
+ 	if (chrc->service->claimed &&
+ 			btd_opts.gatt_export == BT_GATT_EXPORT_READ_ONLY)
+-		return btd_error_not_authorized(msg);
++		return ubm_gatt_finish(msg, btd_error_not_authorized(msg));
+ 
+ 	/*
+ 	 * Decide which write to use based on characteristic properties. For now
+@@ -1081,7 +1121,7 @@
+ 						true, value, value_len, offset,
+ 						chrc, chrc_write_complete);
+ 		if (chrc->write_op)
+-			return NULL;
++			return ubm_gatt_async(device, msg);
+ 	}
+ 
+ 	if ((!type && chrc->props & BT_GATT_CHRC_PROP_WRITE) ||
+@@ -1091,7 +1131,8 @@
+ 		supported = true;
+ 		mtu = bt_gatt_client_get_mtu(gatt);
+ 		if (!mtu)
+-			return btd_error_failed(msg, "No ATT transport");
++			return ubm_gatt_finish(msg,
++					btd_error_failed(msg, "No ATT transport"));
+ 
+ 		if (value_len <= mtu - 3 && !offset)
+ 			chrc->write_op = start_write_request(msg,
+@@ -1105,7 +1146,7 @@
+ 						chrc, chrc_write_complete);
+ 
+ 		if (chrc->write_op)
+-			return NULL;
++			return ubm_gatt_async(device, msg);
+ 	}
+ 
+ 	if ((type && strcasecmp(type, "command")) || offset || (!type &&
+@@ -1118,13 +1159,14 @@
+ 					chrc->value_handle,
+ 					chrc->props & BT_GATT_CHRC_PROP_AUTH,
+ 					value, value_len))
+-		return dbus_message_new_method_return(msg);
++		return ubm_gatt_finish(msg, dbus_message_new_method_return(msg));
+ 
+ fail:
+ 	if (supported)
+-		return btd_error_failed(msg, "Failed to initiate write");
++		return ubm_gatt_finish(msg,
++				btd_error_failed(msg, "Failed to initiate write"));
+ 
+-	return btd_error_not_supported(msg);
++	return ubm_gatt_finish(msg, btd_error_not_supported(msg));
+ }
+ 
+ static bool sock_read(struct io *io, void *user_data)
+@@ -1248,6 +1290,17 @@
+ 					DBUS_TYPE_UINT16, &mtu,
+ 					DBUS_TYPE_INVALID);
+ 
++	if (!reply) {
++		io_destroy(io);
++		close(fds[dir]);
++		return btd_error_failed(msg, "Failed to allocate FD reply");
++	}
++	if (!queue_push_tail(chrc->service->client->ios, io)) {
++		dbus_message_unref(reply);
++		io_destroy(io);
++		close(fds[dir]);
++		return btd_error_failed(msg, "Failed to retain acquired socket");
++	}
+ 	close(fds[dir]);
+ 
+ 	if (dir) {
+@@ -1264,8 +1317,6 @@
+ 						"NotifyAcquired");
+ 	}
+ 
+-	queue_push_tail(chrc->service->client->ios, io);
+-
+ 	DBG("%s: sender %s io %p", dbus_message_get_member(msg),
+ 					dbus_message_get_sender(msg), io);
+ 
+@@ -1275,42 +1326,99 @@
+ 	io_destroy(io);
+ 	close(fds[dir]);
+ 	return btd_error_failed(msg, strerror(EIO));
++}
++
++static void cancel_unused_acquire_ready(struct characteristic *chrc)
++{
++	unsigned int id;
++	if (!chrc->ready_id || (chrc->write_io && chrc->write_io->msg) ||
++			(chrc->notify_io && chrc->notify_io->msg))
++		return;
++	id = chrc->ready_id;
++	chrc->ready_id = 0;
++	bt_gatt_client_ready_unregister(chrc->service->client->gatt, id);
+ }
+ 
+-static void characteristic_ready(bool success, uint8_t ecode, void *user_data)
++/* Finish the exact pending acquisition. A failed socket or failed delivery
++ * leaves neither an ownership hold nor a half-created notify registration.
++ * Select by the sock_io slot: both pending sockets may have a NULL io. */
++static void finish_acquired_sock_reason(struct characteristic *chrc,
++                                struct sock_io **slot, bool success,
++                                uint8_t ecode, const char *reason)
+ {
+-	struct characteristic *chrc = user_data;
++	struct sock_io *sock = *slot;
+ 	DBusMessage *reply;
++	bool failed, delivered = false;
+ 
+-	chrc->ready_id = 0;
+-
+-	if (chrc->write_io && chrc->write_io->msg) {
+-		reply = create_sock(chrc, chrc->write_io->msg);
+-
+-		g_dbus_send_message(btd_get_dbus_connection(), reply);
+-
+-		dbus_message_unref(chrc->write_io->msg);
+-		chrc->write_io->msg = NULL;
++	if (!sock || !sock->msg)
++		return;
++	if (success)
++		reply = create_sock(chrc, sock->msg);
++	else if (ecode)
++		reply = create_gatt_dbus_error(sock->msg, ecode);
++	else
++		reply = btd_error_failed(sock->msg, reason ? reason : "Not connected");
++	failed = !reply || dbus_message_get_type(reply) == DBUS_MESSAGE_TYPE_ERROR;
++	if (reply)
++		delivered = g_dbus_send_message(btd_get_dbus_connection(), reply);
++	if (failed || !delivered) {
++		btd_ubm_le_abandon(chrc->service->client->device, sock->msg);
++		queue_remove(chrc->service->client->ios, sock->io);
++		/* Drop the slot before unregistering callbacks that can re-enter. */
++		*slot = NULL;
++		cancel_unused_acquire_ready(chrc);
++		sock_io_destroy(sock);
++		return;
+ 	}
++	dbus_message_unref(sock->msg);
++	sock->msg = NULL;
++	cancel_unused_acquire_ready(chrc);
++}
+ 
+-	if (chrc->notify_io && chrc->notify_io->msg) {
+-		reply = create_sock(chrc, chrc->notify_io->msg);
++static void finish_acquired_sock(struct characteristic *chrc,
++                                struct sock_io **slot, bool success,
++                                uint8_t ecode)
++{
++	finish_acquired_sock_reason(chrc, slot, success, ecode, NULL);
++}
+ 
+-		g_dbus_send_message(btd_get_dbus_connection(), reply);
++static void characteristic_ready(bool success, uint8_t ecode, void *user_data)
++{
++	struct characteristic *chrc = user_data;
++	unsigned int id = chrc->ready_id;
+ 
+-		dbus_message_unref(chrc->notify_io->msg);
+-		chrc->notify_io->msg = NULL;
+-	}
++	chrc->ready_id = 0;
++	/* A direct notify-registration completion can call this before the
++	 * queued ready callback. The normal ready driver already popped it. */
++	if (id)
++		bt_gatt_client_ready_unregister(chrc->service->client->gatt, id);
++	finish_acquired_sock(chrc, &chrc->write_io, success, ecode);
++	finish_acquired_sock(chrc, &chrc->notify_io, success, ecode);
+ }
+ 
++static DBusMessage *ubm_finish(struct btd_device *device, DBusMessage *msg,
++				DBusMessage *reply, bool accepted)
++{
++	if (accepted)
++		btd_ubm_le_commit(device, msg);
++	else
++		btd_ubm_le_rollback(device, msg);
++	return reply;
++}
++
+ static DBusMessage *characteristic_acquire_write(DBusConnection *conn,
+ 					DBusMessage *msg, void *user_data)
  {
  	struct characteristic *chrc = user_data;
  	struct bt_gatt_client *gatt = chrc->service->client->gatt;
-+	if (!btd_ubm_le_admit(chrc->service->client->device, msg))
++	struct btd_device *device = chrc->service->client->device;
++	DBusMessage *reply;
++	if (!btd_ubm_le_admit(device, msg))
 +		return btd_error_in_progress(msg);
  
  	if (!gatt)
- 		return btd_error_failed(msg, "Not connected");
-@@ -1576,6 +1587,8 @@
+-		return btd_error_failed(msg, "Not connected");
++		return ubm_finish(device, msg,
++				btd_error_failed(msg, "Not connected"), false);
+ 
+ 	/*
+ 	 * Check if service was previously claimed by a plugin and if we shall
+@@ -1318,13 +1426,16 @@
+ 	 */
+ 	if (chrc->service->claimed &&
+ 			btd_opts.gatt_export == BT_GATT_EXPORT_READ_ONLY)
+-		return btd_error_not_authorized(msg);
++		return ubm_finish(device, msg,
++				btd_error_not_authorized(msg), false);
+ 
+ 	if (chrc->write_io)
+-		return btd_error_not_permitted(msg, "Write acquired");
++		return ubm_finish(device, msg,
++				btd_error_not_permitted(msg, "Write acquired"), false);
+ 
+ 	if (!(chrc->props & BT_GATT_CHRC_PROP_WRITE_WITHOUT_RESP))
+-		return btd_error_not_supported(msg);
++		return ubm_finish(device, msg,
++				btd_error_not_supported(msg), false);
+ 
+ 	chrc->write_io = new0(struct sock_io, 1);
+ 
+@@ -1334,11 +1445,20 @@
+ 			chrc->ready_id = bt_gatt_client_ready_register(gatt,
+ 							characteristic_ready,
+ 							chrc, NULL);
++		if (!chrc->ready_id) {
++			destroy_sock(chrc, chrc->write_io->io);
++			return ubm_finish(device, msg,
++				btd_error_failed(msg, "Failed to register readiness"), false);
++		}
+ 		chrc->write_io->msg = dbus_message_ref(msg);
+-		return NULL;
++		return ubm_finish(device, msg, NULL, true);
+ 	}
+ 
+-	return create_sock(chrc, msg);
++	reply = create_sock(chrc, msg);
++	if (!reply || dbus_message_get_type(reply) == DBUS_MESSAGE_TYPE_ERROR)
++		destroy_sock(chrc, chrc->write_io->io);
++	return ubm_finish(device, msg, reply,
++			reply && dbus_message_get_type(reply) != DBUS_MESSAGE_TYPE_ERROR);
+ }
+ 
+ struct notify_client {
+@@ -1347,6 +1467,11 @@
+ 	char *owner;
+ 	guint watch;
+ 	unsigned int notify_id;
++	/* StartNotify message, when this client was committed. A later
++	 * registration failure abandons this admission and no other hold.
++	 * StopNotify only unrefs it: a successful session stays until the
++	 * sender's bus connection dies. */
++	DBusMessage *msg;
+ };
+ 
+ static void notify_client_free(struct notify_client *client)
+@@ -1356,6 +1481,8 @@
+ 	g_dbus_remove_watch(btd_get_dbus_connection(), client->watch);
+ 	bt_gatt_client_unregister_notify(client->chrc->service->client->gatt,
+ 							client->notify_id);
++	if (client->msg)
++		dbus_message_unref(client->msg);
+ 	free(client->owner);
+ 	free(client);
+ }
+@@ -1409,6 +1536,15 @@
+ 	struct characteristic *chrc = client->chrc;
+ 
+ 	DBG("owner %s", client->owner);
++	if (chrc->notify_io && chrc->notify_io->data == client) {
++		if (chrc->notify_io->msg)
++			finish_acquired_sock(chrc, &chrc->notify_io, false, 0);
++		else
++			destroy_sock(chrc, chrc->notify_io->io);
++		/* The socket destructor retired both refs and may have freed client. */
++		update_notifying(chrc);
++		return;
++	}
+ 
+ 	queue_remove(chrc->notify_clients, client);
+ 	queue_remove(chrc->service->client->all_notify_clients, client);
+@@ -1488,8 +1624,19 @@
+ 	struct characteristic *chrc = client->chrc;
+ 
+ 	if (att_ecode) {
++		struct btd_device *device = chrc->service->client->device;
++		const struct queue_entry *entry;
++
+ 		queue_remove(chrc->notify_clients, client);
+ 		queue_remove(chrc->service->client->all_notify_clients, client);
++		/* The attempt was committed when StartNotify was accepted.
++		 * Drop that admission only; another hold of this sender stays.
++		 * A StartNotify accepted while GATT was down keeps its message
++		 * on the client, which this re-registration may not have queued. */
++		for (entry = queue_get_entries(op->msgs); entry; entry = entry->next)
++			btd_ubm_le_abandon(device, entry->data);
++		if (client->msg)
++			btd_ubm_le_abandon(device, client->msg);
+ 		notify_client_free(client);
+ 
+ 		create_notify_reply(op, false, att_ecode);
+@@ -1516,9 +1663,16 @@
+ 	struct characteristic *chrc = client->chrc;
+ 	int err;
+ 
+-	/* Drop notification if the sock is not ready */
+-	if (!chrc->notify_io || !chrc->notify_io->io)
++	if (!chrc->notify_io)
++		return; /* A retired registration's late callback owns no route. */
++	if (!chrc->notify_io->io) {
++		/* A pending acquisition must not publish a stream after losing
++		 * native values during its readiness wait. Refuse its exact
++		 * pending request and retire the committed admission instead. */
++		finish_acquired_sock_reason(chrc, &chrc->notify_io, false, 0,
++			"Notification arrived before acquired transport readiness");
+ 		return;
++	}
+ 
+ 	iov.iov_base = (void *) value;
+ 	iov.iov_len = length;
+@@ -1528,8 +1682,15 @@
+ 	msg.msg_iovlen = 1;
+ 
+ 	err = sendmsg(io_get_fd(chrc->notify_io->io), &msg, MSG_NOSIGNAL);
+-	if (err < 0)
+-		error("sendmsg: %s", strerror(errno));
++	if (err < 0) {
++		error("Acquired notification delivery failed: %s", strerror(errno));
++		destroy_sock(chrc, chrc->notify_io->io);
++		return;
++	}
++	if (err != length) {
++		error("Acquired notification packet truncated: %d/%u", err, length);
++		destroy_sock(chrc, chrc->notify_io->io);
++	}
+ }
+ 
+ static void register_notify_io_cb(uint16_t att_ecode, void *user_data)
+@@ -1539,13 +1700,7 @@
+ 	struct bt_gatt_client *gatt = chrc->service->client->gatt;
+ 
+ 	if (att_ecode) {
+-		DBusMessage *reply =
+-			create_gatt_dbus_error(chrc->notify_io->msg, att_ecode);
+-
+-		g_dbus_send_message(btd_get_dbus_connection(), reply);
+-		dbus_message_unref(chrc->notify_io->msg);
+-		chrc->notify_io->msg = NULL;
+-		destroy_sock(chrc, chrc->notify_io->io);
++		finish_acquired_sock(chrc, &chrc->notify_io, false, att_ecode);
+ 		return;
+ 	}
+ 
+@@ -1554,6 +1709,8 @@
+ 			chrc->ready_id = bt_gatt_client_ready_register(gatt,
+ 							characteristic_ready,
+ 							chrc, NULL);
++		if (!chrc->ready_id)
++			finish_acquired_sock(chrc, &chrc->notify_io, false, 0);
+ 		return;
+ 	}
+ 
+@@ -1576,24 +1733,30 @@
  	struct bt_gatt_client *gatt = chrc->service->client->gatt;
  	const char *sender = dbus_message_get_sender(msg);
  	struct notify_client *client;
-+	if (!btd_ubm_le_admit(chrc->service->client->device, msg))
++	struct btd_device *device = chrc->service->client->device;
++	if (!btd_ubm_le_admit(device, msg))
 +		return btd_error_in_progress(msg);
  
  	if (!gatt)
- 		return btd_error_failed(msg, "Not connected");
-@@ -1623,6 +1636,8 @@
+-		return btd_error_failed(msg, "Not connected");
++		return ubm_finish(device, msg,
++				btd_error_failed(msg, "Not connected"), false);
+ 
+ 	if (chrc->notify_io)
+-		return btd_error_not_permitted(msg, "Notify acquired");
++		return ubm_finish(device, msg,
++				btd_error_not_permitted(msg, "Notify acquired"), false);
+ 
+ 	/* Each client can only have one active notify session. */
+ 	if (!queue_isempty(chrc->notify_clients))
+-		return btd_error_in_progress(msg);
++		return ubm_finish(device, msg, btd_error_in_progress(msg), false);
+ 
+ 	if (!(chrc->props & (BT_GATT_CHRC_PROP_NOTIFY |
+ 			BT_GATT_CHRC_PROP_INDICATE)))
+-		return btd_error_not_supported(msg);
++		return ubm_finish(device, msg, btd_error_not_supported(msg), false);
+ 
+ 	client = notify_client_create(chrc, sender);
+ 	if (!client)
+-		return btd_error_failed(msg, "Failed allocate notify session");
++		return ubm_finish(device, msg,
++			btd_error_failed(msg, "Failed allocate notify session"), false);
+ 
+ 	client->notify_id = bt_gatt_client_register_notify(gatt,
+ 						chrc->value_handle,
+@@ -1602,7 +1765,8 @@
+ 						client, NULL);
+ 	if (!client->notify_id) {
+ 		notify_client_unref(client);
+-		return btd_error_failed(msg, "Failed to subscribe");
++		return ubm_finish(device, msg,
++				btd_error_failed(msg, "Failed to subscribe"), false);
+ 	}
+ 
+ 	queue_push_tail(chrc->notify_clients, client);
+@@ -1612,7 +1776,7 @@
+ 	chrc->notify_io->msg = dbus_message_ref(msg);
+ 	chrc->notify_io->destroy = notify_io_destroy;
+ 
+-	return NULL;
++	return ubm_finish(device, msg, NULL, true);
+ }
+ 
+ static DBusMessage *characteristic_start_notify(DBusConnection *conn,
+@@ -1623,30 +1787,35 @@
  	const char *sender = dbus_message_get_sender(msg);
  	struct async_dbus_op *op;
  	struct notify_client *client;
@@ -970,11 +1736,112 @@
  	struct btd_device *device = chrc->service->client->device;
  
  	if (device_is_disconnecting(device)) {
-@@ -2230,8 +2245,129 @@
- 	gatt_db_foreach_service(client->db, NULL, export_service, client);
+ 		error("Device is disconnecting. StartNotify is not allowed.");
+-		return btd_error_not_connected(msg);
++		return ubm_finish(device, msg, btd_error_not_connected(msg), false);
+ 	}
+ 
+ 	if (chrc->notify_io)
+-		return btd_error_not_permitted(msg, "Notify acquired");
++		return ubm_finish(device, msg,
++				btd_error_not_permitted(msg, "Notify acquired"), false);
+ 
+ 	if (!(chrc->props & (BT_GATT_CHRC_PROP_NOTIFY |
+ 				BT_GATT_CHRC_PROP_INDICATE)))
+-		return btd_error_not_supported(msg);
++		return ubm_finish(device, msg, btd_error_not_supported(msg), false);
+ 
+ 	/* Each client can only have one active notify session. */
+ 	client = queue_find(chrc->notify_clients, match_notify_sender, sender);
+ 	if (client)
+ 		return client->notify_id ?
+-				g_dbus_create_reply(msg, DBUS_TYPE_INVALID) :
+-				btd_error_in_progress(msg);
++				ubm_finish(device, msg,
++					g_dbus_create_reply(msg, DBUS_TYPE_INVALID), true) :
++				ubm_finish(device, msg, btd_error_in_progress(msg), false);
+ 
+ 	client = notify_client_create(chrc, sender);
+ 	if (!client)
+-		return btd_error_failed(msg, "Failed allocate notify session");
++		return ubm_finish(device, msg,
++			btd_error_failed(msg, "Failed allocate notify session"), false);
+ 
+ 	queue_push_tail(chrc->notify_clients, client);
+ 	queue_push_tail(chrc->service->client->all_notify_clients, client);
+@@ -1660,8 +1829,13 @@
+ 		DBusMessage *reply;
+ 
+ 		reply = g_dbus_create_reply(msg, DBUS_TYPE_INVALID);
+-		if (reply)
+-			return reply;
++		if (reply) {
++			/* Registration runs once a GATT client exists. Keep the
++			 * message: a failed register_notify must abandon this
++			 * committed admission. */
++			client->msg = dbus_message_ref(msg);
++			return ubm_finish(device, msg, reply, true);
++		}
+ 
+ 		/*
+ 		 * Clean up and respond with an error instead of timing out to
+@@ -1677,8 +1851,12 @@
+ 						chrc->value_handle,
+ 						register_notify_cb, notify_cb,
+ 						op, async_dbus_op_free);
+-	if (client->notify_id)
+-		return NULL;
++	if (client->notify_id) {
++		/* Reconnect re-registers this client. Keep the message so
++		 * that later failure can abandon this admission. */
++		client->msg = dbus_message_ref(msg);
++		return ubm_finish(device, msg, NULL, true);
++	}
+ 
+ 	async_dbus_op_free(op);
+ 
+@@ -1689,7 +1867,8 @@
+ 	/* Directly free the client */
+ 	notify_client_free(client);
+ 
+-	return btd_error_failed(msg, "Failed to register notify session");
++	return ubm_finish(device, msg,
++			btd_error_failed(msg, "Failed to register notify session"), false);
+ }
+ 
+ static DBusMessage *characteristic_stop_notify(DBusConnection *conn,
+@@ -1701,7 +1880,10 @@
+ 	struct notify_client *client;
+ 
+ 	if (chrc->notify_io) {
+-		destroy_sock(chrc, chrc->notify_io->io);
++		if (chrc->notify_io->msg)
++			finish_acquired_sock(chrc, &chrc->notify_io, false, 0);
++		else
++			destroy_sock(chrc, chrc->notify_io->io);
+ 		return dbus_message_new_method_return(msg);
+ 	}
+ 
+@@ -1776,6 +1958,15 @@
+ 	struct characteristic *chrc = data;
+ 	struct bt_gatt_client *gatt = chrc->service->client->gatt;
+ 	struct bt_att *att;
++	if (chrc->ready_id) {
++		unsigned int id = chrc->ready_id;
++		chrc->ready_id = 0;
++		bt_gatt_client_ready_unregister(gatt, id);
++	}
++
++	/* Settle pending callers before discarding their exact admission. */
++	finish_acquired_sock(chrc, &chrc->write_io, false, 0);
++	finish_acquired_sock(chrc, &chrc->notify_io, false, 0);
+ 
+ 	/* List should be empty here */
+ 	queue_destroy(chrc->descs, NULL);
+@@ -2231,7 +2422,128 @@
  
  	queue_foreach(client->services, update_included_services, client);
-+}
+ }
 +
 +struct ubm_projection {
 +	struct btd_gatt_client *client;
@@ -983,7 +1850,7 @@
 +	unsigned int count;
 +	bool complete;
 +};
-+
+ 
 +static bool ubm_match_descriptor(const void *object, const void *attr)
 +{
 +	return ((const struct descriptor *) object)->attr == attr;
@@ -1030,8 +1897,8 @@
 +	gatt_db_service_foreach_desc(attr, ubm_check_descriptor, &descriptors);
 +	if (!descriptors.complete || descriptors.count != queue_length(chrc->descs))
 +		projection->complete = false;
- }
- 
++}
++
 +static void ubm_check_include(struct gatt_db_attribute *attr, void *data)
 +{
 +	struct ubm_projection *projection = data;
@@ -1100,6 +1967,34 @@
  struct btd_gatt_client *btd_gatt_client_new(struct btd_device *device)
  {
  	struct btd_gatt_client *client;
+@@ -2279,8 +2591,14 @@
+ 
+ 	DBG("Re-register subscribed notification client");
+ 
+-	op = new0(struct async_dbus_op, 1);
+-	op->data = notify_client;
++	/* Queue the committed StartNotify so an ATT refusal takes the same
++	 * abandon path as a notify that was started while GATT was up. */
++	if (notify_client->msg)
++		op = async_dbus_op_new(notify_client->msg, notify_client);
++	else {
++		op = new0(struct async_dbus_op, 1);
++		op->data = notify_client;
++	}
+ 
+ 	notify_client->notify_id = bt_gatt_client_register_notify(client->gatt,
+ 					notify_client->chrc->value_handle,
+@@ -2289,6 +2607,10 @@
+ 	if (notify_client->notify_id)
+ 		return;
+ 
++	/* Registration never started. The caller already observed success
++	 * when GATT was down, but this client will not subscribe. */
++	if (notify_client->msg)
++		btd_ubm_le_abandon(client->device, notify_client->msg);
+ 	async_dbus_op_free(op);
+ 
+ 	DBG("Failed to re-register notification client");
 --- a/src/gatt-client.h
 +++ b/src/gatt-client.h
 @@ -14,6 +14,8 @@
@@ -1613,7 +2508,38 @@
  
 --- a/src/shared/att.c
 +++ b/src/shared/att.c
-@@ -1068,7 +1068,12 @@
+@@ -74,6 +74,8 @@
+ 	struct queue *ind_queue;	/* Queued ATT protocol indications */
+ 	struct queue *write_queue;	/* Queue of PDUs ready to send */
+ 	bool in_disc;			/* Cleanup queues on disconnect_cb */
++	bool no_security_retry;	/* Fail ATT security errors; do not pair */
++	unsigned int security_upgrade_attempts;
+ 
+ 	bt_att_timeout_func_t timeout_callback;
+ 	bt_att_destroy_func_t timeout_destroy;
+@@ -769,6 +771,13 @@
+ 	if (chan->sec_level != BT_ATT_SECURITY_AUTO)
+ 		return false;
+ 
++	/* Unbonded LE: an encrypted attribute must fail this operation.
++	 * Raising security starts pairing and the kernel drops the ACL
++	 * when no agent confirms it.
++	 */
++	if (chan->att->no_security_retry)
++		return false;
++
+ 	security = bt_att_chan_get_security(chan);
+ 
+ 	if (ecode == BT_ATT_ERROR_INSUFFICIENT_ENCRYPTION &&
+@@ -787,6 +796,7 @@
+ 		return false;
+ 	}
+ 
++	chan->att->security_upgrade_attempts++;
+ 	return bt_att_chan_set_security(chan, security);
+ }
+ 
+@@ -1068,7 +1078,12 @@
  	 * If this was not a command and no handler was registered for it,
  	 * respond with "Not Supported"
  	 */
@@ -1627,7 +2553,7 @@
  		respond_not_supported(att, opcode);
  
  	bt_att_unref(att);
-@@ -1607,7 +1612,7 @@
+@@ -1607,7 +1622,7 @@
  	mtu->id = att->next_reg_id++;
  
  	if (!queue_push_tail(att->exchange_list, mtu)) {
@@ -1636,6 +2562,31 @@
  		return 0;
  	}
  
+@@ -2103,6 +2118,14 @@
+ 	return bt_att_chan_set_security(chan, level);
+ }
+ 
++void bt_att_set_security_retry(struct bt_att *att, bool retry)
++{
++	if (!att)
++		return;
++
++	att->no_security_retry = !retry;
++}
++
+ void bt_att_set_enc_key_size(struct bt_att *att, uint8_t enc_size)
+ {
+ 	if (!att)
+--- a/src/shared/att.h
++++ b/src/shared/att.h
+@@ -112,6 +112,7 @@
+ 
+ int bt_att_get_security(struct bt_att *att, uint8_t *enc_size);
+ bool bt_att_set_security(struct bt_att *att, int level);
++void bt_att_set_security_retry(struct bt_att *att, bool retry);
+ void bt_att_set_enc_key_size(struct bt_att *att, uint8_t enc_size);
+ 
+ bool bt_att_set_local_key(struct bt_att *att, uint8_t sign_key[16],
 --- a/src/shared/gatt-client.c
 +++ b/src/shared/gatt-client.c
 @@ -20,6 +20,7 @@
@@ -2086,7 +3037,7 @@
 +#endif
 --- a/src/ubm-le-lease.c
 +++ b/src/ubm-le-lease.c
-@@ -0,0 +1,931 @@
+@@ -0,0 +1,1579 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/* Versioned sender-scoped LE authority. Not a general Device1 disconnect. */
 +#ifdef HAVE_CONFIG_H
@@ -2155,10 +3106,47 @@
 +};
 +static GSList *histories;
 +
++/* Recorded when the link comes up, including before any lease peer exists.
++ * initiator==true is not origin: another process can be the local initiator. */
++enum link_origin {
++	ORIGIN_UNRECORDED = 0,
++	ORIGIN_DAEMON_AUTO,
++	ORIGIN_EXTERNAL,
++};
 +struct interest {
 +	char *sender;
 +	guint watch;
++	unsigned int inflight;
++	uint64_t generation;
 +};
++struct admission {
++	DBusMessage *message;
++	struct interest *interest;
++	struct btd_device *device;
++	bool committed;
++};
++struct early_interest {
++	struct btd_device *device;
++	struct interest *interest;
++};
++struct arrival {
++	struct btd_device *device;
++	uint64_t generation;
++	int origin;
++};
++struct operation {
++	DBusMessage *message;
++	struct interest *interest;
++	uint64_t generation;
++};
++struct reconcile_job {
++	struct btd_device *device;
++	uint64_t generation;
++};
++static GSList *operations;
++static GSList *admissions;
++static GSList *earlies;
++static GSList *arrivals;
 +struct peer {
 +	struct btd_device *device;
 +	struct btd_adapter *adapter;
@@ -2168,7 +3156,12 @@
 +	bool unknown_interest;
 +	bool releasing;
 +	bool withdrawn;
++	int origin;
 +	GSList *interests;
++	/* Protected ACK transfers deferred cleanup to this physical generation.
++	 * It does not retain the caller's token or manufacture physical loss. */
++	uint64_t cleanup_generation;
++	guint reconcile_source;
 +};
 +struct lease {
 +	uint64_t token;
@@ -2316,14 +3309,16 @@
 +		if (lease->owner_dead && !lease->connecting &&
 +				(!lease->peer || (lease->receipt &&
 +				 (!strcmp(lease->receipt, "physical-released") ||
-+				  !strcmp(lease->receipt, "reservation-released")))))
++				  !strcmp(lease->receipt, "reservation-released") ||
++				  (!strcmp(lease->receipt, "lease-released-protected") &&
++				   lease->peer->cleanup_generation == lease->generation)))))
 +			free_lease(lease);
 +	}
 +	l = peers;
 +	while (l) {
 +		struct peer *peer = l->data;
 +		GSList *owned;
-+		bool retained = peer->interests != NULL;
++		bool retained = peer->interests != NULL || peer->cleanup_generation || peer->reconcile_source;
 +		l = l->next;
 +		for (owned = leases; owned && !retained; owned = owned->next)
 +			retained = ((struct lease *) owned->data)->peer == peer;
@@ -2347,9 +3342,56 @@
 +	return NULL;
 +}
 +
++static struct arrival *find_arrival(struct btd_device *device, uint64_t generation)
++{
++	GSList *l;
++	for (l = arrivals; l; l = l->next) {
++		struct arrival *arrival = l->data;
++		if (arrival->device == device && arrival->generation == generation)
++			return arrival;
++	}
++	return NULL;
++}
++
++static void remember_arrival(struct btd_device *device, uint64_t generation, int origin)
++{
++	struct arrival *arrival;
++	if (!generation)
++		return;
++	arrival = find_arrival(device, generation);
++	if (!arrival) {
++		arrival = g_new0(struct arrival, 1);
++		arrival->device = device;
++		arrival->generation = generation;
++		arrivals = g_slist_prepend(arrivals, arrival);
++	}
++	/* An external holder is never rewritten into a daemon auto-connect. */
++	if (arrival->origin == ORIGIN_EXTERNAL && origin == ORIGIN_DAEMON_AUTO)
++		return;
++	arrival->origin = origin;
++}
++
++static void forget_arrival(struct btd_device *device, uint64_t generation)
++{
++	struct arrival *arrival = find_arrival(device, generation);
++	if (!arrival)
++		return;
++	arrivals = g_slist_remove(arrivals, arrival);
++	g_free(arrival);
++}
++
++static int origin_of(struct btd_device *device, uint64_t generation)
++{
++	struct arrival *arrival = find_arrival(device, generation);
++	return arrival ? arrival->origin : ORIGIN_UNRECORDED;
++}
++
++static void retire_interest(struct interest *interest);
++
 +static struct peer *get_peer(struct btd_device *device)
 +{
 +	struct peer *peer = find_peer(device);
++	GSList *next, *l;
 +	if (peer)
 +		return peer;
 +	peer = g_new0(struct peer, 1);
@@ -2358,6 +3400,21 @@
 +	peer->generation = btd_device_ubm_le_generation(device);
 +	/* An already-established link is borrowed, never inferred exclusive. */
 +	peer->borrowed = peer->generation != 0;
++	peer->origin = origin_of(device, peer->generation);
++	for (l = earlies; l; l = next) {
++		struct early_interest *early = l->data;
++		next = l->next;
++		if (early->device != device)
++			continue;
++		if (early->interest->generation &&
++				early->interest->generation != peer->generation) {
++			retire_interest(early->interest);
++			continue;
++		}
++		peer->interests = g_slist_prepend(peer->interests, early->interest);
++		earlies = g_slist_delete_link(earlies, l);
++		g_free(early);
++	}
 +	peers = g_slist_prepend(peers, peer);
 +	return peer;
 +}
@@ -2411,11 +3468,228 @@
 +	return count;
 +}
 +
++static void release_peer(struct lease *lease);
++static struct peer *peer_of_interest(struct interest *interest)
++{
++	GSList *l;
++	for (l = peers; l; l = l->next) {
++		struct peer *peer = l->data;
++		if (g_slist_find(peer->interests, interest))
++			return peer;
++	}
++	return NULL;
++}
++
++static bool interest_has_admission(struct interest *interest)
++{
++	GSList *l;
++	for (l = admissions; l; l = l->next)
++		if (((struct admission *) l->data)->interest == interest)
++			return true;
++	return false;
++}
++
++static bool protecting_interest(struct peer *peer)
++{
++	GSList *l;
++	for (l = peer->interests; l; l = l->next) {
++		struct interest *interest = l->data;
++		if (interest->inflight || interest_has_admission(interest))
++			return true;
++	}
++	return false;
++}
++
++static bool dead_owner_waiting(struct peer *peer)
++{
++	GSList *l;
++	if (!peer || !peer->generation)
++		return false;
++	if (peer->cleanup_generation == peer->generation)
++		return true;
++	for (l = leases; l; l = l->next) {
++		struct lease *lease = l->data;
++		if (lease->peer == peer && lease->released && lease->owner_dead &&
++				lease->generation == peer->generation)
++			return true;
++	}
++	return false;
++}
++
++static void schedule_reconcile(struct peer *peer);
++
++static int request_disconnect(struct peer *peer)
++{
++	int error;
++	peer->releasing = true;
++	btd_device_quiesce_untrusted_auto_connect(peer->device);
++	error = btd_adapter_disconnect_device(peer->adapter,
++		device_get_address(peer->device), device_get_le_address_type(peer->device));
++	if (error < 0)
++		peer->releasing = false;
++	return error;
++}
++
++static void reconcile_job_free(void *data)
++{
++	struct reconcile_job *job = data;
++	btd_device_unref(job->device);
++	g_free(job);
++}
++
++static void enqueue_reconcile(struct peer *peer, bool retry);
++
++static gboolean reconcile_idle(void *data)
++{
++	struct reconcile_job *job = data;
++	struct peer *peer = find_peer(job->device);
++	GSList *owned;
++	if (!peer || !peer->generation || peer->generation != job->generation)
++		return G_SOURCE_REMOVE;
++	peer->reconcile_source = 0;
++	if (protecting_interest(peer) || live_count(peer) || peer->withdrawn || peer->releasing)
++		return G_SOURCE_REMOVE;
++	if (peer->cleanup_generation == job->generation &&
++			peer->origin != ORIGIN_EXTERNAL && !peer->unknown_interest &&
++			peer->origin != ORIGIN_UNRECORDED &&
++			(peer->born_exclusive || peer->origin == ORIGIN_DAEMON_AUTO)) {
++		int error = request_disconnect(peer);
++		if (error < 0) {
++			g_warning("Deferred LE cleanup refused for generation %" G_GUINT64_FORMAT ": %s; retry retained",
++				job->generation, strerror(-error));
++			enqueue_reconcile(peer, true);
++		}
++		return G_SOURCE_REMOVE;
++	}
++	owned = leases;
++	while (owned) {
++		struct lease *lease = owned->data;
++		owned = owned->next;
++		if (lease->peer == peer && lease->released && lease->owner_dead &&
++				lease->generation == job->generation)
++			release_peer(lease);
++	}
++	return G_SOURCE_REMOVE;
++}
++
++static void enqueue_reconcile(struct peer *peer, bool retry)
++{
++	struct reconcile_job *job;
++	if (!dead_owner_waiting(peer) || protecting_interest(peer) ||
++			live_count(peer) || peer->withdrawn || peer->releasing || peer->reconcile_source)
++		return;
++	job = g_new0(struct reconcile_job, 1);
++	job->device = btd_device_ref(peer->device);
++	job->generation = peer->generation;
++	peer->reconcile_source = retry ?
++		g_timeout_add_seconds_full(G_PRIORITY_DEFAULT, 1, reconcile_idle, job, reconcile_job_free) :
++		g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, reconcile_idle, job, reconcile_job_free);
++}
++
++static void schedule_reconcile(struct peer *peer)
++{
++	enqueue_reconcile(peer, false);
++}
++
++static void drop_admissions(struct interest *interest)
++{
++	GSList *next, *l;
++	for (l = admissions; l; l = next) {
++		struct admission *admission = l->data;
++		next = l->next;
++		if (admission->interest != interest)
++			continue;
++		admissions = g_slist_delete_link(admissions, l);
++		dbus_message_unref(admission->message);
++		g_free(admission);
++	}
++}
++
++static void drop_operations(struct interest *interest)
++{
++	GSList *next, *l;
++	for (l = operations; l; l = next) {
++		struct operation *operation = l->data;
++		next = l->next;
++		if (operation->interest != interest)
++			continue;
++		operations = g_slist_delete_link(operations, l);
++		g_free(operation);
++	}
++}
++
 +static void interest_dead(DBusConnection *conn, void *data)
 +{
 +	struct interest *interest = data;
++	struct peer *peer = NULL;
 +	GSList *l;
 +	(void) conn;
++	drop_operations(interest);
++	drop_admissions(interest);
++	for (l = peers; l; l = l->next) {
++		struct peer *candidate = l->data;
++		if (g_slist_find(candidate->interests, interest)) {
++			candidate->interests = g_slist_remove(candidate->interests, interest);
++			peer = candidate;
++			break;
++		}
++	}
++	for (l = earlies; l; l = l->next) {
++		struct early_interest *early = l->data;
++		if (early->interest == interest) {
++			earlies = g_slist_remove(earlies, early);
++			g_free(early);
++			break;
++		}
++	}
++	interest->watch = 0;
++	g_free(interest->sender);
++	g_free(interest);
++	if (peer)
++		schedule_reconcile(peer);
++}
++
++static struct interest *interest_lookup(struct peer *peer, const char *sender)
++{
++	GSList *l;
++	for (l = peer->interests; l; l = l->next) {
++		struct interest *interest = l->data;
++		if (!strcmp(interest->sender, sender))
++			return interest;
++	}
++	return NULL;
++}
++
++static struct interest *interest_track(struct peer *peer, const char *sender)
++{
++	struct interest *interest = interest_lookup(peer, sender);
++	if (interest)
++		return interest;
++	if (g_slist_length(peer->interests) >= MAX_INTERESTS) {
++		peer->unknown_interest = true;
++		return NULL;
++	}
++	interest = g_new0(struct interest, 1);
++	interest->sender = g_strdup(sender);
++	interest->generation = peer->generation;
++	interest->watch = g_dbus_add_disconnect_watch(btd_get_dbus_connection(),
++					sender, interest_dead, interest, NULL);
++	if (!interest->watch) {
++		peer->unknown_interest = true;
++		g_free(interest->sender);
++		g_free(interest);
++		return NULL;
++	}
++	peer->interests = g_slist_prepend(peer->interests, interest);
++	return interest;
++}
++
++static void retire_interest(struct interest *interest)
++{
++	GSList *l;
++	guint watch;
++	drop_operations(interest);
++	drop_admissions(interest);
 +	for (l = peers; l; l = l->next) {
 +		struct peer *peer = l->data;
 +		if (g_slist_find(peer->interests, interest)) {
@@ -2423,9 +3697,130 @@
 +			break;
 +		}
 +	}
++	for (l = earlies; l; l = l->next) {
++		struct early_interest *early = l->data;
++		if (early->interest == interest) {
++			earlies = g_slist_remove(earlies, early);
++			g_free(early);
++			break;
++		}
++	}
++	watch = interest->watch;
 +	interest->watch = 0;
++	if (watch)
++		g_dbus_remove_watch(btd_get_dbus_connection(), watch);
 +	g_free(interest->sender);
 +	g_free(interest);
++}
++
++static void release_interest_if_idle(struct interest *interest)
++{
++	if (interest->inflight || interest_has_admission(interest))
++		return;
++	retire_interest(interest);
++}
++
++static struct admission *find_admission_message(DBusMessage *message)
++{
++	GSList *l;
++	if (!message)
++		return NULL;
++	for (l = admissions; l; l = l->next) {
++		struct admission *admission = l->data;
++		if (admission->message == message)
++			return admission;
++	}
++	return NULL;
++}
++
++static struct interest *early_lookup(struct btd_device *device, const char *sender)
++{
++	GSList *l;
++	for (l = earlies; l; l = l->next) {
++		struct early_interest *early = l->data;
++		if (early->device == device && !strcmp(early->interest->sender, sender))
++			return early->interest;
++	}
++	return NULL;
++}
++
++static struct interest *ensure_interest(struct btd_device *device, const char *sender)
++{
++	struct peer *peer = find_peer(device);
++	struct interest *interest;
++	struct early_interest *early;
++	if (peer)
++		return interest_track(peer, sender);
++	interest = early_lookup(device, sender);
++	if (interest)
++		return interest;
++	if (g_slist_length(earlies) >= MAX_INTERESTS)
++		return NULL;
++	interest = g_new0(struct interest, 1);
++	interest->sender = g_strdup(sender);
++	interest->watch = g_dbus_add_disconnect_watch(btd_get_dbus_connection(),
++					sender, interest_dead, interest, NULL);
++	if (!interest->watch) {
++		g_free(interest->sender);
++		g_free(interest);
++		return NULL;
++	}
++	early = g_new0(struct early_interest, 1);
++	early->device = device;
++	early->interest = interest;
++	interest->generation = btd_device_ubm_le_generation(device);
++	earlies = g_slist_prepend(earlies, early);
++	return interest;
++}
++
++static bool lease_sender_owns(struct btd_device *device, const char *sender)
++{
++	GSList *l;
++
++	if (!device || !sender)
++		return false;
++	for (l = leases; l; l = l->next) {
++		struct lease *lease = l->data;
++
++		if (!lease->owner_dead && lease->sender && lease->peer &&
++				lease->peer->device == device &&
++				!strcmp(lease->sender, sender))
++			return true;
++	}
++	return false;
++}
++
++/* Connect and Pair name who brought the link up. A GATT admission only
++ * protects the link while that admission is still held. */
++static bool provenance_member(DBusMessage *message)
++{
++	const char *member = message ? dbus_message_get_member(message) : NULL;
++
++	return member && (!strcmp(member, "Connect") || !strcmp(member, "Pair"));
++}
++
++static void note_external(struct btd_device *device, DBusMessage *message)
++{
++	struct peer *peer;
++	const char *sender;
++	uint64_t generation = btd_device_ubm_le_generation(device);
++
++	if (!generation || !provenance_member(message))
++		return;
++	/* Provenance stays once this daemon recorded the arrival. A later
++	 * Connect or Pair still protects through its admission, and it must
++	 * not make an exclusive link undroppable after that sender leaves. */
++	if (origin_of(device, generation) == ORIGIN_DAEMON_AUTO)
++		return;
++	peer = find_peer(device);
++	if (peer && peer->generation == generation && peer->born_exclusive)
++		return;
++	sender = message ? dbus_message_get_sender(message) : NULL;
++	if (lease_sender_owns(device, sender))
++		return;
++	remember_arrival(device, generation, ORIGIN_EXTERNAL);
++	if (peer && peer->generation == generation)
++		peer->origin = ORIGIN_EXTERNAL;
 +}
 +
 +bool btd_ubm_le_admit(struct btd_device *device, DBusMessage *message)
@@ -2433,61 +3828,184 @@
 +	struct peer *peer = find_peer(device);
 +	const char *sender = message ? dbus_message_get_sender(message) : NULL;
 +	struct interest *interest;
-+	GSList *l;
-+	if (!peer)
-+		return true;
-+	if (peer->releasing)
++	struct admission *admission;
++	if (peer && peer->releasing)
 +		return false;
 +	if (!sender) {
-+		peer->unknown_interest = true;
++		if (peer)
++			peer->unknown_interest = true;
 +		return true;
 +	}
-+	if (live_sender(peer, sender))
++	if (find_admission_message(message))
 +		return true;
-+	for (l = peer->interests; l; l = l->next) {
-+		interest = l->data;
-+		if (!strcmp(interest->sender, sender))
-+			return true;
-+	}
-+	if (g_slist_length(peer->interests) >= MAX_INTERESTS) {
-+		peer->unknown_interest = true;
++	if (peer && live_sender(peer, sender))
 +		return true;
++	interest = ensure_interest(device, sender);
++	if (!interest) {
++		if (peer)
++			peer->unknown_interest = true;
++		return false;
 +	}
-+	interest = g_new0(struct interest, 1);
-+	interest->sender = g_strdup(sender);
-+	interest->watch = g_dbus_add_disconnect_watch(btd_get_dbus_connection(),
-+					sender, interest_dead, interest, NULL);
-+	if (!interest->watch) {
-+		peer->unknown_interest = true;
-+		g_free(interest->sender);
-+		g_free(interest);
-+		return true;
-+	}
-+	peer->interests = g_slist_prepend(peer->interests, interest);
++	admission = g_new0(struct admission, 1);
++	admission->message = dbus_message_ref(message);
++	admission->interest = interest;
++	admission->device = device;
++	admissions = g_slist_prepend(admissions, admission);
 +	return true;
++}
++
++void btd_ubm_le_commit(struct btd_device *device, DBusMessage *message)
++{
++	struct admission *admission = find_admission_message(message);
++	(void) device;
++	if (!admission || admission->committed)
++		return;
++	admission->committed = true;
++	note_external(admission->device, admission->message);
++}
++
++void btd_ubm_le_rollback(struct btd_device *device, DBusMessage *message)
++{
++	struct admission *admission = find_admission_message(message);
++	struct interest *interest;
++	struct peer *peer;
++	(void) device;
++	if (!admission || admission->committed)
++		return;
++	interest = admission->interest;
++	peer = peer_of_interest(interest);
++	admissions = g_slist_remove(admissions, admission);
++	dbus_message_unref(admission->message);
++	g_free(admission);
++	release_interest_if_idle(interest);
++	if (peer)
++		schedule_reconcile(peer);
++}
++
++/* Drop one admission after it was committed. A failed AcquireNotify,
++ * StartNotify, or Connect must not keep a hold it never acquired. Another
++ * admission or in-flight operation of the same sender stays. */
++void btd_ubm_le_abandon(struct btd_device *device, DBusMessage *message)
++{
++	struct admission *admission = find_admission_message(message);
++	struct interest *interest;
++	struct peer *peer;
++	(void) device;
++	if (!admission)
++		return;
++	interest = admission->interest;
++	peer = peer_of_interest(interest);
++	admissions = g_slist_remove(admissions, admission);
++	dbus_message_unref(admission->message);
++	g_free(admission);
++	release_interest_if_idle(interest);
++	if (peer)
++		schedule_reconcile(peer);
++}
++
++static bool operation_pending(DBusMessage *message)
++{
++	GSList *l;
++	for (l = operations; l; l = l->next)
++		if (((struct operation *) l->data)->message == message)
++			return true;
++	return false;
++}
++
++bool btd_ubm_le_operation_pending(DBusMessage *message)
++{
++	return message && operation_pending(message);
++}
++
++bool btd_ubm_le_operation_begin(struct btd_device *device, DBusMessage *message)
++{
++	struct peer *peer = find_peer(device);
++	const char *sender = message ? dbus_message_get_sender(message) : NULL;
++	struct interest *interest;
++	struct operation *operation;
++	if (peer && peer->releasing)
++		return false;
++	if (!message || !sender) {
++		if (peer)
++			peer->unknown_interest = true;
++		return peer != NULL;
++	}
++	if ((peer && live_sender(peer, sender)) || operation_pending(message))
++		return true;
++	interest = ensure_interest(device, sender);
++	if (!interest)
++		return false;
++	interest->inflight++;
++	operation = g_new0(struct operation, 1);
++	operation->message = message;
++	operation->interest = interest;
++	operation->generation = btd_device_ubm_le_generation(device);
++	operations = g_slist_prepend(operations, operation);
++	return true;
++}
++
++void btd_ubm_le_operation_end_message(DBusMessage *message)
++{
++	GSList *l;
++	struct operation *operation = NULL;
++	if (!message)
++		return;
++	for (l = operations; l; l = l->next) {
++		struct operation *candidate = l->data;
++		if (candidate->message == message) {
++			operation = candidate;
++			break;
++		}
++	}
++	if (!operation)
++		return;
++	operations = g_slist_remove(operations, operation);
++	{
++		struct peer *peer = peer_of_interest(operation->interest);
++		if (operation->interest->inflight)
++			operation->interest->inflight--;
++		release_interest_if_idle(operation->interest);
++		g_free(operation);
++		/* A dead owner cannot retry. Reconcile only that generation. */
++		if (peer)
++			schedule_reconcile(peer);
++	}
 +}
 +
 +bool btd_ubm_le_internal_activity(struct btd_device *device)
 +{
-+	if (device != own_connect)
-+		return btd_ubm_le_admit(device, NULL);
-+	return true;
++	struct peer *peer;
++	if (device == own_connect)
++		return true;
++	peer = find_peer(device);
++	/* Arming auto-connect while probing profiles is daemon bookkeeping.
++	 * It is not another application's hold on a link we created. */
++	if (peer && peer->born_exclusive && peer->generation && !peer->releasing)
++		return true;
++	return btd_ubm_le_admit(device, NULL);
 +}
 +
 +int btd_ubm_le_connect(struct btd_device *device, DBusMessage *message)
 +{
 +	int error;
++	bool up;
 +	if (!btd_ubm_le_admit(device, message))
 +		return -EBUSY;
++	up = btd_device_ubm_le_generation(device) != 0;
 +	own_connect = device;
 +	error = device_connect_le(device);
 +	own_connect = NULL;
++	/* One admission: commit the accepted connect, or roll the pending one back. */
++	if (error == 0 || up)
++		btd_ubm_le_commit(device, message);
++	else
++		btd_ubm_le_rollback(device, message);
 +	return error;
 +}
 +
 +static void send_receipts(struct lease *lease)
 +{
-+	uint32_t version = 2;
++	uint32_t version = 3;
 +	GSList *l;
 +	if (!lease->receipt)
 +		return;
@@ -2542,18 +4060,25 @@
 +		lease->receipt = "lease-released-indeterminate";
 +	} else if (peer->generation != lease->generation) {
 +		lease->receipt = "physical-released";
-+	} else if (live_count(peer) || peer->interests || peer->borrowed) {
++	} else if (live_count(peer) || protecting_interest(peer) ||
++			peer->origin == ORIGIN_EXTERNAL) {
++		/* Another live lease, a committed application hold, or a link this
++		 * daemon did not originate stays up. A controller initiator bit is
++		 * not proof that no other application owns the link. */
 +		lease->receipt = "lease-released-protected";
-+	} else if (!peer->born_exclusive || peer->unknown_interest) {
++		if (lease->owner_dead) {
++			peer->cleanup_generation = lease->generation;
++			schedule_reconcile(peer);
++		}
++	} else if (peer->unknown_interest ||
++			peer->origin == ORIGIN_UNRECORDED ||
++			(!peer->born_exclusive &&
++					peer->origin != ORIGIN_DAEMON_AUTO)) {
 +		lease->receipt = "lease-released-indeterminate";
 +	} else if (!peer->releasing) {
 +		int error;
-+		peer->releasing = true;
-+		error = btd_adapter_disconnect_device(peer->adapter,
-+			device_get_address(peer->device),
-+			device_get_le_address_type(peer->device));
++		error = request_disconnect(peer);
 +		if (error < 0) {
-+			peer->releasing = false;
 +			fail_releases(lease, strerror(-error));
 +		}
 +		return; /* Only actual kernel disconnect can confirm physical end. */
@@ -2685,13 +4210,20 @@
 +	if (!lease)
 +		return btd_error_does_not_exist(message);
 +	if (!lease->receipt || (strcmp(lease->receipt, "physical-released") &&
-+				strcmp(lease->receipt, "reservation-released")))
++				strcmp(lease->receipt, "reservation-released") &&
++				strcmp(lease->receipt, "lease-released-protected")))
 +		return btd_error_not_permitted(message, "Release is not terminal");
 +	if (!add_fence(history->reservations, lease->reservation_id) ||
 +					!add_fence(history->tokens, token))
 +		return g_dbus_create_error(message, LEASE ".Error.Capacity",
 +					"Cannot retain exact terminal acknowledgement fence");
++	struct peer *peer = lease->peer;
++	if (!strcmp(lease->receipt, "lease-released-protected") && peer &&
++			peer->generation == lease->generation)
++		peer->cleanup_generation = lease->generation;
 +	free_lease(lease);
++	if (peer)
++		schedule_reconcile(peer);
 +	g_idle_add(collect_dead, NULL);
 +	return dbus_message_new_method_return(message);
 +}
@@ -2775,7 +4307,35 @@
 +{
 +	struct peer *peer = find_peer(device);
 +	bool own = false;
++	bool external = false;
++	int origin;
 +	GSList *l;
++	for (l = admissions; l; l = l->next) {
++		struct admission *admission = l->data;
++		const char *sender;
++
++		if (admission->device != device || (!admission->committed &&
++				!provenance_member(admission->message)))
++			continue;
++		/* The lease owner's own Connect is not another application. */
++		sender = admission->message ?
++			dbus_message_get_sender(admission->message) : NULL;
++		if (lease_sender_owns(device, sender))
++			continue;
++		external = true;
++		break;
++	}
++	/* Remember the arrival even when no lease peer exists yet. */
++	origin = (!initiator || external) ? ORIGIN_EXTERNAL : ORIGIN_DAEMON_AUTO;
++	remember_arrival(device, generation, origin);
++	/* Bind requests admitted while disconnected to the link they opened.
++	 * A later loss must retire only that generation, including pre-lease
++	 * requests that have not yet been adopted into a peer. */
++	for (l = earlies; l; l = l->next) {
++		struct early_interest *early = l->data;
++		if (early->device == device && !early->interest->generation)
++			early->interest->generation = generation;
++	}
 +	if (!peer)
 +		return;
 +	for (l = leases; l; l = l->next) {
@@ -2783,11 +4343,22 @@
 +		if (lease->peer == peer && lease->connecting)
 +			own = true;
 +	}
++	if (peer->generation != generation) {
++		peer->cleanup_generation = 0;
++		if (peer->reconcile_source) {
++			g_source_remove(peer->reconcile_source);
++			peer->reconcile_source = 0;
++		}
++	}
 +	peer->generation = generation;
-+	peer->born_exclusive = generation && own && initiator;
++	for (l = peer->interests; l; l = l->next) {
++		struct interest *interest = l->data;
++		if (!interest->generation)
++			interest->generation = generation;
++	}
++	peer->born_exclusive = generation && own && initiator && !external;
 +	peer->borrowed = !peer->born_exclusive;
-+	if (!peer->born_exclusive)
-+		peer->unknown_interest = true;
++	peer->origin = origin_of(device, generation);
 +	for (l = leases; l; l = l->next) {
 +		struct lease *lease = l->data;
 +		if (lease->peer != peer || !lease->connecting)
@@ -2837,7 +4408,26 @@
 +{
 +	struct peer *peer = find_peer(device);
 +	GSList *l;
-+	if (!peer || peer->generation != generation || !generation)
++	if (!generation)
++		return;
++	forget_arrival(device, generation);
++	/* The producer records foreign interest before the first lease. Its
++	 * cleanup cannot depend on whether a UBM client ever reserved a token. */
++	for (;;) {
++		struct interest *ended = NULL;
++		for (l = earlies; l; l = l->next) {
++			struct early_interest *early = l->data;
++			if (early->device == device &&
++					early->interest->generation == generation) {
++				ended = early->interest;
++				break;
++			}
++		}
++		if (!ended)
++			break;
++		retire_interest(ended);
++	}
++	if (!peer || peer->generation != generation)
 +		return;
 +	/* The operation's own reply retains the exact kernel observation even
 +	 * when the client consumes that reply before its signal callback runs. */
@@ -2848,22 +4438,21 @@
 +			lease->disconnect_reason = reason;
 +		}
 +	}
++	peer->cleanup_generation = 0;
++	if (peer->reconcile_source) {
++		g_source_remove(peer->reconcile_source);
++		peer->reconcile_source = 0;
++	}
 +	peer->generation = 0;
 +	peer->releasing = false;
 +	peer->born_exclusive = false;
 +	peer->borrowed = false;
 +	peer->unknown_interest = false;
++	peer->origin = ORIGIN_UNRECORDED;
 +	/* Sender interests belonged to the ended physical generation, not every
 +	 * future link to this address. Internal autoconnect is observed afresh. */
-+	for (l = peer->interests; l; l = l->next) {
-+		struct interest *interest = l->data;
-+		if (interest->watch)
-+			g_dbus_remove_watch(btd_get_dbus_connection(), interest->watch);
-+		g_free(interest->sender);
-+		g_free(interest);
-+	}
-+	g_slist_free(peer->interests);
-+	peer->interests = NULL;
++	while (peer->interests)
++		retire_interest(peer->interests->data);
 +	const char *path = device_get_path(device);
 +	if (!g_dbus_emit_signal(btd_get_dbus_connection(),
 +		adapter_get_path(peer->adapter), LEASE, "PhysicalLost",
@@ -2886,7 +4475,7 @@
 +static DBusMessage *get_contract(DBusConnection *conn, DBusMessage *message,
 +						void *data)
 +{
-+	uint32_t protocol = 1, lease = 2, gatt = 1;
++	uint32_t protocol = 1, lease = 3, gatt = 1;
 +	(void) conn;
 +	(void) data;
 +	/* Versioned producer and fresh ATT observer are verified together. */
@@ -2933,6 +4522,8 @@
 +			if (lease->peer == peer)
 +				fail_releases(lease, reason);
 +		}
++		if (peer->cleanup_generation == peer->generation)
++			enqueue_reconcile(peer, true);
 +	}
 +}
 +
@@ -3005,6 +4596,14 @@
 +		if (peer->adapter == adapter) {
 +			peer->withdrawn = true;
 +			peer->releasing = false;
++			if (peer->cleanup_generation)
++				g_warning("Deferred LE cleanup authority removed for generation %" G_GUINT64_FORMAT,
++					peer->cleanup_generation);
++			peer->cleanup_generation = 0;
++			if (peer->reconcile_source) {
++				g_source_remove(peer->reconcile_source);
++				peer->reconcile_source = 0;
++			}
 +			btd_ubm_le_connect_failed(peer->device, -ENODEV);
 +		}
 +	}
@@ -3020,7 +4619,7 @@
 +}
 --- a/src/ubm-le-lease.h
 +++ b/src/ubm-le-lease.h
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,37 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#ifndef UBM_LE_LEASE_H
 +#define UBM_LE_LEASE_H
@@ -3032,8 +4631,18 @@
 +void btd_ubm_le_advertisement(struct btd_adapter *adapter,
 +		struct btd_device *device, uint8_t type, bool connectable);
 +void btd_ubm_le_unregister(struct btd_adapter *adapter);
-+/* Admissions run on bluetoothd's single GLib context, before native effects. */
++/* Admissions run on bluetoothd's single GLib context, before native effects.
++ * Admit records a pending sender only. Commit keeps that sender until its bus
++ * connection dies. Rollback drops that pending admission and no other hold.
++ * Abandon drops one admission after commit, when that attempt failed, and no
++ * other hold. A read or write holds only while its ATT operation is in flight. */
 +bool btd_ubm_le_admit(struct btd_device *device, DBusMessage *message);
++void btd_ubm_le_commit(struct btd_device *device, DBusMessage *message);
++void btd_ubm_le_rollback(struct btd_device *device, DBusMessage *message);
++void btd_ubm_le_abandon(struct btd_device *device, DBusMessage *message);
++bool btd_ubm_le_operation_begin(struct btd_device *device, DBusMessage *message);
++bool btd_ubm_le_operation_pending(DBusMessage *message);
++void btd_ubm_le_operation_end_message(DBusMessage *message);
 +bool btd_ubm_le_internal_activity(struct btd_device *device);
 +int btd_ubm_le_connect(struct btd_device *device, DBusMessage *message);
 +void btd_ubm_le_connected(struct btd_device *device, uint64_t generation,
@@ -3050,7 +4659,7 @@
 +#endif
 --- a/unit/test-ubm-att-exchange.c
 +++ b/unit/test-ubm-att-exchange.c
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,220 @@
 +// SPDX-License-Identifier: LGPL-2.1-or-later
 +/* Actual ATT registration and indication paths; no Bluetooth/system bus. */
 +#define queue_push_tail test_queue_push_tail
@@ -3143,9 +4752,110 @@
 +	puts("Incoming server-only indication confirms exactly once: OK");
 +}
 +
++
++static void security_error_response(uint8_t opcode, const void *pdu,
++					uint16_t length, void *user_data)
++{
++	unsigned int *seen = user_data;
++	const uint8_t *bytes = pdu;
++
++	assert(opcode == BT_ATT_OP_ERROR_RSP);
++	assert(length >= 4);
++	assert(bytes[3] == BT_ATT_ERROR_INSUFFICIENT_ENCRYPTION);
++	(*seen)++;
++}
++
++static void pump_att(void)
++{
++	while (g_main_context_iteration(NULL, false))
++		;
++}
++
++static struct bt_att *new_auto_att(int sockets[2])
++{
++	struct bt_att_chan *chan;
++	struct bt_att *att;
++
++	assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets));
++	assert(fcntl(sockets[1], F_SETFL, O_NONBLOCK) == 0);
++	att = bt_att_new(sockets[0], false);
++	assert(att);
++	chan = queue_peek_head(att->chans);
++	/* A real L2CAP channel keeps sec_level at zero, which is AUTO.
++	 * This AF_UNIX channel is LOCAL, so imitate that gate.
++	 */
++	assert(chan && chan->type == BT_ATT_LOCAL);
++	chan->sec_level = BT_ATT_SECURITY_AUTO;
++	return att;
++}
++
++static void exchange_read_error(struct bt_att *att, int peer, unsigned int *seen)
++{
++	uint8_t request[8];
++	uint16_t handle = 0x007c;
++	uint8_t error[] = { BT_ATT_OP_ERROR_RSP, BT_ATT_OP_READ_REQ, 0x7c, 0x00,
++				BT_ATT_ERROR_INSUFFICIENT_ENCRYPTION };
++	ssize_t n;
++
++	assert(bt_att_send(att, BT_ATT_OP_READ_REQ, &handle, sizeof(handle),
++				security_error_response, seen, NULL));
++	pump_att();
++	n = recv(peer, request, sizeof(request), 0);
++	assert(n == 3 && request[0] == BT_ATT_OP_READ_REQ);
++	assert(send(peer, error, sizeof(error), 0) == (ssize_t)sizeof(error));
++	pump_att();
++}
++
++/* Stock AUTO retries an Insufficient Encryption error by raising
++ * security. An unbonded link must finish the operation instead, so
++ * pairing never starts and the ACL stays up.
++ */
++static void unbonded_security_error_does_not_raise(void)
++{
++	int sockets[2];
++	uint8_t extra[8];
++	unsigned int seen = 0;
++	struct bt_att *att = new_auto_att(sockets);
++
++	bt_att_set_security_retry(att, false);
++	exchange_read_error(att, sockets[1], &seen);
++	assert(seen == 1);
++	assert(att->security_upgrade_attempts == 0);
++	assert(recv(sockets[1], extra, sizeof(extra), 0) == -1 &&
++						(errno == EAGAIN || errno == EWOULDBLOCK));
++	/* The same attachment resumes retries after explicit pairing. */
++	seen = 0;
++	bt_att_set_security_retry(att, true);
++	exchange_read_error(att, sockets[1], &seen);
++	assert(seen == 0);
++	assert(att->security_upgrade_attempts == 1);
++	exchange_read_error(att, sockets[1], &seen);
++	assert(seen == 1);
++	assert(att->security_upgrade_attempts == 1);
++	bt_att_set_security_retry(NULL, false);
++	bt_att_unref(att);
++	close(sockets[1]);
++
++	seen = 0;
++	att = new_auto_att(sockets);
++	exchange_read_error(att, sockets[1], &seen);
++	assert(seen == 0);
++	assert(att->security_upgrade_attempts == 1);
++	/* The upgrade requeues the same read. A second error completes it
++	 * because the recorded level is no longer AUTO.
++	 */
++	exchange_read_error(att, sockets[1], &seen);
++	assert(seen == 1);
++	assert(att->security_upgrade_attempts == 1);
++	bt_att_unref(att);
++	close(sockets[1]);
++	puts("Unbonded ATT security error does not raise security: OK");
++}
++
 +int main(void)
 +{
 +	incoming_server_indication();
++	unbonded_security_error_does_not_raise();
 +	int sockets[2];
 +	unsigned int disconnect_id;
 +	assert(!socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets));
@@ -4138,7 +5848,7 @@
 +}
 --- a/unit/test-ubm-le-lease.c
 +++ b/unit/test-ubm-le-lease.c
-@@ -0,0 +1,463 @@
+@@ -0,0 +1,976 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/* Real daemon tables/handlers on private D-Bus; kernel/device boundary doubles. */
 +#include "src/ubm-le-lease.c"
@@ -4146,11 +5856,11 @@
 +#include <stdio.h>
 +
 +struct btd_adapter { int identity; };
-+struct btd_device { uint64_t generation; bool connecting; int refs; };
++struct btd_device { uint64_t generation; bool connecting; bool initiator; int refs; };
 +static struct btd_adapter adapter;
 +static struct btd_device device;
 +static DBusConnection *server;
-+static unsigned int connect_calls, disconnect_calls;
++static unsigned int connect_calls, disconnect_calls, quiesce_calls;
 +static int connect_result, disconnect_result;
 +static bool device_visible = true;
 +static uint64_t settle_generation = 9;
@@ -4205,11 +5915,22 @@
 +	dev->connecting = connect_result == 0;
 +	return connect_result;
 +}
++void btd_device_quiesce_untrusted_auto_connect(struct btd_device *dev)
++{
++	assert(dev == &device);
++	quiesce_calls++;
++}
++bool btd_device_is_initiator(struct btd_device *dev)
++{
++	assert(dev == &device);
++	return dev->initiator;
++}
 +int btd_adapter_disconnect_device(struct btd_adapter *value,
 +					const bdaddr_t *address, uint8_t type)
 +{
 +	assert(value == &adapter && address == device_get_address(&device));
 +	assert(type == BDADDR_LE_PUBLIC);
++	assert(quiesce_calls == disconnect_calls + 1);
 +	disconnect_calls++;
 +	return disconnect_result;
 +}
@@ -4287,7 +6008,7 @@
 +		DBUS_TYPE_UINT64, &returned_generation, DBUS_TYPE_STRING, &scope,
 +		DBUS_TYPE_BOOLEAN, &has_reason, DBUS_TYPE_BYTE, &reason,
 +		DBUS_TYPE_INVALID));
-+	assert(version == 2 && token == returned_token && generation == returned_generation);
++	assert(version == 3 && token == returned_token && generation == returned_generation);
 +	assert(!strcmp(expected, scope));
 +	if (!strcmp(scope, "physical-released")) {
 +		assert(has_reason && (reason == 2 || reason == 3));
@@ -4314,6 +6035,92 @@
 +	btd_ubm_le_lost(&device, settle_generation, 2);
 +	return G_SOURCE_REMOVE;
 +}
++
++static void prelease_lifetimes(DBusConnection *foreign)
++{
++	DBusMessage *pair, *read;
++	struct peer *peer;
++	unsigned int cycle;
++	assert(!peers && !earlies && !arrivals && !admissions && !operations);
++	/* Pair can open a link before either completion or the first UBM lease.
++	 * A delayed loss from another generation cannot retire that request. */
++	pair = dbus_message_new_method_call("org.ubm.Test", device_get_path(&device),
++			"org.bluez.Device1", "Pair");
++	assert(dbus_message_set_sender(pair, dbus_bus_get_unique_name(foreign)));
++	assert(btd_ubm_le_admit(&device, pair));
++	device.generation = 1200;
++	btd_ubm_le_connected(&device, 1200, true);
++	assert(origin_of(&device, 1200) == ORIGIN_EXTERNAL);
++	btd_ubm_le_lost(&device, 1199, 2);
++	assert(find_admission_message(pair));
++	assert(early_lookup(&device, dbus_bus_get_unique_name(foreign)));
++	device.generation = 0;
++	btd_ubm_le_lost(&device, 1200, 2);
++	assert(!peers && !earlies && !arrivals && !admissions && !operations);
++	dbus_message_unref(pair);
++	for (cycle = 0; cycle < 100; cycle++) {
++		uint64_t generation = 1000 + cycle;
++		device.generation = generation;
++		btd_ubm_le_connected(&device, generation, true);
++		pair = dbus_message_new_method_call("org.ubm.Test", device_get_path(&device),
++				"org.bluez.Device1", "Pair");
++		assert(dbus_message_set_sender(pair, dbus_bus_get_unique_name(foreign)));
++		assert(btd_ubm_le_admit(&device, pair));
++		assert(find_admission_message(pair));
++		assert(!find_peer(&device));
++		device.generation = 0;
++		btd_ubm_le_lost(&device, generation, 2);
++		assert(!arrivals && !earlies && !admissions && !operations);
++		dbus_message_unref(pair);
++	}
++	device.generation = 1100;
++	btd_ubm_le_connected(&device, 1100, true);
++	read = dbus_message_new_method_call("org.ubm.Test", device_get_path(&device),
++			"org.bluez.GattCharacteristic1", "ReadValue");
++	assert(dbus_message_set_sender(read, dbus_bus_get_unique_name(foreign)));
++	assert(btd_ubm_le_operation_begin(&device, read));
++	assert(btd_ubm_le_operation_pending(read));
++	peer = get_peer(&device);
++	assert(protecting_interest(peer));
++	btd_ubm_le_operation_end_message(read);
++	assert(!protecting_interest(peer));
++	dbus_message_unref(read);
++	pair = dbus_message_new_method_call("org.ubm.Test", device_get_path(&device),
++			"org.bluez.Device1", "Pair");
++	assert(dbus_message_set_sender(pair, dbus_bus_get_unique_name(foreign)));
++	assert(btd_ubm_le_admit(&device, pair));
++	assert(protecting_interest(peer));
++	btd_ubm_le_rollback(&device, pair);
++	assert(!protecting_interest(peer));
++	assert(btd_ubm_le_admit(&device, pair));
++	btd_ubm_le_commit(&device, pair);
++	assert(protecting_interest(peer));
++	btd_ubm_le_abandon(&device, pair);
++	assert(!protecting_interest(peer));
++	dbus_message_unref(pair);
++	device.generation = 0;
++	btd_ubm_le_lost(&device, 1100, 2);
++	while (g_main_context_iteration(NULL, FALSE)) {}
++	assert(!peers && !earlies && !arrivals && !admissions && !operations);
++	/* Adoption can run before the old generation's loss callback. */
++	device.generation = 1300;
++	btd_ubm_le_connected(&device, 1300, true);
++	pair = dbus_message_new_method_call("org.ubm.Test", device_get_path(&device),
++			"org.bluez.Device1", "Pair");
++	assert(dbus_message_set_sender(pair, dbus_bus_get_unique_name(foreign)));
++	assert(btd_ubm_le_admit(&device, pair));
++	device.generation = 1301;
++	btd_ubm_le_connected(&device, 1301, true);
++	peer = get_peer(&device);
++	assert(!protecting_interest(peer));
++	assert(!find_admission_message(pair));
++	btd_ubm_le_lost(&device, 1300, 2);
++	device.generation = 0;
++	btd_ubm_le_lost(&device, 1301, 2);
++	while (g_main_context_iteration(NULL, FALSE)) {}
++	assert(!peers && !earlies && !arrivals && !admissions && !operations);
++	dbus_message_unref(pair);
++}
 +int main(void)
 +{
 +	DBusError error = DBUS_ERROR_INIT;
@@ -4326,6 +6133,7 @@
 +	assert(client);
 +	loop = g_main_loop_new(NULL, FALSE);
 +	assert(btd_ubm_le_register(&adapter));
++	prelease_lifetimes(client);
 +	dbus_bus_add_match(client, "type='signal',interface='org.unifiedblemanager.LinuxAuthority1',member='LeAdvertisement'", &error);
 +	assert(!dbus_error_is_set(&error));
 +	assert(dbus_connection_add_filter(client, availability_report, NULL, NULL));
@@ -4335,7 +6143,7 @@
 +	assert(dbus_message_get_args(replay.reply, NULL,
 +		DBUS_TYPE_UINT32, &contract, DBUS_TYPE_UINT32, &lease_version,
 +		DBUS_TYPE_UINT32, &gatt_version, DBUS_TYPE_INVALID));
-+	assert(contract == 1 && lease_version == 2 && gatt_version == 1);
++	assert(contract == 1 && lease_version == 3 && gatt_version == 1);
 +	clear_call(&replay);
 +	/* Initial acquisition requires a fresh connectable LE kernel report,
 +	 * never a Classic report or a cached Device1 object. */
@@ -4500,7 +6308,8 @@
 +	assert(!contains(ranges, 1) && ranges->len == MAX_FENCE_RANGES);
 +	assert(add_fence(ranges, 3) && ranges->len == MAX_FENCE_RANGES - 1);
 +	g_array_free(ranges, true);
-+	/* Positive preexisting ownership never drops that physical link. */
++	/* Positive preexisting ownership this controller did not initiate
++	 * never drops that physical link. */
 +	uint64_t borrowed = reserve_token(client);
 +	send_call(client, "ConnectLease", borrowed, &connect);
 +	await_call(&connect);
@@ -4509,10 +6318,8 @@
 +	receipt(&release, borrowed, 10, "lease-released-protected");
 +	assert(disconnect_calls == 1);
 +	clear_call(&release);
-+	send_call(client, "AckLease", borrowed, &replay);
-+	while (!replay.reply) g_main_loop_run(loop);
-+	assert(dbus_message_get_type(replay.reply) == DBUS_MESSAGE_TYPE_ERROR);
-+	clear_call(&replay);
++	/* Leave this token unacknowledged to retain the exact later loss receipt.
++	 * A separate long-lived sender test acknowledges protected tokens below. */
 +	device.generation = 0;
 +	btd_ubm_le_lost(&device, 10, 3);
 +	send_call(client, "ReleaseLease", borrowed, &release);
@@ -4526,7 +6333,11 @@
 +	send_call(client, "AckLease", borrowed, &replay);
 +	await_call(&replay);
 +	clear_call(&replay);
-+	/* Another real bus sender's stock GATT interest protects our created link. */
++	/* A finished external read does not protect the link. The same read
++	 * protects only while it is in flight. A durable admit (connect, pair,
++	 * notify, or acquire) protects until that sender's bus connection dies.
++	 * Do not ReleaseLease in the gap after the read ends: that would start
++	 * the kernel disconnect and consume the refusal-retry sequence below. */
 +	settle_generation = 11;
 +	uint64_t owned = reserve_token(client);
 +	send_call(client, "ConnectLease", owned, &connect);
@@ -4535,12 +6346,31 @@
 +	btd_ubm_le_lost(&device, 10, 7);
 +	assert(!find_lease(&adapter, owned, dbus_bus_get_unique_name(client))->has_disconnect_reason);
 +	clear_call(&connect);
++	assert(!find_peer(&device)->interests);
++	assert(find_peer(&device)->born_exclusive);
++	assert(!find_peer(&device)->unknown_interest);
++	assert(btd_ubm_le_internal_activity(&device));
++	assert(!find_peer(&device)->unknown_interest);
++	assert(!find_peer(&device)->interests);
 +	DBusConnection *external = g_dbus_setup_private(DBUS_BUS_SESSION, NULL, &error);
 +	assert(external);
 +	DBusMessage *interest = dbus_message_new_method_call("org.ubm.Test",
 +		device_get_path(&device), "org.bluez.GattCharacteristic1", "ReadValue");
 +	assert(dbus_message_set_sender(interest, dbus_bus_get_unique_name(external)));
++	assert(btd_ubm_le_operation_begin(&device, interest));
++	assert(g_slist_length(find_peer(&device)->interests) == 1);
++	assert(btd_ubm_le_operation_begin(&device, interest));
++	assert(g_slist_length(find_peer(&device)->interests) == 1);
++	send_call(client, "ReleaseLease", owned, &release);
++	receipt(&release, owned, 11, "lease-released-protected");
++	clear_call(&release);
++	assert(disconnect_calls == 1);
++	btd_ubm_le_operation_end_message(interest);
++	assert(!find_peer(&device)->interests);
++	btd_ubm_le_operation_end_message(interest);
++	assert(!find_peer(&device)->interests);
 +	assert(btd_ubm_le_admit(&device, interest));
++	btd_ubm_le_commit(&device, interest);
 +	dbus_message_unref(interest);
 +	send_call(client, "ReleaseLease", owned, &release);
 +	receipt(&release, owned, 11, "lease-released-protected");
@@ -4599,7 +6429,400 @@
 +	while (g_main_context_iteration(NULL, FALSE)) {}
 +	assert(!find_lease(&adapter, late, dead_sender));
 +	g_free(dead_sender);
-+	puts("production lease handlers: nonce recovery fences, interleaved lifetime ACKs, accepted cancellation/sender death, protected/exclusive release, asynchronous refusal retry and exact generation passed");
++	/* Daemon auto-connect is a locally initiated link recorded before this
++	 * lease exists. Origin comes from that arrival, not the initiator bit.
++	 * With no application holder, release still drops it. */
++	assert(!find_peer(&device));
++	device.generation = 21;
++	device.initiator = true;
++	btd_ubm_le_connected(&device, 21, true);
++	assert(!find_peer(&device));
++	unsigned int connects_before = connect_calls;
++	expected_disconnects = disconnect_calls + 1;
++	uint64_t adopted = reserve_token(client);
++	assert(find_peer(&device)->origin == ORIGIN_DAEMON_AUTO);
++	assert(find_peer(&device)->borrowed);
++	assert(!find_peer(&device)->born_exclusive);
++	assert(!find_peer(&device)->unknown_interest);
++	assert(!find_peer(&device)->interests);
++	send_call(client, "ConnectLease", adopted, &connect);
++	await_call(&connect);
++	clear_call(&connect);
++	assert(connect_calls == connects_before);
++	settle_generation = 21;
++	send_call(client, "ReleaseLease", adopted, &release);
++	g_timeout_add(25, settle_disconnect, NULL);
++	assert(receipt(&release, adopted, 21, "physical-released") == 2);
++	clear_call(&release);
++	assert(disconnect_calls == expected_disconnects);
++	send_call(client, "AckLease", adopted, &replay);
++	await_call(&replay);
++	clear_call(&replay);
++	while (g_main_context_iteration(NULL, FALSE)) {}
++	assert(!find_peer(&device));
++	/* A rolled-back acquire leaves no hold, so exclusive release disconnects. */
++	{
++		DBusConnection *external = g_dbus_setup_private(DBUS_BUS_SESSION, NULL, &error);
++		DBusMessage *acquired;
++		uint64_t exclusive;
++		assert(external);
++		settle_generation = 40;
++		device.generation = 0;
++		device.connecting = false;
++		exclusive = reserve_token(client);
++		send_call(client, "ConnectLease", exclusive, &connect);
++		g_timeout_add(25, settle_connect, NULL);
++		await_call(&connect);
++		clear_call(&connect);
++		assert(find_peer(&device)->born_exclusive);
++		acquired = dbus_message_new_method_call("org.ubm.Test",
++			device_get_path(&device), "org.bluez.GattCharacteristic1", "AcquireNotify");
++		assert(dbus_message_set_sender(acquired, dbus_bus_get_unique_name(external)));
++		assert(btd_ubm_le_admit(&device, acquired));
++		btd_ubm_le_rollback(&device, acquired);
++		assert(!find_peer(&device)->interests);
++		expected_disconnects = disconnect_calls + 1;
++		send_call(client, "ReleaseLease", exclusive, &release);
++		g_timeout_add(25, settle_disconnect, NULL);
++		assert(receipt(&release, exclusive, 40, "physical-released") == 2);
++		clear_call(&release);
++		assert(disconnect_calls == expected_disconnects);
++		send_call(client, "AckLease", exclusive, &replay);
++		await_call(&replay);
++		clear_call(&replay);
++		dbus_message_unref(acquired);
++		dbus_connection_close(external);
++		dbus_connection_unref(external);
++		while (g_main_context_iteration(NULL, FALSE)) {}
++	}
++	/* Committed StartNotify survives a rolled-back AcquireNotify. */
++	{
++		DBusConnection *external = g_dbus_setup_private(DBUS_BUS_SESSION, NULL, &error);
++		DBusMessage *started, *acquired;
++		uint64_t exclusive;
++		unsigned int before;
++		int64_t until;
++		assert(external);
++		settle_generation = 41;
++		device.generation = 0;
++		device.connecting = false;
++		exclusive = reserve_token(client);
++		send_call(client, "ConnectLease", exclusive, &connect);
++		g_timeout_add(25, settle_connect, NULL);
++		await_call(&connect);
++		clear_call(&connect);
++		started = dbus_message_new_method_call("org.ubm.Test",
++			device_get_path(&device), "org.bluez.GattCharacteristic1", "StartNotify");
++		assert(dbus_message_set_sender(started, dbus_bus_get_unique_name(external)));
++		assert(btd_ubm_le_admit(&device, started));
++		btd_ubm_le_commit(&device, started);
++		acquired = dbus_message_new_method_call("org.ubm.Test",
++			device_get_path(&device), "org.bluez.GattCharacteristic1", "AcquireNotify");
++		assert(dbus_message_set_sender(acquired, dbus_bus_get_unique_name(external)));
++		assert(btd_ubm_le_admit(&device, acquired));
++		btd_ubm_le_rollback(&device, acquired);
++		assert(g_slist_length(find_peer(&device)->interests) == 1);
++		before = disconnect_calls;
++		send_call(client, "ReleaseLease", exclusive, &release);
++		receipt(&release, exclusive, 41, "lease-released-protected");
++		clear_call(&release);
++		assert(disconnect_calls == before);
++		assert(find_peer(&device)->interests);
++		dbus_message_unref(started);
++		dbus_message_unref(acquired);
++		dbus_connection_close(external);
++		dbus_connection_unref(external);
++		until = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
++		while (find_peer(&device)->interests && g_get_monotonic_time() < until) {
++			g_main_context_iteration(NULL, FALSE);
++			g_usleep(1000);
++		}
++		assert(!find_peer(&device)->interests);
++		btd_ubm_le_lost(&device, 41, 2);
++		send_call(client, "AckLease", exclusive, &replay);
++		await_call(&replay);
++		clear_call(&replay);
++		while (g_main_context_iteration(NULL, FALSE)) {}
++	}
++	/* A committed AcquireNotify that then fails drops only that attempt.
++	 * The earlier StartNotify hold stays, so release stays protected.
++	 * Abandoning that remaining hold removes the interest. */
++	{
++		DBusConnection *external = g_dbus_setup_private(DBUS_BUS_SESSION, NULL, &error);
++		DBusMessage *started, *acquired;
++		uint64_t exclusive;
++		unsigned int before;
++		int64_t until;
++		assert(external);
++		settle_generation = 42;
++		device.generation = 0;
++		device.connecting = false;
++		exclusive = reserve_token(client);
++		send_call(client, "ConnectLease", exclusive, &connect);
++		g_timeout_add(25, settle_connect, NULL);
++		await_call(&connect);
++		clear_call(&connect);
++		started = dbus_message_new_method_call("org.ubm.Test",
++			device_get_path(&device), "org.bluez.GattCharacteristic1", "StartNotify");
++		assert(dbus_message_set_sender(started, dbus_bus_get_unique_name(external)));
++		assert(btd_ubm_le_admit(&device, started));
++		btd_ubm_le_commit(&device, started);
++		acquired = dbus_message_new_method_call("org.ubm.Test",
++			device_get_path(&device), "org.bluez.GattCharacteristic1", "AcquireNotify");
++		assert(dbus_message_set_sender(acquired, dbus_bus_get_unique_name(external)));
++		assert(btd_ubm_le_admit(&device, acquired));
++		btd_ubm_le_commit(&device, acquired);
++		btd_ubm_le_abandon(&device, acquired);
++		assert(g_slist_length(find_peer(&device)->interests) == 1);
++		before = disconnect_calls;
++		send_call(client, "ReleaseLease", exclusive, &release);
++		receipt(&release, exclusive, 42, "lease-released-protected");
++		clear_call(&release);
++		assert(disconnect_calls == before);
++		assert(find_peer(&device)->interests);
++		btd_ubm_le_abandon(&device, started);
++		assert(!find_peer(&device)->interests);
++		dbus_message_unref(started);
++		dbus_message_unref(acquired);
++		dbus_connection_close(external);
++		dbus_connection_unref(external);
++		until = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
++		while (find_peer(&device) && find_peer(&device)->interests &&
++				g_get_monotonic_time() < until) {
++			g_main_context_iteration(NULL, FALSE);
++			g_usleep(1000);
++		}
++		assert(!find_peer(&device) || !find_peer(&device)->interests);
++		btd_ubm_le_lost(&device, 42, 2);
++		send_call(client, "AckLease", exclusive, &replay);
++		await_call(&replay);
++		clear_call(&replay);
++		while (g_main_context_iteration(NULL, FALSE)) {}
++	}
++	/* An external sender connects and subscribes before any UBM peer exists.
++	 * initiator==true must not make UBM's release drop that link. */
++	{
++		DBusConnection *external = g_dbus_setup_private(DBUS_BUS_SESSION, NULL, &error);
++		DBusMessage *connected_msg, *notify_msg;
++		uint64_t borrowed_late;
++		unsigned int before;
++		assert(external);
++		assert(!find_peer(&device));
++		device.generation = 50;
++		device.initiator = true;
++		device.connecting = false;
++		connected_msg = dbus_message_new_method_call("org.ubm.Test",
++			device_get_path(&device), "org.bluez.Device1", "Connect");
++		assert(dbus_message_set_sender(connected_msg, dbus_bus_get_unique_name(external)));
++		assert(btd_ubm_le_admit(&device, connected_msg));
++		btd_ubm_le_commit(&device, connected_msg);
++		notify_msg = dbus_message_new_method_call("org.ubm.Test",
++			device_get_path(&device), "org.bluez.GattCharacteristic1", "StartNotify");
++		assert(dbus_message_set_sender(notify_msg, dbus_bus_get_unique_name(external)));
++		assert(btd_ubm_le_admit(&device, notify_msg));
++		btd_ubm_le_commit(&device, notify_msg);
++		assert(!find_peer(&device));
++		before = disconnect_calls;
++		borrowed_late = reserve_token(client);
++		assert(find_peer(&device)->origin == ORIGIN_EXTERNAL);
++		assert(!find_peer(&device)->born_exclusive);
++		assert(find_peer(&device)->interests);
++		send_call(client, "ConnectLease", borrowed_late, &connect);
++		await_call(&connect);
++		clear_call(&connect);
++		send_call(client, "ReleaseLease", borrowed_late, &release);
++		receipt(&release, borrowed_late, 50, "lease-released-protected");
++		clear_call(&release);
++		assert(disconnect_calls == before);
++		assert(!find_peer(&device)->releasing);
++		assert(find_peer(&device)->interests);
++		dbus_message_unref(connected_msg);
++		dbus_message_unref(notify_msg);
++		dbus_connection_close(external);
++		dbus_connection_unref(external);
++		{
++			int64_t until = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
++			while (find_peer(&device)->interests && g_get_monotonic_time() < until) {
++				g_main_context_iteration(NULL, FALSE);
++				g_usleep(1000);
++			}
++		}
++		assert(!find_peer(&device)->interests);
++		btd_ubm_le_lost(&device, 50, 2);
++		send_call(client, "AckLease", borrowed_late, &replay);
++		await_call(&replay);
++		clear_call(&replay);
++		while (g_main_context_iteration(NULL, FALSE)) {}
++		assert(!find_peer(&device));
++	}
++	/* Sender death while a foreign read is in flight stays up. When that
++	 * read ends, and nobody retries, this generation disconnects. */
++	{
++		DBusConnection *ubm = g_dbus_setup_private(DBUS_BUS_SESSION, NULL, &error);
++		DBusConnection *reader = g_dbus_setup_private(DBUS_BUS_SESSION, NULL, &error);
++		DBusMessage *read_msg;
++		char *dead_sender;
++		uint64_t owned_dead;
++		unsigned int before;
++		int64_t until;
++		assert(ubm && reader);
++		settle_generation = 60;
++		device.generation = 0;
++		device.connecting = false;
++		before = disconnect_calls;
++		owned_dead = reserve_token(ubm);
++		dead_sender = g_strdup(dbus_bus_get_unique_name(ubm));
++		send_call(ubm, "ConnectLease", owned_dead, &connect);
++		g_timeout_add(25, settle_connect, NULL);
++		await_call(&connect);
++		clear_call(&connect);
++		assert(find_peer(&device)->born_exclusive);
++		read_msg = dbus_message_new_method_call("org.ubm.Test",
++			device_get_path(&device), "org.bluez.GattCharacteristic1", "ReadValue");
++		assert(dbus_message_set_sender(read_msg, dbus_bus_get_unique_name(reader)));
++		assert(btd_ubm_le_operation_begin(&device, read_msg));
++		dbus_connection_close(ubm);
++		dbus_connection_unref(ubm);
++		until = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
++		while (find_peer(&device)->cleanup_generation != 60 &&
++				g_get_monotonic_time() < until)
++			g_main_context_iteration(NULL, FALSE);
++		assert(find_peer(&device)->cleanup_generation == 60);
++		assert(!find_lease(&adapter, owned_dead, dead_sender) ||
++				find_lease(&adapter, owned_dead, dead_sender)->owner_dead);
++		assert(disconnect_calls == before);
++		btd_ubm_le_operation_end_message(read_msg);
++		until = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
++		while (disconnect_calls == before && g_get_monotonic_time() < until)
++			g_main_context_iteration(NULL, FALSE);
++		assert(disconnect_calls == before + 1);
++		assert(find_peer(&device)->releasing);
++		device.generation = 0;
++		btd_ubm_le_lost(&device, 60, 2);
++		dbus_message_unref(read_msg);
++		dbus_connection_close(reader);
++		dbus_connection_unref(reader);
++		g_free(dead_sender);
++		while (g_main_context_iteration(NULL, FALSE)) {}
++	}
++	/* Ending the old read after the generation changed must not disconnect
++	 * the replacement link. */
++	{
++		DBusConnection *ubm = g_dbus_setup_private(DBUS_BUS_SESSION, NULL, &error);
++		DBusConnection *reader = g_dbus_setup_private(DBUS_BUS_SESSION, NULL, &error);
++		DBusMessage *read_msg;
++		char *dead_sender;
++		uint64_t owned_dead;
++		unsigned int before;
++		int64_t until;
++		struct reconcile_job *job;
++		assert(ubm && reader);
++		settle_generation = 61;
++		device.generation = 0;
++		device.connecting = false;
++		before = disconnect_calls;
++		owned_dead = reserve_token(ubm);
++		dead_sender = g_strdup(dbus_bus_get_unique_name(ubm));
++		send_call(ubm, "ConnectLease", owned_dead, &connect);
++		g_timeout_add(25, settle_connect, NULL);
++		await_call(&connect);
++		clear_call(&connect);
++		read_msg = dbus_message_new_method_call("org.ubm.Test",
++			device_get_path(&device), "org.bluez.GattCharacteristic1", "ReadValue");
++		assert(dbus_message_set_sender(read_msg, dbus_bus_get_unique_name(reader)));
++		assert(btd_ubm_le_operation_begin(&device, read_msg));
++		dbus_connection_close(ubm);
++		dbus_connection_unref(ubm);
++		until = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
++		while (find_peer(&device)->cleanup_generation != 61 &&
++				g_get_monotonic_time() < until)
++			g_main_context_iteration(NULL, FALSE);
++		assert(find_peer(&device)->cleanup_generation == 61);
++		assert(disconnect_calls == before);
++		btd_ubm_le_lost(&device, 61, 2);
++		device.generation = 62;
++		btd_ubm_le_connected(&device, 62, true);
++		btd_ubm_le_operation_end_message(read_msg);
++		job = g_new0(struct reconcile_job, 1);
++		job->device = btd_device_ref(&device);
++		job->generation = 61;
++		assert(reconcile_idle(job) == G_SOURCE_REMOVE);
++		reconcile_job_free(job);
++		while (g_main_context_iteration(NULL, FALSE)) {}
++		assert(disconnect_calls == before);
++		dbus_message_unref(read_msg);
++		dbus_connection_close(reader);
++		dbus_connection_unref(reader);
++		g_free(dead_sender);
++	}
++	/* A live sender may retire thousands of protected logical leases. The
++	 * daemon owns one generation-scoped reconciliation obligation after ACK,
++	 * not thousands of unacknowledgeable tokens. */
++	{
++		DBusConnection *ubm = g_dbus_setup_private(DBUS_BUS_SESSION, NULL, &error);
++		DBusConnection *reader = g_dbus_setup_private(DBUS_BUS_SESSION, NULL, &error);
++		DBusMessage *read_msg;
++		unsigned int before = disconnect_calls;
++		assert(ubm && reader);
++		btd_ubm_le_lost(&device, 62, 2);
++		device.generation = 0;
++		device.connecting = false;
++		settle_generation = 70;
++		uint64_t initial = reserve_token(ubm);
++		send_call(ubm, "ConnectLease", initial, &connect);
++		g_timeout_add(25, settle_connect, NULL);
++		await_call(&connect);
++		clear_call(&connect);
++		read_msg = dbus_message_new_method_call("org.ubm.Test", device_get_path(&device),
++				"org.bluez.GattCharacteristic1", "ReadValue");
++		assert(dbus_message_set_sender(read_msg, dbus_bus_get_unique_name(reader)));
++		assert(btd_ubm_le_operation_begin(&device, read_msg));
++		for (unsigned int i = 0; i < MAX_TOKENS + 32; i++) {
++			uint64_t token = i ? reserve_token(ubm) : initial;
++			if (i) {
++				send_call(ubm, "ConnectLease", token, &connect);
++				await_call(&connect);
++				clear_call(&connect);
++			}
++			send_call(ubm, "ReleaseLease", token, &release);
++			receipt(&release, token, 70, "lease-released-protected");
++			clear_call(&release);
++			send_call(ubm, "AckLease", token, &replay);
++			await_call(&replay);
++			clear_call(&replay);
++			send_call(ubm, "AckLease", token, &replay);
++			await_call(&replay);
++			clear_call(&replay);
++			assert(g_slist_length(leases) < MAX_TOKENS);
++			assert(find_peer(&device)->cleanup_generation == 70);
++			assert(disconnect_calls == before);
++		}
++		/* A failed native disconnect remains owned and retries without a
++		 * sender-death event. A later generation never inherits the job. */
++		disconnect_result = -EAGAIN;
++		btd_ubm_le_operation_end_message(read_msg);
++		while (g_main_context_iteration(NULL, FALSE)) {}
++		assert(disconnect_calls == before + 1);
++		assert(find_peer(&device)->cleanup_generation == 70);
++		assert(find_peer(&device)->reconcile_source);
++		disconnect_result = 0;
++		int64_t until = g_get_monotonic_time() + 3 * G_TIME_SPAN_SECOND;
++		while (disconnect_calls == before + 1 && g_get_monotonic_time() < until)
++			g_main_context_iteration(NULL, TRUE);
++		assert(disconnect_calls == before + 2);
++		assert(find_peer(&device)->releasing);
++		device.generation = 0;
++		btd_ubm_le_lost(&device, 70, 2);
++		while (g_main_context_iteration(NULL, FALSE)) {}
++		assert(!find_peer(&device) || (!find_peer(&device)->cleanup_generation &&
++				!find_peer(&device)->reconcile_source));
++		dbus_message_unref(read_msg);
++		dbus_connection_close(reader);
++		dbus_connection_unref(reader);
++		dbus_connection_close(ubm);
++		dbus_connection_unref(ubm);
++	}
++	puts("production lease handlers: nonce recovery fences, protected ACK capacity and live-owner reconciliation, accepted cancellation/sender death, protected/exclusive release, asynchronous refusal retry and exact generation passed");
 +	return 0;
 +}
 --- a/unit/test-ubm-refresh.c
@@ -4976,4 +7199,297 @@
 +	g_slist_free(clients);
 +	puts("actual daemon UUID filter matching/nonmatching/empty passed");
 +	return 0;
++}
+--- a/unit/test-ubm-acquired-failure.c
++++ b/unit/test-ubm-acquired-failure.c
+@@ -0,0 +1,290 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/* Complete production acquired-FD callback; only OS/owner boundaries doubled. */
++#define socketpair controlled_socketpair
++#define sendmsg controlled_sendmsg
++#define bt_gatt_client_is_ready controlled_ready
++#define bt_gatt_client_get_mtu controlled_mtu
++#define bt_gatt_client_ready_register controlled_register
++#define bt_gatt_client_ready_unregister controlled_unregister_ready
++#define bt_gatt_client_unregister_notify controlled_unregister_notify
++#define bt_gatt_client_get_att controlled_att
++#define g_dbus_remove_watch controlled_remove_watch
++#define g_dbus_send_message controlled_send
++#define g_dbus_emit_property_changed controlled_property
++#include "src/gatt-client.c"
++#undef socketpair
++#undef sendmsg
++#include <assert.h>
++#include <stdio.h>
++
++static bool ready, socket_failure, delivery_failure;
++static bool notification_send_failure, notification_short_send;
++static unsigned int rollbacks, commits;
++static unsigned int abandoned, delivered, destroyed;
++static unsigned int ready_removed, notify_removed, watch_removed;
++static DBusMessage *expected;
++struct btd_opts btd_opts;
++DBusConnection *btd_get_dbus_connection(void) { return NULL; }
++void btd_debug(uint16_t index, const char *format, ...) { }
++void btd_error(uint16_t index, const char *format, ...) { }
++bool controlled_ready(struct bt_gatt_client *gatt) { return ready; }
++uint16_t controlled_mtu(struct bt_gatt_client *gatt) { return 23; }
++int socketpair(int domain, int type, int protocol, int sockets[2]);
++ssize_t sendmsg(int socket, const struct msghdr *message, int flags);
++int controlled_socketpair(int domain, int type, int protocol, int sockets[2])
++{
++    if (socket_failure) { errno = EMFILE; return -1; }
++    return socketpair(domain, type, protocol, sockets);
++}
++ssize_t controlled_sendmsg(int socket, const struct msghdr *message, int flags)
++{
++    if (notification_send_failure) { errno = EAGAIN; return -1; }
++    if (notification_short_send) return message->msg_iov[0].iov_len - 1;
++    return sendmsg(socket, message, flags);
++}
++gboolean controlled_send(DBusConnection *connection, DBusMessage *reply)
++{
++    assert(reply);
++    delivered++;
++    assert(dbus_message_get_type(reply) == (socket_failure || !ready ?
++        DBUS_MESSAGE_TYPE_ERROR : DBUS_MESSAGE_TYPE_METHOD_RETURN));
++    dbus_message_unref(reply);
++    return !delivery_failure;
++}
++void controlled_property(DBusConnection *connection, const char *path,
++                         const char *interface, const char *name) { }
++void btd_ubm_le_abandon(struct btd_device *device, DBusMessage *message)
++{
++    assert(message == expected);
++    abandoned++;
++}
++bool btd_ubm_le_admit(struct btd_device *device, DBusMessage *message) { return true; }
++void btd_ubm_le_commit(struct btd_device *device, DBusMessage *message) { commits++; }
++void btd_ubm_le_rollback(struct btd_device *device, DBusMessage *message) { rollbacks++; }
++unsigned int controlled_register(struct bt_gatt_client *gatt,
++    bt_gatt_client_callback_t callback, void *data, bt_gatt_client_destroy_func_t destroy)
++{ return 0; }
++static void half_resource_destroy(void *data) { destroyed++; }
++bool controlled_unregister_ready(struct bt_gatt_client *gatt, unsigned int id)
++{ assert(id == 7); ready_removed++; return true; }
++bool controlled_unregister_notify(struct bt_gatt_client *gatt, unsigned int id)
++{ assert(id == 42); notify_removed++; return true; }
++struct bt_att *controlled_att(struct bt_gatt_client *gatt) { return NULL; }
++gboolean controlled_remove_watch(DBusConnection *connection, guint id)
++{ assert(id == 11); watch_removed++; return true; }
++
++static void immediate_write(bool registration_refused)
++{
++    struct btd_gatt_client client = { .gatt = (void *) 1, .ios = queue_new() };
++    struct service service = { .client = &client };
++    struct characteristic chrc = { .service = &service, .path = "/test",
++        .props = BT_GATT_CHRC_PROP_WRITE_WITHOUT_RESP };
++    DBusMessage *message = dbus_message_new_method_call("org.bluez", "/test",
++        GATT_CHARACTERISTIC_IFACE, "AcquireWrite");
++    DBusMessage *reply;
++    dbus_message_set_serial(message, 1);
++    ready = !registration_refused;
++    socket_failure = !registration_refused;
++    rollbacks = commits = 0;
++    reply = characteristic_acquire_write(NULL, message, &chrc);
++    assert(reply && dbus_message_get_type(reply) == DBUS_MESSAGE_TYPE_ERROR);
++    assert(rollbacks == 1 && commits == 0 && !chrc.write_io);
++    assert(queue_isempty(client.ios));
++    dbus_message_unref(reply);
++    dbus_message_unref(message);
++    queue_destroy(client.ios, NULL);
++}
++
++
++static void deferred_success(bool notify)
++{
++    struct btd_gatt_client client = { .gatt = (void *) 1, .ios = queue_new() };
++    struct service service = { .client = &client };
++    struct characteristic chrc = { .service = &service, .path = "/test", .ready_id = 7 };
++    struct sock_io *pending = new0(struct sock_io, 1);
++    expected = dbus_message_new_method_call("org.bluez", "/test",
++        GATT_CHARACTERISTIC_IFACE, notify ? "AcquireNotify" : "AcquireWrite");
++    dbus_message_set_serial(expected, 1);
++    pending->msg = dbus_message_ref(expected);
++    pending->destroy = half_resource_destroy;
++    if (notify) chrc.notify_io = pending;
++    else chrc.write_io = pending;
++    ready = true;
++    socket_failure = delivery_failure = false;
++    abandoned = delivered = destroyed = ready_removed = 0;
++    characteristic_ready(true, 0, &chrc);
++    assert(delivered == 1 && abandoned == 0 && destroyed == 0 && ready_removed == 1);
++    assert(!pending->msg && pending->io && io_get_fd(pending->io) >= 0);
++    assert(chrc.ready_id == 0 && queue_length(client.ios) == 1);
++    destroy_sock(&chrc, pending->io);
++    assert(destroyed == 1 && queue_isempty(client.ios));
++    assert(abandoned == 0);
++    dbus_message_unref(expected);
++    expected = NULL;
++    queue_destroy(client.ios, NULL);
++}
++
++static void deferred(bool notify, bool ready_ok, bool socket_error, bool send_error)
++{
++    struct btd_gatt_client client = { .gatt = (void *) 1, .ios = queue_new() };
++    struct service service = { .client = &client };
++    struct characteristic chrc = { .service = &service, .path = "/test", .ready_id = 7 };
++    struct sock_io *pending = new0(struct sock_io, 1);
++    expected = dbus_message_new_method_call("org.bluez", "/test",
++        GATT_CHARACTERISTIC_IFACE, notify ? "AcquireNotify" : "AcquireWrite");
++    assert(expected);
++    dbus_message_set_serial(expected, 1);
++    pending->msg = dbus_message_ref(expected);
++    pending->destroy = half_resource_destroy;
++    if (notify) chrc.notify_io = pending;
++    else chrc.write_io = pending;
++    ready = ready_ok;
++    socket_failure = socket_error;
++    delivery_failure = send_error;
++    abandoned = delivered = destroyed = 0;
++    characteristic_ready(ready_ok, ready_ok ? 0 : 0x0e, &chrc);
++    assert(delivered == 1 && abandoned == 1 && destroyed == 1);
++    assert(chrc.ready_id == 0 && !chrc.write_io && !chrc.notify_io);
++    assert(queue_isempty(client.ios));
++    dbus_message_unref(expected);
++    expected = NULL;
++    queue_destroy(client.ios, NULL);
++}
++
++/* Actual notify_io_destroy/notify_client_free, not a substitute destructor. */
++static void pending_notify_cleanup(unsigned int scenario)
++{
++    struct btd_gatt_client client = { .gatt = (void *) 1, .ios = queue_new(),
++        .all_notify_clients = queue_new() };
++    struct service service = { .client = &client };
++    struct characteristic *chrc = new0(struct characteristic, 1);
++    struct notify_client *subscriber = new0(struct notify_client, 1);
++    chrc->service = &service;
++    chrc->path = g_strdup("/test");
++    chrc->ready_id = 7;
++    chrc->descs = queue_new();
++    chrc->notify_clients = queue_new();
++    expected = dbus_message_new_method_call("org.bluez", "/test",
++        GATT_CHARACTERISTIC_IFACE, "AcquireNotify");
++    dbus_message_set_serial(expected, 1);
++    subscriber->chrc = chrc;
++    subscriber->owner = strdup(":1.42");
++    subscriber->watch = 11;
++    subscriber->notify_id = 42;
++    subscriber->ref_count = 2;
++    queue_push_tail(chrc->notify_clients, subscriber);
++    chrc->notify_io = new0(struct sock_io, 1);
++    chrc->notify_io->data = subscriber;
++    chrc->notify_io->destroy = notify_io_destroy;
++    chrc->notify_io->msg = dbus_message_ref(expected);
++    ready = false;
++    socket_failure = delivery_failure = false;
++    abandoned = delivered = ready_removed = notify_removed = watch_removed = 0;
++    if (scenario == 0) {
++        DBusMessage *stop = dbus_message_new_method_call("org.bluez", "/test",
++            GATT_CHARACTERISTIC_IFACE, "StopNotify");
++        dbus_message_set_serial(stop, 2);
++        DBusMessage *reply = characteristic_stop_notify(NULL, stop, chrc);
++        assert(reply && dbus_message_get_type(reply) == DBUS_MESSAGE_TYPE_METHOD_RETURN);
++        dbus_message_unref(reply);
++        dbus_message_unref(stop);
++    } else if (scenario == 1) {
++        characteristic_free(chrc);
++        chrc = NULL;
++    } else if (scenario == 2) {
++        notify_client_disconnect(NULL, subscriber);
++    } else {
++        const uint8_t value[] = { 7, 8 };
++        notify_io_cb(1, value, sizeof(value), subscriber);
++    }
++    assert(abandoned == 1 && delivered == 1 && ready_removed == 1);
++    assert(notify_removed == 1 && watch_removed == 1);
++    assert(queue_isempty(client.ios));
++    if (chrc) {
++        assert(!chrc->notify_io && chrc->ready_id == 0);
++        assert(queue_isempty(chrc->notify_clients));
++        characteristic_free(chrc);
++    }
++    assert(abandoned == 1 && delivered == 1 && ready_removed == 1);
++    assert(notify_removed == 1 && watch_removed == 1);
++    dbus_message_unref(expected);
++    expected = NULL;
++    queue_destroy(client.ios, NULL);
++    queue_destroy(client.all_notify_clients, NULL);
++}
++static void acquired_notify_delivery(bool fail, bool short_send)
++{
++    struct btd_gatt_client driver = { .gatt = (void *) 1,
++        .ios = queue_new(), .all_notify_clients = queue_new() };
++    struct service service = { .client = &driver };
++    struct characteristic chrc = { .service = &service, .path = "/test",
++        .notify_clients = queue_new() };
++    struct notify_client *subscriber = new0(struct notify_client, 1);
++    int descriptors[2];
++    assert(socketpair(AF_LOCAL, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC,
++        0, descriptors) == 0);
++    struct io *socket = io_new(descriptors[0]);
++    assert(socket);
++    io_set_close_on_destroy(socket, true);
++    queue_push_tail(driver.ios, socket);
++    subscriber->chrc = &chrc;
++    subscriber->owner = strdup(":1.42");
++    subscriber->watch = 11;
++    subscriber->notify_id = 42;
++    subscriber->ref_count = 2;
++    queue_push_tail(chrc.notify_clients, subscriber);
++    chrc.notify_io = new0(struct sock_io, 1);
++    chrc.notify_io->io = socket;
++    chrc.notify_io->data = subscriber;
++    chrc.notify_io->destroy = notify_io_destroy;
++    /* A successfully delivered acquisition no longer owns a pending reply. */
++    assert(!chrc.notify_io->msg);
++    notification_send_failure = fail;
++    notification_short_send = short_send;
++    abandoned = ready_removed = notify_removed = watch_removed = 0;
++    const uint8_t value[] = { 7, 8 };
++    notify_io_cb(1, value, sizeof(value), subscriber);
++    uint8_t received[8];
++    if (fail || short_send) {
++        assert(!chrc.notify_io);
++        assert(queue_isempty(chrc.notify_clients));
++        assert(queue_isempty(driver.ios));
++        assert(notify_removed == 1 && watch_removed == 1);
++        assert(recv(descriptors[1], received, sizeof(received), 0) == 0);
++    } else {
++        assert(chrc.notify_io && chrc.notify_io->io == socket);
++        assert(recv(descriptors[1], received, sizeof(received), 0) == 2);
++        assert(received[0] == 7 && received[1] == 8);
++        assert(notify_removed == 0 && watch_removed == 0);
++        destroy_sock(&chrc, socket);
++        assert(notify_removed == 1 && watch_removed == 1);
++    }
++    assert(abandoned == 0 && ready_removed == 0);
++    notification_send_failure = notification_short_send = false;
++    close(descriptors[1]);
++    queue_destroy(chrc.notify_clients, NULL);
++    queue_destroy(driver.ios, NULL);
++    queue_destroy(driver.all_notify_clients, NULL);
++}
++int main(void)
++{
++    acquired_notify_delivery(false, false);
++    acquired_notify_delivery(true, false);
++    acquired_notify_delivery(false, true);
++    immediate_write(false);
++    immediate_write(true);
++    deferred(false, true, true, false);
++    deferred(true, true, true, false);
++    deferred(false, false, false, false);
++    deferred(true, false, false, false);
++    deferred(false, true, false, true);
++    deferred(true, true, false, true);
++    deferred_success(false);
++    deferred_success(true);
++    pending_notify_cleanup(0);
++    pending_notify_cleanup(1);
++    pending_notify_cleanup(2);
++    pending_notify_cleanup(3);
++    puts("Production deferred FD errors retire exact admission and half-resource: OK");
++    return 0;
 +}

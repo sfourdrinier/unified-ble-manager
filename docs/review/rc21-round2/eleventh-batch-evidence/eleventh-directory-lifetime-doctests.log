@@ -1,0 +1,52 @@
+   Compiling ubm5_napi_echo v0.1.0 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/bindings/napi)
+   Compiling ubm5_jni_echo v0.1.0 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/bindings/jni)
+   Compiling ubm5_uniffi_echo v0.1.0 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/bindings/uniffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.99s
+   Doc-tests ubm_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm_desktop
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm_fake_radio
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm_mobile
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm5_jni_echo
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm5_napi_echo
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm5_uniffi_echo
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ubm5_wasm_echo
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

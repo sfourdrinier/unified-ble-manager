@@ -32,8 +32,30 @@ function descriptor(id, scenario) {
 }
 
 describe('trusted IPC capability bootstrap', () => {
-  test('projects renderer-only control seams to unsupported until IPC routes them', () => {
+  test('routes write readiness, so the native descriptor passes through', () => {
     const source = descriptor('gatt:write-without-response-readiness', 'connection-controls')
+    const projected = projectRemoteCapabilities({
+      schemaVersion: 2,
+      backendGeneration: 'backend-generation-1',
+      descriptors: [source]
+    })
+
+    expect(projected.descriptors[0]).toEqual(source)
+  })
+
+  test('routes connection parameters, so the native descriptor passes through', () => {
+    const source = descriptor('connection:parameters', 'connection-controls')
+    const projected = projectRemoteCapabilities({
+      schemaVersion: 2,
+      backendGeneration: 'backend-generation-1',
+      descriptors: [source]
+    })
+
+    expect(projected.descriptors[0]).toEqual(source)
+  })
+
+  test('projects renderer-only control seams to unsupported until IPC routes them', () => {
+    const source = descriptor('connection:subrate', 'connection-controls')
     const projected = projectRemoteCapabilities({
       schemaVersion: 2,
       backendGeneration: 'backend-generation-1',

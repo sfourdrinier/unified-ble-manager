@@ -1,0 +1,18 @@
+{
+  "runtime": "Bun 1.4.2",
+  "scope": "actual provider watch/event methods with deterministic native scheduling, no physical radio",
+  "expected": "Initial 30000 before newer 60000, or suppress obsolete initial sample; final current sample must be 60000",
+  "actualIntervalsUs": [
+    60000,
+    30000
+  ],
+  "actualOrdinals": [
+    1,
+    2
+  ],
+  "actualObservedTimes": [
+    1,
+    2
+  ],
+  "finalStateRegressed": true
+}

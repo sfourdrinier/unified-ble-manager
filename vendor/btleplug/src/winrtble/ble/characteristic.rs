@@ -40,7 +40,7 @@ use windows::{
 
 /// UBM patch (`winrt-attribute-instances`): shared so a live subscription
 /// can move to the characteristic object of a later discovery.
-pub type NotifyEventHandler = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
+pub type NotifyEventHandler = Arc<dyn Fn(std::result::Result<Vec<u8>, crate::PlatformError>) + Send + Sync>;
 
 impl From<WriteType> for GattWriteOption {
     fn from(val: WriteType) -> Self {
@@ -80,15 +80,18 @@ fn value_changed(
 ) -> TypedEventHandler<GattCharacteristic, GattValueChangedEventArgs> {
     TypedEventHandler::new(
         move |_: Ref<GattCharacteristic>, args: Ref<GattValueChangedEventArgs>| {
-            if let Ok(args) = args.ok() {
+            let result = (|| -> windows::core::Result<Vec<u8>> {
+                let args = args.ok()?;
                 let value = args.CharacteristicValue()?;
                 let reader = DataReader::FromBuffer(&value)?;
                 let len = reader.UnconsumedBufferLength()? as usize;
                 let mut input: Vec<u8> = vec![0u8; len];
                 reader.ReadBytes(&mut input[0..len])?;
                 trace!("changed {:?}", input);
-                handler(input);
-            }
+                Ok(input)
+            })();
+            handler(result.map_err(|error| crate::PlatformError::new("winrt", "hresult", error.message().to_string())
+                .with("hresult", crate::winrtble::gatt_model::hresult_code(error.code().0))));
             Ok(())
         },
     )
@@ -212,30 +215,42 @@ impl BLECharacteristic {
         value: GattClientCharacteristicConfigurationDescriptorValue,
         operation: &str,
     ) -> Result<()> {
-        let status = characteristic
-            .WriteClientCharacteristicConfigurationDescriptorAsync(value)?
+        let result = characteristic
+            .WriteClientCharacteristicConfigurationDescriptorWithResultAsync(value)?
             .into_future()
             .await?;
+        let status = result.Status()?;
         trace!("{operation} {:?}", status);
         if status == GattCommunicationStatus::Success {
             Ok(())
         } else {
-            // The CCCD call returns no result object, so no ATT error byte
-            // is available here; the status alone is reported.
-            Err(utils::gatt_status_error(operation, status, None))
+            Err(utils::gatt_status_error(
+                operation,
+                status,
+                utils::protocol_att_error(result.ProtocolError()),
+            ))
         }
     }
 
-    /// Register `handler` for `ValueChanged`, replacing this object's
-    /// previous registration so handlers never accumulate, and return the
-    /// CCCD value subscribe writes with the new registration's token. A
-    /// characteristic that can neither notify nor indicate is refused
-    /// before anything is registered.
+    /// Register `handler` for `ValueChanged` and return the CCCD value
+    /// `to_descriptor_value` would write (Indicate when that bit is set).
+    /// Other callers keep that path. The desktop enable path uses
+    /// [`register_with`] so the first write is the selected mode.
     pub fn register(
         &mut self,
         handler: NotifyEventHandler,
     ) -> Result<(GattClientCharacteristicConfigurationDescriptorValue, i64)> {
-        let config = to_descriptor_value(self.properties);
+        self.register_with(handler, to_descriptor_value(self.properties))
+    }
+
+    /// Register `handler` and write `config` once. `None` is refused before
+    /// anything is registered. The given value is not replaced with the
+    /// other mode.
+    pub fn register_with(
+        &mut self,
+        handler: NotifyEventHandler,
+        config: GattClientCharacteristicConfigurationDescriptorValue,
+    ) -> Result<(GattClientCharacteristicConfigurationDescriptorValue, i64)> {
         if config == GattClientCharacteristicConfigurationDescriptorValue::None {
             return Err(Error::NotSupported("Can not subscribe to attribute".into()));
         }

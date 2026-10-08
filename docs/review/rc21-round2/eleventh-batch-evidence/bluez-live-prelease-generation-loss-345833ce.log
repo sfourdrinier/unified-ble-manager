@@ -1,0 +1,6 @@
+{"phase": "owned-kernel-auto-connect-policy", "priorDeviceList": "6c:1f:8a:a1:25:a7 (type 0)\n", "addAnswer": "Adding device with DC:56:7B:D9:E8:A4 (LE Public)\nhci0 device_flags_changed: DC:56:7B:D9:E8:A4 (LE Public)\n     supp: 0x00000009  curr: 0x00000000\n"}
+{"phase": "foreign-read-before-first-lease", "initiator": "kernel-auto-connect", "centralAdapter": "hci0", "peripheralAdapter": "hci1", "heldProcess": 3699123, "readSender": ":1.15663", "pending": true}
+{"phase": "unleased-generation-physically-ended", "readAnswer": {"error": "org.bluez.Error.Failed: Operation failed with ATT error: 0x0e", "name": "org.bluez.Error.Failed"}, "readSender": ":1.15663"}
+{"result": "passed", "generation": 52, "receipt": "physical-released", "readSenderStillAlive": ":1.15663", "oldRead": {"error": "org.bluez.Error.Failed: Operation failed with ATT error: 0x0e", "name": "org.bluez.Error.Failed"}, "physicalReleased": true, "source": "installed daemon, native remote controller disconnect and actual ATT; simulated server held by SIGSTOP"}
+{"phase": "owned-auto-policy-removed", "answer": "Removing device with DC:56:7B:D9:E8:A4 (LE Public)\n"}
+{"phase": "kernel-auto-policy-restored", "deviceList": "6c:1f:8a:a1:25:a7 (type 0)\n"}

@@ -1,0 +1,4 @@
+    Checking btleplug v0.12.0 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/vendor/btleplug)
+   Compiling tauri-plugin-unified-ble-manager v5.0.0-rc.21 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/native/tauri)
+    Checking ubm-desktop v0.1.0 (/Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/crates/ubm-desktop)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.31s

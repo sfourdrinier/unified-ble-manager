@@ -384,6 +384,8 @@ async fn cleanup_only_scan_is_stopped_before_immediate_replacement_admission() {
 
     assert_eq!(
         host.ingest(RadioIngress::Advertisement(Advertisement {
+            capture_timestamp_ms: None,
+            cached_name: None,
             peer_id: POLAR.to_owned(),
             address: Some(POLAR.to_owned()),
             service_uuids: vec![HR_SERVICE.to_owned()],

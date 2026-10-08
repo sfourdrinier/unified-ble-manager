@@ -108,8 +108,10 @@ export interface GattDatabase {
 export interface GattService {
   readonly uuid: string
   readonly occurrence: number
-  readonly primary: boolean
-  readonly includedServices: readonly GattServiceReference[]
+  readonly primary: boolean | null
+  readonly includedServices: readonly GattServiceReference[] | null
+  /** Present when Windows kept the service but did not list its characteristics. */
+  readonly restriction?: import('../backend-contract/gatt').GattServiceRestriction
   readonly characteristics: readonly GattCharacteristic[]
   characteristic(uuid: UuidInput, selector?: OccurrenceSelector): GattCharacteristic
   characteristicsByUuid(uuid: UuidInput): readonly GattCharacteristic[]
@@ -132,6 +134,12 @@ export interface GattCharacteristic {
   readReceipt(options?: OperationOptions): Promise<GattReadReceipt>
   write(value: Uint8Array, options?: GattWriteOptions): Promise<GattWriteReceipt>
   writeWhenReady(value: Uint8Array, options?: OperationOptions): Promise<GattWriteReceipt>
+  /** Acquires BlueZ's optional eligible-characteristic FD; never falls back to writes. */
+  acquireWrite(options?: OperationOptions): Promise<GattAcquiredWriter>
+  /** Acquires the optional FD notification route with bounded owned delivery. */
+  acquireNotifications(
+    options?: OperationOptions & { readonly stream?: StreamPolicy }
+  ): Promise<GattAcquiredNotifications>
   writeLong(value: Uint8Array, options?: LongWriteOptions): Promise<GattLongWriteReceipt>
   /**
    * A subscription acquired but not publishable is removed before rejection.
@@ -141,6 +149,17 @@ export interface GattCharacteristic {
   subscribe(options?: GattSubscribeOptions): Promise<GattSubscription>
   withSubscription<T>(options: GattSubscribeOptions, action: (subscription: GattSubscription) => Promise<T>): Promise<T>
   descriptor(uuid: UuidInput, selector?: OccurrenceSelector): GattDescriptor
+}
+
+export interface GattAcquiredWriter {
+  readonly mtuBytes: number
+  write(value: Uint8Array, options?: OperationOptions): Promise<GattWriteReceipt>
+  close(): Promise<CleanupRecord>
+}
+export interface GattAcquiredNotifications {
+  readonly mtuBytes: number
+  readonly values: PublicBoundedAsyncStream<GattValueEvent>
+  close(): Promise<CleanupRecord>
 }
 
 export interface GattDescriptor {
@@ -361,8 +380,9 @@ class PublicGattDatabase implements GattDatabase {
 class PublicGattService implements GattService {
   readonly uuid: string
   readonly occurrence: number
-  readonly primary: boolean
-  readonly includedServices: readonly GattServiceReference[]
+  readonly primary: boolean | null
+  readonly includedServices: readonly GattServiceReference[] | null
+  readonly restriction?: import('../backend-contract/gatt').GattServiceRestriction
   readonly characteristics: readonly GattCharacteristic[]
   private readonly characteristicLookup: ReadonlyMap<string, readonly GattCharacteristic[]>
 
@@ -377,12 +397,19 @@ class PublicGattService implements GattService {
   ) {
     this.uuid = normalizeUuid(indexedRecord.record.path.serviceUuid)
     this.occurrence = indexedRecord.occurrence
-    this.primary = optionalBoolean(indexedRecord.record.primary, true, 'public-gatt.service.primary')
-    this.includedServices = Object.freeze(
-      (indexedRecord.record.includedServices ?? []).map(reference =>
-        Object.freeze({ uuid: normalizeUuid(reference.uuid), occurrence: occurrenceNumber(reference.occurrence) })
-      )
-    )
+    this.primary =
+      indexedRecord.record.primary == null
+        ? null
+        : optionalBoolean(indexedRecord.record.primary, false, 'public-gatt.service.primary')
+    this.includedServices =
+      indexedRecord.record.includedServices == null
+        ? null
+        : Object.freeze(
+            indexedRecord.record.includedServices.map(reference =>
+              Object.freeze({ uuid: normalizeUuid(reference.uuid), occurrence: occurrenceNumber(reference.occurrence) })
+            )
+          )
+    this.restriction = indexedRecord.record.restriction
     this.characteristics = Object.freeze(
       characteristics.map(
         entry => new PublicGattCharacteristic(this, source, entry.characteristic, entry.descriptors, provisionalOwner)
@@ -483,6 +510,50 @@ class PublicGattCharacteristic implements GattCharacteristic {
         chunkSize: options.chunkSize
       })
     )
+  }
+
+  acquireWrite(options: OperationOptions = {}): Promise<GattAcquiredWriter> {
+    return this.run(async () => {
+      const acquire = this.source.acquireWrite
+      if (acquire === undefined) throw contractError('capability.unsupported', 'gatt', 'public-gatt.acquire-write')
+      const writer = await acquire.call(
+        this.source,
+        this.indexedRecord.record.path,
+        normalizeOperationOptions(options, () => this.source.monotonicNow())
+      )
+      return Object.freeze({
+        mtuBytes: writer.mtuBytes,
+        write: (value: Uint8Array, writeOptions: OperationOptions = {}) =>
+          this.run(() => {
+            if (!(value instanceof Uint8Array))
+              throw contractError('argument.invalid', 'gatt', 'public-gatt.acquired-write.bytes')
+            const owned = new Uint8Array(value)
+            return writer.write(
+              owned,
+              normalizeOperationOptions(writeOptions, () => this.source.monotonicNow())
+            )
+          }),
+        close: () => rehydrateCleanup(writer.close())
+      })
+    })
+  }
+
+  acquireNotifications(
+    options: OperationOptions & { readonly stream?: StreamPolicy } = {}
+  ): Promise<GattAcquiredNotifications> {
+    return this.run(async () => {
+      const acquire = this.source.acquireNotifications
+      if (acquire === undefined) throw contractError('capability.unsupported', 'gatt', 'public-gatt.acquire-notify')
+      const subscription = await acquire.call(this.source, this.indexedRecord.record.path, {
+        ...normalizeOperationOptions(options, () => this.source.monotonicNow()),
+        delivery: resolveStreamPolicy(options.stream ?? 'balanced')
+      })
+      return Object.freeze({
+        mtuBytes: subscription.mtuBytes,
+        values: mapGattValueStream(subscription.values, () => this.source.monotonicNow()),
+        close: () => rehydrateCleanup(subscription.close())
+      })
+    })
   }
 
   async subscribe(options: GattSubscribeOptions = {}): Promise<GattSubscription> {

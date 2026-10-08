@@ -178,6 +178,8 @@ async fn buffered_advertisement_retains_its_membership_across_restart() {
     let _ = session.drain(256, 65536);
     let before = wake.1.load(Ordering::SeqCst);
     host.ingest(RadioIngress::Advertisement(Advertisement {
+        capture_timestamp_ms: None,
+        cached_name: None,
         peer_id: POLAR.into(),
         service_uuids: vec![HR_SERVICE.into()],
         ..Advertisement::default()

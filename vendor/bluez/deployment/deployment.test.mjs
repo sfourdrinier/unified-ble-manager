@@ -27,7 +27,7 @@ function fixture(t) {
     upstream: { archive: 'bluez-5.87.tar.xz', sha256: hash(fs.readFileSync(archive)) },
     patch: { file: 'extension.patch', sha256: hash('extension.patch') },
     licenseFiles: ['COPYING', 'COPYING.LIB'].map(file => ({ file, sha256: hash(file) })),
-    distribution: { linuxAuthorityContract: [1, 2, 1], release: '5.87-ubm.2' }
+    distribution: { linuxAuthorityContract: [1, 3, 1], release: '5.87-ubm.2' }
   }
   fs.writeFileSync(path.join(assets, 'source-asset-manifest.json'), JSON.stringify(manifest))
   const calls = []
@@ -66,7 +66,7 @@ test('build invokes fresh preparation, producer gates, and separate production p
   const bundle = buildBundle(f.options, { assets: f.assets, run: f.run })
   assert.equal(bundle.schema, 'ubm-bluez-deployment/1')
   assert.equal(bundle.qualification, 'built-not-radio-qualified')
-  assert.deepEqual(bundle.authorityContract, [1, 2, 1])
+  assert.deepEqual(bundle.authorityContract, [1, 3, 1])
   const prepares = f.calls.filter(call => call.command === 'sh' && call.args[0].endsWith('prepare-isolated.sh'))
   assert.equal(prepares.length, 2)
   assert.notEqual(prepares[0].args[2], prepares[1].args[2])
@@ -91,7 +91,7 @@ test('unready producer, changed input, relative paths and existing destinations 
   delete f.manifest.distribution.linuxAuthorityContract
   fs.writeFileSync(path.join(f.assets, 'source-asset-manifest.json'), JSON.stringify(f.manifest))
   assert.throws(() => buildBundle(f.options, { assets: f.assets, run: f.run }), /not ready/)
-  f.manifest.distribution.linuxAuthorityContract = [1, 2, 1]
+  f.manifest.distribution.linuxAuthorityContract = [1, 3, 1]
   fs.writeFileSync(path.join(f.assets, 'source-asset-manifest.json'), JSON.stringify(f.manifest))
   fs.appendFileSync(f.archive, 'mutation')
   assert.throws(() => buildBundle(f.options, { assets: f.assets, run: f.run }), /archive digest/)
@@ -105,7 +105,8 @@ test('old scope-only and unknown authority revisions refuse before invoking tool
   const f = fixture(t)
   for (const contract of [
     [1, 1, 1],
-    [1, 2, 2]
+    [1, 2, 1],
+    [1, 3, 2]
   ]) {
     f.manifest.distribution.linuxAuthorityContract = contract
     fs.writeFileSync(path.join(f.assets, 'source-asset-manifest.json'), JSON.stringify(f.manifest))

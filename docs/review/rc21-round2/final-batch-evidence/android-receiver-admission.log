@@ -1,0 +1,91 @@
+
+> unified-ble-manager@5.0.0-rc.21 test:native-protocol:android /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> cd example/android && ./gradlew -I ../../example-expo/native/test-android.gradle :unified-ble-manager:testDebugUnitTest :manifest-consumer:processNeverTrueDebugMainManifest :manifest-consumer:processNeverFalseDebugMainManifest :manifest-consumer:processNeverTrueAgainDebugMainManifest :manifest-consumer:processLegacyApi30DebugMainManifest --no-daemon --console=plain && node ../../scripts/ci/verify-android-consumer-manifests.js && node ../../scripts/ci/check-android-prebuilt-verifier.js && node ../../scripts/ci/check-android-bundle-inputs.js
+
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.13/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :gradle-plugin:settings-plugin:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gradle-plugin:shared:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gradle-plugin:shared:compileKotlin UP-TO-DATE
+> Task :gradle-plugin:shared:compileJava NO-SOURCE
+> Task :gradle-plugin:shared:processResources NO-SOURCE
+> Task :gradle-plugin:shared:classes UP-TO-DATE
+> Task :gradle-plugin:shared:jar UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:compileKotlin UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:compileJava NO-SOURCE
+> Task :gradle-plugin:settings-plugin:pluginDescriptors UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:processResources UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:classes UP-TO-DATE
+> Task :gradle-plugin:settings-plugin:jar UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gradle-plugin:react-native-gradle-plugin:compileKotlin UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:compileJava NO-SOURCE
+> Task :gradle-plugin:react-native-gradle-plugin:pluginDescriptors UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:processResources UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:classes UP-TO-DATE
+> Task :gradle-plugin:react-native-gradle-plugin:jar UP-TO-DATE
+> Task :unified-ble-manager:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :unified-ble-manager:buildUbmRustCdylibDebug UP-TO-DATE
+> Task :unified-ble-manager:generateCodegenSchemaFromJavaScript UP-TO-DATE
+> Task :unified-ble-manager:generateCodegenArtifactsFromSchema UP-TO-DATE
+> Task :unified-ble-manager:preBuild UP-TO-DATE
+> Task :unified-ble-manager:preDebugBuild UP-TO-DATE
+> Task :unified-ble-manager:generateDebugBuildConfig UP-TO-DATE
+> Task :unified-ble-manager:generateDebugResValues UP-TO-DATE
+> Task :unified-ble-manager:generateDebugResources UP-TO-DATE
+> Task :unified-ble-manager:packageDebugResources UP-TO-DATE
+> Task :unified-ble-manager:parseDebugLocalResources UP-TO-DATE
+> Task :unified-ble-manager:generateDebugRFile UP-TO-DATE
+> Task :unified-ble-manager:javaPreCompileDebug UP-TO-DATE
+> Task :unified-ble-manager:preDebugUnitTestBuild UP-TO-DATE
+> Task :unified-ble-manager:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :unified-ble-manager:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :manifest-consumer:preBuild UP-TO-DATE
+> Task :manifest-consumer:preNeverTrueDebugBuild UP-TO-DATE
+> Task :manifest-consumer:generateNeverTrueDebugResValues UP-TO-DATE
+> Task :manifest-consumer:extractDeepLinksNeverTrueDebug UP-TO-DATE
+> Task :unified-ble-manager:extractDeepLinksDebug UP-TO-DATE
+> Task :unified-ble-manager:processDebugManifest UP-TO-DATE
+> Task :manifest-consumer:processNeverTrueDebugMainManifest UP-TO-DATE
+> Task :manifest-consumer:preNeverFalseDebugBuild UP-TO-DATE
+> Task :manifest-consumer:generateNeverFalseDebugResValues UP-TO-DATE
+> Task :manifest-consumer:extractDeepLinksNeverFalseDebug UP-TO-DATE
+> Task :manifest-consumer:processNeverFalseDebugMainManifest UP-TO-DATE
+> Task :manifest-consumer:preNeverTrueAgainDebugBuild UP-TO-DATE
+> Task :manifest-consumer:generateNeverTrueAgainDebugResValues UP-TO-DATE
+> Task :manifest-consumer:extractDeepLinksNeverTrueAgainDebug UP-TO-DATE
+> Task :manifest-consumer:processNeverTrueAgainDebugMainManifest UP-TO-DATE
+> Task :manifest-consumer:preLegacyApi30DebugBuild UP-TO-DATE
+> Task :manifest-consumer:generateLegacyApi30DebugResValues UP-TO-DATE
+> Task :manifest-consumer:extractDeepLinksLegacyApi30Debug UP-TO-DATE
+> Task :manifest-consumer:processLegacyApi30DebugMainManifest UP-TO-DATE
+> Task :unified-ble-manager:compileDebugKotlin
+> Task :unified-ble-manager:compileDebugJavaWithJavac UP-TO-DATE
+> Task :unified-ble-manager:processDebugJavaRes UP-TO-DATE
+> Task :unified-ble-manager:bundleLibRuntimeToJarDebug
+> Task :unified-ble-manager:bundleLibCompileToJarDebug
+
+> Task :unified-ble-manager:compileDebugUnitTestKotlin
+w: file:///Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/android/src/test/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcherRadioIngressTest.kt:170:35 'fun writeDescriptor(p0: BluetoothGattDescriptor!): Boolean' is deprecated. Deprecated in Java.
+w: file:///Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/android/src/test/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidEncryptionTest.kt:172:19 'fun <T : Parcelable!> getParcelableExtra(p0: String!): T?' is deprecated. Deprecated in Java.
+
+> Task :unified-ble-manager:compileDebugUnitTestJavaWithJavac UP-TO-DATE
+> Task :unified-ble-manager:processDebugUnitTestJavaRes UP-TO-DATE
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+
+> Task :unified-ble-manager:testDebugUnitTest
+canonical wrapper envelopes: 5 passed
+
+[Incubating] Problems report is available at: file:///Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21/example/android/build/reports/problems/problems-report.html
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.13/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD SUCCESSFUL in 22s
+45 actionable tasks: 5 executed, 40 up-to-date
+Android merged-manifest consumer proof passed (presence, true -> false -> true, API 30 location).
+Android prebuilt ELF verifier: ELF32/ELF64 accepted; eleven malformed fixtures rejected; Gradle ran with empty PATH
+Android bundle inputs: copied JS modification/addition/removal and package metadata invalidate; reference endpoint enabled/off/absent transitions invalidate; unchanged inputs stay cached; paths with spaces work; missing copied modules fail closed

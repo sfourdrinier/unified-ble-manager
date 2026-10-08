@@ -48,10 +48,7 @@ describe('rc.4.1 fail-closed audit closure', () => {
   })
 
   test('P2-03 rejects malformed counters and uses a public capability error when diagnostics are unavailable', () => {
-    expectCode(
-      () => snapshotResourceCounters({ activeScanControllers: Number.NaN }),
-      'protocol.violation'
-    )
+    expectCode(() => snapshotResourceCounters({ activeScanControllers: Number.NaN }), 'protocol.violation')
     expectCode(() => snapshotResourceCounters({ scanConsumers: -1 }), 'protocol.violation')
     expectCode(() => snapshotResourceCounters({ connectionLeases: 1.5 }), 'protocol.violation')
     const diagnostics = diagnosticsUnavailable()
@@ -184,7 +181,11 @@ describe('rc.4.1 fail-closed audit closure', () => {
       primary: true,
       includedServices: [{ uuid: '1800', occurrence: '99' }]
     }
-    await expect(createPublicGattDatabase(gattSource({ path, services: [baseService, dangling], characteristics: [], descriptors: [] }))).rejects.toMatchObject({
+    await expect(
+      createPublicGattDatabase(
+        gattSource({ path, services: [baseService, dangling], characteristics: [], descriptors: [] })
+      )
+    ).rejects.toMatchObject({
       code: 'protocol.violation'
     })
     const malformedProperty = {
@@ -328,11 +329,9 @@ describe('rc.4.1 fail-closed audit closure', () => {
 
   test('P1-14 Node host factories rehydrate BackendContractError to BleError', async () => {
     await expect(
-      createNodeBleManagerFromProvider(
-        { listAdapters: async () => [] },
-        coreBluetoothCompatibility,
-        { diagnostics: null }
-      )
+      createNodeBleManagerFromProvider({ listAdapters: async () => [] }, coreBluetoothCompatibility, {
+        diagnostics: null
+      })
     ).rejects.toBeInstanceOf(BleError)
   })
 
@@ -362,11 +361,76 @@ describe('rc.4.1 fail-closed audit closure', () => {
       },
       attachmentId: 'attachment-1',
       versions: {
-        backendContract: { axis: 'backend-contract', selected: { axis: 'backend-contract', value: 1 }, localRange: { axis: 'backend-contract', minimum: { axis: 'backend-contract', value: 1 }, maximum: { axis: 'backend-contract', value: 1 } }, remoteRange: { axis: 'backend-contract', minimum: { axis: 'backend-contract', value: 1 }, maximum: { axis: 'backend-contract', value: 1 } } },
-        capabilitySchema: { axis: 'capability-schema', selected: { axis: 'capability-schema', value: 1 }, localRange: { axis: 'capability-schema', minimum: { axis: 'capability-schema', value: 1 }, maximum: { axis: 'capability-schema', value: 1 } }, remoteRange: { axis: 'capability-schema', minimum: { axis: 'capability-schema', value: 1 }, maximum: { axis: 'capability-schema', value: 1 } } },
-        eventSchema: { axis: 'event-schema', selected: { axis: 'event-schema', value: 1 }, localRange: { axis: 'event-schema', minimum: { axis: 'event-schema', value: 1 }, maximum: { axis: 'event-schema', value: 1 } }, remoteRange: { axis: 'event-schema', minimum: { axis: 'event-schema', value: 1 }, maximum: { axis: 'event-schema', value: 1 } } },
-        traceFormat: { axis: 'trace-format', selected: { axis: 'trace-format', value: 1 }, localRange: { axis: 'trace-format', minimum: { axis: 'trace-format', value: 1 }, maximum: { axis: 'trace-format', value: 1 } }, remoteRange: { axis: 'trace-format', minimum: { axis: 'trace-format', value: 1 }, maximum: { axis: 'trace-format', value: 1 } } },
-        ipcProtocol: { axis: 'ipc-protocol', selected: { axis: 'ipc-protocol', value: 5 }, localRange: { axis: 'ipc-protocol', minimum: { axis: 'ipc-protocol', value: 5 }, maximum: { axis: 'ipc-protocol', value: 5 } }, remoteRange: { axis: 'ipc-protocol', minimum: { axis: 'ipc-protocol', value: 5 }, maximum: { axis: 'ipc-protocol', value: 5 } } }
+        backendContract: {
+          axis: 'backend-contract',
+          selected: { axis: 'backend-contract', value: 1 },
+          localRange: {
+            axis: 'backend-contract',
+            minimum: { axis: 'backend-contract', value: 1 },
+            maximum: { axis: 'backend-contract', value: 1 }
+          },
+          remoteRange: {
+            axis: 'backend-contract',
+            minimum: { axis: 'backend-contract', value: 1 },
+            maximum: { axis: 'backend-contract', value: 1 }
+          }
+        },
+        capabilitySchema: {
+          axis: 'capability-schema',
+          selected: { axis: 'capability-schema', value: 1 },
+          localRange: {
+            axis: 'capability-schema',
+            minimum: { axis: 'capability-schema', value: 1 },
+            maximum: { axis: 'capability-schema', value: 1 }
+          },
+          remoteRange: {
+            axis: 'capability-schema',
+            minimum: { axis: 'capability-schema', value: 1 },
+            maximum: { axis: 'capability-schema', value: 1 }
+          }
+        },
+        eventSchema: {
+          axis: 'event-schema',
+          selected: { axis: 'event-schema', value: 1 },
+          localRange: {
+            axis: 'event-schema',
+            minimum: { axis: 'event-schema', value: 1 },
+            maximum: { axis: 'event-schema', value: 1 }
+          },
+          remoteRange: {
+            axis: 'event-schema',
+            minimum: { axis: 'event-schema', value: 1 },
+            maximum: { axis: 'event-schema', value: 1 }
+          }
+        },
+        traceFormat: {
+          axis: 'trace-format',
+          selected: { axis: 'trace-format', value: 1 },
+          localRange: {
+            axis: 'trace-format',
+            minimum: { axis: 'trace-format', value: 1 },
+            maximum: { axis: 'trace-format', value: 1 }
+          },
+          remoteRange: {
+            axis: 'trace-format',
+            minimum: { axis: 'trace-format', value: 1 },
+            maximum: { axis: 'trace-format', value: 1 }
+          }
+        },
+        ipcProtocol: {
+          axis: 'ipc-protocol',
+          selected: { axis: 'ipc-protocol', value: 6 },
+          localRange: {
+            axis: 'ipc-protocol',
+            minimum: { axis: 'ipc-protocol', value: 6 },
+            maximum: { axis: 'ipc-protocol', value: 6 }
+          },
+          remoteRange: {
+            axis: 'ipc-protocol',
+            minimum: { axis: 'ipc-protocol', value: 6 },
+            maximum: { axis: 'ipc-protocol', value: 6 }
+          }
+        }
       },
       capabilities: {
         schemaVersion: 2,
@@ -395,9 +459,7 @@ describe('rc.4.1 fail-closed audit closure', () => {
             implementationVersion: 'fixture',
             sourceDigest: `fixture-${id}`,
             scenarioIds: ['capability.truth-limits-evidence-and-binding'],
-            limitations: [
-              { code: 'not-implemented', explanation: 'fixture', affectedGuarantee: 'support' }
-            ]
+            limitations: [{ code: 'not-implemented', explanation: 'fixture', affectedGuarantee: 'support' }]
           },
           limitations: [{ code: 'not-implemented', explanation: 'fixture', affectedGuarantee: 'support' }],
           limits: { availability: { maximum: 1, minimum: null, unit: 'boolean' } }
@@ -470,7 +532,12 @@ describe('rc.4.1 fail-closed audit closure', () => {
         }
       ]
     }
-    await expect(runWithCleanup(async () => 'ok', async () => cleanup)).rejects.toMatchObject({
+    await expect(
+      runWithCleanup(
+        async () => 'ok',
+        async () => cleanup
+      )
+    ).rejects.toMatchObject({
       name: 'BleCleanupError',
       message: 'BLE cleanup failed',
       cleanup
@@ -486,7 +553,10 @@ function gattSource(snapshot) {
     scheduleDeadline: () => ({ cancel() {} }),
     snapshot: async () => snapshot,
     read: async () => new Uint8Array(),
-    write: async () => ({ terminal: { correlation: 'w', outcome: 'succeeded', cause: null }, commitState: 'confirmed' }),
+    write: async () => ({
+      terminal: { correlation: 'w', outcome: 'succeeded', cause: null },
+      commitState: 'confirmed'
+    }),
     maximumWriteLength: async () => ({
       maximumWriteLength: 20,
       observedAtMonotonicMs: 1,

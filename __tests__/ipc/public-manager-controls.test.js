@@ -4,7 +4,33 @@ function descriptor(id, state, limitations = []) {
   return { id, state, limitations }
 }
 
-function capabilities(readinessState = 'unsupported', deferredState) {
+function scriptedStream(items) {
+  return {
+    [Symbol.asyncIterator]() {
+      let index = 0
+      return {
+        async next() {
+          if (index >= items.length) return { done: true, value: undefined }
+          const value = items[index]
+          index += 1
+          return { done: false, value }
+        },
+        async return() {
+          index = items.length
+          return { done: true, value: undefined }
+        }
+      }
+    }
+  }
+}
+
+function capabilities(
+  readinessState = 'unsupported',
+  deferredState,
+  parametersState = 'unsupported',
+  priorityState = 'unsupported',
+  phyState = 'unsupported'
+) {
   const descriptors = new Map([
     ['connection:direct', descriptor('connection:direct', 'supported')],
     [
@@ -20,9 +46,9 @@ function capabilities(readinessState = 'unsupported', deferredState) {
     ['gatt:maximum-write-length', descriptor('gatt:maximum-write-length', 'limited')],
     ['connection:effective-mtu', descriptor('connection:effective-mtu', 'unsupported')],
     ['connection:request-mtu', descriptor('connection:request-mtu', 'unsupported')],
-    ['connection:priority', descriptor('connection:priority', 'unsupported')],
-    ['connection:phy', descriptor('connection:phy', 'unsupported')],
-    ['connection:parameters', descriptor('connection:parameters', 'unsupported')],
+    ['connection:priority', descriptor('connection:priority', priorityState)],
+    ['connection:phy', descriptor('connection:phy', phyState)],
+    ['connection:parameters', descriptor('connection:parameters', parametersState)],
     ['connection:subrate', descriptor('connection:subrate', 'unsupported')],
     ['gatt:write-without-response-readiness', descriptor('gatt:write-without-response-readiness', readinessState)]
   ])
@@ -90,8 +116,8 @@ function database(generation) {
   }
 }
 
-function setup(readinessState, deferredState) {
-  const capabilitySnapshot = capabilities(readinessState, deferredState)
+function setup(readinessState, deferredState, parametersState, priorityState, phyState) {
+  const capabilitySnapshot = capabilities(readinessState, deferredState, parametersState, priorityState, phyState)
   let discoveryCount = 0
   const calls = []
   const base = {
@@ -102,6 +128,21 @@ function setup(readinessState, deferredState) {
     ownerLeaseId: 'lease-1',
     connectionGeneration: 'connection-generation-1',
     events: emptyEvents(),
+    readPhy: async options => {
+      calls.push({ kind: 'readPhy', options })
+      return {
+        tx: 'le-2m',
+        rx: 'le-coded',
+        observedAtMonotonicMs: 42,
+        source: 'platform',
+        authority: 'desktop-native',
+        limitations: []
+      }
+    },
+    requestPriority: async (priority, options) => {
+      calls.push({ kind: 'requestPriority', priority, options })
+      return true
+    },
     readRssi: async options => {
       calls.push({ kind: 'readRssi', options })
       return -42
@@ -123,6 +164,41 @@ function setup(readinessState, deferredState) {
     disconnect: async () => ({ state: 'released', failures: [] }),
     release: async () => ({ state: 'released', failures: [] })
   }
+  if (readinessState === 'limited' || readinessState === 'supported') {
+    base.writeReadiness = async () => ({
+      events: scriptedStream([
+        {
+          kind: 'value',
+          value: {
+            connectionId: 'connection-1',
+            connectionGeneration: 'connection-generation-1',
+            ready: true,
+            observedAtMonotonicMs: 42
+          }
+        }
+      ]),
+      close: async () => ({ state: 'released', failures: [] })
+    })
+  }
+  if (parametersState === 'limited' || parametersState === 'supported') {
+    base.parameters = async () => ({ intervalUs: 7500, latency: 0, supervisionTimeoutUs: 200000 })
+    base.parameterEvents = async () => ({
+      events: scriptedStream([
+        {
+          kind: 'value',
+          value: {
+            connectionId: 'connection-1',
+            connectionGeneration: 'connection-generation-1',
+            intervalUs: 7500,
+            latency: 0,
+            supervisionTimeoutUs: 200000,
+            observedAtMonotonicMs: 42
+          }
+        }
+      ]),
+      close: async () => ({ state: 'released', failures: [] })
+    })
+  }
   const ipc = {
     capabilities: capabilitySnapshot,
     bootstrap: { discovery: { kind: 'continuous-scan' } },
@@ -133,8 +209,25 @@ function setup(readinessState, deferredState) {
     capabilities: capabilitySnapshot,
     adapter: { id: 'adapter-1', state: async () => ({}), waitUntilReady: async () => ({}) }
   })
-  return { manager, calls, ipc }
+  return { manager, calls, ipc, base }
 }
+
+test('IPC public priority uses the supported host route and preserves request truth', async () => {
+  const { manager, calls } = setup(undefined, undefined, undefined, 'limited')
+  const connection = await manager.connect({ id: 'peer-1' })
+  for (const priority of ['balanced', 'low-power', 'high-throughput']) {
+    await expect(connection.controls.requestPriority(priority)).resolves.toMatchObject({
+      state: 'accepted',
+      requested: priority
+    })
+  }
+  await expect(connection.controls.requestPriority('invalid')).rejects.toMatchObject({ code: 'argument.invalid' })
+  expect(calls.filter(call => call.kind === 'requestPriority').map(call => call.priority)).toEqual([
+    'balanced',
+    'low-power',
+    'high-throughput'
+  ])
+})
 
 describe('IPC public connection controls', () => {
   test.each([
@@ -366,6 +459,178 @@ describe('IPC public connection controls', () => {
     }
   })
 
+  test('converts observed microseconds to milliseconds and yields a limited readiness event', async () => {
+    const { manager } = setup('limited', undefined, 'limited')
+    const connection = await manager.connect('peer-1')
+    await expect(connection.controls.parameters()).resolves.toMatchObject({
+      state: 'measured',
+      intervalMs: 7.5,
+      peripheralLatency: 0,
+      supervisionTimeoutMs: 200,
+      subrateFactor: null,
+      connectionEventLengthMs: null
+    })
+    const parameters = await connection.controls.parameterEvents()[Symbol.asyncIterator]().next()
+    expect(parameters.value).toMatchObject({ intervalMs: 7.5, supervisionTimeoutMs: 200 })
+    const readiness = await connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]().next()
+    expect(readiness.value).toMatchObject({ state: 'measured', mode: 'without-response', ready: true })
+  })
+
+  test('rejects a foreign control event and stamps the renderer receipt clock', async () => {
+    const now = jest.spyOn(globalThis.performance, 'now').mockReturnValue(8_000)
+    try {
+      const { manager, ipc } = setup('limited', undefined, 'limited')
+      const closes = []
+      const base = await ipc.connect('peer-1')
+      base.parameterEvents = async () => ({
+        events: scriptedStream([
+          {
+            kind: 'value',
+            value: {
+              connectionId: 'other-connection',
+              connectionGeneration: 'connection-generation-1',
+              intervalUs: 7500,
+              latency: 0,
+              supervisionTimeoutUs: 200000,
+              observedAtMonotonicMs: 42
+            }
+          }
+        ]),
+        close: async () => {
+          closes.push('parameters')
+          return { state: 'released', failures: [] }
+        }
+      })
+      base.writeReadiness = async () => ({
+        events: scriptedStream([
+          {
+            kind: 'value',
+            value: {
+              connectionId: 'connection-1',
+              connectionGeneration: 'other-generation',
+              ready: true,
+              observedAtMonotonicMs: 42
+            }
+          },
+          {
+            kind: 'value',
+            value: {
+              connectionId: 'connection-1',
+              connectionGeneration: 'connection-generation-1',
+              ready: true,
+              observedAtMonotonicMs: 42
+            }
+          }
+        ]),
+        close: async () => {
+          closes.push('readiness')
+          return { state: 'released', failures: [] }
+        }
+      })
+      const connection = await manager.connect('peer-1')
+      const parameters = connection.controls.parameterEvents()[Symbol.asyncIterator]()
+      await expect(parameters.next()).rejects.toMatchObject({
+        code: 'protocol.violation',
+        operation: 'ipc-public-manager.controls.parameter-events'
+      })
+      const readiness = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+      await expect(readiness.next()).rejects.toMatchObject({
+        code: 'protocol.violation',
+        operation: 'ipc-public-manager.controls.write-readiness'
+      })
+      expect(closes).toEqual(['parameters', 'readiness'])
+      base.parameterEvents = async () => ({
+        events: scriptedStream([
+          {
+            kind: 'value',
+            value: {
+              connectionId: 'connection-1',
+              connectionGeneration: 'connection-generation-1',
+              intervalUs: 7500,
+              latency: 0,
+              supervisionTimeoutUs: 200000,
+              observedAtMonotonicMs: 42
+            }
+          }
+        ]),
+        close: async () => ({ state: 'released', failures: [] })
+      })
+      base.writeReadiness = async () => ({
+        events: scriptedStream([
+          {
+            kind: 'value',
+            value: {
+              connectionId: 'connection-1',
+              connectionGeneration: 'connection-generation-1',
+              ready: true,
+              observedAtMonotonicMs: 42
+            }
+          }
+        ]),
+        close: async () => ({ state: 'released', failures: [] })
+      })
+      const acceptedParameters = await connection.controls.parameterEvents()[Symbol.asyncIterator]().next()
+      expect(acceptedParameters.value).toMatchObject({
+        state: 'measured',
+        intervalMs: 7.5,
+        connectionGeneration: 'connection-generation-1',
+        observedAtMonotonicMs: 8_000
+      })
+      const accepted = await connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]().next()
+      expect(accepted.value).toMatchObject({
+        state: 'measured',
+        ready: true,
+        connectionGeneration: 'connection-generation-1',
+        observedAtMonotonicMs: 8_000,
+        limitations: expect.arrayContaining([expect.objectContaining({ code: 'ipc-receipt-timestamp' })])
+      })
+      expect(accepted.value.observedAtMonotonicMs).not.toBe(42)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  test('overflow and source failure close the watch and keep the platform error', async () => {
+    const { manager, ipc } = setup('limited', undefined, 'limited')
+    const closes = []
+    const watch = items => async () => ({
+      events: scriptedStream(items),
+      close: async () => {
+        closes.push(items[0].kind === 'overflow' ? 'overflow' : 'source-failed')
+        return { state: 'released', failures: [] }
+      }
+    })
+    const base = await ipc.connect('peer-1')
+    base.parameterEvents = watch([{ kind: 'overflow' }])
+    base.writeReadiness = watch([
+      {
+        kind: 'terminal',
+        reason: 'source-failed',
+        error: {
+          code: 'adapter.powered-off',
+          domain: 'adapter',
+          operation: 'connection.write-readiness.watch',
+          platform: null,
+          retryability: 'caller-decides'
+        }
+      }
+    ])
+    const connection = await manager.connect('peer-1')
+    const parameters = connection.controls.parameterEvents()[Symbol.asyncIterator]()
+    await expect(parameters.next()).rejects.toMatchObject({
+      code: 'stream.overflow',
+      operation: 'ipc-public-manager.controls.parameter-events'
+    })
+    const readiness = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+    await expect(readiness.next()).rejects.toMatchObject({
+      code: 'adapter.powered-off',
+      operation: 'connection.write-readiness.watch'
+    })
+    expect(closes).toEqual(['overflow', 'source-failed'])
+    await parameters.return()
+    await readiness.return()
+  })
+
   test('preserves unavailable readiness state in the renderer stream error', async () => {
     const { manager } = setup('unavailable')
     const connection = await manager.connect('peer-1')
@@ -395,4 +660,321 @@ describe('IPC public connection controls', () => {
       expect.objectContaining({ kind: 'rediscover', reason: 'service-changed' })
     ])
   })
+})
+
+test('IPC public read-only PHY observation preserves differing native TX/RX without enabling selection', async () => {
+  const { manager, calls } = setup(undefined, undefined, undefined, undefined, 'limited')
+  const connection = await manager.connect({ id: 'peer-1' })
+  await expect(connection.controls.readPhy()).resolves.toMatchObject({
+    state: 'measured',
+    tx: 'le-2m',
+    rx: 'le-coded',
+    connectionGeneration: 'connection-generation-1'
+  })
+  expect(calls.filter(call => call.kind === 'readPhy')).toHaveLength(1)
+  await expect(connection.controls.requestPhy({ tx: 'le-2m' })).rejects.toMatchObject({
+    code: 'capability.unsupported'
+  })
+})
+
+test.each(['unsupported', 'unavailable'])('IPC PHY runtime refusal stays %s before native dispatch', async state => {
+  const { manager, calls } = setup(undefined, undefined, undefined, undefined, state)
+  const connection = await manager.connect({ id: 'peer-1' })
+  await expect(connection.controls.readPhy()).rejects.toMatchObject({ code: `capability.${state}` })
+  expect(calls).toHaveLength(0)
+})
+
+test.each([
+  { tx: 'unknown', rx: 'le-1m' },
+  { tx: null, rx: 'le-1m' }
+])('IPC rejects malformed PHY measurements %p', async value => {
+  const { manager, base } = setup(undefined, undefined, undefined, undefined, 'limited')
+  base.readPhy = async () => value
+  const connection = await manager.connect({ id: 'peer-1' })
+  await expect(connection.controls.readPhy()).rejects.toMatchObject({ code: 'protocol.violation' })
+})
+
+test.each([
+  { intervalUs: 1.5 },
+  { intervalUs: Number.MAX_SAFE_INTEGER + 1 },
+  { supervisionTimeoutUs: 1.5 },
+  { supervisionTimeoutUs: Number.MAX_SAFE_INTEGER + 1 }
+])('IPC public parameter snapshot and event reject nonintegral/unsafe microseconds: %j', async invalid => {
+  const { manager, base } = setup('unsupported', undefined, 'supported')
+  const values = { intervalUs: 30_000, latency: 0, supervisionTimeoutUs: 4_000_000, ...invalid }
+  base.parameters = async () => values
+  const close = jest.fn(async () => ({ state: 'released', failures: [] }))
+  base.parameterEvents = async () => ({
+    close,
+    events: scriptedStream([
+      {
+        kind: 'value',
+        value: {
+          connectionId: 'connection-1',
+          connectionGeneration: 'connection-generation-1',
+          observedAtMonotonicMs: 42,
+          ordinal: 1,
+          ...values
+        }
+      }
+    ])
+  })
+  const connection = await manager.connect('peer-1')
+  await expect(connection.controls.parameters()).rejects.toMatchObject({ code: 'protocol.violation' })
+  const iterator = connection.controls.parameterEvents()[Symbol.asyncIterator]()
+  await expect(iterator.next()).rejects.toMatchObject({ code: 'protocol.violation' })
+  expect(close).toHaveBeenCalledTimes(1)
+})
+
+const { IpcConnection } = require('../../src/ipc/manager')
+
+test.each([
+  { intervalUs: 1.5 },
+  { intervalUs: Number.MAX_SAFE_INTEGER + 1 },
+  { supervisionTimeoutUs: 1.5 },
+  { supervisionTimeoutUs: Number.MAX_SAFE_INTEGER + 1 },
+  { latency: 1.5 },
+  { intervalUs: 0 },
+  { latency: -1 }
+])('private IPC snapshot and event decoder reject malformed numeric facts %j', async invalid => {
+  const observation = {
+    connectionId: 'c',
+    connectionGeneration: 'g',
+    intervalUs: 30000,
+    latency: 0,
+    supervisionTimeoutUs: 4000000,
+    observedAtMonotonicMs: 12.5,
+    ordinal: 1,
+    ...invalid
+  }
+  let validate
+  const manager = {
+    route: jest.fn(async command => (command === 'connection.parameters' ? observation : { handle: 'watch' })),
+    mintParameterEventsHandle: () => 'watch',
+    registerStream: (_handle, guard) => {
+      validate = guard
+      return scriptedStream([])
+    }
+  }
+  const connection = new IpcConnection(manager, 'h', 'p', 'c', 'owner', 'g')
+  await expect(connection.parameters()).rejects.toMatchObject({
+    normalized: { code: 'protocol.violation', operation: 'ipc-manager.connection-parameters' }
+  })
+  await connection.parameterEvents()
+  expect(validate(observation)).toBe(false)
+})
+
+test('private IPC preserves safe integer measurements and independent fractional clock metadata', async () => {
+  const observation = {
+    connectionId: 'c',
+    connectionGeneration: 'g',
+    intervalUs: Number.MAX_SAFE_INTEGER,
+    latency: 0,
+    supervisionTimeoutUs: 1001,
+    observedAtMonotonicMs: 12.5,
+    ordinal: 1
+  }
+  let validate
+  const manager = {
+    route: jest.fn(async command => (command === 'connection.parameters' ? observation : { handle: 'watch' })),
+    mintParameterEventsHandle: () => 'watch',
+    registerStream: (_handle, guard) => {
+      validate = guard
+      return scriptedStream([])
+    }
+  }
+  const connection = new IpcConnection(manager, 'h', 'p', 'c', 'owner', 'g')
+  await expect(connection.parameters()).resolves.toEqual({
+    intervalUs: Number.MAX_SAFE_INTEGER,
+    latency: 0,
+    supervisionTimeoutUs: 1001
+  })
+  await connection.parameterEvents()
+  expect(validate(observation)).toBe(true)
+})
+
+test.each(['parameters', 'readiness'])('%s return aborts a stalled initial watch admission', async kind => {
+  const { manager, ipc } = setup('supported', undefined, 'supported')
+  const base = await ipc.connect('peer-1')
+  let admittedSignal
+  let entered
+  const started = new Promise(resolve => {
+    entered = resolve
+  })
+  const open = jest.fn(
+    options =>
+      new Promise((_resolve, reject) => {
+        admittedSignal = options?.signal
+        entered()
+        options?.signal?.addEventListener(
+          'abort',
+          () =>
+            reject(
+              require('../../src/backend-contract/errors').contractError(
+                'operation.aborted',
+                'connection',
+                'controlled.initial-probe'
+              )
+            ),
+          { once: true }
+        )
+      })
+  )
+  if (kind === 'parameters') base.parameterEvents = open
+  else base.writeReadiness = open
+  const connection = await manager.connect('peer-1')
+  const iterator = (
+    kind === 'parameters'
+      ? connection.controls.parameterEvents()
+      : connection.controls.writeReadiness('without-response')
+  )[Symbol.asyncIterator]()
+  const pending = iterator.next()
+  await started
+  const returned = iterator.return()
+  expect(admittedSignal).toBeDefined()
+  expect(admittedSignal.aborted).toBe(true)
+  await expect(returned).resolves.toMatchObject({ done: true })
+  await expect(pending).resolves.toMatchObject({ done: true })
+})
+
+test.each(['parameters', 'readiness'])('%s late admission shares close and retries refused cleanup', async kind => {
+  const { manager, ipc } = setup('supported', undefined, 'supported')
+  const base = await ipc.connect('peer-1')
+  let finishOpen, finishClose
+  const opening = new Promise(resolve => {
+    finishOpen = resolve
+  })
+  const closing = new Promise(resolve => {
+    finishClose = resolve
+  })
+  const close = jest
+    .fn()
+    .mockImplementationOnce(() => closing)
+    .mockResolvedValue({ state: 'released', failures: [] })
+  if (kind === 'parameters') base.parameterEvents = () => opening
+  else base.writeReadiness = () => opening
+  const connection = await manager.connect('peer-1')
+  const iterator = (
+    kind === 'parameters'
+      ? connection.controls.parameterEvents()
+      : connection.controls.writeReadiness('without-response')
+  )[Symbol.asyncIterator]()
+  const pending = iterator.next().then(
+    value => ({ value }),
+    error => ({ error })
+  )
+  const first = iterator.return().then(
+    value => ({ value }),
+    error => ({ error })
+  )
+  const concurrent = iterator.return().then(
+    value => ({ value }),
+    error => ({ error })
+  )
+  finishOpen({ events: scriptedStream([]), close })
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(close).toHaveBeenCalledTimes(1)
+  finishClose({
+    state: 'release-failed',
+    failures: [
+      {
+        resourceKind: 'watch',
+        error: {
+          code: 'platform.failure',
+          domain: 'stream',
+          operation: 'controlled.close',
+          platform: null,
+          retryability: 'caller-decides'
+        }
+      }
+    ]
+  })
+  expect((await first).error).toBeDefined()
+  expect((await concurrent).error).toBeDefined()
+  expect((await pending).error).toBeDefined()
+  await expect(iterator.return()).resolves.toMatchObject({ done: true })
+  expect(close).toHaveBeenCalledTimes(2)
+})
+
+test.each(['parameters', 'readiness'])(
+  '%s independent source and close failures survive iterator cleanup retry',
+  async kind => {
+    const { manager, ipc } = setup('supported', undefined, 'supported')
+    const base = await ipc.connect('peer-1')
+    const fault = {
+      code: 'adapter.powered-off',
+      domain: 'adapter',
+      operation: 'controlled.source',
+      platform: null,
+      retryability: 'caller-decides'
+    }
+    const close = jest
+      .fn()
+      .mockResolvedValueOnce({
+        state: 'release-failed',
+        failures: [
+          {
+            resourceKind: 'watch',
+            error: { ...fault, code: 'platform.failure', domain: 'stream', operation: 'controlled.close' }
+          }
+        ]
+      })
+      .mockResolvedValue({ state: 'released', failures: [] })
+    const open = async () => ({
+      events: scriptedStream([{ kind: 'terminal', reason: 'source-failed', error: fault }]),
+      close
+    })
+    if (kind === 'parameters') base.parameterEvents = open
+    else base.writeReadiness = open
+    const connection = await manager.connect('peer-1')
+    const iterator = (
+      kind === 'parameters'
+        ? connection.controls.parameterEvents()
+        : connection.controls.writeReadiness('without-response')
+    )[Symbol.asyncIterator]()
+    const error = await iterator.next().then(
+      () => null,
+      failure => failure
+    )
+    expect(error).toBeInstanceOf(AggregateError)
+    expect(error.errors[0]).toMatchObject({ code: 'adapter.powered-off', operation: 'controlled.source' })
+    expect(error.errors[1].cleanup.failures[0].error).toMatchObject({ operation: 'controlled.close' })
+    await expect(iterator.return()).resolves.toMatchObject({ done: true })
+    expect(close).toHaveBeenCalledTimes(2)
+  }
+)
+
+test.each(['parameters', 'readiness'])('%s pending next cannot expose a value after return', async kind => {
+  const { manager, ipc } = setup('supported', undefined, 'supported')
+  const base = await ipc.connect('peer-1')
+  let resolveNext, entered
+  const started = new Promise(resolve => {
+    entered = resolve
+  })
+  const next = jest.fn(() => {
+    entered()
+    return new Promise(resolve => {
+      resolveNext = resolve
+    })
+  })
+  const close = jest.fn(async () => {
+    resolveNext({ done: false, value: { kind: 'value', value: {} } })
+    return { state: 'released', failures: [] }
+  })
+  const open = async () => ({ events: { [Symbol.asyncIterator]: () => ({ next }) }, close })
+  if (kind === 'parameters') base.parameterEvents = open
+  else base.writeReadiness = open
+  const connection = await manager.connect('peer-1')
+  const iterator = (
+    kind === 'parameters'
+      ? connection.controls.parameterEvents()
+      : connection.controls.writeReadiness('without-response')
+  )[Symbol.asyncIterator]()
+  const pending = iterator.next()
+  await started
+  await expect(iterator.return()).resolves.toMatchObject({ done: true })
+  await expect(pending).resolves.toMatchObject({ done: true })
+  expect(close).toHaveBeenCalledTimes(1)
 })
