@@ -1,16 +1,17 @@
 # Migrating UBM 4.0.28 to 5.x
 
 Status: Current. This page is for apps already using UBM, not the historical
-ble-plx rewrite. Install the exact candidate documented below and retain it in
+ble-plx rewrite. Install the exact release documented below and retain it in
 your lockfile. Published release history and immutable source identities are
 recorded in [`RELEASE.md`](RELEASE.md); source preparation is not publication.
 
 ```sh
-pnpm add unified-ble-manager@5.0.0-rc.21
+pnpm add unified-ble-manager@5.0.0
 ```
 
-Pin the exact candidate and rebuild native projects. Never mix a 4.0.28 binary
-with 5.x JavaScript. Unpinned installs still select npm `latest` (4.0.28).
+Pin the exact release and rebuild native projects. Never mix a 4.0.28 binary
+with 5.x JavaScript. After 5.0.0 publication, unpinned installs select npm
+`latest` (5.0.0).
 Package SemVer does not promote backend hardware-evidence labels.
 
 ## Mobile construction, permissions and restoration
