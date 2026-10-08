@@ -6,17 +6,18 @@
  */
 const fs = require('fs')
 const path = require('path')
+const { classifyReleaseVersion } = require('../scripts/release/release-version-policy')
 
 const root = path.join(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
 const packageVersion = JSON.parse(read('package.json')).version
 const stable40 = /^4\.0\.\d+$/u.test(packageVersion)
 const rcVersionMatch = /^4\.0\.0-rc\.\d+(?:\.\d+)?$/u.exec(packageVersion)
-const rc50VersionMatch = /^5\.0\.0-rc\.\d+$/u.exec(packageVersion)
+const currentReleaseChannel = packageVersion.startsWith('5.') ? classifyReleaseVersion(packageVersion) : null
 const alphaVersionMatch = /^4\.0\.0-alpha\.(\d+)$/u.exec(packageVersion)
-if (!stable40 && rcVersionMatch === null && rc50VersionMatch === null && alphaVersionMatch === null) {
+if (!stable40 && rcVersionMatch === null && currentReleaseChannel === null && alphaVersionMatch === null) {
   throw new Error(
-    `Expected a 4.0.x stable, a 4.0 RC, a 5.0 RC, or a 4.0 alpha package version, received ${packageVersion}`
+    `Expected a 4.0.x stable, a 4.0 RC, an authorized 5.x release, or a 4.0 alpha package version, received ${packageVersion}`
   )
 }
 const currentAlpha = alphaVersionMatch === null ? null : Number(alphaVersionMatch[1])
@@ -219,8 +220,12 @@ describe('consumer documentation matches the published package', () => {
     expect(background).toContain('am force-stop')
   })
   test('current public documentation follows the package release channel', () => {
-    if (stable40 || rcVersionMatch || rc50VersionMatch) {
-      expect(packageVersion).toMatch(/^(?:4\.0\.\d+(?:-rc\.\d+(?:\.\d+)?)?|5\.0\.0-rc\.\d+)$/u)
+    if (currentReleaseChannel !== null) {
+      expect(currentReleaseChannel.npmDistTag).toBe(currentReleaseChannel.isStable ? 'latest' : 'next')
+      return
+    }
+    if (stable40 || rcVersionMatch) {
+      expect(packageVersion).toMatch(/^4\.0\.\d+(?:-rc\.\d+(?:\.\d+)?)?$/u)
       return
     }
     for (const document of architectureAuthorityDocuments) {
@@ -453,7 +458,7 @@ describe('consumer documentation matches the published package', () => {
     expect(migration).not.toMatch(/optional bytes codemod/i)
 
     expect(release).toContain('Release branch: `main`')
-    expect(release).toContain('Current 5.0 prerelease npm dist-tag: `next`')
+    expect(release).toContain('Numbered 5.x release-candidate npm dist-tag: `next`')
     expect(release).not.toContain('active `4.0.0-rc.*` release-train candidates publish to `latest`')
     expect(release).toContain('Stable SemVer and platform support qualification are independent')
     expect(release).toContain('git tag -a v4.0.0')
@@ -515,11 +520,13 @@ describe('consumer documentation matches the published package', () => {
     expect(readme).not.toMatch(/new\s+BleManager\s*\(/)
   })
 
-  test('candidate consumer guides pin the exact native package instead of resolving stable latest', () => {
+  test('consumer guides provide the exact native package and respect its release channel', () => {
     for (const document of ['docs/GETTING_STARTED.md', 'docs/EXPO_PLUGIN.md', 'docs/WEB.md', 'docs/TAURI.md']) {
       const text = read(document)
       expect(text).toContain(`pnpm add unified-ble-manager@${packageVersion}`)
-      expect(text).not.toMatch(/^\s*pnpm add unified-ble-manager\s*$/m)
+      if (rcVersionMatch !== null || (currentReleaseChannel !== null && !currentReleaseChannel.isStable)) {
+        expect(text).not.toMatch(/^\s*pnpm add unified-ble-manager\s*$/m)
+      }
     }
   })
 
@@ -529,7 +536,7 @@ describe('consumer documentation matches the published package', () => {
     const platforms = read('docs/PLATFORMS.md')
 
     expect(readme).toContain(packageVersion)
-    expect(readme).toContain('npm trusted publishing/OIDC with provenance')
+    expect(readme.replace(/\s+/gu, ' ')).toContain('npm trusted publishing/OIDC with provenance')
     expect(release).toContain('git tag -a "v$release_candidate"')
     expect(release).toContain('release_candidate=4.0.0-rc.N')
     expect(release).toContain('git tag -a v4.0.0')
@@ -588,7 +595,7 @@ describe('consumer documentation matches the published package', () => {
     const readme = read('README.md')
     const teachingLead = readme.split('\n').slice(0, 40).join('\n')
 
-    expect(readme).toMatch(/Sponsored by \[Imagi Explain\]\(https:\/\/imagiexplain\.com\)/)
+    expect(teachingLead).toContain('Sponsored by [HeartStudio.ai](https://heartstudio.ai).')
     expect(readme).toContain('react-native-ble-plx')
     expect(readme).toMatch(/cross-platform|unified/)
     expect(readme).toContain('find')

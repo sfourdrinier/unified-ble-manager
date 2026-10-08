@@ -1,5 +1,7 @@
 <!-- README.md -->
 
+> Sponsored by [HeartStudio.ai](https://heartstudio.ai).
+
 # Unified BLE Manager
 
 <img src="assets/brand/ubm-mark.svg" width="88" height="88" alt="Unified BLE Manager icon" />
@@ -30,8 +32,6 @@ GitHub release remain authoritative.
 > runtime capabilities and retain the backend evidence limitations. Stable
 > SemVer does not establish physical qualification or production readiness
 > for every platform and scenario.
-
-> Sponsored by [Imagi Explain](https://imagiexplain.com) — researched, narrated whiteboard explainers from a prompt, a PDF, or your notes.
 
 ## Documentation map
 
