@@ -1,0 +1,62 @@
+bun test v1.4.2 (744846f84)
+
+../../../../../private/tmp/ubm-rc21-verification/review-ca8f66ad/unified-ble-manager-pr251-review-ca8f66ad/evidence/electron-admission-repro.test.ts:
+FIXTURE {
+  head: "8f877ec839caa150a3f37d1fde8382f5273da04a",
+  fixtureSha256: "7845a88b41a82a79109ee92010d25dce6c73b242f3a0a669cd192b3c52a0fff5",
+  scope: "actual authenticated Electron binding, arbiter and router; controlled manager boundary; no native radio",
+}
+(pass) CONTROL: the concurrent connection survives when the read does not expire [13.09ms]
+CONFIRMED {
+  scenario: "unrelated-rollback",
+  completedConnection: "connection-2",
+  disconnectsBeforeCallerRelease: 1,
+  laterError: "ownership.denied",
+}
+(pass) REPRO: expired read rolls back another successful concurrent connection [1.94ms]
+CONFIRMED {
+  scenario: "completed-priority",
+  acceptedByOwner: true,
+  applicationReceives: "operation.timed-out",
+}
+(pass) REPRO: accepted priority request is reclassified as timed out by Electron post-check [0.51ms]
+
+../../../../../private/tmp/ubm-rc21-verification/review-ca8f66ad/unified-ble-manager-pr251-review-ca8f66ad/evidence/ipc-priority-projection/priority-projection-repro.test.ts:
+CONFIRMED {
+  host: "electron",
+  incomingPriorityCapability: "limited",
+  publicPriorityCapability: "unsupported",
+  publicPresetsAttempted: 3,
+  nativePriorityDispatches: 0,
+}
+(pass) REPRO: actual electron factory hides incoming limited connection priority before public dispatch [9.86ms]
+CONFIRMED {
+  host: "electron",
+  incomingPriorityCapability: "supported",
+  publicPriorityCapability: "unsupported",
+  publicPresetsAttempted: 3,
+  nativePriorityDispatches: 0,
+}
+(pass) REPRO: actual electron factory hides incoming supported connection priority before public dispatch [1.15ms]
+CONFIRMED {
+  host: "tauri",
+  incomingPriorityCapability: "limited",
+  publicPriorityCapability: "unsupported",
+  publicPresetsAttempted: 3,
+  nativePriorityDispatches: 0,
+}
+(pass) REPRO: actual tauri factory hides incoming limited connection priority before public dispatch [4.93ms]
+CONFIRMED {
+  host: "tauri",
+  incomingPriorityCapability: "supported",
+  publicPriorityCapability: "unsupported",
+  publicPresetsAttempted: 3,
+  nativePriorityDispatches: 0,
+}
+(pass) REPRO: actual tauri factory hides incoming supported connection priority before public dispatch [4.83ms]
+(pass) CONTROL: the real lower IPC connection can reach the same accepted priority host route [0.57ms]
+
+ 8 pass
+ 0 fail
+ 48 expect() calls
+Ran 8 tests across 2 files. [201.00ms]

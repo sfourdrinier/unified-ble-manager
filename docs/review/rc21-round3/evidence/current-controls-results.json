@@ -1,0 +1,40 @@
+{
+  "head": "8f877ec839caa150a3f37d1fde8382f5273da04a",
+  "runtime": "Bun 1.4.2",
+  "receipts": [
+    {
+      "scenario": "fixed initial probe ordering",
+      "intervals": [
+        60000,
+        90000
+      ]
+    },
+    {
+      "scenario": "steady state readiness reprobe regression",
+      "ready": [
+        false,
+        true,
+        false
+      ],
+      "ordinals": [
+        1,
+        2,
+        3
+      ],
+      "observedAt": [
+        1,
+        2,
+        3
+      ],
+      "scope": "actual production watch/reprobe/event methods, deterministic delayed native response"
+    },
+    {
+      "scenario": "transient source getter error recovery latch",
+      "directRead": 90000,
+      "freshWatch": "refused before getter",
+      "getterCallsBeforeRecovery": 1,
+      "eventRecovery": "later native state event clears latch; new watch then opens",
+      "scope": "actual production source-failure, direct-read and watch methods; deterministic native getter"
+    }
+  ]
+}

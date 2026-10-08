@@ -1,0 +1,57 @@
+PASS __tests__/web/web-bluetooth-backend.test.js
+  WebBluetoothBackend
+    ✓ preserves included secondary instances and distinguishes an unavailable inclusion getter (7 ms)
+    ✓ discovers characteristics on a service whose inclusion getter reports normal absence (2 ms)
+    ✓ preserves SecurityError inclusion failure instead of publishing an empty list (1 ms)
+    ✓ preserves NetworkError inclusion failure instead of publishing an empty list (1 ms)
+    ✓ preserves AbortError inclusion failure instead of publishing an empty list (2 ms)
+    ✓ preserves Error inclusion failure instead of publishing an empty list (1 ms)
+    ✓ normal absent inclusions cross the production Navigator wrapper into discovery (2 ms)
+    ✓ bounds roots service discovery without publishing a partial graph (28 ms)
+    ✓ bounds includes service discovery without publishing a partial graph (31 ms)
+    ✓ exposes origin-authorized devices through the backend peer directory contract (1 ms)
+    ✓ keeps continuous scanning unavailable and exposes device selection only through the chooser (2 ms)
+    ✓ projects chooser-compatible service predicates without claiming continuous Web scanning (4 ms)
+    ✓ marks chooser predicates that Web Bluetooth cannot express as unavailable (1 ms)
+    ✓ preserves richer chooser grants when authorized-device enumeration has no grant metadata (1 ms)
+    ✓ races authorized-device enumeration against abort without retaining a late peer
+    ✓ chooses, connects, discovers duplicate-safe paths, and owns read bytes (1 ms)
+    ✓ installs the listener before synchronous notification startup, removes it before later emissions, and stops once (2 ms)
+    ✓ a connect rejected with NetworkError is connection.failed / caller-decides (1 ms)
+    ✓ a connect rejected with SecurityError is platform.security / never (1 ms)
+    ✓ invalidates the old database generation after rediscovery (1 ms)
+    ✓ rejects forged attachment, session, owner, peer, and connection path fields for direct and dispatched GATT reads (2 ms)
+    ✓ rejects a forged Web subscription before it can remove the owner notification (1 ms)
+    ✓ fails closed when chooser preconditions are absent
+    ✓ fails closed when chooser preconditions are absent
+    ✓ aborted chooser stays pending then drops a late requestDevice grant (1 ms)
+    ✓ keeps a chooser session busy until the browser-owned request actually settles
+    ✓ validates every chooser filter before browser work and never broadens malformed requests (2 ms)
+    ✓ snapshots chooser services, manufacturer prefixes, and optional services before browser admission (1 ms)
+    ✓ rejects adapter state calls after destroy before polling or allocating streams
+    ✓ unregisters explicitly closed event and adapter streams (1 ms)
+    ✓ locally releasing a connection suppresses the browser disconnect event and preserves retry ownership (1 ms)
+    ✓ rejects cancellable chooser abort without retaining a late grant (1 ms)
+    ✓ rejects cancellable chooser deadline without retaining a late grant
+    ✓ integrates with the host-neutral manager for chooser discovery and connection ownership (4 ms)
+    ✓ reports its discovery capabilities in the shared vocabulary (2 ms)
+    ✓ accepts the Web backend adapter watch byte quota and cleans it up through the public manager (2 ms)
+    ✓ constructs a public web manager that exposes deterministic scan and chooser via WithEnvironment (4 ms)
+    ✓ refuses a background standing order before constructing a browser manager
+    ✓ keeps Web chooser match filters separate from optional GATT grants (2 ms)
+    an operation cut off by the end of the link
+      ✓ the browser reports the link gone: connection.lost (1 ms)
+      ✓ the app's own release: operation.disconnected
+      ✓ a GATT call the browser fails with NetworkError: connection.lost, answer kept (1 ms)
+  NavigatorWebBluetoothBoundary
+    ✓ translates chooser options without probing globals and reports the exact requested grants
+    ✓ forwards owned manufacturer criteria for manufacturer-only and combined filters (1 ms)
+  InMemoryWebBluetoothTckBoundary
+    ✓ captures an owned chooser request and fires only due timers in stable order (1 ms)
+    ✓ refuses a delivery mode Web Bluetooth cannot write before startNotifications (1 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       46 passed, 46 total
+Snapshots:   0 total
+Time:        1.115 s
+Ran all test suites matching /__tests__\/web\/web-bluetooth-backend.test.js/i.

@@ -1,0 +1,38 @@
+
+running 3 tests
+test distinct_native_handles_do_not_alias ... FAILED
+test vendored_btleplug_preserves_hexadecimal_handle_digits ... FAILED
+test desktop_model_preserves_hexadecimal_handle_digits ... FAILED
+
+failures:
+
+---- distinct_native_handles_do_not_alias stdout ----
+
+thread 'distinct_native_handles_do_not_alias' (90386552) panicked at /tmp/ubm-rc21-verification/review-ca8f66ad/unified-ble-manager-pr251-review-ca8f66ad/evidence/linux/gatt-handle-regression.rs:43:5:
+assertion `left != right` failed
+  left: Some(1)
+ right: Some(1)
+
+---- vendored_btleplug_preserves_hexadecimal_handle_digits stdout ----
+
+thread 'vendored_btleplug_preserves_hexadecimal_handle_digits' (90386553) panicked at /tmp/ubm-rc21-verification/review-ca8f66ad/unified-ble-manager-pr251-review-ca8f66ad/evidence/linux/gatt-handle-regression.rs:37:5:
+assertion `left == right` failed
+  left: Some(1)
+ right: Some(40961)
+
+---- desktop_model_preserves_hexadecimal_handle_digits stdout ----
+
+thread 'desktop_model_preserves_hexadecimal_handle_digits' (90386551) panicked at /tmp/ubm-rc21-verification/review-ca8f66ad/unified-ble-manager-pr251-review-ca8f66ad/evidence/linux/gatt-handle-regression.rs:30:5:
+assertion `left == right` failed
+  left: Some(1)
+ right: Some(40961)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    desktop_model_preserves_hexadecimal_handle_digits
+    distinct_native_handles_do_not_alias
+    vendored_btleplug_preserves_hexadecimal_handle_digits
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

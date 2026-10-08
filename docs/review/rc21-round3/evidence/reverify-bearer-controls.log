@@ -1,0 +1,5 @@
+DEFECT A: LE releasing returns InProgress before selecting independent BR/EDR pairing; zero Classic dispatches
+POSITIVE: clearing the LE-release bit lets identical BR/EDR Pair reach adapter_create_bonding
+DEFECT B: accepted Classic Pair alone marks the UBM-created LE generation external and prevents last-owner LE release
+DEFECT B persists after Classic sender death: no interests remain, yet LE release remains protected by fabricated external origin
+POSITIVE: UBM-only LE arrival without Classic admission remains exclusive and requests last-owner LE teardown

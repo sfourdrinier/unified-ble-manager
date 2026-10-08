@@ -2048,6 +2048,18 @@
       "verification": "Android native protocol gate and docs pass; encryption native suite passes eight tests including both new retry regressions and successful-admission cleanup debt control. Current Android prebuilt identity verified. Deterministic Context fixtures, not physical radio.",
       "receipt": "final-batch-evidence/android-receiver-admission.log",
       "reference": "https://developer.android.com/reference/android/content/Context#unregisterReceiver(android.content.BroadcastReceiver)"
+    },
+    "web_empty_inclusions": {
+      "source_head": "bca092e1d8e94ebca02d9d3d2ed312c0c685a590",
+      "thread": "PRRT_kwDOT5DnRc6qJVW9",
+      "verification": "46 Web tests, typecheck and docs pass; real Navigator wrapper exercised with deterministic browser objects. Native NotFoundError only is an empty list; other failures remain errors.",
+      "receipt": "../rc21-round3/evidence/web-empty-inclusions-tests.log"
+    },
+    "round3_review": {
+      "status": "17 confirmed open: 1 P1 and 16 P2; release blocked",
+      "ledger": "../rc21-round3/verification.json",
+      "verified_head": "8f877ec839caa150a3f37d1fde8382f5273da04a",
+      "scope": "11 controlled reproductions and 6 joined-source confirmations; R3-05 permanent leak claim not established"
     }
   },
   "previous_review_dispositions": [
