@@ -86,3 +86,11 @@ failed before execution because JAVA_HOME referenced a removed Homebrew JDK;
 that precondition failure is retained separately. Current prebuilt identity
 checks pass; no Rust/JNI identity input changed. Native fixture execution does
 not establish physical mobile radio qualification.
+
+Android failed security receiver admission correction at `c58379d8`:
+`android-receiver-admission.log` passes the native Android protocol gate,
+including registration refusal plus confirmed absence and retry, uncertain
+admission plus retained cleanup refusal followed by successful release/retry,
+and unchanged admitted-owner teardown debt. The native encryption suite has
+eight passing tests. Documentation and current Android prebuilt identity pass.
+These are deterministic Context fixtures, not physical radio qualification.

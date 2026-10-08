@@ -1,0 +1,12 @@
+
+> unified-ble-manager@5.0.0-rc.21 docs:check /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> node scripts/docs/generate-backend-sdk-reference.js --check && node scripts/docs/generate-platform-support.js --check && node scripts/docs/check-api-reports.js && node scripts/docs/check-generated-html.js && node scripts/docs/check-docs-index.js && prettier --check CHANGELOG.md AGENTS.md docs/NODE.md
+
+API reports checked: 24 TypeScript entrypoints; excluded metadata/config: ./app.plugin.js, ./package.json
+../../../../../var/folders/x6/fx6xhn0j7kqbv_kndmcl_4tc0000gn/T/unified-ble-manager-docs-5bIwTG/docs/index.html 134ms
+../../../../../var/folders/x6/fx6xhn0j7kqbv_kndmcl_4tc0000gn/T/unified-ble-manager-docs-5bIwTG/docs/assets/anchor.js 47ms
+../../../../../var/folders/x6/fx6xhn0j7kqbv_kndmcl_4tc0000gn/T/unified-ble-manager-docs-5bIwTG/docs/assets/site.js 11ms
+Generated HTML checked: byte-identical, root-public-safe and code examples present
+Documentation index, llms.txt, and README agent pointers are consistent.
+Checking formatting...
+All matched files use Prettier code style!
