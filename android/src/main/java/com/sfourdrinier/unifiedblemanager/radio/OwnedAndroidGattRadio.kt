@@ -551,6 +551,7 @@ class OwnedAndroidGattRadio private constructor(
   private var scanCallback: ScanCallback? = null
   private var adapterStateReceiver: BroadcastReceiver? = null
   private var bondStateReceiver: BroadcastReceiver? = null
+  private var bondReceiverAdmissionFailed = false
   private var securityReceiverActive = false
   private val connectedEncryptionGenerations = ConcurrentHashMap<String, Long>()
   private val encryptionApi by lazy {
@@ -1229,6 +1230,7 @@ class OwnedAndroidGattRadio private constructor(
     val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
     if (securitySdkInt >= 36) filter.addAction(BluetoothDevice.ACTION_ENCRYPTION_CHANGE)
     bondStateReceiver = receiver
+    bondReceiverAdmissionFailed = false
     securityReceiverActive = true
     try {
       if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
@@ -1238,7 +1240,8 @@ class OwnedAndroidGattRadio private constructor(
       }
     } catch (error: Exception) {
       securityReceiverActive = false
-      // Keep the receiver handle for explicit unregister/retry if admission failed after an OS effect.
+      bondReceiverAdmissionFailed = true
+      // Retain uncertain OS effects until release succeeds or Android confirms no registration.
       throw error
     }
   }
@@ -1249,8 +1252,15 @@ class OwnedAndroidGattRadio private constructor(
     return try {
       context.unregisterReceiver(receiver)
       bondStateReceiver = null
+      bondReceiverAdmissionFailed = false
       null
     } catch (error: Exception) {
+      if (bondReceiverAdmissionFailed && error is IllegalArgumentException) {
+        // Context documents this exception when the receiver was never registered.
+        bondStateReceiver = null
+        bondReceiverAdmissionFailed = false
+        return null
+      }
       OwnedAndroidLog.e("unregisterBondStateReceiver", error)
       OwnedRadioTeardownFailure("unregisterBondStateReceiver", error)
     }

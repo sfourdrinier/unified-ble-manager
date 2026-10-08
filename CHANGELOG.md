@@ -4,6 +4,8 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.0-rc.21] - 2026-10-05
 
+- Recover Android security receiver registration after confirmed absent failed admission, while retaining uncertain cleanup ownership.
+
 - Report runtime encryption evidence in Android already-paired results, matching the security-state projection.
 - Discard retained N-API parameter/readiness events before reconciling a control-stream gap, while preserving subsequent events.
 - Preserve specific scan-evidence quota and pump errors on public scan terminal observations.

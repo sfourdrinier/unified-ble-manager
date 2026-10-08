@@ -203,3 +203,13 @@ ensure one callback and no new createBond operation, and preserve event-only
 unknown status when no snapshot API exists. The existing native encryption API
 controls separately cover available 36.1 encrypted/unencrypted snapshots and
 permission refusal; no physical mobile encryption proof is inferred.
+
+Android security receiver registration now distinguishes failed admission from
+successfully registered ownership. A failed registration retires callbacks and
+retains the handle until explicit cleanup succeeds or Android reports its
+documented not-registered IllegalArgumentException. Only that failed-admission
+case clears an absent handle; other cleanup failures retain retry debt. Native
+controls cover registration refusal followed by absence and successful retry,
+uncertain registration with cleanup refusal then successful release and retry,
+and cleanup failure after successful registration. No physical-radio claim is
+made by these deterministic Context fixtures.

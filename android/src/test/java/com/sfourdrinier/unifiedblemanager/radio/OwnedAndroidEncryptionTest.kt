@@ -115,6 +115,50 @@ class OwnedAndroidEncryptionTest {
     verify(manager, never()).getConnectionState(device, BluetoothProfile.GATT)
   }
 
+  @Test fun failedReceiverAdmissionCanRecoverWhenAndroidConfirmsItWasNotRegistered() {
+    val current = radio(36)
+    val rejected = mutableListOf<BroadcastReceiver>()
+    val refusal = SecurityException("registration refused")
+    doAnswer { call ->
+      rejected.add(call.getArgument(0))
+      if (rejected.size == 1) throw refusal
+      null
+    }.`when`(context).registerReceiver(any(BroadcastReceiver::class.java), any(IntentFilter::class.java))
+    doThrow(IllegalArgumentException("Receiver not registered"))
+      .`when`(context).unregisterReceiver(any(BroadcastReceiver::class.java))
+    try { current.registerBondStateReceiver(); fail("Expected registration refusal") }
+    catch (error: SecurityException) { assertSame(refusal, error) }
+    current.registerBondStateReceiver()
+    assertEquals(2, rejected.size)
+    assertNotSame(rejected[0], rejected[1])
+    verify(context).unregisterReceiver(rejected[0])
+    // Absence is accepted only after failed admission, not for a successfully admitted owner.
+    assertNotNull(current.unregisterBondStateReceiver())
+    doNothing().`when`(context).unregisterReceiver(rejected[1])
+    assertNull(current.unregisterBondStateReceiver())
+  }
+
+  @Test fun uncertainReceiverAdmissionRetainsCleanupDebtUntilReleaseSucceeds() {
+    val current = radio(36)
+    val attempted = mutableListOf<BroadcastReceiver>()
+    doAnswer { call ->
+      attempted.add(call.getArgument(0))
+      if (attempted.size == 1) throw IllegalStateException("registration outcome uncertain")
+      null
+    }.`when`(context).registerReceiver(any(BroadcastReceiver::class.java), any(IntentFilter::class.java))
+    doThrow(SecurityException("cleanup denied")).doNothing()
+      .`when`(context).unregisterReceiver(any(BroadcastReceiver::class.java))
+    try { current.registerBondStateReceiver(); fail("Expected admission failure") }
+    catch (error: IllegalStateException) { assertEquals("registration outcome uncertain", error.message) }
+    try { current.registerBondStateReceiver(); fail("Expected retained cleanup refusal") }
+    catch (error: SecurityException) { assertEquals("cleanup denied", error.message) }
+    assertEquals(1, attempted.size)
+    current.registerBondStateReceiver()
+    assertEquals(2, attempted.size)
+    verify(context, times(2)).unregisterReceiver(attempted[0])
+    assertNull(current.unregisterBondStateReceiver())
+  }
+
   @Test fun failedReceiverCleanupKeepsRetryDebtButRetiresCallbacksImmediately() {
     val current = radio(36)
     var receiver: BroadcastReceiver? = null
