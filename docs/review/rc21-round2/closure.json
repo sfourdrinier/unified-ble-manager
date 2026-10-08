@@ -1454,7 +1454,7 @@
       "id": "R2-26",
       "priority": "P2",
       "required_outcome": "Implement available system/known peer directories independent of manager cache",
-      "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
+      "implementation_commit": "cdefd63f5ed50f258553f40f7d7adb67372411fd",
       "implementation": [
         "crates/ubm-desktop/src/os/windows.rs",
         "crates/ubm-desktop/src/os/linux.rs",
@@ -1474,7 +1474,7 @@
       "implementation_blobs": {
         "crates/ubm-desktop/src/os/windows.rs": "6b55d94823b704887512b386829ff74efacdd971",
         "crates/ubm-desktop/src/os/linux.rs": "8be95179f3218aca3dc48720372f7adfb2854a3c",
-        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt": "eab08dcf103a36e5d80e1eefc631497fb9c7d601",
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt": "d5d88ade318124a63984065552d74b052070c528",
         "ios/UnifiedBleRustRadioAdapter.swift": "d2a6b2096c7e9a6554a1f8c8e863d8dc424aac9f",
         "src/backends/desktop/desktop-rust-core-provider.ts": "27e21e502ff0a776ea14fbe45673b756888513ca",
         "src/ipc/public-manager.ts": "50da03b29020fe14ba802b477cddcec084f6e66c"
@@ -1581,7 +1581,7 @@
       "id": "R2-28",
       "priority": "P2",
       "required_outcome": "Implement Android SDK 36.1 subrate with runtime authorization",
-      "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
+      "implementation_commit": "cdefd63f5ed50f258553f40f7d7adb67372411fd",
       "implementation": [
         "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
         "crates/ubm-mobile/src/session.rs",
@@ -1595,7 +1595,7 @@
       "historical_evidence": "SDK minor-version/public-signature admission, four presets, authorization/native status, cancellation and supported TCK invocation controls pass in Android protocol/mobile/package gates. Final-head replay pending; SDK 36.1 physical negotiation remains a separate unverified evidence level.",
       "previous_findings": [],
       "implementation_blobs": {
-        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt": "eab08dcf103a36e5d80e1eefc631497fb9c7d601",
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt": "d5d88ade318124a63984065552d74b052070c528",
         "crates/ubm-mobile/src/session.rs": "65a624fee9ac45c6a830adac7f755d107e70b669",
         "src/backends/reactnative/react-native-rust-core-manager.ts": "4da1b36244748ebd35a76cde7d31d55caf6e2661"
       },
@@ -1614,7 +1614,7 @@
       "id": "R2-29",
       "priority": "P2",
       "required_outcome": "Implement Android encryption event/snapshot observations without invented authentication",
-      "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
+      "implementation_commit": "cdefd63f5ed50f258553f40f7d7adb67372411fd",
       "implementation": [
         "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
         "crates/ubm-mobile/src/session.rs",
@@ -1628,7 +1628,7 @@
       "historical_evidence": "API 36 events, 36.1 nullable snapshots, native algorithm mapping, delayed broadcast versus replacement generation and original source failure controls pass in 48-suite/473-test Android protocol and full package gates. Final-head replay pending; no authentication/SC facts or physical qualification inferred.",
       "previous_findings": [],
       "implementation_blobs": {
-        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt": "eab08dcf103a36e5d80e1eefc631497fb9c7d601",
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt": "d5d88ade318124a63984065552d74b052070c528",
         "crates/ubm-mobile/src/session.rs": "65a624fee9ac45c6a830adac7f755d107e70b669",
         "src/backends/reactnative/react-native-rust-core-provider.ts": "d50471771231137cb8ce6e43a0c9b69cf05f71d9"
       },
@@ -1650,7 +1650,7 @@
       "id": "R2-30",
       "priority": "P2",
       "required_outcome": "Implement available Android batching/PHY scan options and batch intake",
-      "implementation_commit": "10589aeeb84d502e873cc3873617330e69d9a685",
+      "implementation_commit": "cdefd63f5ed50f258553f40f7d7adb67372411fd",
       "implementation": [
         "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
         "android/src/main/java/com/sfourdrinier/unifiedblemanager/rustcore/RustRadioHostAdapter.kt"
@@ -1663,7 +1663,7 @@
       "historical_evidence": "Native batch callback, report-delay/PHY forwarding, host/hardware restrictions and JNI/UniFFI/wire routes pass in Android/mobile/package gates. Final-head replay pending; hardware batching is not established by fixtures.",
       "previous_findings": [],
       "implementation_blobs": {
-        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt": "eab08dcf103a36e5d80e1eefc631497fb9c7d601",
+        "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt": "d5d88ade318124a63984065552d74b052070c528",
         "android/src/main/java/com/sfourdrinier/unifiedblemanager/rustcore/RustRadioHostAdapter.kt": "c7380591a517fc5ed853bdd3d7f617338ec8d560"
       },
       "remaining_limits": "Runtime evidence is limited to the named hosts and controlled peripherals. No physical H10 or physical mobile qualification is inferred.",
@@ -2030,6 +2030,15 @@
       "regression": "control_receiver_gap_discards_retained_parameter_and_readiness_events",
       "verification": "Actual native polling regression, 68 NAPI Rust tests and all-targets Clippy pass. Provider ordering tests pass. Joined local public tests blocked by stale addon; owning package refresh blocked by unrelated old Apple artifacts. New-identity joined qualification remains required in final CI.",
       "receipt": "final-batch-evidence/napi-control-gap-full-tests.log"
+    },
+    "android_already_paired_encryption": {
+      "source_head": "cdefd63f5ed50f258553f40f7d7adb67372411fd",
+      "thread": "PRRT_kwDOT5DnRc6qJD7G",
+      "implementation": "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt",
+      "correction": "Capture runtime securityStateOf(device, bonded) once for scheduled and fallback alreadyPaired callback routes. Preserve the admitted bond fact and truthful unsupported/unknown/snapshot encryption state.",
+      "verification": "Android native protocol gate including six API-profile/callback-route controls passes; seven public encryption tests and docs pass. Existing API 36.1 snapshot controls remain in the native suite. Deterministic native execution, not physical mobile qualification.",
+      "receipt": "final-batch-evidence/android-already-paired-encryption.log",
+      "precondition_failure": "Initial Gradle launch rejected a removed Homebrew JAVA_HOME before tests; retained separately. Corrected to stable JDK 17 opt path."
     }
   },
   "previous_review_dispositions": [

@@ -78,3 +78,11 @@ identity; the owning package refresh then stops on unrelated already-stale
 Apple artifacts before addon refresh. Both failures are retained, not counted
 as passes. The provider-only ordering suite passes 10 tests. Clean final CI
 remains required for joined public/native qualification of the new identity.
+
+Android already-paired follow-up at `cdefd63f`: native Android protocol gate
+passes, including six API 35/36.0/36.1 and callback scheduling controls. The
+public encryption suite passes seven tests; docs checks pass. The first launch
+failed before execution because JAVA_HOME referenced a removed Homebrew JDK;
+that precondition failure is retained separately. Current prebuilt identity
+checks pass; no Rust/JNI identity input changed. Native fixture execution does
+not establish physical mobile radio qualification.

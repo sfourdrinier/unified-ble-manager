@@ -195,6 +195,22 @@
     "napi-control-gap-docs.log": {
       "original_sha256": "704645ad0db323a6c3ce6018b1f7c9bd60051e89a2b90f9d3ddca7509caf1422",
       "lf_normalized_sha256": "704645ad0db323a6c3ce6018b1f7c9bd60051e89a2b90f9d3ddca7509caf1422"
+    },
+    "android-already-paired-encryption.log": {
+      "original_sha256": "29fde07c6256f829d817267dc7b7694235dbde9fcd03992b975050274d159e04",
+      "lf_normalized_sha256": "29fde07c6256f829d817267dc7b7694235dbde9fcd03992b975050274d159e04"
+    },
+    "android-already-paired-public.log": {
+      "original_sha256": "41c038ce31cd0e40825144118cb1eb5cd60d7a6caf497b4cdd0e22322fb81c3f",
+      "lf_normalized_sha256": "41c038ce31cd0e40825144118cb1eb5cd60d7a6caf497b4cdd0e22322fb81c3f"
+    },
+    "android-already-paired-docs.log": {
+      "original_sha256": "4a85622fa4b84b8b0ba2c01037d7cf5fa24ff906ecf0dca8e994f9ffa4ec9c23",
+      "lf_normalized_sha256": "4a85622fa4b84b8b0ba2c01037d7cf5fa24ff906ecf0dca8e994f9ffa4ec9c23"
+    },
+    "android-already-paired-java-precondition.log": {
+      "original_sha256": "61763e8e269db2332b481a66338292d25d2358daac4621093c42d256b9a735fb",
+      "lf_normalized_sha256": "61763e8e269db2332b481a66338292d25d2358daac4621093c42d256b9a735fb"
     }
   },
   "final_frozen_runtime_head": "10589aeeb84d502e873cc3873617330e69d9a685",

@@ -1,0 +1,11 @@
+
+> unified-ble-manager@5.0.0-rc.21 test:native-protocol:android /Users/sfourdrinier/src/trackourhealth/unified-ble-manager-rc21
+> cd example/android && ./gradlew -I ../../example-expo/native/test-android.gradle :unified-ble-manager:testDebugUnitTest :manifest-consumer:processNeverTrueDebugMainManifest :manifest-consumer:processNeverFalseDebugMainManifest :manifest-consumer:processNeverTrueAgainDebugMainManifest :manifest-consumer:processLegacyApi30DebugMainManifest --no-daemon --console=plain && node ../../scripts/ci/verify-android-consumer-manifests.js && node ../../scripts/ci/check-android-prebuilt-verifier.js && node ../../scripts/ci/check-android-bundle-inputs.js
+
+
+ERROR: JAVA_HOME is set to an invalid directory: /opt/homebrew/Cellar/openjdk@17/17.0.16/libexec/openjdk.jdk/Contents/Home
+
+Please set the JAVA_HOME variable in your environment to match the
+location of your Java installation.
+
+ ELIFECYCLE  Command failed with exit code 1.
