@@ -73,12 +73,15 @@ export function coreDispatch<Attachment extends string, Value>(
   correlation: OperationCorrelation<Attachment, string>,
   terminalFor: (value: Value) => OperationTerminalRecord<Attachment, string>
 ): CoreOperationDispatch<Value> {
+  let completedOutcome = false
   const completion = dispatch.completion.then(value => {
     assertSuccessfulOperationTerminal(terminalFor(value), correlation, 'unified-core.operation-terminal')
+    completedOutcome = true
     return value
   })
   return {
     completion: awaitPhysicalSettlement(completion, dispatch.physicalSettlement),
+    hasCompletedOutcome: () => completedOutcome,
     requestCancellation: () => dispatch.requestCancellation().then(() => undefined)
   }
 }

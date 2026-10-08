@@ -3723,3 +3723,170 @@ async fn a_newer_security_failure_survives_an_older_successful_probe() {
     assert!(snapshot["security"].as_array().unwrap().is_empty());
     assert_eq!(parse(&host.shutdown().await)["state"], "released");
 }
+
+fn effectful_control_args(op: &str, budget_ms: Option<u64>) -> Value {
+    let mut args = json!({"peerId":POLAR,"lease":"lease-1","operationId":op});
+    match op {
+        "connection.request-mtu" => args["mtu"] = json!(247),
+        "connection.request-priority" => args["priority"] = json!("balanced"),
+        "connection.request-subrate" => args["mode"] = json!("low-power"),
+        "connection.request-phy" => args["tx"] = json!("le-1m"),
+        _ => {}
+    }
+    if let Some(ms) = budget_ms {
+        args["budgetMs"] = json!(ms);
+    }
+    args
+}
+
+const EFFECTFUL_CONTROLS: [(&str, RequestKind); 4] = [
+    ("connection.request-mtu", RequestKind::RequestMtu),
+    (
+        "connection.request-priority",
+        RequestKind::RequestConnectionPriority,
+    ),
+    ("connection.request-subrate", RequestKind::RequestSubrate),
+    ("connection.request-phy", RequestKind::RequestPhy),
+];
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn effectful_control_post_dispatch_cancel_and_deadline_are_uncertain_and_never_retryable() {
+    for (op, kind) in EFFECTFUL_CONTROLS {
+        for cancelled in [true, false] {
+            let radio = Scripted::new(Box::new(move |request| {
+                if request.kind() == kind {
+                    Reply::Hold
+                } else {
+                    polar_responder(request)
+                }
+            }));
+            radio.subrate_available.store(true, Ordering::SeqCst);
+            let (host, _) = open(&radio, MobilePlatform::Android).await;
+            let session = host.open_session("effectful-control").unwrap();
+            connect(&session, "connect-control").await;
+            let pending = tokio::spawn({
+                let session = session.clone();
+                let args = effectful_control_args(op, Some(1000)).to_string();
+                async move { call(&session, op, &args).await }
+            });
+            wait_for(|| !radio.held_of(kind).is_empty()).await;
+            if cancelled {
+                ok(&call(
+                    &session,
+                    "op.cancel",
+                    &json!({"operationId":op}).to_string(),
+                )
+                .await);
+            } else {
+                tokio::time::advance(Duration::from_millis(1000)).await;
+            }
+            let result = parse(&pending.await.unwrap());
+            assert_eq!(
+                result["error"]["code"],
+                if cancelled {
+                    "operation.aborted"
+                } else {
+                    "operation.timed-out"
+                },
+                "{op}"
+            );
+            assert_eq!(result["commit"], "uncertain", "{op}");
+            assert_eq!(result["retryability"], "never", "{op}");
+            assert_eq!(radio.count(kind), 1, "{op}: no implicit replay");
+        }
+    }
+}
+
+#[tokio::test]
+async fn effectful_control_pre_dispatch_cancel_reports_no_effect_and_caller_decides() {
+    for (op, kind) in EFFECTFUL_CONTROLS {
+        let radio = Scripted::polar();
+        radio.subrate_available.store(true, Ordering::SeqCst);
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("pre-dispatch-control").unwrap();
+        connect(&session, "connect-control").await;
+        let args = admitted_args(&session, op, &effectful_control_args(op, None).to_string());
+        ok(&call(
+            &session,
+            "op.cancel",
+            &json!({"operationId":op}).to_string(),
+        )
+        .await);
+        let result = parse(&call(&session, op, &args).await);
+        assert_eq!(result["error"]["code"], "operation.aborted", "{op}");
+        assert_eq!(result["commit"], "not-dispatched", "{op}");
+        assert_eq!(result["retryability"], "caller-decides", "{op}");
+        assert_eq!(radio.count(kind), 0, "{op}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn read_only_control_timeout_has_no_commit_uncertainty() {
+    let radio = Scripted::new(Box::new(|request| {
+        if request.kind() == RequestKind::ReadPhy {
+            Reply::Hold
+        } else {
+            polar_responder(request)
+        }
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("read-control").unwrap();
+    connect(&session, "connect-control").await;
+    let result = parse(
+        &call(
+            &session,
+            "connection.read-phy",
+            &effectful_control_args("connection.read-phy", Some(1000)).to_string(),
+        )
+        .await,
+    );
+    assert_eq!(result["error"]["code"], "operation.timed-out");
+    assert!(result["commit"].is_null());
+    assert_eq!(result["retryability"], "caller-decides");
+}
+
+#[tokio::test]
+async fn effectful_controls_preserve_the_platforms_accepted_rejected_and_observed_answers() {
+    for accepted in [true, false] {
+        let radio = Scripted::new(Box::new(move |request| match request {
+            ubm_mobile::RadioRequest::RequestMtu { .. } => {
+                Reply::Now(RadioCompletion::Mtu(Some(185)))
+            }
+            ubm_mobile::RadioRequest::RequestConnectionPriority { .. }
+            | ubm_mobile::RadioRequest::RequestSubrate { .. } => {
+                Reply::Now(RadioCompletion::Accepted(accepted))
+            }
+            ubm_mobile::RadioRequest::RequestPhy { .. } => {
+                Reply::Now(RadioCompletion::PhyRequest {
+                    accepted,
+                    observation: accepted.then_some(ubm_mobile::PhyObservation {
+                        tx: ubm_mobile::Phy::Le2m,
+                        rx: ubm_mobile::Phy::Le2m,
+                    }),
+                })
+            }
+            other => polar_responder(other),
+        }));
+        radio.subrate_available.store(true, Ordering::SeqCst);
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("completed-control").unwrap();
+        connect(&session, "connect-control").await;
+        for (op, kind) in EFFECTFUL_CONTROLS {
+            let result =
+                ok(&call(&session, op, &effectful_control_args(op, None).to_string()).await);
+            if op == "connection.request-mtu" {
+                assert_eq!(result["mtu"], 185);
+            } else {
+                assert_eq!(result["accepted"], accepted, "{op}");
+            }
+            if op == "connection.request-phy" {
+                if accepted {
+                    assert_eq!(result["observation"]["tx"], "le-2m");
+                } else {
+                    assert!(result["observation"].is_null());
+                }
+            }
+            assert_eq!(radio.count(kind), 1, "{op}");
+        }
+    }
+}

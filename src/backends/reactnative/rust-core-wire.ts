@@ -97,7 +97,15 @@ export const WIRE_OPS = Object.freeze([
 ] as const)
 export type WireOp = (typeof WIRE_OPS)[number]
 
-const WRITE_OPS: readonly WireOp[] = Object.freeze(['gatt.write', 'gatt.write-when-ready', 'gatt.write-descriptor'])
+const EFFECTFUL_OPS: readonly WireOp[] = Object.freeze([
+  'gatt.write',
+  'gatt.write-when-ready',
+  'gatt.write-descriptor',
+  'connection.request-mtu',
+  'connection.request-priority',
+  'connection.request-subrate',
+  'connection.request-phy'
+])
 
 export const DELIVERY_KINDS = Object.freeze(['notification', 'indication', 'unknown'] as const)
 export type WireDelivery = (typeof DELIVERY_KINDS)[number]
@@ -952,12 +960,12 @@ function wireOpOrThrow(op: unknown, path: string): WireOp {
 
 /**
  * Parses the string `invoke` resolves with. `commit` is required non-null
- * on write failures and required null everywhere else.
+ * on effectful operation failures and required null on read-only failures.
  */
 export function parseInvokeEnvelope(text: unknown, op: WireOp): WireResult<WireInvokeEnvelope> {
   return capture(() => {
     const knownOp = wireOpOrThrow(op, 'envelope.op')
-    return invokeEnvelopeOrThrow(text, `${knownOp}.envelope`, WRITE_OPS.includes(knownOp))
+    return invokeEnvelopeOrThrow(text, `${knownOp}.envelope`, EFFECTFUL_OPS.includes(knownOp))
   })
 }
 
@@ -986,7 +994,7 @@ export function parseRecordingControlEnvelope(
 function invokeEnvelopeOrThrow(
   text: unknown,
   path: string,
-  writing: boolean,
+  effectful: boolean,
   maximumBytes = MAX_WIRE_TEXT_BYTES
 ): WireInvokeEnvelope {
   const value = parseWireTextOrThrow(text, path, maximumBytes)
@@ -1002,7 +1010,7 @@ function invokeEnvelopeOrThrow(
   const commit = nullable(fields.get('commit'), `${path}.commit`, (entry, entryPath) =>
     enumOrThrow(entry, COMMIT_STATES, entryPath)
   )
-  if (writing !== (commit !== null)) throw malformed(`${path}.commit`)
+  if (effectful !== (commit !== null)) throw malformed(`${path}.commit`)
   const retryability = enumOrThrow(fields.get('retryability'), BLE_RETRYABILITIES, `${path}.retryability`)
   if (commit === 'uncertain' && retryability !== 'never') throw malformed(`${path}.retryability`)
   return Object.freeze({ kind: 'failure', failure, commit, retryability })
@@ -1036,7 +1044,7 @@ export function remoteFailureError(failure: WireRemoteFailure): BackendContractE
 
 /**
  * The contract error a failure envelope reports: the owner's retryability,
- * and its commit state on writes (a write that may have committed is never
+ * and its commit state on effectful requests (an effect that may have committed is never
  * retryable — the parser refuses an envelope that says otherwise).
  */
 export function failureEnvelopeError(

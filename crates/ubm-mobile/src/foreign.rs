@@ -47,9 +47,9 @@ pub const NOTIFICATION_INGRESS_BYTES: usize = 1 << 20;
 pub const CONTROL_INGRESS_CAP: usize = 512;
 
 tokio::task_local! {
-    /// Set when a write request was actually submitted to the platform in
+    /// Set when an effectful request was actually submitted to the platform in
     /// the current op task: the difference between `not-dispatched` and
-    /// `uncertain` for a failed write.
+    /// `uncertain` for a failed write or link-control request.
     pub static DISPATCHED: Cell<bool>;
     /// The platform requests the current op task has outstanding: what
     /// makes a session op `dispatched` rather than `queued` in its
@@ -325,7 +325,15 @@ impl ForeignRadio {
             id,
             armed: true,
         };
-        if kind == RequestKind::Write || kind == RequestKind::WriteDescriptor {
+        if matches!(
+            kind,
+            RequestKind::Write
+                | RequestKind::WriteDescriptor
+                | RequestKind::RequestMtu
+                | RequestKind::RequestConnectionPriority
+                | RequestKind::RequestSubrate
+                | RequestKind::RequestPhy
+        ) {
             let _ = DISPATCHED.try_with(|flag| flag.set(true));
         }
         let _in_flight = InFlight::enter();

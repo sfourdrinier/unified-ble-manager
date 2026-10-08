@@ -4,6 +4,11 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.0-rc.21] - 2026-10-05
 
+- Preserve validated effectful control responses across cancellation during
+  cleanup, and report uncertain commitment for dispatched MTU, priority, PHY
+  and subrate requests whose outcome is not yet known. Pre-dispatch cancellation
+  and observation-only controls retain noncommitting semantics.
+
 - Order merged scan facts by comparable capture clocks and ingress ordinals,
   preventing late older packets from replacing newer values or borrowing future
   evidence. Receipt clocks continue to govern expiry; unknown clocks retain

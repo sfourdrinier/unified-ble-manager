@@ -287,9 +287,9 @@ fn platform_value(detail: &PlatformDetail) -> Value {
     ])
 }
 
-/// Failure envelope text. `commit` must be `Some` exactly for writes.
+/// Failure envelope text. `commit` is present for writes and effectful link controls.
 /// `retryability` is the owner's own answer (`never` / `caller-decides`),
-/// never re-derived from the code by the caller; a write whose commit is
+/// never re-derived from the code by the caller; any request whose commit is
 /// `uncertain` is always `never`.
 #[must_use]
 pub fn error_envelope(error: &DesktopError, commit: Option<&str>) -> String {

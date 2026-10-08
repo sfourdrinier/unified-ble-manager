@@ -142,3 +142,67 @@ focused lint, package build and documentation checks pass. Receipt:
 source review found zero remaining blockers. The failed freeze is retained as
 failed evidence; the corrective successor requires a new clean preflight and
 current-head cross-platform qualification.
+
+## Effectful-control outcome follow-up (R2-28, R3-03)
+
+Automated review 4213908630 exposed incorrect ownership and retry-safety
+classification for connection-control effects. Shared-core priority, subrate and
+PHY requests used noncommitting cancellation semantics; MTU already declared
+effects. The mobile owner also omitted all four requests from commit-envelope
+classification and the actual foreign-radio dispatch marker. The paired strict
+TypeScript wire decoder likewise treated commit metadata as write-only. The
+ordinary RN factory uses the direct native-owner route, so the shared-core
+coordinator defect is not attributed to every RN call.
+
+The correction treats these requests as effectful end to end. Existing native
+dispatch tracking distinguishes pre-dispatch refusal from an uncertain effect
+after radio handoff. Owner-generated pre-dispatch cancellation and observation-only
+timeout remain noncommitting; explicit platform retry outcomes are preserved.
+The strict decoder and deterministic fixture use the matching effectful operation
+set without weakening validation. A complete response already validated at the
+core boundary retains its accepted/rejected result while physical retirement
+drains. That retirement remains part of release/destroy ownership, keeps the
+queue occupied, wakes drain waiters at completion, and uses the existing finite
+cleanup drain bound. No microtask grace or unbounded cancellation-acknowledgement
+wait was introduced. Pending requests still settle promptly with uncertain
+commitment and retryability `never`; unvalidated native callback arrival is not
+a successful terminal contender.
+
+Cross-platform assessment covers shared core, mobile Rust owner, foreign radio,
+strict wire ingress and RN public projection. Android implements the affected
+requests where runtime capability admits them; Apple genuine unsupported controls
+remain unsupported. Desktop priority already classifies native request effects,
+and supported Electron/Tauri routes preserve its settled owner response. Read-only
+RSSI, PHY, parameters and effective-MTU observations remain noncommitting. Web
+unsupported controls gain no fabricated mechanism. Protocol vocabulary and native
+ABI are unchanged. Canonical Android/Apple artifacts require source-identity refresh;
+desktop native sources are unchanged.
+
+Regression evidence: 340 tests across five complete core/coordinator/public/wire
+suites pass, including all four requests, accepted/rejected validated answers,
+abort/deadline, pending cancellation, pre-dispatch/queued refusal, physical
+retirement during destroy and public error projection. Native session verification
+passes 90 tests with actual session/foreign-radio dispatch boundaries, including
+post-dispatch cancellation/deadline, pre-dispatch cancellation, accepted/rejected
+answers and a read-only PHY control; focused native Clippy passes. These are
+controlled-boundary tests and not physical-radio proof. Receipts:
+`effectful-controls-wire-final-verified.log`,
+`mobile-effectful-controls-full-session.log` and their retained handoffs. Counts
+overlap existing coverage and do not replace the frozen full-suite denominator.
+Original diagnostic failures, incomplete baselines and fixture corrections remain
+retained with their actual limitations.
+
+Final type checking, focused ESLint, package build, documentation and dependency
+artifact checks pass. Independent source review found zero remaining blockers after
+the typed drain query correction. Canonical Android and Apple refresh completed;
+`native:status` reports all applicable groups fresh and desktop was unchanged.
+Android source digest: `ad62d6771fab71d343022e340d99b1e018669fbcc21ab9b091e1fafdd91f6d45`;
+Apple source digest: `e9ff2f9035f926fca326abe4efe482b0886ce9b0f3216fea690652b11e94b13c`.
+An earlier refresh refused a source identity changed during its build; that failed
+receipt is retained and is not a qualified artifact. Final refresh receipts:
+`effectful-native-refresh.log` and `effectful-native-status.log`.
+
+The new fixing candidate must be pinned, then pass clean preflight and current-head
+cross-platform qualification.
+The previous scan candidate's green Linux run does not qualify this new batch.
+Existing physical qualification gaps remain explicit; no evidence label is promoted.

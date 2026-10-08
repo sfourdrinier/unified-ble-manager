@@ -46,6 +46,8 @@ export type CoreOperationResult<Attachment extends string, Value> =
 
 export interface CoreOperationDispatch<Value> {
   readonly completion: Promise<Value>
+  /** A validated backend answer can precede physical resource retirement. */
+  readonly hasCompletedOutcome?: () => boolean
   requestCancellation(): Promise<void>
 }
 
@@ -77,6 +79,7 @@ interface TrackedOperation {
   readonly queueKey: string | null
   readonly fairnessKey: string
   phase: OperationPhase
+  hasCompletedEffectOutcome(): boolean
   cancelOperation(outcome: Exclude<CoreOperationOutcome, 'succeeded' | 'failed'>): void
   beginOperation(): void
 }
@@ -212,6 +215,8 @@ export class CoreOperationCoordinator<Attachment extends string> {
         admissionHandle: null,
         admissionClosePromise: null,
         phase: 'queued',
+        hasCompletedEffectOutcome: () =>
+          execution.mayCommit && operation.dispatchHandle?.hasCompletedOutcome?.() === true,
         queueKey: execution.queueKey,
         fairnessKey: execution.fairnessKey ?? DEFAULT_FAIRNESS_KEY,
         cancelOperation: outcome => this.cancel(operation, outcome),
@@ -297,7 +302,9 @@ export class CoreOperationCoordinator<Attachment extends string> {
   hasPendingDrain(queueKey?: string): boolean {
     for (const operation of this.operations) {
       if (
-        (operation.phase === 'quarantined' || operation.phase === 'admission-cancelled') &&
+        (operation.phase === 'quarantined' ||
+          operation.phase === 'admission-cancelled' ||
+          (operation.phase === 'dispatched' && operation.hasCompletedEffectOutcome())) &&
         (queueKey === undefined || operation.queueKey === queueKey)
       ) {
         return true
@@ -543,6 +550,7 @@ export class CoreOperationCoordinator<Attachment extends string> {
           })()
     operation.dispatchHandle = {
       completion,
+      hasCompletedOutcome: dispatch.hasCompletedOutcome,
       requestCancellation: () => dispatch.requestCancellation()
     }
     completion.then(
@@ -593,6 +601,12 @@ export class CoreOperationCoordinator<Attachment extends string> {
       return
     }
     if (operation.phase === 'dispatched') {
+      // An effectful request's validated answer has already won arbitration.
+      // Its cleanup may still be draining; cancellation cannot rewrite that answer.
+      if (operation.hasCompletedEffectOutcome()) {
+        this.record(operation, 'cancellation-after-outcome', this.codeForOutcome(outcome))
+        return
+      }
       this.options.resourceLedger.decrement('dispatchedOperations')
       this.settlePublic(
         operation,
@@ -862,6 +876,7 @@ export class CoreOperationCoordinator<Attachment extends string> {
     operation.phase = 'completed'
     this.operations.delete(operation)
     this.removeQueuedOperation(operation)
+    this.resolveOperationDrain()
   }
 
   private removeQueuedOperation<Value>(operation: PendingOperation<Attachment, Value>): void {

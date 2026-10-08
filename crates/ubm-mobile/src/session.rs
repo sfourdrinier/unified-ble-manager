@@ -98,10 +98,14 @@ pub const OPS: &[&str] = &[
     "session.dispose",
 ];
 
-const WRITE_OPS: &[&str] = &[
+const EFFECTFUL_OPS: &[&str] = &[
     "gatt.write",
     "gatt.write-when-ready",
     "gatt.write-descriptor",
+    "connection.request-mtu",
+    "connection.request-priority",
+    "connection.request-subrate",
+    "connection.request-phy",
 ];
 /// How far past the highest admitted operation a pre-admission cancel may
 /// name an admission (finding 109). A client assigns admissions in the order
@@ -285,7 +289,15 @@ pub(crate) fn cleanup_record(failures: Vec<Value>) -> Value {
 }
 
 fn error(code: BleErrorCode, domain: BleErrorDomain, operation: &str) -> DesktopError {
-    DesktopError::new(code, domain, operation)
+    let error = DesktopError::new(code, domain, operation);
+    if matches!(
+        code,
+        BleErrorCode::OperationAborted | BleErrorCode::OperationTimedOut
+    ) {
+        error.with_outcome(None, ubm_desktop::Retryability::CallerDecides)
+    } else {
+        error
+    }
 }
 
 fn unsupported(operation: &str, detail: &str) -> DesktopError {
@@ -668,11 +680,11 @@ impl MobileSession {
     pub fn invoke(&self, op: &str, args_json: &str, completion: Completion) {
         let received = Instant::now();
         let lifetime_received = tokio::time::Instant::now();
-        let is_write = WRITE_OPS.contains(&op);
+        let is_effectful = EFFECTFUL_OPS.contains(&op);
         let reject = |error: DesktopError, completion: Completion| {
             completion(wire::error_envelope(
                 &error,
-                is_write.then_some("not-dispatched"),
+                is_effectful.then_some("not-dispatched"),
             ));
         };
         let Some(op) = OPS.iter().copied().find(|known| *known == op) else {
@@ -826,9 +838,10 @@ impl MobileSession {
             }
             let text = match outcome {
                 Ok(value) => wire::ok_envelope(value),
-                Err(error) => {
-                    wire::error_envelope(&error, is_write.then(|| commit_of(&error, dispatched)))
-                }
+                Err(error) => wire::error_envelope(
+                    &error,
+                    is_effectful.then(|| commit_of(&error, dispatched)),
+                ),
             };
             if let Some(id) = operation_id {
                 lock(&session.state.ops).live.remove(&id);

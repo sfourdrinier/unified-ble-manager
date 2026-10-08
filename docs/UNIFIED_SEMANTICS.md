@@ -750,6 +750,17 @@ cleanup ownership, and suppresses its later native completion. Reused backend
 correlation values cannot settle a newer operation because correlation includes
 backend generation and an unrepeatable dispatch epoch.
 
+MTU, priority, PHY-selection and subrate requests are effectful controls. A
+request cancelled before native dispatch reports no committed effect. Once
+native dispatch may have applied the request, cancellation without a validated
+answer reports uncertain commitment and forbids automatic retry. An accepted
+or rejected operation response already validated at the core boundary retains
+its outcome while owned physical retirement drains; cancellation cannot rewrite
+that known answer. Merely receiving an unvalidated native callback does not
+establish success, and pending requests still settle promptly when cancelled.
+Observation-only controls remain noncommitting. Acceptance is distinct from
+observing the resulting link parameters or PHY.
+
 A failure reports whether the operation may be repeated as `retryability`, and
 that is the operation's own answer, not something derived from the error code.
 `caller-decides` means nothing was committed: the operation never reached the
