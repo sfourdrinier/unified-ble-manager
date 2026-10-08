@@ -141,3 +141,14 @@ describe('React Native Rust route: public link controls', () => {
     await manager.destroy()
   })
 })
+
+
+test.each(['android', 'apple'])('RN %s parameter read and watch keep their truthful unsupported boundary', async platform => {
+  const { manager, connection } = await openConnection(platform)
+  try {
+    await expect(connection.controls.parameters()).rejects.toMatchObject({ code: 'capability.unsupported' })
+    const iterator = connection.controls.parameterEvents()[Symbol.asyncIterator]()
+    await expect(iterator.next()).rejects.toMatchObject({ code: 'capability.unsupported' })
+    await iterator.return()
+  } finally { await manager.destroy() }
+})

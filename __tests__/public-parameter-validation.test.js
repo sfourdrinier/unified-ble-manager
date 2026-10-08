@@ -36,12 +36,16 @@ test.each([
   { intervalUs: NaN },
   { intervalUs: Infinity },
   { intervalUs: -1 },
+  { intervalUs: 1.5 },
+  { intervalUs: Number.MAX_SAFE_INTEGER + 1 },
   { latency: -1 },
   { latency: 0.5 },
   { latency: Infinity },
   { supervisionTimeoutUs: 0 },
   { supervisionTimeoutUs: NaN },
-  { supervisionTimeoutUs: Infinity }
+  { supervisionTimeoutUs: Infinity },
+  { supervisionTimeoutUs: 1.5 },
+  { supervisionTimeoutUs: Number.MAX_SAFE_INTEGER + 1 }
 ])('snapshot and stream both reject malformed parameter values: %j', async invalid => {
   const { controls: control, close } = await controls({
     intervalUs: 30_000,
@@ -67,5 +71,16 @@ test('snapshot and stream agree on valid parameter units and identity', async ()
     supervisionTimeoutMs: 4000,
     connectionGeneration: 'g'
   })
+  await iterator.return()
+})
+
+
+test.each([1001, Number.MAX_SAFE_INTEGER])('positive safe-integer microseconds %s remain measurable without imposing a native-only ceiling', async micros => {
+  const { controls: control } = await controls({ intervalUs: micros, latency: 0, supervisionTimeoutUs: micros })
+  const snapshot = await control.parameters()
+  const iterator = control.parameterEvents()[Symbol.asyncIterator]()
+  expect((await iterator.next()).value).toEqual(snapshot)
+  expect(snapshot.intervalMs).toBe(micros / 1000)
+  expect(snapshot.supervisionTimeoutMs).toBe(micros / 1000)
   await iterator.return()
 })

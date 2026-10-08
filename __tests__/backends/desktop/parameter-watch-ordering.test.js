@@ -132,7 +132,7 @@ test('disconnect during acquisition does not resurrect the watch or emit the sta
   expect(fixture.backend.parameterWatches.size).toBe(0)
 })
 
-test.each([0, NaN, Infinity])('invalid initial parameter interval %s fails acquisition', async intervalUs => {
+test.each([0, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1])('invalid initial parameter interval %s fails acquisition', async intervalUs => {
   const fixture = pendingProbe()
   const opening = fixture.backend.watchConnectionParameters(fixture.record.path)
   fixture.resolve({ intervalUs, latency: 0, supervisionTimeoutUs: 4_000_000 })
@@ -278,4 +278,26 @@ test('parameter reconciliation preserves a queued source failure before publishi
   })
   expect(fixture.backend.parameterWatches.size).toBe(0)
   await publicWatch.close()
+})
+
+
+test.each([
+  { intervalUs: 1.5 }, { intervalUs: Number.MAX_SAFE_INTEGER + 1 },
+  { supervisionTimeoutUs: 1.5 }, { supervisionTimeoutUs: Number.MAX_SAFE_INTEGER + 1 }
+])('malformed native microseconds %j refuse snapshot acquisition and live events', async invalid => {
+  const initial = pendingProbe()
+  const opening = initial.backend.watchConnectionParameters(initial.record.path)
+  initial.resolve({ intervalUs: 30_000, latency: 0, supervisionTimeoutUs: 4_000_000, ...invalid })
+  await expect(opening).rejects.toMatchObject({ normalized: { code: 'protocol.violation' } })
+  expect(initial.backend.parameterWatches.size).toBe(0)
+  const live = pendingProbe()
+  live.resolve({ intervalUs: 30_000, latency: 0, supervisionTimeoutUs: 4_000_000 })
+  const watch = await live.backend.watchConnectionParameters(live.record.path)
+  const iterator = watch.events[Symbol.asyncIterator]()
+  await iterator.next()
+  live.backend.applyConnectionParameters({ kind: 'state', peerId: 'peer', connectionGeneration: 'native-generation',
+    intervalUs: 30_000, latency: 0, supervisionTimeoutUs: 4_000_000, ...invalid })
+  await expect(iterator.next()).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'source-failed',
+    error: { code: 'protocol.violation' } } })
+  await watch.close()
 })

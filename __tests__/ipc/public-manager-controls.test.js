@@ -693,3 +693,102 @@ test.each([
   const connection = await manager.connect({ id: 'peer-1' })
   await expect(connection.controls.readPhy()).rejects.toMatchObject({ code: 'protocol.violation' })
 })
+
+test.each([
+  { intervalUs: 1.5 },
+  { intervalUs: Number.MAX_SAFE_INTEGER + 1 },
+  { supervisionTimeoutUs: 1.5 },
+  { supervisionTimeoutUs: Number.MAX_SAFE_INTEGER + 1 }
+])('IPC public parameter snapshot and event reject nonintegral/unsafe microseconds: %j', async invalid => {
+  const { manager, base } = setup('unsupported', undefined, 'supported')
+  const values = { intervalUs: 30_000, latency: 0, supervisionTimeoutUs: 4_000_000, ...invalid }
+  base.parameters = async () => values
+  const close = jest.fn(async () => ({ state: 'released', failures: [] }))
+  base.parameterEvents = async () => ({
+    close,
+    events: scriptedStream([
+      {
+        kind: 'value',
+        value: {
+          connectionId: 'connection-1',
+          connectionGeneration: 'connection-generation-1',
+          observedAtMonotonicMs: 42,
+          ordinal: 1,
+          ...values
+        }
+      }
+    ])
+  })
+  const connection = await manager.connect('peer-1')
+  await expect(connection.controls.parameters()).rejects.toMatchObject({ code: 'protocol.violation' })
+  const iterator = connection.controls.parameterEvents()[Symbol.asyncIterator]()
+  await expect(iterator.next()).rejects.toMatchObject({ code: 'protocol.violation' })
+  expect(close).toHaveBeenCalledTimes(1)
+})
+
+const { IpcConnection } = require('../../src/ipc/manager')
+
+test.each([
+  { intervalUs: 1.5 },
+  { intervalUs: Number.MAX_SAFE_INTEGER + 1 },
+  { supervisionTimeoutUs: 1.5 },
+  { supervisionTimeoutUs: Number.MAX_SAFE_INTEGER + 1 },
+  { latency: 1.5 },
+  { intervalUs: 0 },
+  { latency: -1 }
+])('private IPC snapshot and event decoder reject malformed numeric facts %j', async invalid => {
+  const observation = {
+    connectionId: 'c',
+    connectionGeneration: 'g',
+    intervalUs: 30000,
+    latency: 0,
+    supervisionTimeoutUs: 4000000,
+    observedAtMonotonicMs: 12.5,
+    ordinal: 1,
+    ...invalid
+  }
+  let validate
+  const manager = {
+    route: jest.fn(async command => (command === 'connection.parameters' ? observation : { handle: 'watch' })),
+    mintParameterEventsHandle: () => 'watch',
+    registerStream: (_handle, guard) => {
+      validate = guard
+      return scriptedStream([])
+    }
+  }
+  const connection = new IpcConnection(manager, 'h', 'p', 'c', 'owner', 'g')
+  await expect(connection.parameters()).rejects.toMatchObject({
+    normalized: { code: 'protocol.violation', operation: 'ipc-manager.connection-parameters' }
+  })
+  await connection.parameterEvents()
+  expect(validate(observation)).toBe(false)
+})
+
+test('private IPC preserves safe integer measurements and independent fractional clock metadata', async () => {
+  const observation = {
+    connectionId: 'c',
+    connectionGeneration: 'g',
+    intervalUs: Number.MAX_SAFE_INTEGER,
+    latency: 0,
+    supervisionTimeoutUs: 1001,
+    observedAtMonotonicMs: 12.5,
+    ordinal: 1
+  }
+  let validate
+  const manager = {
+    route: jest.fn(async command => (command === 'connection.parameters' ? observation : { handle: 'watch' })),
+    mintParameterEventsHandle: () => 'watch',
+    registerStream: (_handle, guard) => {
+      validate = guard
+      return scriptedStream([])
+    }
+  }
+  const connection = new IpcConnection(manager, 'h', 'p', 'c', 'owner', 'g')
+  await expect(connection.parameters()).resolves.toEqual({
+    intervalUs: Number.MAX_SAFE_INTEGER,
+    latency: 0,
+    supervisionTimeoutUs: 1001
+  })
+  await connection.parameterEvents()
+  expect(validate(observation)).toBe(true)
+})

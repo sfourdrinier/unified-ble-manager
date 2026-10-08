@@ -247,3 +247,63 @@ related source correction invalidated its freeze; 435 suites / 5,580 tests and
 67 plugin tests had passed before interruption. Its incomplete receipt is not a
 complete preflight pass or a product-test failure. The new immutable successor
 requires clean preflight and current-head qualification.
+
+### Scan event failure and parameter numeric admission follow-up
+
+Automated findings `4214032775` and `4214032781` survive the reviewed
+`554548c5` source. The first violates terminal-cause consistency: observation
+terminals retained the source/evidence failure while discovery-event broadcast
+closure erased it. The second violates private-boundary admission: measured
+microsecond fields admitted fractional and unsafe numeric values despite the
+integer measurement contract.
+
+The shared scan event broadcast now retains and forwards the normalized cause
+through finish/close and late subscription. Buffered events drain before the
+public iterator rejects; failure remains visible until iterator return. Return
+cancels that view normally, without hiding failure from other views. Source
+failure remains separate from physical cleanup debt and cleanup retry. The
+independent connection-event broadcast already preserves its cause and needs
+no change. These shared public scan semantics apply to supported React Native,
+Web and desktop public scan factories. Electron and Tauri use the separate
+`IpcPublicScanSession` facade, which exposes observations without this discovery
+event broadcast. No native scanning implementation or platform capability changes.
+
+The canonical parameter validator now requires positive safe integer intervals
+and supervision timeouts in microseconds, matching its existing nonnegative
+safe integer latency admission. Desktop provider opening/live events, generic
+public snapshot/event mapping and Electron/Tauri IPC snapshot/event mapping all
+use that guard. Private IPC snapshot/event admission is aligned with the same
+contract, and its TCK assertions require equivalent integer measurements. The
+shared contract adds no native-specific u32 maximum or
+Bluetooth timing quantization. React Native and Web still truthfully report
+unsupported parameter observations rather than inventing a measurement route.
+Native u32 serialization already enforces integer native values; the new guards
+reject malformed or version-skewed boundary responses.
+
+Before the scan fix, three new public regressions failed and 97 tests passed.
+Before the numeric fix, four new malformed public cases failed and 11 passed.
+Regressions cover evidence quota and native source causes, buffered values,
+active/late/pending event consumers, normal stop and iterator return, failed
+cleanup/retry, malformed read/event fields, valid integer-to-millisecond
+projection and genuine unsupported mobile calls. Existing source/ownership
+controls remain in the complete affected suites. Independent narrow source
+review found zero blockers and retained source fingerprints. These are public
+controlled-boundary regressions and source inspection, not physical-radio proof.
+
+Package build/type generation and focused lint pass. The initial documentation
+check overlapped the package builder's generated-input replacement and failed
+with missing build inputs; its sequential rerun after the completed build
+passes. Native source and artifact identities are unchanged, so no native
+refresh is needed. Receipts use the `scan-event-terminal-*`,
+`parameter-integer-*` and `scan-parameter-*` names in the retained qualification
+log directory. The successor requires clean Linux preflight and current-head
+cross-platform qualification; prior-head green results are not relabeled.
+
+The private IPC addendum reproduced seven additional invalid decoder cases before
+fixing admission. Its corrected four complete parameter suites pass 85 tests;
+that count overlaps the integrated batch. The final seven complete scan/parameter
+suites pass 230 tests. The final package build/type generation and focused lint
+pass, with documentation checks after the completed build. Independent review
+of the shared predicate, private IPC terminal/cleanup handling and TCK mapping
+also found zero blockers. Private event failure still uses its existing owned
+unsubscribe/retry route; malformed values never become public measurements.

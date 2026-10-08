@@ -624,6 +624,7 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
   private terminal: {
     readonly mode: 'close' | 'finish'
     readonly reason: PublicScanEventTerminalReason
+    readonly error?: NormalizedBleError | null
   } | null = null
 
   constructor(
@@ -637,16 +638,27 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
       this.subscribers.add(stream)
       this.startPump()
     } else if (this.terminal.mode === 'finish') {
-      stream.finishWithReason(this.terminal.reason)
+      stream.finishWithReason(this.terminal.reason, this.terminal.error ?? null)
     } else {
-      stream.closeWithReason(this.terminal.reason)
+      stream.closeWithReason(this.terminal.reason, this.terminal.error ?? null)
     }
     const iterator = stream[Symbol.asyncIterator]()
     const delivery = this.delivery
+    let returned = false
+    let failed = false
+    const sourceFailure = () =>
+      rehydratePublicError(
+        this.terminal?.error == null
+          ? contractError('platform.failure', 'stream', 'public-scan.events')
+          : new BackendContractError(this.terminal.error)
+      )
     return {
       next: async () => {
+        if (returned) return { done: true, value: undefined }
+        if (failed) throw sourceFailure()
         while (true) {
           const item = await iterator.next()
+          if (returned) return { done: true, value: undefined }
           if (item.done) return { done: true, value: undefined }
           if (item.value.kind === 'value') return { done: false, value: item.value.value }
           if (item.value.kind === 'overflow') {
@@ -670,10 +682,15 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
               )
             )
           }
+          if (item.value.reason === 'source-failed') {
+            failed = true
+            throw sourceFailure()
+          }
           return { done: true, value: undefined }
         }
       },
       return: async () => {
+        returned = true
         this.subscribers.delete(stream)
         await iterator.return()
         return { done: true, value: undefined }
@@ -696,20 +713,20 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
     return terminated
   }
 
-  finish(reason: PublicScanEventTerminalReason): void {
+  finish(reason: PublicScanEventTerminalReason, error?: NormalizedBleError | null): void {
     if (this.terminal !== null) return
-    this.terminal = { mode: 'finish', reason }
+    this.terminal = { mode: 'finish', reason, error }
     for (const subscriber of this.subscribers) {
-      subscriber.finishWithReason(reason)
+      subscriber.finishWithReason(reason, error ?? null)
       this.subscribers.delete(subscriber)
     }
   }
 
-  close(reason: PublicScanEventTerminalReason): void {
+  close(reason: PublicScanEventTerminalReason, error?: NormalizedBleError | null): void {
     if (this.terminal !== null) return
-    this.terminal = { mode: 'close', reason }
+    this.terminal = { mode: 'close', reason, error }
     for (const subscriber of this.subscribers) {
-      subscriber.closeWithReason(reason)
+      subscriber.closeWithReason(reason, error ?? null)
       this.subscribers.delete(subscriber)
     }
   }
@@ -1092,10 +1109,10 @@ class PublicScanSessionController<Attachment extends string> {
             : 'closed'
     if (observationMode === 'close') {
       this.observationBroadcast.closeWithReason(reason, error)
-      this.eventBroadcast.close(eventReason)
+      this.eventBroadcast.close(eventReason, error)
     } else {
       this.observationBroadcast.finishWithReason(reason, error)
-      this.eventBroadcast.finish(eventReason)
+      this.eventBroadcast.finish(eventReason, error)
     }
     this.onDeliveryEnded(reason)
   }

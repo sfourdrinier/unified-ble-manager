@@ -1,4 +1,8 @@
 import {
+  assertConnectionParameterValues,
+  isConnectionParameterValues
+} from '../backend-contract/connection-parameter-validation'
+import {
   BackendContractError,
   BLE_COMMIT_UNCERTAINTIES,
   BLE_ERROR_CODES,
@@ -2003,11 +2007,13 @@ export class IpcConnection {
       throw contractError('protocol.violation', 'connection', operation)
     }
     this.assertAdmissionOpen()
-    return Object.freeze({
-      intervalUs: requiredNumber(payload, 'intervalUs', 'ipc-manager.connection-parameters'),
-      latency: requiredNumber(payload, 'latency', 'ipc-manager.connection-parameters'),
-      supervisionTimeoutUs: requiredNumber(payload, 'supervisionTimeoutUs', 'ipc-manager.connection-parameters')
-    })
+    const measured = {
+      intervalUs: requiredNumber(payload, 'intervalUs', operation),
+      latency: requiredNumber(payload, 'latency', operation),
+      supervisionTimeoutUs: requiredNumber(payload, 'supervisionTimeoutUs', operation)
+    }
+    assertConnectionParameterValues(measured, operation)
+    return Object.freeze(measured)
   }
 
   async parameterEvents(options: IpcManagerOperationOptions = {}): Promise<{
@@ -3404,12 +3410,7 @@ function isConnectionParametersObservation(value: unknown): value is {
   return (
     typeof record.connectionId === 'string' &&
     typeof record.connectionGeneration === 'string' &&
-    typeof record.intervalUs === 'number' &&
-    Number.isFinite(record.intervalUs) &&
-    typeof record.latency === 'number' &&
-    Number.isFinite(record.latency) &&
-    typeof record.supervisionTimeoutUs === 'number' &&
-    Number.isFinite(record.supervisionTimeoutUs) &&
+    isConnectionParameterValues(record) &&
     typeof record.observedAtMonotonicMs === 'number' &&
     Number.isFinite(record.observedAtMonotonicMs) &&
     record.observedAtMonotonicMs >= 0 &&

@@ -4,6 +4,10 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.0-rc.21] - 2026-10-05
 
+- Preserve structured scan source and evidence failures for discovery-event
+  consumers, including late subscribers, and reject fractional or unsafe
+  connection-parameter measurements on snapshot and event boundaries.
+
 - Preserve validated effectful control responses across cancellation during
   cleanup, and report uncertain commitment for dispatched MTU, priority, PHY
   and subrate requests whose outcome is not yet known. Pre-dispatch cancellation

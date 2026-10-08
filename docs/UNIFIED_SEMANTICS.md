@@ -283,6 +283,11 @@ fields fail `capability.unsupported`; a backend MUST NOT silently broaden or
 narrow a filter. The response exposes a session identity, one bounded
 observation stream, and a terminal outcome.
 
+Source and evidence-matching failures retain the same structured cause in the
+observation terminal and discovery-event iterator. Buffered discovery events
+drain before the iterator rejects; subscribers created after failure receive
+the retained cause. Ordinary stop or iterator return completes normally.
+
 The shared service-UUID planner treats a singleton `services.any` as a required
 service, just like an `all` entry. Native filtering uses only services required
 by every positive OR clause; a branch without a required service keeps the
@@ -978,6 +983,11 @@ canonical runtime capability IDs are:
 | `controls.requestSubrate()`                   | `connection:subrate`                    | Request result plus an observation only when measurable.                     |
 | `controls.maximumWriteLength(mode)`           | `gatt:maximum-write-length`             | Authoritative mode-specific write limit for that connection.                 |
 | `controls.writeReadiness('without-response')` | `gatt:write-without-response-readiness` | Bounded readiness snapshots/events, when the backend advertises the feature. |
+
+Measured connection intervals and supervision timeouts are positive safe
+integer microseconds; latency is a nonnegative safe integer. Snapshot and event
+boundaries reject malformed values with `protocol.violation` before exposing a
+measurement. An unavailable observation does not invent numeric measurements.
 
 WinRT registers `connection:parameters` from the instantiated runtime's
 `GetConnectionParameters` and `ConnectionParametersChanged` API presence.
