@@ -4,6 +4,9 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.0-rc.21] - 2026-10-05
 
+- Cancel parameter, write-readiness and IPC security watch admission when their
+  iterator closes, while releasing late resources and retaining cleanup retry.
+
 - Retain malformed native acquired-GATT handles for owned cleanup retry while
   preserving the metadata protocol failure and any compensating cleanup debt.
 

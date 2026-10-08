@@ -1131,7 +1131,9 @@ interface OptionalInternalControlConnection<Attachment extends string> {
     readonly platformPduBytes: number | null
     readonly observedAtMonotonicMs?: number
   }>
-  readonly writeWithoutResponseReadiness?: () => Promise<ConnectionWriteReadinessWatch<Attachment>>
+  readonly writeWithoutResponseReadiness?: (
+    options?: PublicOperationOptions
+  ) => Promise<ConnectionWriteReadinessWatch<Attachment>>
   readonly parameters?: () => Promise<{
     readonly connectionId: string
     readonly connectionGeneration: string
@@ -1140,7 +1142,7 @@ interface OptionalInternalControlConnection<Attachment extends string> {
     readonly supervisionTimeoutUs: number
     readonly observedAtMonotonicMs: number
   }>
-  readonly parameterEvents?: () => Promise<ConnectionParametersWatch<Attachment>>
+  readonly parameterEvents?: (options?: PublicOperationOptions) => Promise<ConnectionParametersWatch<Attachment>>
 }
 
 type PublicControlConnection<
@@ -1272,6 +1274,8 @@ function publicParameterStream<Attachment extends string, Identity extends Backe
     [Symbol.asyncIterator](): AsyncIterator<ConnectionParametersObservation> {
       let watch: ConnectionParametersWatch<Attachment> | null = null
       let iterator: BoundedAsyncStreamIterator<ConnectionParametersStreamObservation<Attachment>> | null = null
+      const acquisition = new AbortController()
+      let returned = false
       let closed = false
       let iteratorDone = false
       let opening: Promise<void> | null = null
@@ -1280,15 +1284,19 @@ function publicParameterStream<Attachment extends string, Identity extends Backe
       const open = (): Promise<void> => {
         if (opening === null) {
           opening = Promise.resolve().then(async () => {
+            if (acquisition.signal.aborted) {
+              throw contractError('operation.aborted', 'connection', 'public-connection.controls.watch-open')
+            }
             if (connection.parameterEvents === undefined) {
               throw contractError('capability.unsupported', 'connection', operation)
             }
-            watch = await connection.parameterEvents()
+            watch = await connection.parameterEvents({ signal: acquisition.signal, deadline: null })
           })
         }
         return opening
       }
       const close = (): Promise<void> => {
+        acquisition.abort()
         if (closing !== null) return closing
         const releasing = Promise.resolve().then(async () => {
           if (opening !== null) {
@@ -1363,6 +1371,15 @@ function publicParameterStream<Attachment extends string, Identity extends Backe
             await close()
             return { done: true, value: undefined }
           } catch (error) {
+            if (
+              returned &&
+              acquisition.signal.aborted &&
+              error instanceof BackendContractError &&
+              error.normalized.code === 'operation.aborted'
+            ) {
+              await close()
+              return { done: true, value: undefined }
+            }
             const sourceError = rehydratePublicError(error)
             if (teardownAttempted) throw sourceError
             closed = true
@@ -1378,6 +1395,7 @@ function publicParameterStream<Attachment extends string, Identity extends Backe
           }
         },
         async return(): Promise<IteratorResult<ConnectionParametersObservation, undefined>> {
+          returned = true
           closed = true
           try {
             await close()
@@ -1400,6 +1418,8 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
     [Symbol.asyncIterator](): AsyncIterator<WriteReadinessEvent> {
       let watch: ConnectionWriteReadinessWatch<Attachment> | null = null
       let iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<Attachment>> | null = null
+      const acquisition = new AbortController()
+      let returned = false
       let closed = false
       let iteratorDone = false
       let opening: Promise<void> | null = null
@@ -1408,16 +1428,20 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
       const open = (): Promise<void> => {
         if (opening === null) {
           opening = Promise.resolve().then(async () => {
+            if (acquisition.signal.aborted) {
+              throw contractError('operation.aborted', 'connection', 'public-connection.controls.watch-open')
+            }
             if (connection.writeWithoutResponseReadiness === undefined) {
               throw contractError('capability.unsupported', 'connection', 'public-connection.controls.write-readiness')
             }
-            watch = await connection.writeWithoutResponseReadiness()
+            watch = await connection.writeWithoutResponseReadiness({ signal: acquisition.signal, deadline: null })
           })
         }
         return opening
       }
 
       const close = (): Promise<void> => {
+        acquisition.abort()
         if (closing !== null) return closing
         const operation = Promise.resolve().then(async () => {
           if (opening !== null) {
@@ -1511,6 +1535,15 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
             await close()
             return { done: true, value: undefined }
           } catch (error) {
+            if (
+              returned &&
+              acquisition.signal.aborted &&
+              error instanceof BackendContractError &&
+              error.normalized.code === 'operation.aborted'
+            ) {
+              await close()
+              return { done: true, value: undefined }
+            }
             const sourceError = rehydratePublicError(error)
             if (teardownAttempted) throw sourceError
             closed = true
@@ -1526,6 +1559,7 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
           }
         },
         async return(): Promise<IteratorResult<WriteReadinessEvent, undefined>> {
+          returned = true
           closed = true
           try {
             await close()

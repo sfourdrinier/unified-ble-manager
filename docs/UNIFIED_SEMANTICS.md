@@ -236,9 +236,12 @@ bounded streams with an immediate current snapshot followed by transitions; a
 watch cannot miss a transition between its successful registration and the
 returned initial snapshot.
 
-Security and write-readiness watches retain one in-flight source acquisition.
-Iterator return waits for that acquisition and releases any late resource; it
-cannot permit a later value after closure. Acquisition failure is reported by
+Security, parameter and write-readiness watches retain one in-flight source
+acquisition. Parameter and write-readiness iterator return aborts pending
+admission before waiting for its settlement, then releases any late resource.
+An IPC security watch owns its stream immediately; closing that stream aborts
+its pending subscription admission before awaiting settlement and release.
+A closed iterator cannot deliver a later value. Acquisition failure is reported by
 the pending `next()`, not duplicated as cleanup of a nonexistent resource.
 Concurrent cleanup callers share one attempt. Confirmed success is retained;
 failed release remains owned and retryable. Ordinary closure completes, while a

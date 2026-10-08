@@ -728,6 +728,47 @@ function assertIpcControlEventIdentity(
   }
 }
 
+function ipcControlWatchLifetime<Watch extends { close(): Promise<CleanupRecord> }>(
+  open: (options?: { signal?: AbortSignal; deadline?: number | null }) => Promise<Watch>
+) {
+  const admission = new AbortController()
+  let watch: Watch | null = null
+  let opening: Promise<Watch> | null = null
+  let releasing: Promise<void> | null = null
+  let released = false
+  return {
+    acquire(): Promise<Watch> {
+      if (opening === null) {
+        opening = open({ signal: admission.signal }).then(value => {
+          watch = value
+          return value
+        })
+      }
+      return opening
+    },
+    abortAdmission(): void {
+      admission.abort()
+    },
+    release(): Promise<void> {
+      if (released || watch === null) return Promise.resolve()
+      if (releasing !== null) return releasing
+      const current = watch
+      releasing = current.close().then(
+        cleanup => {
+          releasing = null
+          if (cleanup.state === 'release-failed') throw new BleCleanupError(cleanup)
+          released = true
+        },
+        error => {
+          releasing = null
+          throw error
+        }
+      )
+      return releasing
+    }
+  }
+}
+
 function ipcParameterStream(
   open: (options?: { signal?: AbortSignal; deadline?: number | null }) => Promise<{
     readonly events: BoundedAsyncStream<{
@@ -762,19 +803,16 @@ function ipcParameterStream(
       }> | null = null
       let closed = false
       let opening: Promise<void> | null = null
+      const lifetime = ipcControlWatchLifetime(open)
       const acquire = (): Promise<void> => {
         if (opening === null) {
-          opening = open().then(value => {
+          opening = lifetime.acquire().then(value => {
             watch = value
           })
         }
         return opening
       }
-      const release = async (): Promise<void> => {
-        if (watch === null) return
-        const cleanup = await watch.close()
-        if (cleanup.state === 'release-failed') throw new BleCleanupError(cleanup)
-      }
+      const release = (): Promise<void> => lifetime.release()
       return {
         async next(): Promise<IteratorResult<ConnectionParametersObservation, undefined>> {
           if (closed) return { done: true, value: undefined }
@@ -795,6 +833,11 @@ function ipcParameterStream(
             }
             if (iterator === null) iterator = watch.events[Symbol.asyncIterator]()
             const item = await iterator.next()
+            if (closed) {
+              teardownAttempted = true
+              await release()
+              return { done: true, value: undefined }
+            }
             if (item.done === true || item.value === undefined) {
               closed = true
               teardownAttempted = true
@@ -831,6 +874,11 @@ function ipcParameterStream(
             await release()
             return { done: true, value: undefined }
           } catch (error) {
+            const sourceError = rehydratePublicError(error)
+            if (closed && sourceError instanceof BleError && sourceError.code === 'operation.aborted') {
+              await release()
+              return { done: true, value: undefined }
+            }
             return settleIpcControlFailure(
               error,
               teardownAttempted,
@@ -844,6 +892,7 @@ function ipcParameterStream(
         },
         async return(): Promise<IteratorResult<ConnectionParametersObservation, undefined>> {
           closed = true
+          lifetime.abortAdmission()
           if (opening !== null) {
             await opening.catch(() => undefined)
           }
@@ -885,19 +934,16 @@ function ipcWriteReadinessStream(
       }> | null = null
       let closed = false
       let opening: Promise<void> | null = null
+      const lifetime = ipcControlWatchLifetime(open)
       const acquire = (): Promise<void> => {
         if (opening === null) {
-          opening = open().then(value => {
+          opening = lifetime.acquire().then(value => {
             watch = value
           })
         }
         return opening
       }
-      const release = async (): Promise<void> => {
-        if (watch === null) return
-        const cleanup = await watch.close()
-        if (cleanup.state === 'release-failed') throw new BleCleanupError(cleanup)
-      }
+      const release = (): Promise<void> => lifetime.release()
       return {
         async next(): Promise<IteratorResult<WriteReadinessEvent, undefined>> {
           if (closed) return { done: true, value: undefined }
@@ -918,6 +964,11 @@ function ipcWriteReadinessStream(
             }
             if (iterator === null) iterator = watch.events[Symbol.asyncIterator]()
             const item = await iterator.next()
+            if (closed) {
+              teardownAttempted = true
+              await release()
+              return { done: true, value: undefined }
+            }
             if (item.done === true || item.value === undefined) {
               closed = true
               teardownAttempted = true
@@ -949,6 +1000,11 @@ function ipcWriteReadinessStream(
             await release()
             return { done: true, value: undefined }
           } catch (error) {
+            const sourceError = rehydratePublicError(error)
+            if (closed && sourceError instanceof BleError && sourceError.code === 'operation.aborted') {
+              await release()
+              return { done: true, value: undefined }
+            }
             return settleIpcControlFailure(
               error,
               teardownAttempted,
@@ -962,6 +1018,7 @@ function ipcWriteReadinessStream(
         },
         async return(): Promise<IteratorResult<WriteReadinessEvent, undefined>> {
           closed = true
+          lifetime.abortAdmission()
           if (opening !== null) {
             await opening.catch(() => undefined)
           }

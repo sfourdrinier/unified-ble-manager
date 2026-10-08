@@ -351,3 +351,56 @@ destruction settles the retained native resource. Package build/type generation,
 focused lint and documentation checks pass. Independent narrow source review
 found zero blockers. The immutable successor requires clean Linux preflight and
 current-head cross-platform qualification; existing hardware gaps remain explicit.
+
+### Abort owned watch admission before iterator teardown
+
+Automated finding `4214337830` survives `b5518601`. The violated invariant is
+cancellation during owned acquisition: the public and IPC parameter iterators
+waited for initial admission during return without forwarding an abort signal.
+The readiness projections had the same cause. A stalled initial native probe
+could therefore prevent teardown from reaching the owned watch release.
+
+Parameter and readiness projections now own an admission controller, forward its
+signal and abort before waiting for admission settlement. A late watch remains
+owned and is released rather than published after return. Concurrent cleanup
+uses one attempt; confirmed release is retained and refusal remains retryable.
+The iterator's own admission abort completes normally after return, while
+independent source errors and cleanup failures remain observable. Real desktop
+watch owners and private IPC subscriptions already support signal cancellation;
+the correction connects their existing mechanism instead of abandoning the
+pending resource or inventing a successful close.
+
+The related IPC security watch also launched subscription without a signal. Its
+backend contract returns an owned stream synchronously, so its internal close
+now aborts the pending subscription before awaiting settlement. No new shared
+security contract is needed. Public security obtains this owned stream and uses
+its close route; asynchronous peer resolution is separate from native watch
+admission. Pairing already owns a separate controller and does not establish
+security-watch cancellation by itself.
+
+Generic public parameter/readiness projections apply to supported desktop
+routes and React Native readiness. Electron/Tauri IPC projections and IPC
+security carry cancellation into their exact private route. React Native/Web
+parameter observations remain genuinely unsupported; no measured route or
+capability is fabricated. Native sources/artifact identities are unchanged.
+These controlled regressions do not establish physical-radio qualification.
+
+Before correction, generic parameter/readiness acquisition regressions produced
+six failures with four passing controls; IPC parameter/readiness regressions
+produced four failures with 36 passing controls, and IPC security produced two
+failures with three passing controls. Final five public/native suites pass
+59 tests; the separate two IPC suites pass 49 tests. Coverage includes stalled
+admission abort, pre-dispatch return, late arrival, concurrent cleanup, cleanup
+refusal/retry, suppressed stale delivery and independent source/cleanup faults.
+One older readiness fixture now waits for and asserts real admission before
+return, so it tests late resource cleanup rather than avoiding admission.
+The default local addon initially failed identity checks before product
+execution; the existing canonical refreshed artifact passes the joined native
+suite without rebuilding. Package build/type generation, focused lint and
+sequential documentation checks pass. Independent narrow source review found
+zero blockers and traced actual Electron/Tauri subscription cancellation and
+late-handle compensation; the renderer awaits the owned receipt rather than
+racing it away. Receipt prefixes: `control-watch-acquisition-*`,
+`ipc-watch-cancel-*`, `ipc-all-watch-cancel-*` and `watch-admission-*`.
+The immutable successor requires clean Linux preflight and current-head CI;
+prior-head results retain their identities and hardware gaps remain explicit.

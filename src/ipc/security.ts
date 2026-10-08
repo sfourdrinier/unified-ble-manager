@@ -126,11 +126,13 @@ export function createIpcSecurityBackend(ipc: IpcBleManager): SecurityBackend {
       return result.state
     },
     watch: peerId => {
+      const admission = new AbortController()
+      let retiring = false
       const fallback = new CoreBoundedStream<PeerSecurityEvent>(
         { itemCapacity: capacity(128), byteCapacity: capacity(65536), reservedControlCapacity: capacity(1) },
         'error'
       )
-      const acquired = ipc.route('security.watch.subscribe', { peerId }).then(result => {
+      const acquired = ipc.route('security.watch.subscribe', { peerId }, null, admission.signal).then(result => {
         if (typeof result.handle !== 'string')
           throw contractError('protocol.malformed', 'ipc', 'ipc.security.watch-handle')
         return {
@@ -140,7 +142,7 @@ export function createIpcSecurityBackend(ipc: IpcBleManager): SecurityBackend {
             (value): value is PeerSecurityEvent => isSecurityEvent(value) && value.peerId === peerId,
             undefined,
             'error',
-            () => close(),
+            () => releaseOwned(),
             'lease-owned'
           )
         }
@@ -152,7 +154,7 @@ export function createIpcSecurityBackend(ipc: IpcBleManager): SecurityBackend {
         () => null
       )
       let release: Promise<import('../backend-contract/errors').CleanupRecord> | null = null
-      const close = (): Promise<import('../backend-contract/errors').CleanupRecord> => {
+      const releaseOwned = (): Promise<import('../backend-contract/errors').CleanupRecord> => {
         if (release !== null) return release
         const tracked = owned
           .then(async value => {
@@ -170,6 +172,11 @@ export function createIpcSecurityBackend(ipc: IpcBleManager): SecurityBackend {
         release = tracked
         return tracked
       }
+      const close = (): Promise<import('../backend-contract/errors').CleanupRecord> => {
+        retiring = true
+        admission.abort()
+        return releaseOwned()
+      }
       const watch: BoundedAsyncStream<PeerSecurityEvent> = {
         limits: fallback.limits,
         overflowPolicy: fallback.overflowPolicy,
@@ -180,7 +187,23 @@ export function createIpcSecurityBackend(ipc: IpcBleManager): SecurityBackend {
             [Symbol.asyncIterator]() {
               return this
             },
-            next: async () => (await iterator).next(),
+            next: async () => {
+              try {
+                const current = await iterator
+                if (retiring) return { done: true, value: undefined }
+                const item = await current.next()
+                return retiring ? { done: true, value: undefined } : item
+              } catch (error) {
+                if (
+                  retiring &&
+                  error instanceof BackendContractError &&
+                  error.normalized.code === 'operation.aborted'
+                ) {
+                  return { done: true, value: undefined }
+                }
+                throw error
+              }
+            },
             return: async () => {
               await close()
               if ((await owned) === null) return { done: true, value: undefined }
