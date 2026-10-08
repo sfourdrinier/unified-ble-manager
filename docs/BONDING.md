@@ -133,7 +133,10 @@ rejects with the same error the pairing rejected with.
 
 An abort or deadline on `cancelPairing()` itself is admitted before any native
 cancellation is issued and bounds the whole wait, acknowledgement and pairing
-result included. A timed-out or aborted wait reports `operation.timed-out` /
+result included. The same absolute deadline covers both phases; acknowledgement
+does not reset the remaining budget. Each cancellation waiter owns its abort
+listener and timer independently of the original pairing and other waiters.
+A timed-out or aborted wait reports `operation.timed-out` /
 `operation.aborted` rather than inventing `'cancelled'` from an acknowledgement,
 and the in-flight pairing stays owned so `state()`/`watch()` (and a later
 `cancelPairing()` that waits long enough) can still observe the pairing's own

@@ -4,6 +4,11 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.0-rc.21] - 2026-10-05
 
+- Fence desktop control-watch opening and gap recovery with accepted-observation
+  revisions, preventing delayed probes from overwriting newer state. Bound
+  React Native pairing-cancellation acknowledgement and result waiting by the
+  caller deadline and signal while retaining the original pairing owner.
+
 - Cancel parameter, write-readiness and IPC security watch admission when their
   iterator closes, while releasing late resources and retaining cleanup retry.
 

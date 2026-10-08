@@ -997,8 +997,14 @@ WinRT registers `connection:parameters` from the instantiated runtime's
 An absent API reports `unavailable` with the native limitation; an API-probe
 failure reports its structured platform error. Compiling a Windows target
 does not establish that those APIs are present on the host.
-Getter failure terminates the affected parameter watch with the platform's
-original detail. A native parameter broadcast gap is counted and propagated:
+An unsuperseded getter failure terminates the affected parameter watch with the
+platform's original detail. Desktop parameter and readiness watches order
+opening, accepted events (including buffered events) and gap recovery with a
+generation-scoped acceptance revision, separate from public delivery ordinals.
+A delayed probe cannot replace a newer accepted observation or terminate it with
+an older probe failure. Caller cancellation, ended generations and independent
+newer source failures remain terminal contenders.
+A native parameter broadcast gap is counted and propagated:
 the desktop provider reports the discontinuity and re-reads the current value;
 Tauri ends its bounded watch with an overflow error. Neither path turns a
 failed getter into a missing event or fabricates a measured zero value.

@@ -112,10 +112,9 @@ test('reports arriving during the initial probe replace its delayed answer and r
   expect(fixture.backend.parameterWatches.size).toBe(0)
 })
 
-test('initial probe failure closes the registered source and retains the refusal', async () => {
+test('initial probe failure without a newer observation closes the source and retains the refusal', async () => {
   const fixture = pendingProbe()
   const opening = fixture.backend.watchConnectionParameters(fixture.record.path)
-  fixture.event(60_000)
   fixture.reject(new Error('probe failed'))
   await expect(opening).rejects.toThrow('probe failed')
   expect(fixture.backend.parameterWatches.size).toBe(0)
@@ -132,13 +131,16 @@ test('disconnect during acquisition does not resurrect the watch or emit the sta
   expect(fixture.backend.parameterWatches.size).toBe(0)
 })
 
-test.each([0, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1])('invalid initial parameter interval %s fails acquisition', async intervalUs => {
-  const fixture = pendingProbe()
-  const opening = fixture.backend.watchConnectionParameters(fixture.record.path)
-  fixture.resolve({ intervalUs, latency: 0, supervisionTimeoutUs: 4_000_000 })
-  await expect(opening).rejects.toMatchObject({ normalized: { code: 'protocol.violation' } })
-  expect(fixture.backend.parameterWatches.size).toBe(0)
-})
+test.each([0, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+  'invalid initial parameter interval %s fails acquisition',
+  async intervalUs => {
+    const fixture = pendingProbe()
+    const opening = fixture.backend.watchConnectionParameters(fixture.record.path)
+    fixture.resolve({ intervalUs, latency: 0, supervisionTimeoutUs: 4_000_000 })
+    await expect(opening).rejects.toMatchObject({ normalized: { code: 'protocol.violation' } })
+    expect(fixture.backend.parameterWatches.size).toBe(0)
+  }
+)
 
 test('a malformed report during acquisition retains its own source failure', async () => {
   const fixture = pendingProbe()
@@ -280,10 +282,11 @@ test('parameter reconciliation preserves a queued source failure before publishi
   await publicWatch.close()
 })
 
-
 test.each([
-  { intervalUs: 1.5 }, { intervalUs: Number.MAX_SAFE_INTEGER + 1 },
-  { supervisionTimeoutUs: 1.5 }, { supervisionTimeoutUs: Number.MAX_SAFE_INTEGER + 1 }
+  { intervalUs: 1.5 },
+  { intervalUs: Number.MAX_SAFE_INTEGER + 1 },
+  { supervisionTimeoutUs: 1.5 },
+  { supervisionTimeoutUs: Number.MAX_SAFE_INTEGER + 1 }
 ])('malformed native microseconds %j refuse snapshot acquisition and live events', async invalid => {
   const initial = pendingProbe()
   const opening = initial.backend.watchConnectionParameters(initial.record.path)
@@ -295,9 +298,217 @@ test.each([
   const watch = await live.backend.watchConnectionParameters(live.record.path)
   const iterator = watch.events[Symbol.asyncIterator]()
   await iterator.next()
-  live.backend.applyConnectionParameters({ kind: 'state', peerId: 'peer', connectionGeneration: 'native-generation',
-    intervalUs: 30_000, latency: 0, supervisionTimeoutUs: 4_000_000, ...invalid })
-  await expect(iterator.next()).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'source-failed',
-    error: { code: 'protocol.violation' } } })
+  live.backend.applyConnectionParameters({
+    kind: 'state',
+    peerId: 'peer',
+    connectionGeneration: 'native-generation',
+    intervalUs: 30_000,
+    latency: 0,
+    supervisionTimeoutUs: 4_000_000,
+    ...invalid
+  })
+  await expect(iterator.next()).resolves.toMatchObject({
+    value: { kind: 'terminal', reason: 'source-failed', error: { code: 'protocol.violation' } }
+  })
   await watch.close()
 })
+
+function deferred() {
+  let resolve, reject
+  const promise = new Promise((yes, no) => {
+    resolve = yes
+    reject = no
+  })
+  return { promise, resolve, reject }
+}
+const parameters = intervalUs => ({ intervalUs, latency: 2, supervisionTimeoutUs: 4_000_000 })
+
+function openingRace(kind) {
+  const fixture = pendingProbe()
+  fixture.backend.noteDiagnostic = () => {}
+  fixture.backend.destroyed = false
+  fixture.backend.readinessWatches = new Set()
+  const initial = deferred()
+  const recovery = deferred()
+  const method = kind === 'parameters' ? 'connectionParameters' : 'writeReadiness'
+  fixture.backend.central[method] = jest.fn().mockReturnValueOnce(initial.promise).mockReturnValueOnce(recovery.promise)
+  const opening =
+    kind === 'parameters'
+      ? fixture.backend.watchConnectionParameters(fixture.record.path)
+      : fixture.backend.writeWithoutResponseReadiness(fixture.record.path)
+  const owned = [...(kind === 'parameters' ? fixture.backend.parameterWatches : fixture.backend.readinessWatches)][0]
+  const recovering = () =>
+    kind === 'parameters'
+      ? fixture.backend.reconcileConnectionParameters(1)
+      : fixture.backend.reconcileWriteReadiness(1)
+  const event = () =>
+    kind === 'parameters'
+      ? fixture.event(90_000)
+      : fixture.backend.applyWriteReadiness({
+          kind: 'state',
+          peerId: 'peer',
+          connectionGeneration: 'native-generation',
+          ready: true
+        })
+  return { ...fixture, initial, recovery, opening, owned, recovering, event }
+}
+
+test.each(['parameters', 'readiness'])('%s opening ignores a stale getter after a newer recovery', async kind => {
+  const f = openingRace(kind)
+  const recovery = f.recovering()
+  f.recovery.resolve(kind === 'parameters' ? parameters(90_000) : true)
+  await recovery
+  f.initial.resolve(kind === 'parameters' ? parameters(30_000) : false)
+  const watch = await f.opening
+  const iterator = watch.events[Symbol.asyncIterator]()
+  expect((await iterator.next()).value.value).toMatchObject(
+    kind === 'parameters' ? { intervalUs: 90_000 } : { ready: true }
+  )
+  expect(f.owned.ordinal).toBe(1)
+  await watch.close()
+})
+
+test.each(['parameters', 'readiness'])(
+  '%s buffered event invalidates stale recovery and opening successes',
+  async kind => {
+    const f = openingRace(kind)
+    const recovery = f.recovering()
+    f.event()
+    f.recovery.resolve(kind === 'parameters' ? parameters(60_000) : false)
+    await recovery
+    f.initial.resolve(kind === 'parameters' ? parameters(30_000) : false)
+    const watch = await f.opening
+    expect((await watch.events[Symbol.asyncIterator]().next()).value.value).toMatchObject(
+      kind === 'parameters' ? { intervalUs: 90_000 } : { ready: true }
+    )
+    expect(f.owned.ordinal).toBe(1)
+    await watch.close()
+  }
+)
+
+test.each(['parameters', 'readiness'])(
+  '%s buffered event invalidates stale recovery and opening failures',
+  async kind => {
+    const f = openingRace(kind)
+    const recovery = f.recovering()
+    f.event()
+    f.recovery.reject(new Error('stale recovery failure'))
+    await recovery
+    f.initial.reject(new Error('stale opening failure'))
+    const watch = await f.opening
+    expect((await watch.events[Symbol.asyncIterator]().next()).value.value).toMatchObject(
+      kind === 'parameters' ? { intervalUs: 90_000 } : { ready: true }
+    )
+    expect(f.owned.ordinal).toBe(1)
+    await watch.close()
+  }
+)
+
+test.each(['parameters', 'readiness'])(
+  '%s generation replacement during opening never resurrects the old watch',
+  async kind => {
+    const f = openingRace(kind)
+    f.event()
+    f.record.coreGeneration = 'replacement'
+    f.initial.resolve(kind === 'parameters' ? parameters(30_000) : false)
+    await expect(f.opening).rejects.toMatchObject({ normalized: { code: 'connection.stale' } })
+    expect((kind === 'parameters' ? f.backend.parameterWatches : f.backend.readinessWatches).size).toBe(0)
+  }
+)
+
+test.each(['parameters', 'readiness'])(
+  '%s genuine recovery failure with no newer state closes acquisition',
+  async kind => {
+    const f = openingRace(kind)
+    const recovery = f.recovering()
+    f.recovery.reject(new Error('platform.failure|platform|native.recovery|never|||current recovery failure'))
+    await recovery
+    f.initial.resolve(kind === 'parameters' ? parameters(30_000) : false)
+    await expect(f.opening).rejects.toMatchObject({ normalized: { code: 'platform.failure' } })
+    expect((kind === 'parameters' ? f.backend.parameterWatches : f.backend.readinessWatches).size).toBe(0)
+  }
+)
+
+test.each(['parameters', 'readiness'])('%s caller cancellation wins over buffered source state', async kind => {
+  const f = pendingProbe()
+  f.backend.readinessWatches = new Set()
+  const controller = new AbortController()
+  f.backend.central.writeReadiness = () => f.backend.central.connectionParameters()
+  const opening =
+    kind === 'parameters'
+      ? f.backend.watchConnectionParameters(f.record.path, { signal: controller.signal, deadline: null })
+      : f.backend.writeWithoutResponseReadiness(f.record.path, { signal: controller.signal, deadline: null })
+  if (kind === 'parameters') f.event(90_000)
+  else
+    f.backend.applyWriteReadiness({
+      kind: 'state',
+      peerId: 'peer',
+      connectionGeneration: 'native-generation',
+      ready: true
+    })
+  controller.abort()
+  f.resolve(kind === 'parameters' ? parameters(30_000) : false)
+  await expect(opening).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+  expect((kind === 'parameters' ? f.backend.parameterWatches : f.backend.readinessWatches).size).toBe(0)
+})
+
+test.each(['parameters', 'readiness'])('%s accepted recovery also supersedes an older opening failure', async kind => {
+  const f = openingRace(kind)
+  const recovery = f.recovering()
+  f.recovery.resolve(kind === 'parameters' ? parameters(90_000) : true)
+  await recovery
+  f.initial.reject(new Error('obsolete opening refusal'))
+  const watch = await f.opening
+  expect((await watch.events[Symbol.asyncIterator]().next()).value.value).toMatchObject(
+    kind === 'parameters' ? { intervalUs: 90_000 } : { ready: true }
+  )
+  expect(f.owned.ordinal).toBe(1)
+  await watch.close()
+})
+
+test.each(['parameters', 'readiness'])('%s expired admission does not borrow a buffered healthy state', async kind => {
+  const f = pendingProbe()
+  f.backend.readinessWatches = new Set()
+  let time = 0
+  f.backend.now = () => time
+  f.backend.central.writeReadiness = () => f.backend.central.connectionParameters()
+  const opening =
+    kind === 'parameters'
+      ? f.backend.watchConnectionParameters(f.record.path, { signal: null, deadline: 10 })
+      : f.backend.writeWithoutResponseReadiness(f.record.path, { signal: null, deadline: 10 })
+  if (kind === 'parameters') f.event(90_000)
+  else
+    f.backend.applyWriteReadiness({
+      kind: 'state',
+      peerId: 'peer',
+      connectionGeneration: 'native-generation',
+      ready: true
+    })
+  time = 11
+  f.resolve(kind === 'parameters' ? parameters(30_000) : false)
+  await expect(opening).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+  expect((kind === 'parameters' ? f.backend.parameterWatches : f.backend.readinessWatches).size).toBe(0)
+})
+
+test.each(['parameters', 'readiness'])(
+  '%s publishing an already accepted buffer does not invalidate a newer probe',
+  async kind => {
+    const f = openingRace(kind)
+    f.event()
+    const recovery = f.recovering()
+    f.initial.resolve(kind === 'parameters' ? parameters(30_000) : false)
+    const watch = await f.opening
+    const iterator = watch.events[Symbol.asyncIterator]()
+    expect((await iterator.next()).value.value).toMatchObject(
+      kind === 'parameters' ? { intervalUs: 90_000 } : { ready: true }
+    )
+    expect(f.owned.acceptanceRevision).toBe(1)
+    f.recovery.resolve(kind === 'parameters' ? parameters(120_000) : false)
+    await recovery
+    expect((await iterator.next()).value.value).toMatchObject(
+      kind === 'parameters' ? { intervalUs: 120_000 } : { ready: false }
+    )
+    expect(f.owned.ordinal).toBe(2)
+    await watch.close()
+  }
+)

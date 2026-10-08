@@ -413,3 +413,75 @@ all three watch families, abort-before-wait, IPC security subscription abort and
 retained failed cleanup. All 18 guide tests pass. Production and native sources
 are unchanged by this test/receipt correction. The failed receipt is retained
 separately and is not a complete qualification pass.
+
+### Round-four targeted corrective batch
+
+The supplied review identifies two remaining P2 root issues on `b5518601`;
+both also survive current `496929be`. The supplied report's previous-finding
+dispositions remain distinct from these new findings; no prior denominator or
+hardware evidence is relabeled.
+
+**R4-01 — Opening plus gap-recovery ordering.** The violated invariant is
+freshness across accepted but unpublished observations. Publication ordinals
+cannot fence pending probes while events remain buffered. Desktop parameter and
+readiness watches now use a generation-scoped acceptance revision across
+opening, native events and recovery. A newly accepted fact advances that revision;
+publishing its buffered copy does not. Probe completion drains pending native
+reports before applying its success or failure. A superseded probe cannot replace
+newer facts or retire their watch with an older failure. Explicit caller abort,
+deadline, generation closure and independent newer source faults remain terminal.
+This corrects WinRT parameters and CoreBluetooth readiness through Node/Bun and
+Electron main. Tauri and React Native have different watch owners and were not
+claimed to exhibit this exact defect. Native implementation is unchanged.
+
+The authentic controlled baseline fails five race cases with 23 passing controls.
+The corrected four complete desktop suites pass 44 tests, including actual
+public/provider/NAPI synthetic delayed-opening routes, stale success/failure,
+current failure, cancellation/deadline and generation replacement. Positive
+controls verify established watches and recovery started after event acceptance
+but before buffered publication, avoiding false freshness invalidation. Receipts:
+`r4-watch-order-baseline.log` and `r4-watch-order-final.log`. This is controlled
+production-class and native synthetic evidence, not new Windows/macOS RF proof.
+
+**R4-02 — Cancellation acknowledgement plus pending pairing result.** The violated
+invariant is one cancellation caller's budget across both waits, independent of
+the original effect's ownership. The RN security backend checks the original
+absolute deadline and signal before cancellation admission, forwards the remaining
+budget to the cancellation operation and bounds both acknowledgement and result
+waiting. Each caller owns its listeners/timer and cancellation-operation identity;
+ending that wait never cancels or discards the original pairing-result owner.
+Shutdown ends cancellation waiters, and later pairing success/refusal remains
+available. Native capability refusal stays truthful. The existing provider forwards
+the argument budget to the versioned native session; no native wire or Rust source
+change is needed. Desktop cancellation already bounds its transaction and IPC
+forwards deadline/signal, so those routes remain unchanged.
+
+The authentic isolated original-source RN baseline fails eight cases with two
+passing controls. Corrected direct-production-class and joined RN factory/public/
+provider/wire controls exercise expired admission, abort/deadline in both wait
+phases, native refusal, independent repeated callers, retained pairing outcomes
+and shutdown. Early fixture failures are retained separately from the authentic
+baseline. Android's instantiated descriptor and native unsupported cancellation
+answer are preserved, rather than inventing universal ceremony cancellation.
+Independent review also requires the cancellation acknowledgement promise to stay
+observed when an early deadline wins before its wait begins. Receipt prefix:
+`r4-rn-cancel-*`. These are controlled mobile integration tests, not SDK36.1 RF
+qualification.
+
+Final R4-02 verification passes three complete suites / 56 tests. Independent
+review caught an early-deadline acknowledgement ownership edge; three additional
+regressions fail before its correction with ten passing controls. The final
+acknowledgement is reflected into an always-observed receipt before bounded
+waiting, and admission/budget/lifecycle are rechecked immediately before the
+native effect. Late acknowledgement refusal remains observed even when the caller
+already timed out. Receipts: `r4-rn-cancel-authentic-baseline.log`,
+`r4-rn-cancel-ack-baseline.log` and `r4-rn-cancel-ack-final.log`.
+
+The two final affected batches total seven disjoint suites / 100 passing tests
+(44 desktop, 56 mobile). All 18 host-guidance tests pass. Final package build/type
+generation, focused lint and sequential documentation checks pass. Independent
+narrow source review found zero remaining blockers and retained fingerprints.
+Native sources and identities are unchanged, so no native rebuild was performed.
+The successor still requires clean Linux preflight, current-head cross-platform
+CI and applicable physical qualification; earlier Windows default-profile Bun
+ESM and pending-loss/retry limits remain disclosed, not converted into passes.
