@@ -1122,8 +1122,9 @@ class OwnedAndroidGattRadio private constructor(
     val bluetoothAdapter = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
     val device = bluetoothAdapter.getRemoteDevice(deviceId.uppercase(Locale.ROOT))
     if (isAlreadyPaired(device.bondState, device.type, transport)) {
-      if (!postNow { callback("alreadyPaired", OwnedAndroidSecurityState("bonded", true)) }) {
-        callback("alreadyPaired", OwnedAndroidSecurityState("bonded", true))
+      val state = securityStateOf(device, "bonded")
+      if (!postNow { callback("alreadyPaired", state) }) {
+        callback("alreadyPaired", state)
       }
       return 0L
     }

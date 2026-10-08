@@ -194,3 +194,12 @@ that could otherwise follow the provider's fresh reread. The regression invokes
 the actual N-API polling methods after 4,097 records overflow their 4,096-record
 receivers, verifies old records are absent, verifies later parameter/readiness
 observations survive, and checks the separate upstream parameter gap path.
+
+Android already-paired results now capture the runtime security projection once
+with the observed bonded fact, rather than constructing the default unsupported
+encryption state. Scheduled and immediate fallback callbacks share that captured
+answer. Native fixture controls cover API 35, 36.0 and 36.1 runtime profiles,
+ensure one callback and no new createBond operation, and preserve event-only
+unknown status when no snapshot API exists. The existing native encryption API
+controls separately cover available 36.1 encrypted/unencrypted snapshots and
+permission refusal; no physical mobile encryption proof is inferred.

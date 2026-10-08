@@ -27,6 +27,22 @@ class OwnedAndroidEncryptionTest {
   private fun radio(sdk: Int) = OwnedAndroidGattRadio(context, post = { it(); true },
     scheduleDelayed = { _, _ -> true }, securitySdkInt = sdk, securityFullSdkInt = sdk * 100000)
 
+  @Test fun alreadyPairedResultUsesTheRuntimeSecurityProjectionOnBothCallbackRoutes() {
+    for ((sdk, fullSdk) in listOf(35 to 3500000, 36 to 3600000, 36 to 3600001)) {
+      for (scheduled in listOf(true, false)) {
+        val current = OwnedAndroidGattRadio(context,
+          post = { if (scheduled) { it(); true } else false },
+          scheduleDelayed = { _, _ -> true }, securitySdkInt = sdk, securityFullSdkInt = fullSdk)
+        val expected = current.securityState(peer)
+        val results = mutableListOf<Pair<String, OwnedAndroidSecurityState>>()
+        assertEquals(0L, current.pair(peer, "platformDefault") { outcome, state -> results.add(outcome to state) })
+        assertEquals(listOf("alreadyPaired" to expected), results)
+        assertEquals(if (sdk < 36) "unsupported" else "unknown", results.single().second.encryption)
+        verify(device, never()).createBond()
+      }
+    }
+  }
+
   @Test fun api35DoesNotInventEncryptionAndApi36EventsNeedNoBondTransition() {
     val old = radio(35)
     val states = mutableListOf<OwnedAndroidSecurityState>()
