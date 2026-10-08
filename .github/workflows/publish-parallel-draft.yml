@@ -171,7 +171,7 @@ jobs:
           distribution: temurin
           java-version: 21
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4.0.1
+        uses: android-actions/setup-android@v4.0.4
         with:
           packages: platform-tools ndk;27.1.12297006
       - name: Install pinned Rust + Android targets
@@ -226,7 +226,7 @@ jobs:
           distribution: temurin
           java-version: 21
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4.0.1
+        uses: android-actions/setup-android@v4.0.4
         with:
           packages: platform-tools ndk;27.1.12297006
       - name: Install pinned Rust + Android targets
@@ -701,7 +701,7 @@ jobs:
           distribution: temurin
           java-version: 21
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4.0.1
+        uses: android-actions/setup-android@v4.0.4
         with:
           packages: platform-tools ndk;27.1.12297006
       - name: Compile exact packed Expo TV ARM32 consumer
