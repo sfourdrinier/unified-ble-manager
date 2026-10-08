@@ -213,3 +213,12 @@ controls cover registration refusal followed by absence and successful retry,
 uncertain registration with cleanup refusal then successful release and retry,
 and cleanup failure after successful registration. No physical-radio claim is
 made by these deterministic Context fixtures.
+
+Web Bluetooth inclusion discovery now handles the native NotFoundError result
+as an observed empty child list before error normalization. An unavailable
+getter still reports unknown inclusion metadata, and other errors remain errors
+with their original browser name. Regression controls cover a normal service
+with characteristics, the production Navigator service wrapper, and permission,
+connection, cancellation and unclassified failure paths without a partial graph.
+Existing secondary-instance and bounded graph controls remain part of the same
+Web suite. This is deterministic browser-boundary execution, not physical radio.

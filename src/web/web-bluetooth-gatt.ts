@@ -261,8 +261,18 @@ export class WebBluetoothGattRuntime {
           : await this.host.runAbortable(
               record,
               options,
-              () => service.getIncludedServices?.() ?? Promise.resolve(null),
-              'gatt.not-found',
+              async () => {
+                try {
+                  return (await service.getIncludedServices?.()) ?? null
+                } catch (error) {
+                  // GetGATTChildren rejects an empty result with NotFoundError.
+                  // Handle only that native absence, before generic normalization.
+                  if (typeof error === 'object' && error !== null && 'name' in error && error.name === 'NotFoundError')
+                    return []
+                  throw error
+                }
+              },
+              'platform.failure',
               'gatt',
               'web-gatt.discover-included-services'
             )

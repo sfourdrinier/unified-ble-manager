@@ -165,6 +165,105 @@ describe('WebBluetoothBackend', () => {
     }
   })
 
+  test('discovers characteristics on a service whose inclusion getter reports normal absence', async () => {
+    const mock = createBoundary()
+    mock.service.getIncludedServices = jest.fn(async () => {
+      throw new DOMException('No included services', 'NotFoundError')
+    })
+    const { backend } = await createAttachedWebBackend(mock.boundary)
+    try {
+      const chosen = await backend.choose({ filters: [], acceptAllDevices: true, optionalServices: [] }, noDeadline())
+      const lease = await backend.connections.connect(chosen.peerId, 'empty-inclusions', noDeadline())
+      const database = await backend.gatt.discover(lease.connection, noDeadline())
+      const graph = await database.snapshot()
+      expect(graph.services).toHaveLength(1)
+      expect(graph.services[0].includedServices).toEqual([])
+      expect(graph.characteristics).toHaveLength(1)
+      expect(mock.service.getIncludedServices).toHaveBeenCalledTimes(1)
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test.each([
+    ['SecurityError', 'platform.security'],
+    ['NetworkError', 'connection.lost'],
+    ['AbortError', 'operation.aborted'],
+    ['Error', 'platform.failure']
+  ])('preserves %s inclusion failure instead of publishing an empty list', async (name, code) => {
+    const mock = createBoundary()
+    mock.service.getIncludedServices = jest.fn(async () => {
+      const error = new Error('Inclusion discovery failed')
+      error.name = name
+      throw error
+    })
+    mock.service.getCharacteristics = jest.fn(async () => [mock.characteristic])
+    const { backend } = await createAttachedWebBackend(mock.boundary)
+    try {
+      const chosen = await backend.choose({ filters: [], acceptAllDevices: true, optionalServices: [] }, noDeadline())
+      const lease = await backend.connections.connect(chosen.peerId, 'failed-inclusions', noDeadline())
+      await expect(backend.gatt.discover(lease.connection, noDeadline())).rejects.toMatchObject({
+        normalized: { code, operation: 'web-gatt.discover-included-services', platform: { code: name } }
+      })
+      expect(mock.service.getCharacteristics).not.toHaveBeenCalled()
+    } finally {
+      await backend.destroy()
+    }
+  })
+
+  test('normal absent inclusions cross the production Navigator wrapper into discovery', async () => {
+    const rawService = {
+      uuid: HEART_RATE_SERVICE,
+      isPrimary: true,
+      getIncludedServices: jest.fn(async () => {
+        throw new DOMException('None', 'NotFoundError')
+      }),
+      getCharacteristics: async () => []
+    }
+    const rawGatt = {
+      connected: false,
+      connect: async () => {
+        rawGatt.connected = true
+        return rawGatt
+      },
+      disconnect: () => {
+        rawGatt.connected = false
+      },
+      getPrimaryServices: async () => [rawService]
+    }
+    const rawDevice = {
+      id: 'empty-inclusion-browser-peer',
+      gatt: rawGatt,
+      addEventListener: () => {},
+      removeEventListener: () => {}
+    }
+    const boundary = new NavigatorWebBluetoothBoundary({
+      implementationVersion: 'navigator-inclusion-test',
+      browserEngine: 'test-engine',
+      bluetooth: { requestDevice: async () => rawDevice },
+      isSecureContext: () => true,
+      hasTransientUserActivation: () => true,
+      now: () => 1,
+      setTimer: callback => ({ callback }),
+      clearTimer: () => {},
+      addPageLifecycleListener: () => () => {}
+    })
+    const { backend } = await createAttachedWebBackend(boundary)
+    try {
+      const chosen = await backend.choose(
+        { filters: [], acceptAllDevices: true, optionalServices: [HEART_RATE_SERVICE] },
+        noDeadline()
+      )
+      const lease = await backend.connections.connect(chosen.peerId, 'navigator-empty-inclusions', noDeadline())
+      const graph = await (await backend.gatt.discover(lease.connection, noDeadline())).snapshot()
+      expect(graph.services).toHaveLength(1)
+      expect(graph.services[0].includedServices).toEqual([])
+      expect(rawService.getIncludedServices).toHaveBeenCalledTimes(1)
+    } finally {
+      await backend.destroy()
+    }
+  })
+
   test.each(['roots', 'includes'])('bounds %s service discovery without publishing a partial graph', async source => {
     const mock = createBoundary()
     const children = Array.from({ length: 4097 }, () => ({
