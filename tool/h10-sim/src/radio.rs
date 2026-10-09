@@ -86,6 +86,7 @@ pub struct OwnedNotifyTarget {
 }
 
 impl OwnedNotifyTarget {
+    #[cfg(any(target_os = "linux", test))]
     pub fn new(peer_address: impl Into<String>, generation: u64) -> Self {
         Self {
             peer_address: peer_address.into(),
