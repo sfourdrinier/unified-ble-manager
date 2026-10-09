@@ -1,4 +1,4 @@
-// __tests__/fixtures/api-report-symbol-noise.ts
+// __tests__/helpers/api-reports/api-report-symbol-noise.ts
 declare const noiseOne: unique symbol
 declare const noiseTwo: unique symbol
 

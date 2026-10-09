@@ -138,3 +138,9 @@ alias rebinding, a shadowed `Symbol`, standard symbols and report parsing.
 Focused tests and `pnpm docs:check` passed. This invalidates the earlier source
 freeze for documentation qualification; fresh clean preflight is required.
 Runtime sources and native artifact identities are unchanged by this fix.
+
+The first clean rerun passed all 5,737 assertions but Jest discovered the four
+type-only generator fixtures as executable suites. Fixtures were moved to
+the existing ignored test-helper directory; no tests were disabled or Jest
+configuration weakened. The six generator regressions passed after relocation.
+Fresh frozen-source qualification follows this packaging correction.

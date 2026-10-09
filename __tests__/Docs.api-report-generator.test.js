@@ -4,9 +4,9 @@ const ts = require('typescript')
 
 const { collectExportEntries, collectExportEntriesFromProgram } = require('../scripts/docs/check-api-reports')
 
-const fixture = path.join(__dirname, 'fixtures', 'api-report-symbols.ts')
-const noiseFixture = path.join(__dirname, 'fixtures', 'api-report-symbol-noise.ts')
-const secondModuleFixture = path.join(__dirname, 'fixtures', 'api-report-symbols-second-module.ts')
+const fixture = path.join(__dirname, 'helpers', 'api-reports', 'api-report-symbols.ts')
+const noiseFixture = path.join(__dirname, 'helpers', 'api-reports', 'api-report-symbol-noise.ts')
+const secondModuleFixture = path.join(__dirname, 'helpers', 'api-reports', 'api-report-symbols-second-module.ts')
 
 function createFixtureProgram(rootNames) {
   return ts.createProgram(rootNames, {
@@ -45,8 +45,12 @@ describe('API report generator signatures', () => {
     const signature = first.find(entry => entry.name === 'SymbolSurface').signature
     expect(signature).toContain('[Symbol.asyncIterator]')
     expect(signature).toContain('[Symbol.toStringTag]: string')
-    expect(signature).toContain('[firstCustom /* __tests__/fixtures/api-report-symbols.ts#firstCustom */]: "first"')
-    expect(signature).toContain('[secondCustom /* __tests__/fixtures/api-report-symbols.ts#secondCustom */]: "second"')
+    expect(signature).toContain(
+      '[firstCustom /* __tests__/helpers/api-reports/api-report-symbols.ts#firstCustom */]: "first"'
+    )
+    expect(signature).toContain(
+      '[secondCustom /* __tests__/helpers/api-reports/api-report-symbols.ts#secondCustom */]: "second"'
+    )
     expect(signature).not.toMatch(/__@[A-Za-z]+@[0-9]+/)
   })
 
@@ -87,7 +91,7 @@ describe('API report generator signatures', () => {
   })
 
   test('does not treat a shadowed Symbol object as a well-known symbol', () => {
-    const source = path.join(__dirname, 'fixtures', 'api-report-symbols-shadow.ts')
+    const source = path.join(__dirname, 'helpers', 'api-reports', 'api-report-symbols-shadow.ts')
     const entries = collectExportEntriesFromProgram(createFixtureProgram([source]), [source]).get(source)
     expect(entries.find(entry => entry.name === 'ShadowSurface').signature).toContain(
       'api-report-symbols-shadow.ts#custom'

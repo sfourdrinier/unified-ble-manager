@@ -1,4 +1,4 @@
-// __tests__/fixtures/api-report-symbols.ts
+// __tests__/helpers/api-reports/api-report-symbols.ts
 declare const firstCustom: unique symbol
 declare const secondCustom: unique symbol
 
