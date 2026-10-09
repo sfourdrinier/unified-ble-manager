@@ -124,3 +124,17 @@ simulator stopped. The current remote simulator streams HR/IBI/ECG/ACC to
 APK45 with the engine running. APK45 does not include the newest scan-expiry
 JavaScript correction or engine coverage correction; final rebuilt-consumer
 qualification remains pending.
+
+## Clean-checkout API report qualification correction
+
+The clean remote Linux preflight of `d5d70625` exposed compiler-assigned
+unique-symbol IDs in API reports: IDs changed between TypeScript programs
+without any public API change. The generator now uses the computed property
+expression and, for custom unique symbols, the declaring module and symbol
+name. Built-in symbols are identified from their default-library declaration,
+so a user-defined object named `Symbol` cannot hide a custom symbol identity.
+Six regressions cover compiler noise, same-name symbols in distinct modules,
+alias rebinding, a shadowed `Symbol`, standard symbols and report parsing.
+Focused tests and `pnpm docs:check` passed. This invalidates the earlier source
+freeze for documentation qualification; fresh clean preflight is required.
+Runtime sources and native artifact identities are unchanged by this fix.
