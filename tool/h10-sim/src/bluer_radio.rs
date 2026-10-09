@@ -26,7 +26,10 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex,
+};
 
 use async_trait::async_trait;
 use bluer::{
@@ -35,9 +38,10 @@ use bluer::{
         local::{
             characteristic_control, service_control, Application, ApplicationHandle,
             Characteristic, CharacteristicControl, CharacteristicControlEvent,
-            CharacteristicControlHandle, CharacteristicNotify, CharacteristicNotifyMethod,
-            CharacteristicRead, CharacteristicReadRequest, CharacteristicWrite,
-            CharacteristicWriteMethod, CharacteristicWriteRequest, ReqError, Service,
+            CharacteristicControlHandle, CharacteristicNotifier, CharacteristicNotify,
+            CharacteristicNotifyMethod, CharacteristicRead, CharacteristicReadRequest,
+            CharacteristicWrite, CharacteristicWriteMethod, CharacteristicWriteRequest, ReqError,
+            Service,
         },
         CharacteristicWriter,
     },
@@ -52,8 +56,9 @@ use crate::daemon_lifetime::DaemonLifetime;
 use crate::linux_advertising::{self, AliasRecord, BluezRegistrationFailure};
 use crate::radio::{
     short_of, CharPermission, CharProperty, CharSpec, DisconnectReport, GattClientSet,
-    PeripheralRadio, QueuedSend, RadioError, RadioEvent, RadioReadAnswer, SendOutcome, SendQueue,
-    ServiceSpec, SubscriptionLedger, SEND_QUEUE_CAPACITY, SKIP_NOT_CONNECTED,
+    OwnedNotifyTarget, PeripheralRadio, QueuedSend, RadioError, RadioEvent, RadioReadAnswer,
+    SendOutcome, SendQueue, ServiceSpec, SubscriptionLedger, SEND_QUEUE_CAPACITY,
+    SKIP_NOT_CONNECTED,
 };
 
 fn backend_error(stage: &str, error: bluer::Error) -> RadioError {
@@ -65,6 +70,184 @@ struct CharNotifyHandler {
     service_uuid: Uuid,
     characteristic_uuid: Uuid,
     control: CharacteristicControl,
+}
+
+/// The two supported notification transports.  IO remains the cheap path for
+/// notify-only streams; indication-only characteristics use Fun so BlueZ does
+/// not retain a raw callback pointer to an acquired fd after CCC unsubscribe.
+enum NotificationWriter {
+    Io(Arc<CharacteristicWriter>),
+    Indication(Arc<IndicationEndpoint>),
+}
+
+const INDICATION_ID_START: u64 = 1 << 63;
+
+struct IndicationIdAllocator {
+    next: AtomicU64,
+    exhausted: AtomicBool,
+}
+
+impl IndicationIdAllocator {
+    fn new() -> Self {
+        Self::with_next(INDICATION_ID_START)
+    }
+
+    fn with_next(next: u64) -> Self {
+        Self {
+            next: AtomicU64::new(next),
+            exhausted: AtomicBool::new(false),
+        }
+    }
+
+    fn allocate(&self) -> Option<u64> {
+        if self.exhausted.load(Ordering::Acquire) {
+            return None;
+        }
+        loop {
+            let current = self.next.load(Ordering::Relaxed);
+            if current < INDICATION_ID_START {
+                self.exhausted.store(true, Ordering::Release);
+                return None;
+            }
+            if current == u64::MAX {
+                if self
+                    .next
+                    .compare_exchange(current, 0, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    self.exhausted.store(true, Ordering::Release);
+                    return Some(current);
+                }
+                continue;
+            }
+            if self
+                .next
+                .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Some(current);
+            }
+        }
+    }
+}
+
+struct IndicationEndpoint {
+    tx: mpsc::Sender<QueuedSend>,
+    ids: Arc<IndicationIdAllocator>,
+    receipts: IndicationReceipts,
+    state: Mutex<bool>,
+    closed: Notify,
+}
+
+impl IndicationEndpoint {
+    #[cfg(test)]
+    fn new(tx: mpsc::Sender<QueuedSend>) -> Self {
+        Self::with_allocator(
+            tx,
+            Arc::new(IndicationIdAllocator::new()),
+            Arc::new(Mutex::new(HashMap::new())),
+        )
+    }
+
+    fn with_allocator(
+        tx: mpsc::Sender<QueuedSend>,
+        ids: Arc<IndicationIdAllocator>,
+        receipts: IndicationReceipts,
+    ) -> Self {
+        Self {
+            tx,
+            ids,
+            receipts,
+            state: Mutex::new(false),
+            closed: Notify::new(),
+        }
+    }
+
+    fn enqueue(&self, mut send: QueuedSend) -> Result<u64, QueuedSend> {
+        let closed = match self.state.lock() {
+            Ok(closed) => closed,
+            Err(_) => return Err(send),
+        };
+        if *closed {
+            return Err(send);
+        }
+        let Some(id) = self.ids.allocate() else {
+            return Err(send);
+        };
+        send.id = id;
+        let receipt = IndicationReceipt {
+            service: send.service.clone(),
+            characteristic: send.characteristic.to_string(),
+            generation: send.generation,
+            stage: "queued",
+        };
+        if let Ok(mut receipts) = self.receipts.lock() {
+            receipts.insert(id, receipt);
+        } else {
+            return Err(send);
+        }
+        match self.tx.try_send(send) {
+            Ok(()) => Ok(id),
+            Err(
+                mpsc::error::TrySendError::Full(send) | mpsc::error::TrySendError::Closed(send),
+            ) => {
+                remove_indication_receipt(&self.receipts, id);
+                Err(send)
+            }
+        }
+    }
+
+    fn close(&self) {
+        if let Ok(mut closed) = self.state.lock() {
+            *closed = true;
+        }
+        self.closed.notify_waiters();
+    }
+
+    async fn closed(&self) {
+        loop {
+            if self.state.lock().map(|closed| *closed).unwrap_or(true) {
+                return;
+            }
+            let notified = self.closed.notified();
+            if self.state.lock().map(|closed| *closed).unwrap_or(true) {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct IndicationReceipt {
+    service: String,
+    characteristic: String,
+    generation: u64,
+    stage: &'static str,
+}
+
+type IndicationReceipts = Arc<Mutex<HashMap<u64, IndicationReceipt>>>;
+type SessionTasks = Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>;
+type IndicationSessions = Arc<Mutex<Vec<(Uuid, u64)>>>;
+
+#[derive(Clone)]
+struct IndicationState {
+    ids: Arc<IndicationIdAllocator>,
+    receipts: IndicationReceipts,
+    sessions: IndicationSessions,
+    tasks: SessionTasks,
+}
+
+fn mark_indication_stage(receipts: &IndicationReceipts, id: u64, stage: &'static str) {
+    if let Ok(mut receipts) = receipts.lock() {
+        if let Some(receipt) = receipts.get_mut(&id) {
+            receipt.stage = stage;
+        }
+    }
+}
+
+fn remove_indication_receipt(receipts: &IndicationReceipts, id: u64) -> Option<IndicationReceipt> {
+    receipts.lock().ok()?.remove(&id)
 }
 
 /// The adapter alias this run replaced, with its record: restored on stop,
@@ -87,7 +270,7 @@ pub struct BluerRadio {
     adv_handle: Option<AdvertisementHandle>,
     app_handle: Option<ApplicationHandle>,
     events: mpsc::Sender<RadioEvent>,
-    writers: Arc<Mutex<HashMap<Uuid, Arc<CharacteristicWriter>>>>,
+    writers: Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
     /// Generation-aware subscription registry: readiness is announced only
     /// after the writer is installed, and a stale session ending late can
     /// never remove a newer session's writer.
@@ -99,6 +282,10 @@ pub struct BluerRadio {
     pump_queue: Arc<Mutex<SendQueue>>,
     /// Wakes the pump when a send is queued.
     pump_wake: Arc<Notify>,
+    indication_ids: Arc<IndicationIdAllocator>,
+    indication_receipts: IndicationReceipts,
+    indication_sessions: IndicationSessions,
+    session_tasks: SessionTasks,
     /// Staged manufacturer data (None = not configured or empty payload).
     mfr: Option<(u16, Vec<u8>)>,
     /// `Some` in `--linux-advertising mgmt-legacy`: the advertisement is the
@@ -218,6 +405,33 @@ fn note_client(clients: &Arc<Mutex<GattClientSet>>, address: bluer::Address) {
     }
 }
 
+fn writer_peer(writer: &NotificationWriter) -> Option<String> {
+    match writer {
+        NotificationWriter::Io(writer) => Some(writer.device_address().to_string()),
+        NotificationWriter::Indication(_) => None,
+    }
+}
+
+/// Captures the D2H writer owner at the native write callback boundary. The
+/// ledger→writers order is shared with subscription install/retirement.
+fn owned_target_for_write(
+    writers: &Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    ledger: &Arc<Mutex<SubscriptionLedger>>,
+    characteristic: Uuid,
+    peer_address: &str,
+) -> Option<OwnedNotifyTarget> {
+    let ledger = ledger.lock().ok()?;
+    let generation = ledger.current(characteristic)?;
+    let writers = writers.lock().ok()?;
+    let writer = writers.get(&characteristic)?;
+    (writer_peer(writer.as_ref()).as_deref() == Some(peer_address))
+        .then(|| OwnedNotifyTarget::new(peer_address, generation))
+}
+
+fn target_matches(target: &OwnedNotifyTarget, peer_address: &str, generation: u64) -> bool {
+    target.peer_address == peer_address && target.generation == generation
+}
+
 /// Removes one canonical address from the client set. A dead lock is loud
 /// on stderr — the prune is bookkeeping, never silent.
 fn prune_client(clients: &Arc<Mutex<GattClientSet>>, canonical: &str) {
@@ -229,15 +443,79 @@ fn prune_client(clients: &Arc<Mutex<GattClientSet>>, canonical: &str) {
     }
 }
 
+#[cfg(test)]
 fn retire_failed_sends(
     pump: &tokio::task::JoinHandle<()>,
-    writers: &Arc<Mutex<HashMap<Uuid, Arc<CharacteristicWriter>>>>,
+    writers: &Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
     queue: &Arc<Mutex<SendQueue>>,
+) -> serde_json::Value {
+    retire_failed_sends_with_indications(
+        pump,
+        writers,
+        queue,
+        &Arc::new(Mutex::new(HashMap::new())),
+        &Arc::new(Mutex::new(Vec::new())),
+        &Arc::new(Mutex::new(Vec::new())),
+    )
+}
+
+fn retire_failed_sends_with_indications(
+    pump: &tokio::task::JoinHandle<()>,
+    writers: &Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    queue: &Arc<Mutex<SendQueue>>,
+    indication_receipts: &IndicationReceipts,
+    indication_sessions: &IndicationSessions,
+    session_tasks: &SessionTasks,
 ) -> serde_json::Value {
     pump.abort();
     let mut failures = Vec::new();
+    let indication_receipts_not_confirmed = match indication_receipts.lock() {
+        Ok(receipts) => receipts
+            .iter()
+            .map(|(id, receipt)| {
+                serde_json::json!({
+                    "id": id,
+                    "service": receipt.service,
+                    "characteristic": receipt.characteristic,
+                    "generation": receipt.generation,
+                    "stage": receipt.stage,
+                })
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => {
+            failures.push("indication receipt lock poisoned");
+            Vec::new()
+        }
+    };
+    let session_task_count = match session_tasks.lock() {
+        Ok(mut tasks) => {
+            let count = tasks.len();
+            for task in tasks.drain(..) {
+                task.abort();
+            }
+            count
+        }
+        Err(_) => {
+            failures.push("session task lock poisoned");
+            0
+        }
+    };
+    let indication_sessions_snapshot = match indication_sessions.lock() {
+        Ok(mut sessions) => std::mem::take(&mut *sessions),
+        Err(_) => {
+            failures.push("indication session lock poisoned");
+            Vec::new()
+        }
+    };
     match writers.lock() {
-        Ok(mut writers) => writers.clear(),
+        Ok(mut writers) => {
+            for writer in writers.values() {
+                if let NotificationWriter::Indication(endpoint) = writer.as_ref() {
+                    endpoint.close();
+                }
+            }
+            writers.clear();
+        }
         Err(_) => failures.push("writer lock poisoned"),
     }
     let mut queued = Vec::new();
@@ -249,7 +527,18 @@ fn retire_failed_sends(
         }
         Err(_) => failures.push("send queue lock poisoned"),
     }
-    serde_json::json!({"queuedSendsNotConfirmed": queued, "inFlightDelivery": "unknown-at-most-one", "failures": failures})
+    serde_json::json!({
+        "queuedSendsNotConfirmed": queued,
+        "inFlightDelivery": "unknown-at-most-one",
+        "indicationReceiptsNotConfirmed": indication_receipts_not_confirmed,
+        "indicationSessions": indication_sessions_snapshot
+            .iter()
+            .map(|(characteristic, generation)| serde_json::json!({"characteristic": characteristic.to_string(), "generation": generation}))
+            .collect::<Vec<_>>(),
+        "sessionTasksAborted": session_task_count,
+        "taskDrain": "not-awaitable-in-synchronous-retirement",
+        "failures": failures
+    })
 }
 
 #[async_trait]
@@ -260,7 +549,14 @@ impl PeripheralRadio for BluerRadio {
 
     fn retire_failed_collection(&mut self) -> serde_json::Value {
         self.app_handle = None;
-        retire_failed_sends(&self.pump_task, &self.writers, &self.pump_queue)
+        retire_failed_sends_with_indications(
+            &self.pump_task,
+            &self.writers,
+            &self.pump_queue,
+            &self.indication_receipts,
+            &self.indication_sessions,
+            &self.session_tasks,
+        )
     }
     async fn notification_payload_capacity(
         &self,
@@ -282,7 +578,15 @@ impl PeripheralRadio for BluerRadio {
             .map_err(|error| RadioError(format!("notification capacity writer lock: {error}")))?;
         // bluer already applies its payload safety adjustment; do not subtract
         // the ATT header a second time.
-        Ok(writers.get(&characteristic).map(|writer| writer.mtu()))
+        Ok(writers
+            .get(&characteristic)
+            .and_then(|writer| match writer.as_ref() {
+                NotificationWriter::Io(writer) => Some(writer.mtu()),
+                // bluer's Fun API intentionally does not expose an acquired MTU.
+                // The simulator only asks this for PMD data, which is notify-only;
+                // never invent a capacity for an indication session.
+                NotificationWriter::Indication(_) => None,
+            }))
     }
 
     async fn open(events: mpsc::Sender<RadioEvent>) -> Result<Self, RadioError> {
@@ -355,6 +659,10 @@ impl PeripheralRadio for BluerRadio {
         let ledger = Arc::new(Mutex::new(SubscriptionLedger::new()));
         let pump_queue = Arc::new(Mutex::new(SendQueue::new(SEND_QUEUE_CAPACITY)));
         let pump_wake = Arc::new(Notify::new());
+        let indication_ids = Arc::new(IndicationIdAllocator::new());
+        let indication_receipts = Arc::new(Mutex::new(HashMap::new()));
+        let indication_sessions = Arc::new(Mutex::new(Vec::new()));
+        let session_tasks = Arc::new(Mutex::new(Vec::new()));
         daemon.verify().await?;
         let pump_task = tokio::spawn(send_pump(
             pump_queue.clone(),
@@ -376,6 +684,10 @@ impl PeripheralRadio for BluerRadio {
             ledger,
             pump_queue,
             pump_wake,
+            indication_ids,
+            indication_receipts,
+            indication_sessions,
+            session_tasks,
             mfr: None,
             mgmt: None,
             adapter_alias: None,
@@ -417,10 +729,19 @@ impl PeripheralRadio for BluerRadio {
         if !had_app {
             // The name already fits the scan-response budget — the caller
             // enforces it via `crate::advertisement::fit_name`.
-            let (handlers, services) = build_services(
+            let indication_state = IndicationState {
+                ids: self.indication_ids.clone(),
+                receipts: self.indication_receipts.clone(),
+                sessions: self.indication_sessions.clone(),
+                tasks: self.session_tasks.clone(),
+            };
+            let (handlers, services) = build_services_with_state(
                 self.services.clone(),
                 self.events.clone(),
                 self.gatt_clients.clone(),
+                self.writers.clone(),
+                self.ledger.clone(),
+                indication_state,
             )?;
             let app_handle = self
                 .adapter
@@ -721,45 +1042,17 @@ impl PeripheralRadio for BluerRadio {
         characteristic: Uuid,
         value: Vec<u8>,
     ) -> Result<SendOutcome, RadioError> {
-        self.daemon.lifetime.admit().map_err(RadioError)?;
-        let generation = match self.ledger.lock() {
-            Ok(ledger) => {
-                if !ledger.is_subscribed(characteristic) {
-                    // Nobody subscribed: the normal case for stream ticks,
-                    // never an error — and never reported as a delivery.
-                    return Ok(SendOutcome::NotSubscribed);
-                }
-                match ledger.current(characteristic) {
-                    Some(generation) => generation,
-                    None => return Ok(SendOutcome::NotSubscribed),
-                }
-            }
-            Err(error) => return Err(RadioError(format!("bluer notify lock: {error}"))),
-        };
-        // Bounded and ordered: the pump delivers FIFO and settles each send
-        // with a NotifySettled event. A full queue fails this send loudly
-        // instead of growing memory or reordering frames.
-        let send = QueuedSend {
-            id: 0,
-            service: self.service_of(characteristic),
-            characteristic,
-            generation,
-            value,
-        };
-        let queued = match self.pump_queue.lock() {
-            Ok(mut queue) => queue.push(send),
-            Err(error) => return Err(RadioError(format!("bluer pump lock: {error}"))),
-        };
-        if let Ok(id) = queued {
-            self.pump_wake.notify_one();
-            Ok(SendOutcome::Queued { id })
-        } else {
-            Ok(SendOutcome::Failed(format!(
-                "bluer notify {characteristic}: send queue full ({SEND_QUEUE_CAPACITY}) or correlation IDs exhausted; the value was not admitted"
-            )))
-        }
+        self.notify_inner(characteristic, value, None).await
     }
 
+    async fn notify_to(
+        &mut self,
+        characteristic: Uuid,
+        value: Vec<u8>,
+        target: OwnedNotifyTarget,
+    ) -> Result<SendOutcome, RadioError> {
+        self.notify_inner(characteristic, value, Some(target)).await
+    }
     fn advertising_detail(&self) -> Option<serde_json::Value> {
         let mut detail = match &self.mgmt {
             Some(mgmt) => mgmt.detail(),
@@ -776,6 +1069,97 @@ impl PeripheralRadio for BluerRadio {
 
     fn advertising_unavailable(&self) -> bool {
         self.advertising_unavailable
+    }
+}
+
+impl BluerRadio {
+    async fn notify_inner(
+        &mut self,
+        characteristic: Uuid,
+        value: Vec<u8>,
+        target: Option<OwnedNotifyTarget>,
+    ) -> Result<SendOutcome, RadioError> {
+        self.daemon.lifetime.admit().map_err(RadioError)?;
+        let (outcome, wake_pump) = {
+            let ledger = self
+                .ledger
+                .lock()
+                .map_err(|error| RadioError(format!("bluer notify lock: {error}")))?;
+            if !ledger.is_subscribed(characteristic) {
+                return Ok(SendOutcome::NotSubscribed);
+            }
+            let generation = match ledger.current(characteristic) {
+                Some(generation) => generation,
+                None => return Ok(SendOutcome::NotSubscribed),
+            };
+            let writers = self
+                .writers
+                .lock()
+                .map_err(|error| RadioError(format!("bluer writer lock: {error}")))?;
+            let writer = match writers.get(&characteristic).cloned() {
+                Some(writer) => writer,
+                None => return Ok(SendOutcome::Failed("writer unavailable".to_string())),
+            };
+            let actual_target = writer_peer(writer.as_ref());
+            if let Some(target) = target.as_ref() {
+                if generation != target.generation
+                    || actual_target.as_deref() != Some(target.peer_address.as_str())
+                {
+                    return Ok(SendOutcome::Failed(
+                        "owned notification target is stale or mismatched".to_string(),
+                    ));
+                }
+            }
+            let target = match target {
+                Some(target) => target,
+                None => OwnedNotifyTarget::new(actual_target.unwrap_or_default(), generation),
+            };
+            let send = QueuedSend {
+                id: 0,
+                service: self.service_of(characteristic),
+                characteristic,
+                generation,
+                target,
+                value,
+            };
+            match writer.as_ref() {
+                // Indications have their own capacity-one lane. A blocked ATT
+                // confirmation cannot stall the high-rate IO pump.
+                NotificationWriter::Indication(endpoint) => (
+                    match endpoint.enqueue(send) {
+                        Ok(id) => SendOutcome::Queued { id },
+                        Err(_) => SendOutcome::Failed(format!(
+                            "bluer indication {characteristic}: bounded lane full or closed; the value was not admitted"
+                        )),
+                    },
+                    false,
+                ),
+                // Bounded and ordered: validation and queue admission stay in
+                // this ledger→writers critical section. A replacement cannot
+                // make an admitted owned send point at the successor writer.
+                NotificationWriter::Io(_) => {
+                    let queued = self
+                        .pump_queue
+                        .lock()
+                        .map_err(|error| RadioError(format!("bluer pump lock: {error}")))?
+                        .push(send);
+                    let admitted = queued.is_ok();
+                    (
+                        match queued {
+                            Ok(id) => SendOutcome::Queued { id },
+                            Err(_) => SendOutcome::Failed(format!(
+                                "bluer notify {characteristic}: send queue full ({SEND_QUEUE_CAPACITY}) or correlation IDs exhausted; the value was not admitted"
+                            )),
+                        },
+                        admitted,
+                    )
+                }
+            }
+        };
+        if wake_pump {
+            self.pump_wake.notify_one();
+        }
+        Ok(outcome)
     }
 }
 
@@ -1032,12 +1416,17 @@ impl BluerRadio {
             let writers = self.writers.clone();
             let ledger = self.ledger.clone();
             let clients = self.gatt_clients.clone();
-            tokio::spawn(async move {
+            let session_tasks = self.session_tasks.clone();
+            let task = tokio::spawn(async move {
                 while let Some(CharacteristicControlEvent::Notify(writer)) =
                     handler.control.next().await
                 {
-                    let writer = Arc::new(writer);
-                    let readiness = match session_readiness(writer.as_ref()) {
+                    let writer = Arc::new(NotificationWriter::Io(Arc::new(writer)));
+                    let raw_writer = match writer.as_ref() {
+                        NotificationWriter::Io(writer) => writer.clone(),
+                        NotificationWriter::Indication(_) => unreachable!("IO handler writer"),
+                    };
+                    let readiness = match session_readiness(raw_writer.as_ref()) {
                         Ok(readiness) => readiness,
                         Err(error) => {
                             eprintln!(
@@ -1056,7 +1445,7 @@ impl BluerRadio {
                     // The notify session carries its central's address, like
                     // reads and writes, so subscribers are recorded as
                     // clients even when they never read or wrote.
-                    note_client(&clients, writer.device_address());
+                    note_client(&clients, raw_writer.device_address());
                     let generation = match ledger.lock() {
                         Ok(mut ledger) => {
                             let generation = ledger.subscribe(handler.characteristic_uuid);
@@ -1094,15 +1483,29 @@ impl BluerRadio {
                     while !ended {
                         match next_session_fate(&readiness).await {
                             Ok(SessionFate::Confirmed) => {
-                                if sender
-                                    .send(RadioEvent::IndicationConfirmed {
-                                        service: service.clone(),
-                                        characteristic: characteristic.clone(),
+                                if ledger
+                                    .lock()
+                                    .map(|ledger| {
+                                        ledger.is_current(handler.characteristic_uuid, generation)
                                     })
-                                    .await
-                                    .is_err()
+                                    .unwrap_or(false)
                                 {
-                                    ended = true;
+                                    if sender
+                                        .send(RadioEvent::IndicationConfirmed {
+                                            service: service.clone(),
+                                            characteristic: characteristic.clone(),
+                                            receipt_id: None,
+                                            generation: Some(generation),
+                                        })
+                                        .await
+                                        .is_err()
+                                    {
+                                        ended = true;
+                                    }
+                                } else {
+                                    eprintln!(
+                                        "h10-sim: suppressed stale confirmation for {characteristic} generation {generation}"
+                                    );
                                 }
                             }
                             Ok(SessionFate::Spurious) => {}
@@ -1131,6 +1534,9 @@ impl BluerRadio {
                     }
                 }
             });
+            if let Ok(mut tasks) = session_tasks.lock() {
+                tasks.push(task);
+            };
         }
     }
 }
@@ -1143,7 +1549,7 @@ impl BluerRadio {
 async fn send_pump(
     pump_queue: Arc<Mutex<SendQueue>>,
     pump_wake: Arc<Notify>,
-    writers: Arc<Mutex<HashMap<Uuid, Arc<CharacteristicWriter>>>>,
+    writers: Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
     ledger: Arc<Mutex<SubscriptionLedger>>,
     events: mpsc::Sender<RadioEvent>,
 ) {
@@ -1188,10 +1594,42 @@ async fn send_pump(
                 .await;
                 continue;
             };
+            if !target_matches(
+                &send.target,
+                writer_peer(writer.as_ref()).as_deref().unwrap_or_default(),
+                send.generation,
+            ) {
+                settle(
+                    &events,
+                    send.id,
+                    send.service,
+                    characteristic,
+                    SendOutcome::Failed(
+                        "superseded: notification writer was replaced before delivery".to_string(),
+                    ),
+                )
+                .await;
+                continue;
+            }
             // `send` only waits for socket buffer space, never for the ATT
             // confirmation, so a dead session surfaces here instead of timing out
-            // the central.
-            match writer.send(&send.value).await {
+            // the central. Indication sessions are owned by their Fun lane and
+            // never enter this pump.
+            let result = match writer.as_ref() {
+                NotificationWriter::Io(writer) => writer.send(&send.value).await,
+                NotificationWriter::Indication(_) => {
+                    settle(
+                        &events,
+                        send.id,
+                        send.service,
+                        characteristic,
+                        SendOutcome::Failed("indication writer entered notify pump".to_string()),
+                    )
+                    .await;
+                    continue;
+                }
+            };
+            match result {
                 Ok(()) => {
                     settle(
                         &events,
@@ -1237,7 +1675,7 @@ async fn send_pump(
 async fn drop_current_subscription(
     events: &mpsc::Sender<RadioEvent>,
     ledger: &Arc<Mutex<SubscriptionLedger>>,
-    writers: &Arc<Mutex<HashMap<Uuid, Arc<CharacteristicWriter>>>>,
+    writers: &Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
     service: &str,
     characteristic: Uuid,
 ) -> Result<bool, RadioError> {
@@ -1259,7 +1697,7 @@ async fn drop_current_subscription(
 async fn retire_failed_subscription(
     events: &mpsc::Sender<RadioEvent>,
     ledger: &Arc<Mutex<SubscriptionLedger>>,
-    writers: &Arc<Mutex<HashMap<Uuid, Arc<CharacteristicWriter>>>>,
+    writers: &Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
     service: &str,
     characteristic: Uuid,
     generation: u64,
@@ -1272,7 +1710,11 @@ async fn retire_failed_subscription(
             .lock()
             .map_err(|error| RadioError(format!("subscription writer lock: {error}")))?;
         if ledger.unsubscribe(characteristic, generation) {
-            writers.remove(&characteristic);
+            if let Some(NotificationWriter::Indication(endpoint)) =
+                writers.remove(&characteristic).as_deref()
+            {
+                endpoint.close();
+            }
             true
         } else {
             false
@@ -1433,14 +1875,272 @@ async fn answer_read(
     }
 }
 
+async fn drain_indication_queue(
+    receiver: &mut mpsc::Receiver<QueuedSend>,
+    events: &mpsc::Sender<RadioEvent>,
+    receipts: &IndicationReceipts,
+) {
+    while let Ok(send) = receiver.try_recv() {
+        remove_indication_receipt(receipts, send.id);
+        settle(
+            events,
+            send.id,
+            send.service,
+            send.characteristic.to_string(),
+            SendOutcome::Failed("indication session stopped before delivery".to_string()),
+        )
+        .await;
+    }
+}
+
+async fn publish_indication_unconfirmed(
+    events: &mpsc::Sender<RadioEvent>,
+    receipts: &IndicationReceipts,
+    id: u64,
+    service: String,
+    characteristic: String,
+    generation: u64,
+    reason: impl Into<String>,
+) {
+    let receipt = remove_indication_receipt(receipts, id);
+    let (service, characteristic, generation) = receipt
+        .map(|receipt| (receipt.service, receipt.characteristic, receipt.generation))
+        .unwrap_or((service, characteristic, generation));
+    let _ = events
+        .send(RadioEvent::IndicationUnconfirmed {
+            service,
+            characteristic,
+            receipt_id: id,
+            generation,
+            reason: reason.into(),
+        })
+        .await;
+}
+
+/// Owns one indication-only session. The lane has capacity one and is
+/// independent of the notify pump, so a central that withholds confirmation
+/// cannot stall ECG/ACC notifications. The Fun notifier is kept alive only in
+/// this session; no raw BlueZ notify fd or late IO callback survives CCC stop.
+async fn indication_session(
+    mut notifier: CharacteristicNotifier,
+    service_uuid: Uuid,
+    characteristic_uuid: Uuid,
+    writers: Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    ledger: Arc<Mutex<SubscriptionLedger>>,
+    events: mpsc::Sender<RadioEvent>,
+    indication_state: IndicationState,
+) {
+    if !notifier.confirming() {
+        eprintln!("h10-sim: indication session {characteristic_uuid} is not confirmation-capable");
+        return;
+    }
+    let (tx, mut receiver) = mpsc::channel(1);
+    let endpoint = Arc::new(IndicationEndpoint::with_allocator(
+        tx,
+        indication_state.ids.clone(),
+        indication_state.receipts.clone(),
+    ));
+    let service = service_uuid.to_string();
+    let characteristic = characteristic_uuid.to_string();
+    let generation = match ledger.lock() {
+        Ok(mut ledger) => {
+            let generation = ledger.subscribe(characteristic_uuid);
+            match writers.lock() {
+                Ok(mut writers) => {
+                    let previous = writers.insert(
+                        characteristic_uuid,
+                        Arc::new(NotificationWriter::Indication(endpoint.clone())),
+                    );
+                    if let Some(NotificationWriter::Indication(previous)) = previous.as_deref() {
+                        previous.close();
+                    }
+                    generation
+                }
+                Err(error) => {
+                    eprintln!("h10-sim: indication writer lock: {error}");
+                    return;
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("h10-sim: indication ledger lock: {error}");
+            return;
+        }
+    };
+    if let Ok(mut sessions) = indication_state.sessions.lock() {
+        sessions.push((characteristic_uuid, generation));
+    }
+
+    if events
+        .send(RadioEvent::Subscription {
+            service: service.clone(),
+            characteristic: characteristic.clone(),
+            subscribed: true,
+        })
+        .await
+        .is_err()
+    {
+        let _ = retire_failed_subscription(
+            &events,
+            &ledger,
+            &writers,
+            &service,
+            characteristic_uuid,
+            generation,
+        )
+        .await;
+        if let Ok(mut sessions) = indication_state.sessions.lock() {
+            sessions.retain(|session| *session != (characteristic_uuid, generation));
+        }
+        return;
+    }
+
+    loop {
+        tokio::select! {
+            _ = notifier.stopped() => {
+                drain_indication_queue(&mut receiver, &events, &indication_state.receipts).await;
+                break;
+            }
+            _ = endpoint.closed() => {
+                drain_indication_queue(&mut receiver, &events, &indication_state.receipts).await;
+                break;
+            }
+            maybe_send = receiver.recv() => {
+                let Some(send) = maybe_send else { break };
+                mark_indication_stage(&indication_state.receipts, send.id, "inflight");
+                if !ledger.lock().map(|ledger| ledger.is_current(characteristic_uuid, generation)).unwrap_or(false) {
+                    remove_indication_receipt(&indication_state.receipts, send.id);
+                    settle(
+                        &events,
+                        send.id,
+                        send.service,
+                        characteristic.clone(),
+                        SendOutcome::Failed("superseded: indication subscription ended before delivery".to_string()),
+                    ).await;
+                    continue;
+                }
+
+                // bluer's Fun API sends the D-Bus Value before its first
+                // Pending poll (which waits for ATT confirmation). Poll once
+                // to distinguish an immediate send failure from an accepted
+                // indication, then await confirmation without blocking notify.
+                let stopped = notifier.stopped();
+                let mut notify = Box::pin(notifier.notify(send.value));
+                let first = std::future::poll_fn(|cx| {
+                    match std::future::Future::poll(notify.as_mut(), cx) {
+                        std::task::Poll::Ready(result) => std::task::Poll::Ready(Some(result)),
+                        std::task::Poll::Pending => std::task::Poll::Ready(None),
+                    }
+                }).await;
+                match first {
+                    Some(Ok(())) => {
+                        mark_indication_stage(&indication_state.receipts, send.id, "confirmed");
+                        settle(&events, send.id, send.service, characteristic.clone(), SendOutcome::OsAccepted).await;
+                        if ledger.lock().map(|ledger| ledger.is_current(characteristic_uuid, generation)).unwrap_or(false) {
+                            remove_indication_receipt(&indication_state.receipts, send.id);
+                            let _ = events.send(RadioEvent::IndicationConfirmed {
+                                service: service.clone(),
+                                characteristic: characteristic.clone(),
+                                receipt_id: Some(send.id),
+                                generation: Some(generation),
+                            }).await;
+                        } else {
+                            publish_indication_unconfirmed(&events, &indication_state.receipts, send.id, service.clone(), characteristic.clone(), generation, "confirmation arrived after subscription replacement").await;
+                        }
+                    }
+                    Some(Err(error)) => {
+                        remove_indication_receipt(&indication_state.receipts, send.id);
+                        settle(&events, send.id, send.service, characteristic.clone(), SendOutcome::Failed(format!("bluer indication: {error}"))).await;
+                        break;
+                    }
+                    None => {
+                        mark_indication_stage(&indication_state.receipts, send.id, "accepted_waiting_confirm");
+                        settle(&events, send.id, send.service, characteristic.clone(), SendOutcome::OsAccepted).await;
+                        tokio::select! {
+                            result = &mut notify => {
+                                if let Err(error) = result {
+                                    publish_indication_unconfirmed(&events, &indication_state.receipts, send.id, service.clone(), characteristic.clone(), generation, format!("accepted but not confirmed: {error}")).await;
+                                } else {
+                                    if ledger.lock().map(|ledger| ledger.is_current(characteristic_uuid, generation)).unwrap_or(false) {
+                                        remove_indication_receipt(&indication_state.receipts, send.id);
+                                        let _ = events.send(RadioEvent::IndicationConfirmed {
+                                            service: service.clone(),
+                                            characteristic: characteristic.clone(),
+                                            receipt_id: Some(send.id),
+                                            generation: Some(generation),
+                                        }).await;
+                                    } else {
+                                        publish_indication_unconfirmed(&events, &indication_state.receipts, send.id, service.clone(), characteristic.clone(), generation, "confirmation arrived after subscription replacement").await;
+                                    }
+                                }
+                            }
+                            _ = endpoint.closed() => {
+                                publish_indication_unconfirmed(&events, &indication_state.receipts, send.id, service.clone(), characteristic.clone(), generation, "accepted but lane closed before confirmation").await;
+                                break;
+                            }
+                            _ = stopped => {
+                                publish_indication_unconfirmed(&events, &indication_state.receipts, send.id, service.clone(), characteristic.clone(), generation, "accepted but notifier stopped before confirmation").await;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    drain_indication_queue(&mut receiver, &events, &indication_state.receipts).await;
+    if let Err(error) = retire_failed_subscription(
+        &events,
+        &ledger,
+        &writers,
+        &service,
+        characteristic_uuid,
+        generation,
+    )
+    .await
+    {
+        eprintln!("h10-sim: indication session {characteristic} retirement failed: {error}");
+    }
+    if let Ok(mut sessions) = indication_state.sessions.lock() {
+        sessions.retain(|session| *session != (characteristic_uuid, generation));
+    }
+}
+
 /// Builds the `bluer` GATT application from the queued service declarations.
 /// Pure construction: no D-Bus traffic, so it is unit-testable without a radio.
 /// An inconsistent declaration (a permission without its property, an
 /// unreadable initial value) fails the whole application, loudly.
+#[cfg(test)]
 fn build_services(
     specs: Vec<ServiceSpec>,
     sender: mpsc::Sender<RadioEvent>,
     clients: Arc<Mutex<GattClientSet>>,
+    writers: Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    ledger: Arc<Mutex<SubscriptionLedger>>,
+) -> Result<(Vec<CharNotifyHandler>, Vec<Service>), RadioError> {
+    build_services_with_state(
+        specs,
+        sender,
+        clients,
+        writers,
+        ledger,
+        IndicationState {
+            ids: Arc::new(IndicationIdAllocator::new()),
+            receipts: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(Vec::new())),
+            tasks: Arc::new(Mutex::new(Vec::new())),
+        },
+    )
+}
+
+fn build_services_with_state(
+    specs: Vec<ServiceSpec>,
+    sender: mpsc::Sender<RadioEvent>,
+    clients: Arc<Mutex<GattClientSet>>,
+    writers: Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    ledger: Arc<Mutex<SubscriptionLedger>>,
+    indication_state: IndicationState,
 ) -> Result<(Vec<CharNotifyHandler>, Vec<Service>), RadioError> {
     let mut services = Vec::with_capacity(specs.len());
     let mut handlers = Vec::new();
@@ -1485,6 +2185,9 @@ fn build_services(
             let write = (write_access != Access::Absent).then(|| {
                 let sender = sender.clone();
                 let clients = clients.clone();
+                let writers = writers.clone();
+                let ledger = ledger.clone();
+                let psftp_wire = crate::psftp::wire_characteristic();
                 CharacteristicWrite {
                     write: with_response,
                     write_without_response: without_response,
@@ -1496,9 +2199,12 @@ fn build_services(
                     method: CharacteristicWriteMethod::Fun(Box::new(
                         move |value: Vec<u8>, request: CharacteristicWriteRequest| {
                             let sender = sender.clone();
+                            let writers = writers.clone();
+                            let ledger = ledger.clone();
                             // Every write carries its central's address, like
                             // reads: CCCD and PMD control-point writers are
                             // recorded as clients here.
+                            let device_address = request.device_address.to_string();
                             note_client(&clients, request.device_address);
                             async move {
                                 if write_access == Access::Refused {
@@ -1513,6 +2219,17 @@ fn build_services(
                                     service: service_uuid.to_string(),
                                     characteristic: char_uuid.to_string(),
                                     value,
+                                    device_address: Some(device_address.clone()),
+                                    owned_target: (char_uuid == psftp_wire)
+                                        .then(|| {
+                                            owned_target_for_write(
+                                                &writers,
+                                                &ledger,
+                                                psftp_wire,
+                                                &device_address,
+                                            )
+                                        })
+                                        .flatten(),
                                     reply: reply_tx,
                                 };
                                 if sender.send(event).await.is_err() {
@@ -1533,21 +2250,62 @@ fn build_services(
             });
 
             let (notify, control_handle) = if has_notify || has_indicate {
-                let (control, handle) = characteristic_control();
-                handlers.push(CharNotifyHandler {
-                    service_uuid,
-                    characteristic_uuid: char_uuid,
-                    control,
-                });
-                (
-                    Some(CharacteristicNotify {
-                        notify: has_notify,
-                        indicate: has_indicate,
-                        method: CharacteristicNotifyMethod::Io,
-                        ..Default::default()
-                    }),
-                    handle,
-                )
+                if has_indicate && !has_notify {
+                    let writers = writers.clone();
+                    let ledger = ledger.clone();
+                    let sender = sender.clone();
+                    let indication_state = indication_state.clone();
+                    (
+                        Some(CharacteristicNotify {
+                            notify: false,
+                            indicate: true,
+                            method: CharacteristicNotifyMethod::Fun(Box::new(move |notifier| {
+                                // StartNotify must acknowledge immediately; awaiting the
+                                // entire session here would block the central's CCC write.
+                                let task = tokio::spawn(indication_session(
+                                    notifier,
+                                    service_uuid,
+                                    char_uuid,
+                                    writers.clone(),
+                                    ledger.clone(),
+                                    sender.clone(),
+                                    indication_state.clone(),
+                                ));
+                                match indication_state.tasks.lock() {
+                                    Ok(mut tasks) => {
+                                        tasks.retain(|task| !task.is_finished());
+                                        tasks.push(task);
+                                    }
+                                    Err(error) => {
+                                        task.abort();
+                                        eprintln!(
+                                            "h10-sim: indication task ownership failed: {error}"
+                                        );
+                                    }
+                                }
+                                async {}.boxed()
+                            })),
+                            ..Default::default()
+                        }),
+                        CharacteristicControlHandle::default(),
+                    )
+                } else {
+                    let (control, handle) = characteristic_control();
+                    handlers.push(CharNotifyHandler {
+                        service_uuid,
+                        characteristic_uuid: char_uuid,
+                        control,
+                    });
+                    (
+                        Some(CharacteristicNotify {
+                            notify: has_notify,
+                            indicate: has_indicate,
+                            method: CharacteristicNotifyMethod::Io,
+                            ..Default::default()
+                        }),
+                        handle,
+                    )
+                }
             } else {
                 (None, CharacteristicControlHandle::default())
             };
@@ -1595,6 +2353,7 @@ mod tests {
                 service: "test".into(),
                 characteristic,
                 generation: 1,
+                target: OwnedNotifyTarget::new("", 1),
                 value: vec![1, 2, 3],
             })
             .unwrap();
@@ -1608,6 +2367,100 @@ mod tests {
         assert_eq!(receipt["inFlightDelivery"], "unknown-at-most-one");
         assert!(queue.lock().unwrap().is_empty());
     }
+
+    #[tokio::test]
+    async fn fatal_retirement_reports_all_indication_receipt_stages() {
+        let task = tokio::spawn(async { std::future::pending::<()>().await });
+        let queue = std::sync::Arc::new(std::sync::Mutex::new(crate::radio::SendQueue::new(1)));
+        let writers = Default::default();
+        let receipts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::from([
+            (
+                1,
+                IndicationReceipt {
+                    service: "svc".into(),
+                    characteristic: "one".into(),
+                    generation: 1,
+                    stage: "queued",
+                },
+            ),
+            (
+                2,
+                IndicationReceipt {
+                    service: "svc".into(),
+                    characteristic: "two".into(),
+                    generation: 2,
+                    stage: "inflight",
+                },
+            ),
+            (
+                3,
+                IndicationReceipt {
+                    service: "svc".into(),
+                    characteristic: "three".into(),
+                    generation: 3,
+                    stage: "accepted_waiting_confirm",
+                },
+            ),
+        ])));
+        let tasks = std::sync::Arc::new(std::sync::Mutex::new(vec![task]));
+        let receipt = super::retire_failed_sends_with_indications(
+            &tokio::spawn(async { std::future::pending::<()>().await }),
+            &writers,
+            &queue,
+            &receipts,
+            &Arc::new(Mutex::new(Vec::new())),
+            &tasks,
+        );
+        let entries = receipt["indicationReceiptsNotConfirmed"]
+            .as_array()
+            .unwrap();
+        assert_eq!(entries.len(), 3);
+        assert!(entries.iter().any(|entry| entry["stage"] == "queued"));
+        assert!(entries.iter().any(|entry| entry["stage"] == "inflight"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry["stage"] == "accepted_waiting_confirm"));
+        assert_eq!(receipt["sessionTasksAborted"], 1);
+        assert_eq!(
+            receipt["taskDrain"],
+            "not-awaitable-in-synchronous-retirement"
+        );
+    }
+
+    #[tokio::test]
+    async fn confirmation_failure_is_observable_as_a_terminal_event() {
+        let receipts = Arc::new(Mutex::new(HashMap::from([(
+            7,
+            IndicationReceipt {
+                service: "svc".into(),
+                characteristic: "char".into(),
+                generation: 4,
+                stage: "accepted_waiting_confirm",
+            },
+        )])));
+        let (events, mut receiver) = mpsc::channel(1);
+        publish_indication_unconfirmed(
+            &events,
+            &receipts,
+            7,
+            "fallback-service".into(),
+            "fallback-characteristic".into(),
+            99,
+            "confirmation failed",
+        )
+        .await;
+        assert!(receipts.lock().unwrap().is_empty());
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RadioEvent::IndicationUnconfirmed {
+                receipt_id: 7,
+                generation: 4,
+                reason,
+                ..
+            }) if reason == "confirmation failed"
+        ));
+    }
+
     #[test]
     fn daemon_watch_uses_a_private_bus_and_detects_real_owner_loss() {
         let output = std::process::Command::new("dbus-run-session")
@@ -1824,23 +2677,45 @@ mod tests {
         let specs = h10_services(&SimConfig::default()).unwrap();
         let (sender, _receiver) = mpsc::channel::<RadioEvent>(8);
         let clients = Arc::new(Mutex::new(GattClientSet::new()));
-        build_services(specs, sender, clients).expect("the H10 surface is consistent")
+        build_services(
+            specs,
+            sender,
+            clients,
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(SubscriptionLedger::new())),
+        )
+        .expect("the H10 surface is consistent")
     }
 
     #[test]
-    fn application_declares_full_h10_surface() {
+    fn application_declares_modeled_h10_surface() {
         let (handlers, services) = build_app();
-        assert_eq!(services.len(), 6, "180D, 180A, 180F, 6217ff4b, PMD, FEEE");
+        assert_eq!(
+            services.len(),
+            5,
+            "180D, 180A, 180F, PMD, FEEE; unmodeled PFC is absent"
+        );
         let counts: Vec<usize> = services
             .iter()
             .map(|service| service.characteristics.len())
             .collect();
-        assert_eq!(counts, vec![2, 7, 1, 2, 2, 3]);
+        assert_eq!(counts, vec![2, 7, 1, 2, 3]);
         assert!(services.iter().all(|service| service.primary));
-        // Every notify/indicate characteristic runs a session: HR
-        // measurement, battery level, vendor write/indicate, PMD control
-        // point, PMD data, FEEE 0x51 and 0x52 — one handler each.
-        assert_eq!(handlers.len(), 7);
+        // Five notify-only characteristics use IO handlers. The PMD indication
+        // characteristic owns a Fun session instead of acquired notification IO.
+        assert_eq!(handlers.len(), 5);
+        let indication_sessions = services
+            .iter()
+            .flat_map(|service| &service.characteristics)
+            .filter(|characteristic| {
+                characteristic.notify.as_ref().is_some_and(|notify| {
+                    notify.indicate
+                        && !notify.notify
+                        && matches!(notify.method, CharacteristicNotifyMethod::Fun(_))
+                })
+            })
+            .count();
+        assert_eq!(indication_sessions, 1);
     }
 
     #[test]
@@ -1873,6 +2748,7 @@ mod tests {
         let notify = control.notify.as_ref().expect("control point indicates");
         assert!(!notify.notify);
         assert!(notify.indicate);
+        assert!(matches!(notify.method, CharacteristicNotifyMethod::Fun(_)));
         let data_uuid = gatt_spec::pmd::DATA.parse::<Uuid>().unwrap();
         let data = pmd
             .characteristics
@@ -1882,6 +2758,110 @@ mod tests {
         assert!(data.read.is_none() && data.write.is_none());
         let data_notify = data.notify.as_ref().expect("PMD data notifies");
         assert!(data_notify.notify && !data_notify.indicate);
+        assert!(matches!(data_notify.method, CharacteristicNotifyMethod::Io));
+    }
+
+    fn queued_send(value: u8) -> QueuedSend {
+        QueuedSend {
+            id: 0,
+            service: "service".to_string(),
+            characteristic: Uuid::nil(),
+            generation: 1,
+            target: OwnedNotifyTarget::new("", 1),
+            value: vec![value],
+        }
+    }
+
+    #[test]
+    fn replaced_writer_generation_cannot_settle_an_old_owned_send() {
+        let old = OwnedNotifyTarget::new("AA:AA:AA:AA:AA:AA", 7);
+        assert!(target_matches(&old, "AA:AA:AA:AA:AA:AA", 7));
+        assert!(!target_matches(&old, "AA:AA:AA:AA:AA:AA", 8));
+        assert!(!target_matches(&old, "BB:BB:BB:BB:BB:BB", 7));
+    }
+
+    #[tokio::test]
+    async fn indication_lane_is_fifo_and_capacity_one() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let endpoint = IndicationEndpoint::new(sender);
+        assert_eq!(endpoint.enqueue(queued_send(1)), Ok(1 << 63));
+        assert!(endpoint.enqueue(queued_send(2)).is_err());
+        assert_eq!(
+            receiver.recv().await.expect("first indication").value,
+            vec![1]
+        );
+        // A rejected admission consumes an ID; receipt IDs are never reused.
+        assert_eq!(endpoint.enqueue(queued_send(2)), Ok((1 << 63) + 2));
+        assert_eq!(
+            receiver.recv().await.expect("second indication").value,
+            vec![2]
+        );
+    }
+
+    #[tokio::test]
+    async fn blocked_indication_lane_does_not_consume_notify_pump_capacity() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let endpoint = IndicationEndpoint::new(sender);
+        assert!(endpoint.enqueue(queued_send(1)).is_ok());
+        assert!(endpoint.enqueue(queued_send(2)).is_err());
+
+        let mut notify_queue = SendQueue::new(1);
+        assert!(notify_queue.push(queued_send(3)).is_ok());
+        assert_eq!(
+            notify_queue
+                .pop()
+                .expect("notify remains independent")
+                .value,
+            vec![3]
+        );
+    }
+
+    #[tokio::test]
+    async fn closing_before_wait_is_observable_and_admission_is_rejected() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let endpoint = IndicationEndpoint::new(sender);
+        endpoint.close();
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), endpoint.closed())
+                .await
+                .is_ok(),
+            "a close before waiting must not lose the wake"
+        );
+        assert!(
+            endpoint.enqueue(queued_send(1)).is_err(),
+            "a close must atomically reject a racing admission"
+        );
+    }
+
+    #[test]
+    fn indication_ids_are_unique_across_endpoints_and_reconnects() {
+        let allocator = Arc::new(IndicationIdAllocator::new());
+        let receipts = Arc::new(Mutex::new(HashMap::new()));
+        let (first_tx, _first_rx) = mpsc::channel(1);
+        let first_endpoint =
+            IndicationEndpoint::with_allocator(first_tx, allocator.clone(), receipts.clone());
+        let first = first_endpoint.enqueue(queued_send(1)).unwrap();
+        let (second_tx, _second_rx) = mpsc::channel(1);
+        let second_endpoint =
+            IndicationEndpoint::with_allocator(second_tx, allocator.clone(), receipts.clone());
+        let second = second_endpoint.enqueue(queued_send(2)).unwrap();
+        let (reconnect_tx, _reconnect_rx) = mpsc::channel(1);
+        let reconnect_endpoint =
+            IndicationEndpoint::with_allocator(reconnect_tx, allocator, receipts);
+        let reconnect = reconnect_endpoint.enqueue(queued_send(3)).unwrap();
+        assert_ne!(first, second);
+        assert_ne!(second, reconnect);
+        assert!(first >= INDICATION_ID_START);
+        assert!(second >= INDICATION_ID_START);
+    }
+
+    #[test]
+    fn indication_id_exhaustion_is_permanent_and_fail_closed() {
+        let allocator = IndicationIdAllocator::with_next(u64::MAX);
+        assert_eq!(allocator.allocate(), Some(u64::MAX));
+        assert_eq!(allocator.allocate(), None);
+        assert_eq!(allocator.allocate(), None);
     }
 
     fn one_characteristic(spec: CharSpec) -> ServiceSpec {
@@ -2019,10 +2999,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(
-            declared, 11,
-            "BSL, battery, 7 DIS, PMD control point, vendor read"
-        );
+        assert_eq!(declared, 10, "BSL, battery, 7 DIS, PMD control point");
     }
 
     #[tokio::test]
@@ -2040,6 +3017,8 @@ mod tests {
             vec![spec],
             sender.clone(),
             Arc::new(Mutex::new(GattClientSet::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(SubscriptionLedger::new())),
         )
         .unwrap();
         assert!(
@@ -2064,6 +3043,8 @@ mod tests {
             vec![spec],
             sender,
             Arc::new(Mutex::new(GattClientSet::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(SubscriptionLedger::new())),
         )
         .err()
         .expect("refused");
@@ -2086,14 +3067,14 @@ mod tests {
                 .find(|characteristic| characteristic.uuid == target)
                 .unwrap_or_else(|| panic!("{uuid} must be registered"))
         };
-        // The vendor characteristic is indicate + write-command only: no
-        // write-with-response flag, so discovery matches the strap.
-        let vendor_write = find(gatt_spec::vendor::WRITE_INDICATE)
-            .write
-            .as_ref()
-            .expect("6217ff4d is writable");
-        assert!(!vendor_write.write);
-        assert!(vendor_write.write_without_response);
+        assert!(
+            services
+                .iter()
+                .flat_map(|service| &service.characteristics)
+                .all(|characteristic| characteristic.uuid
+                    != gatt_spec::vendor::WRITE_INDICATE.parse::<Uuid>().unwrap()),
+            "unmodeled PFC must not be advertised"
+        );
         // The PMD control point keeps write-with-response and no command flag.
         let control = find(gatt_spec::pmd::CONTROL_POINT)
             .write
@@ -2147,6 +3128,8 @@ mod tests {
             vec![spec],
             sender,
             Arc::new(Mutex::new(GattClientSet::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(SubscriptionLedger::new())),
         )
         .err()
         .expect("refused");

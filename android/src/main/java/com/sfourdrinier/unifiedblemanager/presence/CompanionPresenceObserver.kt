@@ -103,13 +103,13 @@ class CompanionPresenceObserver(
         startObserving = { cdm, address ->
           UbmCompanionPresenceService.observe(application, address) {
             routeObservation(Build.VERSION.SDK_INT, cdm, address,
-              legacy = { cdm.startObservingDevicePresence(address) },
+              legacy = { startLegacyObservation(cdm, address) },
               modern = { id -> cdm.startObservingDevicePresence(ObservingDevicePresenceRequest.Builder().setAssociationId(id).build()) })
           }
         },
         stopObserving = { cdm, address ->
           routeObservation(Build.VERSION.SDK_INT, cdm, address,
-            legacy = { cdm.stopObservingDevicePresence(address) },
+            legacy = { stopLegacyObservation(cdm, address) },
             modern = { id -> cdm.stopObservingDevicePresence(ObservingDevicePresenceRequest.Builder().setAssociationId(id).build()) }, stopping = true)
         },
         releaseContinuation = { address ->
@@ -140,6 +140,18 @@ class CompanionPresenceObserver(
         }
       }
       failure?.let { throw it }
+    }
+
+    /** API 31–35 only: the address overload is the OS compatibility route. */
+    @Suppress("DEPRECATION")
+    private fun startLegacyObservation(cdm: CompanionDeviceManager, address: String) {
+      cdm.startObservingDevicePresence(address)
+    }
+
+    /** API 31–35 only: the address overload is the OS compatibility route. */
+    @Suppress("DEPRECATION")
+    private fun stopLegacyObservation(cdm: CompanionDeviceManager, address: String) {
+      cdm.stopObservingDevicePresence(address)
     }
   }
 }

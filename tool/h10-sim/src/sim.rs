@@ -472,6 +472,14 @@ impl SimState {
     }
 
     pub fn observe_subscription(&mut self, characteristic: &str, enabled: bool) {
+        if !enabled && characteristic.eq_ignore_ascii_case(gatt_spec::pmd::DATA) {
+            self.reset_pmd_session();
+        } else if !enabled && characteristic.eq_ignore_ascii_case(gatt_spec::pmd::CONTROL_POINT) {
+            // Releasing command acknowledgements does not release the data lane.
+            self.pending_indications.clear();
+            self.pending_pmd_actions.clear();
+            self.last_pmd_response = None;
+        }
         if !is_hr_characteristic(characteristic) {
             return;
         }
@@ -584,32 +592,22 @@ impl SimState {
         gatt_spec::encode_pmd_features()
     }
 
-    /// Reads a 128-bit vendor characteristic by full UUID. Only the readable
-    /// `6217ff4c` answers; its value is UNCONFIRMED (no capture reads it), so
-    /// an explicit empty placeholder — never a guessed payload.
-    pub fn vendor_read(&self, uuid: &uuid::Uuid) -> Option<Vec<u8>> {
-        if uuid
-            .to_string()
-            .eq_ignore_ascii_case(gatt_spec::vendor::READ)
-        {
-            Some(Vec::new())
-        } else {
-            None
-        }
+    /// Reads a 128-bit vendor characteristic by full UUID. The canonical
+    /// `6217ff4c` UUID is retained for fingerprints, but no vendor value is
+    /// modeled or served, so pure reads return `None` rather than an empty
+    /// placeholder.
+    pub fn vendor_read(&self, _uuid: &uuid::Uuid) -> Option<Vec<u8>> {
+        None
     }
 
     /// Whether a full-UUID characteristic is writable but has no behaviour
-    /// model (`6217ff4d`, FEEE `0x51`/`0x53`): writes there are refused
+    /// model (`6217ff4d`, FEEE `0x53`): writes there are refused
     /// loudly as `unmodeled-vendor-write`, never absorbed.
     pub fn vendor_writable(&self, uuid: &uuid::Uuid) -> bool {
         let text = uuid.to_string();
-        [
-            gatt_spec::vendor::WRITE_INDICATE,
-            gatt_spec::feee::CHAR_51,
-            gatt_spec::feee::CHAR_53,
-        ]
-        .iter()
-        .any(|known| text.eq_ignore_ascii_case(known))
+        [gatt_spec::vendor::WRITE_INDICATE, gatt_spec::feee::CHAR_53]
+            .iter()
+            .any(|known| text.eq_ignore_ascii_case(known))
     }
 
     /// Device Information / Battery read handler. DIS strings carry the
@@ -1610,6 +1608,48 @@ mod tests {
     }
 
     #[test]
+    fn control_point_unsubscribe_preserves_streams_and_cancels_pending_actions() {
+        let mut sim = state();
+        sim.apply_pmd_action(PmdAction::StartEcg);
+        let acc = acc_start(50, 4);
+        let acc_start = sim.handle_pmd_write(&acc);
+        sim.apply_pmd_action(acc_start.action);
+        let ecg_started_at = sim.ecg_started_at;
+        let acc_started_at = sim.acc_started_at;
+        sim.pending_indications.push(PendingIndication {
+            due: Instant::now(),
+            response: vec![0xf0, 3, 0, 0, 0],
+            action: PmdAction::StopEcg,
+        });
+        sim.queue_pmd_action(42, PmdAction::StopAcc);
+        sim.last_pmd_response = Some(vec![0xf0, 2, 0, 0, 0]);
+
+        sim.observe_subscription(gatt_spec::pmd::CONTROL_POINT, false);
+
+        assert!(sim.ecg_streaming);
+        assert!(sim.acc_settings.is_some());
+        assert_eq!(sim.ecg_started_at, ecg_started_at);
+        assert_eq!(sim.acc_started_at, acc_started_at);
+        assert!(sim.pending_indications.is_empty());
+        assert_eq!(sim.settle_pmd_action(42, true), None);
+        assert!(sim.last_pmd_response.is_none());
+    }
+
+    #[test]
+    fn canceled_pending_start_cannot_activate_after_control_point_unsubscribe() {
+        let mut sim = state();
+        let start = sim.handle_pmd_write(&acc_start(25, 2));
+        sim.queue_pmd_action(7, start.action);
+
+        sim.observe_subscription(gatt_spec::pmd::CONTROL_POINT, false);
+
+        assert_eq!(sim.settle_pmd_action(7, true), None);
+        assert!(sim.acc_settings.is_none());
+        assert!(sim.acc_started_at.is_none());
+        assert!(!sim.ecg_streaming);
+    }
+
+    #[test]
     fn reversed_response_deadlines_cannot_commit_stop_before_start() {
         let mut sim = state();
         let now = Instant::now();
@@ -1792,15 +1832,15 @@ mod tests {
         use std::str::FromStr;
         let sim = state();
         let read = uuid::Uuid::from_str(crate::gatt_spec::vendor::READ).expect("valid UUID");
-        assert_eq!(sim.vendor_read(&read), Some(Vec::new()));
+        assert_eq!(sim.vendor_read(&read), None);
         let indicate =
             uuid::Uuid::from_str(crate::gatt_spec::vendor::WRITE_INDICATE).expect("valid UUID");
         assert_eq!(sim.vendor_read(&indicate), None);
         assert!(sim.vendor_writable(&indicate));
         assert!(!sim.vendor_writable(&read));
-        let char51 = uuid::Uuid::from_str(crate::gatt_spec::feee::CHAR_51).expect("valid UUID");
-        assert!(sim.vendor_writable(&char51));
-        assert_eq!(sim.vendor_read(&char51), None);
+        let char53 = uuid::Uuid::from_str(crate::gatt_spec::feee::CHAR_53).expect("valid UUID");
+        assert!(sim.vendor_writable(&char53));
+        assert_eq!(sim.vendor_read(&char53), None);
     }
 
     #[test]

@@ -63,7 +63,7 @@ test.each([undefined, refusedReceipt, { state: 'released', failures: [] }])(
     expect(stopCalls).toBe(1)
     expect(replacementAdmissionStopCalls).toBe(1)
     const diagnostics = events.filter(event => event.code === 'scan-stop-after-native-end')
-    if (lateOutcome?.state === 'released') {
+    if (lateOutcome === undefined || lateOutcome.state === 'released') {
       expect(diagnostics).toEqual([])
     } else {
       expect(diagnostics).toHaveLength(1)
@@ -98,6 +98,7 @@ test.each([undefined, refusedReceipt, { state: 'released', failures: [] }])(
         }
       })
     }
+    expect(native.opsInvoked('session.reconcile')).toEqual([])
   }
 )
 
@@ -170,6 +171,81 @@ test('reconciled native absence settles the exact membership while stop is held'
   const outcome = await stopping
   await manager.destroy()
   expect(outcome).toEqual({ state: 'released', failures: [] })
+})
+
+test.each(['scan-not-active', 'native membership expired'])(
+  'an invalid-state stop reconciles absent membership without an expected-expiry warning: %s',
+  async detail => {
+    const harness = rustCoreHarness()
+    const manager = await createReactNativeBleManagerWithEnvironment(environment(harness))
+    const backend = manager.attachedBackend.backend
+    const events = []
+    const collecting = (async () => {
+      for await (const event of backend.events()) {
+        if (event.kind === 'value') events.push(event.value)
+      }
+    })()
+    const scan = await backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
+    const session = [...harness.native.sessions.values()][0]
+    session.scans.clear()
+    harness.native.failNext('scan.stop', 'lifecycle.invalid-state', 'scan', 'scan.stop', detail)
+
+    const outcome = await scan.stop()
+
+    await manager.destroy()
+    await collecting
+    expect(outcome).toEqual({ state: 'released', failures: [] })
+    expect(harness.native.opsInvoked('scan.stop')).toHaveLength(1)
+    expect(harness.native.opsInvoked('session.reconcile')).toEqual([{}])
+    expect(session.scans.size).toBe(0)
+    expect(events.filter(event => event.code === 'scan-stop-after-native-end')).toEqual([])
+  }
+)
+
+test('an invalid-state stop refusal keeps authoritative active membership owned and retryable', async () => {
+  const harness = rustCoreHarness()
+  const manager = await createReactNativeBleManagerWithEnvironment(environment(harness))
+  const backend = manager.attachedBackend.backend
+  const scan = await backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
+  const session = [...harness.native.sessions.values()][0]
+  harness.native.failNext('scan.stop', 'lifecycle.invalid-state', 'scan', 'scan.stop', 'scan-not-active')
+
+  const refused = await scan.stop()
+  const retry = await scan.stop()
+
+  await manager.destroy()
+  expect(refused).toMatchObject({
+    state: 'release-failed',
+    failures: [{ error: { code: 'lifecycle.invalid-state', operation: 'scan.stop' } }]
+  })
+  expect(retry).toEqual({ state: 'released', failures: [] })
+  expect(harness.native.opsInvoked('session.reconcile')).toEqual([{}])
+  expect(session.scans.size).toBe(0)
+  expect(harness.native.opsInvoked('scan.stop')).toHaveLength(2)
+})
+
+test('a failed reconcile preserves the invalid-state stop failure and adds reconcile evidence', async () => {
+  const harness = rustCoreHarness()
+  const manager = await createReactNativeBleManagerWithEnvironment(environment(harness))
+  const backend = manager.attachedBackend.backend
+  const scan = await backend.scanner.start(scanOptions(), opaqueId('client', 'client', 'test'))
+  const session = [...harness.native.sessions.values()][0]
+  session.scans.clear()
+  harness.native.failNext('session.reconcile', 'platform.failure', 'core', 'session.reconcile', 'reconcile unavailable')
+
+  const outcome = await scan.stop()
+
+  await manager.destroy()
+  expect(outcome).toMatchObject({
+    state: 'release-failed',
+    failures: [
+      { error: { code: 'lifecycle.invalid-state', operation: 'scan.stop' } },
+      { error: { code: 'platform.failure', operation: 'session.reconcile' } }
+    ]
+  })
+  expect(harness.native.opsInvoked('scan.stop')).toHaveLength(1)
+  expect(harness.native.opsInvoked('session.reconcile')).toEqual([{}])
+  expect(session.scans.size).toBe(0)
 })
 
 test('confirmed parent disposal retires cleanup after its held stop is cancelled', async () => {

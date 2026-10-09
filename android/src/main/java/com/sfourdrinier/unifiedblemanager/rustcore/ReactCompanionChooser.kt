@@ -282,7 +282,7 @@ class ReactCompanionChooser @JvmOverloads constructor(
         resolve(info.id, info.deviceMacAddress?.toString(), info.displayName?.toString())
         return
       }
-      val device = data.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE, BluetoothDevice::class.java)
+      val device = legacyCompanionDevice(data)
       resolve(pendingAssociationId, deviceAddress(device), deviceName(device))
     }
   }
@@ -328,6 +328,11 @@ class ReactCompanionChooser @JvmOverloads constructor(
   private fun connectPermitted(): Boolean =
     Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
       reactContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+
+  /** Legacy chooser result route retained when the OS does not expose AssociationInfo. */
+  @Suppress("DEPRECATION")
+  private fun legacyCompanionDevice(intent: Intent): BluetoothDevice? =
+    intent.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE, BluetoothDevice::class.java)
 
   private fun deviceAddress(device: BluetoothDevice?): String? =
     if (device == null || !connectPermitted()) null else device.address

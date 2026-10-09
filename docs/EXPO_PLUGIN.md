@@ -7,7 +7,7 @@ start a radio, request runtime permissions during prebuild, or prove physical
 radio/restoration reliability. Expo Go is not a supported BLE execution
 environment because it cannot contain this native module.
 
-Use the v2 plugin options in this `5.0.0` source. Those options match
+Use the v2 plugin options in this `5.0.1` source. Those options match
 the schema introduced at `4.0.0-rc.4`. Expo Go cannot load this native module.
 
 ## Installation and development build
@@ -15,7 +15,7 @@ the schema introduced at `4.0.0-rc.4`. Expo Go cannot load this native module.
 Pin the package so a later `latest` bump does not change native plugin options
 without a rebuild:
 
-    pnpm add unified-ble-manager@5.0.0
+    pnpm add unified-ble-manager@5.0.1
     pnpm add expo@^57.0.0 expo-dev-client
     npx expo prebuild --clean
     npx expo run:ios
@@ -106,7 +106,17 @@ do not imply a global Bluetooth permission grant. Pending authorization with
 unsettled power may still offer an explicit permission action.
 
 - Android shows the runtime prompt (`BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on
-  API 31+, legacy location below) and answers at once when decided.
+  API 31+, legacy location below) and answers at once when decided. An
+  explicit `legacyLocation: 'required'` policy additionally requests coarse and
+  fine location on API 31+, so its readiness action can resolve that prerequisite.
+- On Android API 24–30, readiness reads native observations of both location
+  services and the legacy location permission on every probe. The manifest
+  policy is not proof that either prerequisite is disabled: a missing
+  permission offers the normal `request-permission` Bluetooth action, disabled
+  services offers `open-settings` for location services, and an unknown
+  observation remains action-required. Native measurements are observations,
+  not caller overrides; changing the native plugin marker or digest still
+  requires a rebuild.
 - Ordinary Apple (iOS and tvOS) apps present the CoreBluetooth prompt on request: the
   process central is allocated by the request itself, never at startup, so
   reading `manager.readiness()` never prompts. A decided authorization

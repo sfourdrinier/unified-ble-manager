@@ -68,7 +68,10 @@ Only when `neverForLocation: true` is also selected does the plugin add
 `manager.permissions.request({ purpose: 'scan-and-connect' })`, inspect the returned
 permission outcome, and require ready scan readiness. The Expo manager resolves
 the required runtime permissions for the actual API level; a declaration alone
-is not a permission grant. API 31+ uses Bluetooth permissions instead. Bare
+is not a permission grant. Readiness also measures location services and the
+legacy location permission from the native Android runtime on each probe, so a
+policy declaration alone never implies that location services are disabled.
+API 31+ uses Bluetooth permissions instead. Bare
 React Native consumers must declare/request the corresponding permissions in
 their application; the factory does not perform runtime requests for them.
 
