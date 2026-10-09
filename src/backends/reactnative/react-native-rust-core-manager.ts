@@ -666,6 +666,9 @@ class ReactNativeRustCoreManager {
   ): Promise<InternalDiscoveredGattDatabase<string, NativeBackendIdentity<string>>> {
     this.assertReady('discover')
     this.assertOperationAdmission(options, 'discover')
+    if (connection.hasPendingDatabaseCleanup()) {
+      assertDatabaseCleanupReleased(await connection.invalidateDatabase('owner-released'))
+    }
     const key = String(connection.connectionId)
     const registered = this.discoveries.get(key)
     if (registered !== undefined && registered.connection === connection) {
@@ -698,13 +701,11 @@ class ReactNativeRustCoreManager {
   ): Promise<InternalDiscoveredGattDatabase<string, NativeBackendIdentity<string>>> {
     this.assertReady('discover')
     this.assertOperationAdmission(options, 'discover')
-    const existing = connection.database
-    if (existing !== null && [...this.discoveries.values()].some(entry => entry.connection === connection)) {
+    if ([...this.discoveries.values()].some(entry => entry.connection === connection)) {
       throw contractError('gatt.stale-handle', 'gatt', 'rust-core-manager.rediscover.concurrent')
     }
-    if (existing !== null) {
-      await connection.invalidateDatabase('owner-released', reason)
-    }
+    const cleanup = await connection.invalidateDatabase('owner-released', reason)
+    assertDatabaseCleanupReleased(cleanup)
     return this.discoverOnConnection(connection, options)
   }
 
@@ -713,15 +714,15 @@ class ReactNativeRustCoreManager {
     _reason: 'connection-lost' | 'owner-released'
   ): Promise<CleanupRecord> {
     const failures: CleanupFailure[] = []
-    for (const subscription of database.drainSubscriptions()) {
+    for (const subscription of database.pendingSubscriptions()) {
       try {
-        const record = await subscription.removeBackend()
+        const record = await subscription.remove()
         failures.push(...record.failures)
       } catch (error) {
         failures.push(asCleanupFailure('subscription', error))
       }
     }
-    database.connection.completeDatabaseCleanup(database)
+    if (failures.length === 0) database.connection.completeDatabaseCleanup(database)
     return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
   }
 
@@ -882,11 +883,13 @@ class ReactNativeRustCoreManager {
       // retried release reaches the same native identity (PR210-09).
       return { state: 'release-failed', failures: [...children.failures, ...backendResult.failures] }
     }
-    connection.markReleased()
-    this.connections.delete(String(connection.resource.connectionId))
     if (children.state !== 'released') {
+      // Keep the original database and failed subscriptions reachable even
+      // after the backend released the link. A retry still needs their receipts.
       return { state: 'release-failed', failures: [...children.failures, ...backendResult.failures] }
     }
+    connection.markReleased()
+    this.connections.delete(String(connection.resource.connectionId))
     return backendResult
   }
 
@@ -1340,6 +1343,10 @@ class NativeConnection {
     return true
   }
 
+  hasPendingDatabaseCleanup(): boolean {
+    return this.pendingDatabaseCleanup !== null
+  }
+
   isPendingDatabaseCleanup(database: NativeGattDatabase): boolean {
     return this.pendingDatabaseCleanup === database
   }
@@ -1685,10 +1692,10 @@ class NativeGattDatabase {
     this.subscriptions.delete(subscription)
   }
 
-  drainSubscriptions(): NativeSubscription[] {
-    const pending = [...this.subscriptions]
-    this.subscriptions.clear()
-    return pending
+  pendingSubscriptions(): NativeSubscription[] {
+    // remove() untracks only after a successful receipt; snapshotting must
+    // not discard failed ownership or bypass its coalesced removal.
+    return [...this.subscriptions]
   }
 
   isCurrent(): boolean {
@@ -1979,6 +1986,15 @@ class NativeSubscription {
     const record = await this.backendSubscription.remove()
     if (record.state === 'released') this.database.untrackSubscription(this)
     return record
+  }
+}
+
+function assertDatabaseCleanupReleased(record: CleanupRecord): void {
+  if (record.state !== 'released') {
+    throw new AggregateError(
+      record.failures.map(failure => new BackendContractError(failure.error)),
+      'GATT database cleanup must complete before discovery'
+    )
   }
 }
 

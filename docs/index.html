@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 5.0.0 | Documentation</title>
+    <title>unified-ble-manager 5.0.1 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>5.0.0</code></div>
+          <div class="mb1"><code>5.0.1</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -64,7 +64,7 @@
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
-            <p>This source targets <code>5.0.0</code>; verify the published version in the npm registry.</p>
+            <p>This source targets <code>5.0.1</code>; verify the published version in the npm registry.</p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -137,7 +137,7 @@
               registry before installing: source preparation is not publication. Install the exact release and commit
               the resolved lockfile for a known native rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0
+            <pre><code>pnpm add unified-ble-manager@5.0.1
 </code></pre>
             <p>
               Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
@@ -146,9 +146,9 @@
             <h4>Expo / CNG v2</h4>
             <p>
               The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. Install
-              <code>5.0.0</code> and keep that exact version in your lockfile while validating the native build:
+              <code>5.0.1</code> and keep that exact version in your lockfile while validating the native build:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0
+            <pre><code>pnpm add unified-ble-manager@5.0.1
 </code></pre>
             <p>The package does not run in Expo Go.</p>
             <p>Expo also needs a native build and development client:</p>
@@ -1009,7 +1009,7 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in this <code>5.0.0</code> source. Those options match the schema introduced at
+              Use the v2 plugin options in this <code>5.0.1</code> source. Those options match the schema introduced at
               <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
@@ -1017,7 +1017,7 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.0
+            <pre><code>pnpm add unified-ble-manager@5.0.1
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
@@ -1112,7 +1112,17 @@ bunx eas build --profile development --platform android
             <ul>
               <li>
                 Android shows the runtime prompt (<code>BLUETOOTH_SCAN</code>/<code>BLUETOOTH_CONNECT</code> on API 31+,
-                legacy location below) and answers at once when decided.
+                legacy location below) and answers at once when decided. An explicit
+                <code>legacyLocation: 'required'</code> policy additionally requests coarse and fine location on API
+                31+, so its readiness action can resolve that prerequisite.
+              </li>
+              <li>
+                On Android API 24–30, readiness reads native observations of both location services and the legacy
+                location permission on every probe. The manifest policy is not proof that either prerequisite is
+                disabled: a missing permission offers the normal <code>request-permission</code> Bluetooth action,
+                disabled services offers <code>open-settings</code> for location services, and an unknown observation
+                remains action-required. Native measurements are observations, not caller overrides; changing the native
+                plugin marker or digest still requires a rebuild.
               </li>
               <li>
                 Ordinary Apple (iOS and tvOS) apps present the CoreBluetooth prompt on request: the process central is

@@ -325,60 +325,54 @@ mod tests {
     }
 
     #[test]
-    fn sim_fingerprint_declares_seventeen_characteristics_and_seven_cccds() {
+    fn sim_fingerprint_declares_fifteen_characteristics_and_six_cccds() {
         let fingerprint = stock_sim_fingerprint();
-        assert_eq!(fingerprint["gatt"]["serviceCount"], 6);
-        assert_eq!(fingerprint["gatt"]["characteristicCount"], 17);
-        assert_eq!(fingerprint["gatt"]["descriptorCount"], 7);
+        assert_eq!(fingerprint["gatt"]["serviceCount"], 5);
+        assert_eq!(fingerprint["gatt"]["characteristicCount"], 15);
+        assert_eq!(fingerprint["gatt"]["descriptorCount"], 6);
     }
 
-    /// Structural fidelity only: no checked field disagreed (`passed`).
-    /// This is partial by construction and cannot measure over-the-air
-    /// timing — the in-process fingerprint carries point distributions
-    /// (`n:1`, not measurements) and omits central-side latencies, so the
-    /// comparison always keeps `Incomplete` corners (see
-    /// `in_process_fingerprint_comparison_is_incomplete_not_qualified`).
-    /// Over-the-air equivalence needs a real capture compared against a
-    /// real simulator run with `passed && complete` (`--qualify-ota`).
+    /// Real fixtures retain the observed vendor service. The simulator does
+    /// not serve that unmodeled service, so strict comparison must report the
+    /// fidelity gap rather than treating omission as a match or rewriting the
+    /// real fixtures.
+    fn assert_missing_pfc_service_gap(real: &Value, sim: &Value) {
+        let report = compare_fingerprints(real, sim, Tolerances::default());
+        assert!(
+            !report.passed,
+            "missing PFC service must fail strict comparison"
+        );
+        let gatt_services = report
+            .fields
+            .iter()
+            .find(|field| field.field == "gatt.services")
+            .expect("strict comparison reports the missing PFC service");
+        assert_eq!(gatt_services.status, crate::compare::CheckStatus::Fail);
+        assert!(gatt_services.detail.contains("6217ff4b"));
+        assert!(crate::compare::qualify_ota(&report)
+            .expect_err("missing PFC service cannot qualify")
+            .contains("gatt.services"));
+    }
     #[test]
-    fn structural_fidelity_has_no_mismatches_vs_tauri_capture() {
+    fn structural_fidelity_reports_missing_pfc_vs_tauri_capture() {
         let real = load_fixture("tauri-macos-unknown-engine-E9B93D29-2026-09-19.json");
         let sim = stock_sim_fingerprint();
-        let report = compare_fingerprints(&real, &sim, Tolerances::default());
-        assert!(
-            report.passed,
-            "fidelity gap vs Tauri capture: {}",
-            serde_json::to_string_pretty(&report).unwrap_or_default()
-        );
+        assert_missing_pfc_service_gap(&real, &sim);
     }
 
-    /// Structural fidelity only: partial, cannot measure over-the-air
-    /// timing (see `structural_fidelity_has_no_mismatches_vs_tauri_capture`).
     #[test]
-    fn structural_fidelity_has_no_mismatches_vs_ios_capture() {
+    fn structural_fidelity_reports_missing_pfc_vs_ios_capture() {
         let real = load_fixture("expo-ios-ios-phone-E9B93D29-2026-09-19.json");
         let sim = stock_sim_fingerprint();
-        let report = compare_fingerprints(&real, &sim, Tolerances::default());
-        assert!(
-            report.passed,
-            "fidelity gap vs iOS capture: {}",
-            serde_json::to_string_pretty(&report).unwrap_or_default()
-        );
+        assert_missing_pfc_service_gap(&real, &sim);
     }
 
-    /// Structural fidelity only: partial, cannot measure over-the-air
-    /// timing (see `structural_fidelity_has_no_mismatches_vs_tauri_capture`).
     #[test]
-    fn structural_fidelity_has_no_mismatches_vs_android_capture_modulo_platform_services() {
+    fn structural_fidelity_reports_missing_pfc_vs_android_capture_modulo_platform_services() {
         let mut real = load_fixture("expo-android-samsung-sm-a376u1-2-E9B93D29-2026-09-19.json");
         strip_android_platform_services(&mut real);
         let sim = stock_sim_fingerprint();
-        let report = compare_fingerprints(&real, &sim, Tolerances::default());
-        assert!(
-            report.passed,
-            "fidelity gap vs Android capture: {}",
-            serde_json::to_string_pretty(&report).unwrap_or_default()
-        );
+        assert_missing_pfc_service_gap(&real, &sim);
     }
 
     /// The in-process fingerprint path is structural evidence only and can
@@ -408,10 +402,14 @@ mod tests {
             let sim = stock_sim_fingerprint();
             let report = compare_fingerprints(real, &sim, Tolerances::default());
             assert!(
-                report.passed,
-                "in-process structural regression vs {name} capture: {}",
-                serde_json::to_string_pretty(&report).unwrap_or_default()
+                !report.passed,
+                "in-process comparison must expose the missing PFC service vs {name}"
             );
+            assert!(report.fields.iter().any(|field| {
+                field.field == "gatt.services"
+                    && field.status == crate::compare::CheckStatus::Fail
+                    && field.detail.contains("6217ff4b")
+            }));
             assert!(
                 !report.complete,
                 "in-process path became complete vs {name}: promote it to the OTA \

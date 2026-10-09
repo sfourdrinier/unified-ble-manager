@@ -78,6 +78,22 @@ pub struct RadioReadAnswer {
     pub ok: bool,
 }
 
+/// Exact owner of one live native notification writer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedNotifyTarget {
+    pub peer_address: String,
+    pub generation: u64,
+}
+
+impl OwnedNotifyTarget {
+    pub fn new(peer_address: impl Into<String>, generation: u64) -> Self {
+        Self {
+            peer_address: peer_address.into(),
+            generation,
+        }
+    }
+}
+
 /// Backend-agnostic peripheral events delivered to the simulator loop.
 #[derive(Debug)]
 pub enum RadioEvent {
@@ -94,6 +110,19 @@ pub enum RadioEvent {
     IndicationConfirmed {
         service: String,
         characteristic: String,
+        receipt_id: Option<u64>,
+        generation: Option<u64>,
+    },
+    /// An indication was admitted/accepted but never reached the central's
+    /// confirmation terminal. This is typed evidence, not stderr-only
+    /// diagnostics.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    IndicationUnconfirmed {
+        service: String,
+        characteristic: String,
+        receipt_id: u64,
+        generation: u64,
+        reason: String,
     },
     Read {
         service: String,
@@ -105,6 +134,8 @@ pub enum RadioEvent {
         service: String,
         characteristic: String,
         value: Vec<u8>,
+        device_address: Option<String>,
+        owned_target: Option<OwnedNotifyTarget>,
         reply: oneshot::Sender<bool>,
     },
     /// A queued send settled in the pump: delivery accepted by the OS or
@@ -147,6 +178,7 @@ pub struct QueuedSend {
     pub service: String,
     pub characteristic: Uuid,
     pub generation: u64,
+    pub target: OwnedNotifyTarget,
     pub value: Vec<u8>,
 }
 
@@ -155,6 +187,7 @@ pub struct QueuedSend {
 /// queue means the link is dead, and saying so beats buffering forever.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const SEND_QUEUE_CAPACITY: usize = 128;
+const SEND_ID_HIGH_RANGE_START: u64 = 1 << 63;
 
 /// Bounded FIFO of [`QueuedSend`]: push fails with the returned send when
 /// full (the caller reports it loudly), pop delivers in arrival order. Pure
@@ -179,7 +212,10 @@ impl SendQueue {
 
     /// Enqueues a send, or hands it back when the queue is full.
     pub fn push(&mut self, mut send: QueuedSend) -> Result<u64, QueuedSend> {
-        if self.queue.len() >= self.capacity || self.next_id == 0 {
+        if self.queue.len() >= self.capacity
+            || self.next_id == 0
+            || self.next_id >= SEND_ID_HIGH_RANGE_START
+        {
             return Err(send);
         }
         let id = self.next_id;
@@ -498,6 +534,18 @@ pub trait PeripheralRadio: Send {
         characteristic: Uuid,
         value: Vec<u8>,
     ) -> Result<SendOutcome, RadioError>;
+    /// Sends only to the exact native writer peer and subscription generation.
+    /// Backends without a native owner identity refuse this operation.
+    async fn notify_to(
+        &mut self,
+        _characteristic: Uuid,
+        _value: Vec<u8>,
+        _target: OwnedNotifyTarget,
+    ) -> Result<SendOutcome, RadioError> {
+        Err(RadioError(
+            "exact owned notification routing is unsupported by this backend".to_string(),
+        ))
+    }
     /// Stages manufacturer data for the next advertisement. Default: no-op
     /// (Apple exposes no manufacturer-data peripheral API).
     async fn set_adv_manufacturer_data(
@@ -557,10 +605,10 @@ pub trait PeripheralRadio: Send {
     }
 }
 
-/// Declarations for the whole H10 surface: services, order, characteristic
-/// order, properties and counts match the h10-capture fingerprints in
-/// `fixtures/h10-fingerprints/` exactly (180D, 180A, 180F, the `6217ff4b`
-/// vendor service, PMD, FEEE). Initial values mirror the simulator config so
+/// Declarations for the served H10 surface. The canonical UUIDs and captured
+/// fingerprints retain the real strap's `6217ff4b` vendor service, but that
+/// service is intentionally absent here until its measured values and
+/// management behavior are modeled. Initial values mirror the simulator config so
 /// backends that serve reads from the declaration agree with the
 /// event-driven answers in the main loop.
 pub fn h10_services(config: &SimConfig) -> Result<Vec<ServiceSpec>, RadioError> {
@@ -644,25 +692,6 @@ pub fn h10_services(config: &SimConfig) -> Result<Vec<ServiceSpec>, RadioError> 
                 permissions: read(),
                 initial_value: Some(gatt_spec::encode_battery_level(config.battery_percent)),
             }],
-        },
-        ServiceSpec {
-            uuid: parse_uuid(gatt_spec::vendor::SERVICE)?,
-            characteristics: vec![
-                CharSpec {
-                    uuid: parse_uuid(gatt_spec::vendor::READ)?,
-                    properties: vec![CharProperty::Read],
-                    permissions: read(),
-                    // The value is UNCONFIRMED (no capture reads it): an
-                    // explicit empty placeholder, never a guessed payload.
-                    initial_value: Some(Vec::new()),
-                },
-                CharSpec {
-                    uuid: parse_uuid(gatt_spec::vendor::WRITE_INDICATE)?,
-                    properties: vec![CharProperty::WriteWithoutResponse, CharProperty::Indicate],
-                    permissions: write(),
-                    initial_value: None,
-                },
-            ],
         },
         ServiceSpec {
             uuid: parse_uuid(gatt_spec::pmd::SERVICE)?,
@@ -973,6 +1002,8 @@ async fn translate(
                     service: request.service.to_string(),
                     characteristic: request.characteristic.to_string(),
                     value,
+                    device_address: Some(request.client.clone()),
+                    owned_target: None,
                     reply: reply_tx,
                 })
                 .await
@@ -1007,6 +1038,17 @@ mod tests {
     }
 
     #[test]
+    fn subscription_replacement_retires_old_generation_for_queue_fencing() {
+        let characteristic = Uuid::nil();
+        let mut ledger = SubscriptionLedger::new();
+        let old = ledger.subscribe(characteristic);
+        let current = ledger.subscribe(characteristic);
+        assert_ne!(old, current);
+        assert!(!ledger.is_current(characteristic, old));
+        assert!(ledger.is_current(characteristic, current));
+    }
+
+    #[test]
     fn settlement_ids_are_unique_across_drains_and_never_wrap() {
         let mut queue = SendQueue::new(1);
         let send = || QueuedSend {
@@ -1014,6 +1056,7 @@ mod tests {
             service: "test".into(),
             characteristic: Uuid::nil(),
             generation: 1,
+            target: OwnedNotifyTarget::new("AA:AA:AA:AA:AA:AA", 1),
             value: vec![1],
         };
         assert_eq!(queue.push(send()).unwrap(), 1);
@@ -1022,11 +1065,9 @@ mod tests {
         assert_eq!(queue.push(send()).unwrap(), 2);
         assert_eq!(queue.pop().unwrap().id, 2);
         queue.next_id = u64::MAX;
-        assert_eq!(queue.push(send()).unwrap(), u64::MAX);
-        queue.pop();
         assert!(
             queue.push(send()).is_err(),
-            "exhausted correlation identity must fail closed"
+            "the low-range allocator must fail before entering the indication range"
         );
     }
 
@@ -1074,7 +1115,7 @@ mod tests {
     #[test]
     fn h10_surface_matches_the_real_fingerprint_layout() {
         use crate::advertisement::short_uuid;
-        use crate::gatt_spec::{feee, pmd, uuid16, vendor};
+        use crate::gatt_spec::{feee, pmd, uuid16};
         let services = h10_services(&SimConfig::default()).expect("H10 surface builds");
         let uuids: Vec<String> = services
             .iter()
@@ -1086,17 +1127,16 @@ mod tests {
                 short_uuid(uuid16::HEART_RATE_SERVICE).to_string(),
                 short_uuid(uuid16::DEVICE_INFORMATION_SERVICE).to_string(),
                 short_uuid(uuid16::BATTERY_SERVICE).to_string(),
-                vendor::SERVICE.to_lowercase(),
                 pmd::SERVICE.to_lowercase(),
                 short_uuid(uuid16::POLAR_ADV_SERVICE).to_string(),
             ],
-            "service order and set match fixtures/h10-fingerprints (180D, 180A, 180F, 6217ff4b, PMD, FEEE)",
+            "served service order excludes the unmodeled 6217ff4b vendor service",
         );
         let counts: Vec<usize> = services
             .iter()
             .map(|service| service.characteristics.len())
             .collect();
-        assert_eq!(counts, vec![2, 7, 1, 2, 2, 3]);
+        assert_eq!(counts, vec![2, 7, 1, 2, 3]);
         // Device Information lists hardware (0x2A27) before firmware (0x2A26).
         let dis_shorts: Vec<u16> = services[1]
             .characteristics
@@ -1115,14 +1155,9 @@ mod tests {
                 uuid16::SYSTEM_ID,
             ]
         );
-        // The vendor service is read plus write-without-response/indicate.
-        assert_eq!(
-            services[3].characteristics[1].properties,
-            vec![CharProperty::WriteWithoutResponse, CharProperty::Indicate]
-        );
         // The FEEE characteristics follow the PMD base UUID with the
         // fingerprint's write/notify mix.
-        let feee_uuids: Vec<String> = services[5]
+        let feee_uuids: Vec<String> = services[4]
             .characteristics
             .iter()
             .map(|characteristic| characteristic.uuid.to_string().to_lowercase())
@@ -1135,17 +1170,17 @@ mod tests {
                 feee::CHAR_53.to_lowercase(),
             ]
         );
-        assert!(services[5].characteristics[0]
+        assert!(services[4].characteristics[0]
             .properties
             .contains(&CharProperty::WriteWithoutResponse));
-        assert!(services[5].characteristics[0]
+        assert!(services[4].characteristics[0]
             .properties
             .contains(&CharProperty::Notify));
         assert_eq!(
-            services[5].characteristics[1].properties,
+            services[4].characteristics[1].properties,
             vec![CharProperty::Notify]
         );
-        // Seven notify/indicate characteristics carry the seven CCCDs.
+        // Six notify/indicate characteristics carry the six CCCDs.
         let cccd = services
             .iter()
             .flat_map(|service| &service.characteristics)
@@ -1154,7 +1189,7 @@ mod tests {
                     || characteristic.properties.contains(&CharProperty::Indicate)
             })
             .count();
-        assert_eq!(cccd, 7);
+        assert_eq!(cccd, 6);
     }
 
     #[tokio::test]
@@ -1324,6 +1359,7 @@ mod tests {
             service: "svc".to_string(),
             characteristic: Uuid::nil(),
             generation: u64::from(n),
+            target: OwnedNotifyTarget::new("AA:AA:AA:AA:AA:AA", u64::from(n)),
             value: vec![n],
         };
         let mut queue = SendQueue::new(2);
@@ -1338,5 +1374,21 @@ mod tests {
         assert_eq!(queue.pop().expect("fifo").generation, 1);
         assert_eq!(queue.pop().expect("fifo").generation, 2);
         assert!(queue.pop().is_none());
+    }
+
+    #[test]
+    fn send_queue_fails_before_entering_indication_id_range() {
+        let mut queue = SendQueue::new(1);
+        queue.next_id = 1 << 63;
+        assert!(queue
+            .push(QueuedSend {
+                id: 0,
+                service: "svc".to_string(),
+                characteristic: Uuid::nil(),
+                generation: 1,
+                target: OwnedNotifyTarget::new("AA:AA:AA:AA:AA:AA", 1),
+                value: vec![1],
+            })
+            .is_err());
     }
 }

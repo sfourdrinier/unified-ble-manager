@@ -13,6 +13,7 @@ mod gatt_spec;
 mod linux_advertising;
 mod mgmt;
 mod profile;
+mod psftp;
 mod radio;
 mod sample_clock;
 mod sim;
@@ -725,7 +726,12 @@ async fn serve(
     wait_powered(&mut radio, &mut log).await?;
     select_linux_advertising(&mut radio, linux_advertising, &mut log)?;
 
-    for service in h10_services(&sim.config).map_err(|error| error.to_string())? {
+    let services = h10_services(&sim.config).map_err(|error| error.to_string())?;
+    let registered_service_uuids: Vec<String> = services
+        .iter()
+        .map(|service| service.uuid.to_string())
+        .collect();
+    for service in services {
         radio
             .add_service(&service)
             .await
@@ -733,7 +739,7 @@ async fn serve(
     }
     log.log(
         "services-registered",
-        json!({"services": ["180D", "180A", "180F", "6217ff4b", "PMD", "FEEE"]}),
+        json!({"services": registered_service_uuids}),
     );
 
     if let Err(message) = start_advertising(&mut radio, &sim, &mut log).await {
@@ -786,6 +792,7 @@ async fn serve(
     let mut next_ecg = Instant::now();
     let mut ecg_runtime = None;
     let mut acc_runtime = None;
+    let mut psftp_session = psftp::Session::new();
     let mut next_battery = Instant::now() + Duration::from_secs(60);
     let mut last_tick = Instant::now();
     let boot = Instant::now();
@@ -851,7 +858,7 @@ async fn serve(
                 drain_indications(&mut radio, &mut sim, &mut log).await;
             }
             Some(event) = radio_rx.recv() => {
-                handle_radio(event, &mut radio, &mut sim, &mut timing, &mut log, boot_epoch_ns).await;
+                handle_radio(event, &mut radio, &mut sim, &mut timing, &mut log, &mut psftp_session, boot_epoch_ns).await;
             }
             Some(request) = control_rx.recv() => {
                 handle_control(request, &mut radio, &mut sim, &mut log).await;
@@ -1303,12 +1310,21 @@ async fn handle_radio(
     sim: &mut SimState,
     timing: &mut timing::TimingRuntime,
     log: &mut EventLog,
+    psftp_session: &mut psftp::Session,
     _boot_epoch_ns: u64,
 ) {
     match event {
         RadioEvent::Powered(powered) => {
             if !powered {
                 sim.reset_pmd_session();
+                psftp_session.reset();
+                let psftp = psftp::wire_characteristic();
+                if let Err(error) = radio.drop_subscription(psftp).await {
+                    log.log(
+                        "psftp-subscription-reset-failed",
+                        json!({"reason": error.to_string()}),
+                    );
+                }
                 log.log_simple("pmd-session-ended");
             }
             log.log("powered", json!({"on": powered}));
@@ -1318,12 +1334,11 @@ async fn handle_radio(
             characteristic,
             subscribed,
         } => {
+            if characteristic.eq_ignore_ascii_case(gatt_spec::feee::CHAR_51) {
+                psftp_session.reset();
+            }
             sim.observe_subscription(&characteristic, subscribed);
-            if !subscribed
-                && (characteristic.eq_ignore_ascii_case(gatt_spec::pmd::DATA)
-                    || characteristic.eq_ignore_ascii_case(gatt_spec::pmd::CONTROL_POINT))
-            {
-                sim.reset_pmd_session();
+            if !subscribed && characteristic.eq_ignore_ascii_case(gatt_spec::pmd::DATA) {
                 log.log("pmd-session-ended", json!({"reason": "final-pmd-subscription-ended", "characteristic": characteristic}));
             }
             log.log(
@@ -1364,10 +1379,24 @@ async fn handle_radio(
         RadioEvent::IndicationConfirmed {
             service,
             characteristic,
+            receipt_id,
+            generation,
         } => {
             log.log(
                 "indication-confirmed",
-                json!({"service": service, "characteristic": characteristic}),
+                json!({"service": service, "characteristic": characteristic, "receiptId": receipt_id, "generation": generation}),
+            );
+        }
+        RadioEvent::IndicationUnconfirmed {
+            service,
+            characteristic,
+            receipt_id,
+            generation,
+            reason,
+        } => {
+            log.log(
+                "indication-unconfirmed",
+                json!({"service": service, "characteristic": characteristic, "receiptId": receipt_id, "generation": generation, "reason": reason}),
             );
         }
         RadioEvent::Read {
@@ -1405,10 +1434,25 @@ async fn handle_radio(
             service,
             characteristic,
             value,
+            device_address,
+            owned_target,
             reply,
         } => {
             let uuid = Uuid::parse_str(&characteristic).unwrap_or_else(|_| Uuid::nil());
-            let accepted = write_request(radio, sim, timing, log, &service, &uuid, &value).await;
+            let accepted = if psftp::is_wire_request(uuid) {
+                handle_psftp_write(
+                    radio,
+                    log,
+                    psftp_session,
+                    &service,
+                    &value,
+                    device_address.as_deref(),
+                    owned_target.as_ref(),
+                )
+                .await
+            } else {
+                write_request(radio, sim, timing, log, &service, &uuid, &value).await
+            };
             log.log(
                 "write",
                 json!({"service": service, "characteristic": characteristic, "len": value.len(), "accepted": accepted}),
@@ -1451,7 +1495,7 @@ async fn write_request(
     let control_point =
         Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
     if *uuid != control_point {
-        // Writable vendor characteristics (6217ff4d, FEEE 0x51/0x53) have no
+        // Writable vendor characteristics (6217ff4d, FEEE 0x53) have no
         // behaviour model: the write is refused loudly, never absorbed.
         let reason = if sim.vendor_writable(uuid) {
             "unmodeled-vendor-write"
@@ -1543,6 +1587,70 @@ async fn write_request(
             log.log(
                 "write-rejected",
                 json!({"service": service, "reason": "malformed-pmd-command"}),
+            );
+            false
+        }
+    }
+}
+
+async fn handle_psftp_write(
+    radio: &mut PlatformRadio,
+    log: &mut EventLog,
+    session: &mut psftp::Session,
+    service: &str,
+    value: &[u8],
+    device_address: Option<&str>,
+    target: Option<&radio::OwnedNotifyTarget>,
+) -> bool {
+    let Some(target) = target else {
+        log.log(
+            "psftp-response-dropped",
+            json!({"reason": "exact D2H writer identity is unavailable", "deviceAddress": device_address}),
+        );
+        session.reset();
+        return false;
+    };
+    match session.ingest_for(target, value) {
+        Ok(None) => {
+            log.log(
+                "psftp-fragment",
+                json!({"service": service, "len": value.len()}),
+            );
+            true
+        }
+        Ok(Some(request)) => {
+            let d2h = psftp::wire_response_characteristic();
+            let response = psftp::not_implemented_response().to_vec();
+            log.log(
+                "psftp-request",
+                json!({"service": service, "requestBytes": request.len(), "status": 201, "responseBytes": response.len()}),
+            );
+            match radio.notify_to(d2h, response, target.clone()).await {
+                Ok(SendOutcome::OsAccepted) | Ok(SendOutcome::Queued { .. }) => true,
+                Ok(SendOutcome::NotSubscribed) => {
+                    log.log(
+                        "psftp-response-dropped",
+                        json!({"reason": "D2H characteristic is not subscribed"}),
+                    );
+                    false
+                }
+                Ok(SendOutcome::Failed(reason)) => {
+                    log.log("psftp-response-dropped", json!({"reason": reason}));
+                    false
+                }
+                Err(error) => {
+                    log.log(
+                        "psftp-response-dropped",
+                        json!({"reason": error.to_string()}),
+                    );
+                    false
+                }
+            }
+        }
+        Err(error) => {
+            log.log(
+                "psftp-frame-rejected",
+                json!({"error": format!("{error:?}")}),
             );
             false
         }
@@ -1994,6 +2102,40 @@ async fn stale_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn psftp_request_and_response_use_feee_char51_wire_route() {
+        let services = h10_services(&SimConfig::default()).expect("H10 surface builds");
+        let feee = services
+            .iter()
+            .find(|service| {
+                service.uuid == advertisement::short_uuid(gatt_spec::uuid16::POLAR_ADV_SERVICE)
+            })
+            .expect("Polar FEEE service");
+        let char51 = feee
+            .characteristics
+            .iter()
+            .find(|characteristic| {
+                characteristic
+                    .uuid
+                    .to_string()
+                    .eq_ignore_ascii_case(gatt_spec::feee::CHAR_51)
+            })
+            .expect("FEEE CHAR_51");
+        assert!(char51.properties.contains(&radio::CharProperty::Write));
+        assert!(char51
+            .properties
+            .contains(&radio::CharProperty::WriteWithoutResponse));
+        assert!(char51.properties.contains(&radio::CharProperty::Notify));
+
+        let char52 = Uuid::parse_str(gatt_spec::feee::CHAR_52).expect("CHAR_52");
+        let char53 = Uuid::parse_str(gatt_spec::feee::CHAR_53).expect("CHAR_53");
+        assert_eq!(psftp::wire_characteristic(), char51.uuid);
+        assert!(psftp::is_wire_request(char51.uuid));
+        assert!(!psftp::is_wire_request(char52));
+        assert!(!psftp::is_wire_request(char53));
+        assert_eq!(psftp::wire_response_characteristic(), char51.uuid);
+    }
 
     struct EcgRadio {
         capacity: Result<Option<usize>, String>,

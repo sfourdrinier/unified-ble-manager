@@ -2,6 +2,30 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.1] - 2026-10-08
+
+- Fix Expo Android readiness to use live native location-services and legacy
+  permission observations on every probe, including Fire TV/API 24–30, while
+  retaining fail-closed rebuild behavior for `legacyLocation: 'none'`.
+- Request coarse/fine location alongside Bluetooth permissions on Android API
+  31+ when the explicit `legacyLocation: 'required'` policy requires them.
+
+- Retain failed React Native subscription and database cleanup ownership across
+  disconnect retries, including after the native link releases, rather than
+  discarding failed children or reporting their owner fully released.
+
+- Include canonical origin peer references in React Native RustCore scan
+  observations, avoiding an extra peer-directory query before consumers can
+  present and retain a discovered device.
+- Reconcile an exceptional React Native scan-stop invalid-state after native
+  lifetime expiry, confirming exact absent membership before settling release
+  while retaining active membership and reconciliation failures for retry.
+- Scope Android compatibility deprecations to the required legacy OS routes
+  while preserving modern presence callbacks and typed chooser results.
+- Harden the Linux H10 simulator indication lifecycle and confirmation
+  receipts without changing notify-only waveform delivery. The simulator is
+  a test tool and is not included in the published package.
+
 ## [5.0.0] - 2026-10-08
 
 - Stabilize the documented 5.0 bytes-first public package/API, with explicit

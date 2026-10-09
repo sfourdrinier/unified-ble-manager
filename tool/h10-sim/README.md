@@ -19,6 +19,38 @@ Keep JSON stdout and diagnostic stderr in separate retained files when collectin
 qualification evidence. An installed connectable advertising instance is not
 proof it is currently on air: an existing connection can suspend transmission.
 
+### Linux indication backend safety
+
+The Linux backend keeps high-rate notify-only characteristics on bluer's
+low-overhead `CharacteristicNotifyMethod::Io` path. The PMD control point is
+indication-only and uses the supported `CharacteristicNotifyMethod::Fun` path.
+Each indication session owns one bounded capacity-one lane and waits for the
+notifier's actual ATT confirmation without sharing the notify pump. Queue
+admission is reported separately from confirmation; `indication-confirmed` is
+emitted only after bluer confirms the value and includes the indication receipt
+and generation when the Fun lane can provide them. Unsubscribe, a stopped
+notifier, and a late old generation close the lane; admitted values that never
+reach confirmation emit the typed `indication-unconfirmed` terminal event with
+the receipt, generation, and reason. They cannot retire a replacement
+subscription.
+
+Indication admission is persistent-close guarded: once a lane closes, a later
+or racing enqueue is rejected. Receipt IDs are allocated once for the entire
+Linux radio lifetime from a checked high range; the normal notify queue uses
+only low IDs and both allocators fail closed on exhaustion. Fatal retirement
+also snapshots queued, in-flight, and accepted-awaiting-confirmation
+indication receipts. Because the existing retirement trait is synchronous, its
+evidence explicitly records that owned task cancellation could not be awaited;
+it never reports that cleanup as complete.
+
+This is required for BlueZ 5.85. The old IO path retained a raw notify callback
+user-data pointer to an acquired socket after CCC unsubscribe: `gatt-database.c`
+could free the IO object while the late ATT confirmation watcher still referred
+to it, producing the observed `g_io_create_watch -> watch_new` negative
+refcount crash (`/tmp/ubm501-bluez-ddeb-backtrace.log`). The simulator therefore
+does not use IO for indication-only sessions and does not claim confirmation
+when only queue admission or OS acceptance is known.
+
 A test tool (not part of the published package) that impersonates a Polar H10
 strap so the shared driver scenarios (`examples-shared/driver/scenarios`:
 `h10-stream`, `device-info`, `mtu`, `ecg`, `link-loss`, `background`,
@@ -140,16 +172,26 @@ variance.
 |                           | `2A38` body sensor location: chest (`1`)                                                                                                                                                                                               | read                             |
 | Device Information `180A` | `2A29` manufacturer `Polar Electro Oy`, `2A24` model `H10`, `2A25` serial, `2A27` hardware, `2A26` firmware, `2A28` software, `2A23` system id (hardware before firmware, like the strap; every string NUL-terminated, like the strap) | read                             |
 | Battery `180F`            | `2A19` level (default 90%, the captured charge state)                                                                                                                                                                                  | read, notify (60 s)              |
-| Polar vendor `6217FF4B-…` | `6217FF4C-…` readable (value UNCONFIRMED, served empty)                                                                                                                                                                                | read                             |
-|                           | `6217FF4D-…`: write-command, indications (no behaviour model: writes are refused loudly, nothing is ever indicated)                                                                                                                    | write-without-response, indicate |
 | Polar PMD `FB005C80-…`    | `FB005C81` control point: read returns features (ECG + ACC, the strap's exact 17 bytes); write `0x01` get-settings / `0x02` start / `0x03` stop, each answered with an indicate `[0xF0, op, type, status, more, params…]`              | read, write, indicate            |
 |                           | `FB005C82` data: ECG frames, up to 73 samples by default at 130 Hz (capacity-limited packets, ~561.6 ms dispatch cadence, signed 24-bit LE µV, recorded strap data by default); independently started ACC frames (signed 16-bit XYZ milli-g) on the same characteristic | notify                           |
-| Polar `FEEE`              | `FB005C51-…` (write, write-command, notify), `FB005C52-…` (notify), `FB005C53-…` (write, write-command): no behaviour model, writes refused loudly, nothing ever notified                                                              | mixed                            |
+| Polar `FEEE`              | `FB005C51-…` (write, write-command, notify): RFC76 requests are parsed and completed requests receive the negative `NOT_IMPLEMENTED(201)` RFC77 response on this same characteristic; `FB005C52-…` is a separate asynchronous notification channel and is not used for PSFTP responses; `FB005C53-…` is the separate asynchronous H2D notification channel and writes are refused loudly | mixed                            |
 
-Services, their order and the characteristic counts/properties match the
-captured strap fingerprints in `fixtures/h10-fingerprints/` exactly
-(`180D`, `180A`, `180F`, `6217FF4B`, PMD, `FEEE`; seven CCCDs). Indication
-confirmations keep the subscription session up: BlueZ reports each
+PSFTP routing follows the Polar SDK's `BlePsFtpClient`: request writes and
+responses both use FEEE `FB005C51` (RFC76/RFC77). The simulator captures the
+exact native peer and live subscription generation for that `.51` writer before
+parsing, so a stale or foreign fragment cannot complete a request or receive a
+response. The implementation deliberately does not fabricate file data:
+completed requests answer only with `NOT_IMPLEMENTED(201)`. FEEE `.52` and
+`.53` remain separate asynchronous notification channels and are not supported
+as PSFTP request/response routes.
+
+The served surface intentionally omits the captured strap's `6217FF4B`
+vendor service: its read value is unconfirmed and its management protocol is
+unsupported. The canonical UUID constants and real fingerprints remain in
+`fixtures/h10-fingerprints/` so strict comparison reports this explicit gap;
+the simulator does not advertise an empty placeholder or claim support.
+The served surface has five services and six CCCDs. Indication confirmations
+keep the subscription session up: BlueZ reports each
 confirmation on the notify file descriptor, and only a closed descriptor ends
 the session (logged as `indication-confirmed` vs `unsubscribed`).
 
@@ -800,8 +842,8 @@ install` / `systemctl enable --now` commands and how to remove it.
   protocol (parsing/validation, token gate over an in-memory duplex,
   bind refusal), the advertisement budget (names plus manufacturer-data
   sizes), the defaulted radio-trait methods, the H10 service layout against
-  the fingerprints (service order, DIS order, vendor/FEEE properties, seven
-  CCCDs), the driver hello/decode shapes,
+  the fingerprints (service order, DIS order, modeled FEEE properties, six
+  CCCDs; PFC remains an explicit strict-fidelity gap), the driver hello/decode shapes,
   the timing model (seeded sampling, fingerprint loading, UNCONFIRMED
   placeholders, checked-in unconfirmed + measured profiles, ECG jitter
   recentering), the fingerprint comparator
@@ -816,7 +858,7 @@ install` / `systemctl enable --now` commands and how to remove it.
   diagnosis and the stale-instance record and cleanup decision — all pure,
   so they run on macOS too — and — Linux only, no radio needed — the
   `bluer` GATT application
-  declaration (6 services, characteristic counts, control-point
+  declaration (5 served services, characteristic counts, control-point
   read/write/indicate flags, write-without-response flags, read/write flags
   following each declared property and permission with no encryption flags,
   a read without the Readable permission refused with `NotPermitted` before
@@ -859,9 +901,10 @@ install` / `systemctl enable --now` commands and how to remove it.
 - No PPG/PPI or offline-recording streams. ACC has SDK-backed settings and
   encoding but synthetic data; its batching, timing, compression and precise
   malformed-command status precedence are not qualified against a real H10.
-  The vendor `6217ff4c` value
-  and the FEEE characteristics' payloads are likewise UNCONFIRMED (empty /
-  refused loudly, never guessed).
+  The captured `6217ff4b` vendor service is not served: its `6217ff4c` read
+  value is unconfirmed and its management behavior is unsupported. Direct
+  vendor reads return no modeled value, while direct writes are refused
+  loudly. The FEEE characteristics' payloads are likewise UNCONFIRMED.
 - Recorded ECG and HR replay cycle one strap session (~25 s ECG, 120 HR
   packets); the synthetic serial stays (`SIM000001`), and 130 Hz is the only
   ECG rate (ACC has its own negotiated sample rate).
@@ -985,7 +1028,7 @@ central's own answers and are never synthesized.
 | Battery uint8 percent; DIS strings UTF-8 with trailing NUL; System ID 8 bytes                                                                                                                                                                     | SIG BAS 1.1 §3.2; SIG DIS 1.1 + `fixtures/h10-fingerprints/` (`src/gatt_spec.rs`)                                                                                                                          |
 | PMD response `[0xF0, op, type, status, more, params…]`, ECG frames `[0x00, tsNs u64 LE, 0x00, s24 LE µV]`, 130 Hz / 14 bit, 73-sample frames, settings TLV, status codes                                                                          | Polar BLE SDK `BlePMDClient` / `PmdControlPointResponse` / `PmdDataFrame` / `PmdSetting` / `PmdMeasurementType` (`src/gatt_spec.rs`, `examples-shared/driver/polar-pmd.ts`) + `fixtures/h10-fingerprints/` |
 | H10 ACC 25/50/100/200 Hz × ±2/4/8 G, 16-bit XYZ milli-g, raw type-1 frame and last-sample timestamp                                                                                                                                               | Pinned Polar SDK product specification, online measurement protocol, `AccDataTest.kt` and maintainer settings recipe linked above; no retained real-H10 ACC capture                                        |
-| GATT database (services, counts, properties, DIS hardware-before-firmware order, seven CCCDs), PMD feature bytes (`0f0500…`, 17 bytes, ECG + ACC), `ALREADY_IN_STATE` on repeated start / idle stop, indication confirmations keeping the session | h10-capture fingerprints `fixtures/h10-fingerprints/` (all three capture hosts agree)                                                                                                                      |
+| GATT database (served services, counts, properties, DIS hardware-before-firmware order, six CCCDs; missing `6217FF4B` is an explicit fidelity gap), PMD feature bytes (`0f0500…`, 17 bytes, ECG + ACC), `ALREADY_IN_STATE` on repeated start / idle stop, indication confirmations keeping the session | h10-capture fingerprints `fixtures/h10-fingerprints/` (all three capture hosts agree)                                                                                                                      |
 | Advertisement: Flags + 16-bit UUID list in AD, name in scan response, Polar company `0x006B`                                                                                                                                                      | BlueZ 5.72 `src/advertising.c` layout (`src/advertisement.rs`) + `fixtures/h10-fingerprints/`                                                                                                              |
 | HR interval (p50 993 ms), PMD response (p50 994 ms), ECG frame jitter (spread 0.009 ms around the 73/130 s cadence), advertising interval (p50 1042 ms)                                                                                           | Tauri capture `timings.*` / `advertisement.*` — **all four CONFIRMED** in `profiles/timing-h10-measured.json`                                                                                              |
 

@@ -49,7 +49,10 @@ pub mod pmd {
 /// Full 128-bit UUIDs of the second Polar vendor service and its two
 /// characteristics, pinned by the h10-capture fingerprints in
 /// `fixtures/h10-fingerprints/` (each characteristic has its own base UUID).
+#[allow(dead_code)]
 pub mod vendor {
+    /// Canonical real-device service UUID retained for fingerprints and future
+    /// measured implementation; the unmodeled service is not currently served.
     pub const SERVICE: &str = "6217FF4B-FB31-1140-AD5A-A45545D7ECF3";
     pub const READ: &str = "6217FF4C-C8EC-B1FB-1380-3AD986708E2D";
     pub const WRITE_INDICATE: &str = "6217FF4D-91BB-91D0-7E2A-7CD3BDA8A1F3";

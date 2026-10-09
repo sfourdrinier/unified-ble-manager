@@ -10,6 +10,8 @@ export interface NativeExpoRuntimeConfiguration {
   platform: NativeExpoRuntimePlatform
   configurationDigest: string
   legacyLocationPolicy?: NativeExpoLegacyLocationPolicy
+  androidLocationServicesEnabled?: boolean
+  androidLocationPermissionGranted?: boolean
 }
 
 export interface NativeExpoPermissionRequest {

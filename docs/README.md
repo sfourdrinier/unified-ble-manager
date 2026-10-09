@@ -126,6 +126,7 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 | Document                                                                                                     | What it is                                                            | Status     |
 | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- | ---------- |
 | [`review/RC21_REMEDIATION.md`](review/RC21_REMEDIATION.md)                                                   | PR #251 second-review remediation and verification ledger             | Current    |
+| [`review/FIRETV_READINESS_FIX.md`](review/FIRETV_READINESS_FIX.md)                                           | Android legacy location readiness correction and scoped evidence      | Current    |
 | [`review/RC21_END_TO_END_AUDIT.md`](review/RC21_END_TO_END_AUDIT.md)                                         | Source reread and scope of the final combined verification            | Current    |
 | [`review/RC21_BLUEZ_LIVE_QUALIFICATION_PLAN.md`](review/RC21_BLUEZ_LIVE_QUALIFICATION_PLAN.md)               | Prepared lab daemon activation, rollback and live-test scope          | Current    |
 | [`review/rc21-round3/VERIFICATION.md`](review/rc21-round3/VERIFICATION.md)                                   | Immutable round-three independent finding verification                | Historical |

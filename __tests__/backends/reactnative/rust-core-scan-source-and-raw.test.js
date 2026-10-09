@@ -3,6 +3,37 @@ const { DEFAULT_PEER } = require('../../../test-support/react-native/determinist
 const { createReactNativeBleManagerWithEnvironment } = require('../../../src/react-native-manager')
 const { createPublicBleManager } = require('../../../src/public/ble-manager')
 
+test('public scan observations carry a resolvable origin peer reference', async () => {
+  const h = rustCoreHarness({ platform: 'android' })
+  const internal = await createReactNativeBleManagerWithEnvironment(environment(h))
+  const manager = await createPublicBleManager(internal, () => 1000)
+  const scan = await manager.scan({ duplicates: 'all' })
+  const iterator = scan.observations[Symbol.asyncIterator]()
+
+  try {
+    const pending = iterator.next()
+    h.native.emitAdvertisement(DEFAULT_PEER)
+    const item = await pending
+    const observedPeer = item.value.value.peer
+
+    expect(observedPeer.reference).toEqual({
+      version: 1,
+      backendId: 'unified-ble:react-native-android',
+      scope: 'origin',
+      opaqueId: DEFAULT_PEER
+    })
+    await expect(manager.peers.resolve(observedPeer.reference, { deadline: 1500 })).resolves.toMatchObject({
+      id: observedPeer.id,
+      reference: observedPeer.reference,
+      name: observedPeer.name
+    })
+  } finally {
+    await iterator.return()
+    await scan.stop()
+    await manager.destroy()
+  }
+})
+
 test.each([true, false])('public raw opt-in is owned, truthful, and optional: %s', async includeRawAdvertisement => {
   const h = rustCoreHarness({ platform: 'android' })
   const internal = await createReactNativeBleManagerWithEnvironment(environment(h, { now: () => 20000 }))

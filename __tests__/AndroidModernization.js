@@ -42,9 +42,9 @@ describe('Android RN 0.86 unified protocol boundary', () => {
   test('uses the current Android Gradle DSL without changing configured SDK semantics', () => {
     const buildGradle = read('android/build.gradle')
 
-    expect(buildGradle).toContain('compileSdk getExtOrIntegerDefault("compileSdkVersion")')
-    expect(buildGradle).toContain('minSdk getExtOrIntegerDefault("minSdkVersion")')
-    expect(buildGradle).toContain('targetSdk getExtOrIntegerDefault("targetSdkVersion")')
+    expect(buildGradle).toContain('compileSdk = getExtOrIntegerDefault("compileSdkVersion")')
+    expect(buildGradle).toContain('minSdk = getExtOrIntegerDefault("minSdkVersion")')
+    expect(buildGradle).toContain('targetSdk = getExtOrIntegerDefault("targetSdkVersion")')
     expect(buildGradle).toContain('lint {')
     expect(buildGradle).toContain('prefab = true')
     expect(buildGradle).not.toContain('compileSdkVersion getExtOrIntegerDefault')
