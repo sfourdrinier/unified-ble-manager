@@ -74,7 +74,7 @@ describe('API report generator signatures', () => {
     const readFile = host.readFile.bind(host)
     host.readFile = name => {
       const content = readFile(name)
-      return name === fixture && content !== undefined
+      return path.normalize(name) === path.normalize(fixture) && content !== undefined
         ? content.replaceAll('firstUnique', 'replacementUnique')
         : content
     }
