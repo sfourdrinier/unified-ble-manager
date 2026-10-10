@@ -110,6 +110,8 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 
 ## Platform support, evidence, and performance
 
+| [`evidence/recording-group-commit-2026-10-10.md`](evidence/recording-group-commit-2026-10-10.md) | Recording group commit regressions and local slow-sync startup reproduction; hosted qualification remains separate | Historical |
+
 | Document                                                                                                               | What it is                                                                                         | Status     |
 | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ---------- |
 | [`PLATFORMS.md`](PLATFORMS.md)                                                                                         | Platform support as an evidence index — label definitions, not a static matrix                     | Current    |

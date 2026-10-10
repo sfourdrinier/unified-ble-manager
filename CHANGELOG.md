@@ -37,6 +37,38 @@ All notable changes to `unified-ble-manager` are documented here.
   reservation, including when link invalidation arrives before caller rebinding.
   Releases remain admitted; stale work reports `backend.reset` without native I/O.
 
+- Commit durable recording values already held by the native host in one
+  bounded SQLite transaction (at most 32 per synced commit) instead of one
+  transaction per value. The per-commit cost, not the value count, bounded
+  sustained intake: a setup acknowledgement queued behind a recording backlog
+  could exceed its command deadline on a slow-sync filesystem even though nothing
+  was lost. The pump never waits to fill a group. Each normal session pass commits
+  at most one value group across routes, rotating fairly and releasing the route
+  lock between passes; terminal controls retain their separate commits. Lifecycle
+  collection and disposal preserve earlier values before their terminal.
+  Journal rows, ordinals, the record-capacity
+  cut and observation order are unchanged: a capacity cut commits the sequential
+  accepted prefix and one first-refusal loss marker atomically. The journal
+  counts that first refusal; the route terminal separately accounts for all
+  other already-polled values refused from the group.
+  A storage failure now rolls the whole group back, accepts none of it and
+  observes none of it, and the route terminal's dropped items and bytes count
+  every polled value that was not committed. A refusal reports its atomic cause,
+  so a later seal cannot turn queue overflow into an already-counted cutoff.
+  Refused disposal-tail values after an existing terminal emit an explicit
+  notification ingress-drop count instead of disappearing. Native build
+  identities change with this fix.
+
+- Give the restored-session test's initial setup-write wait the native connect
+  and discovery startup allowance. A slow-sync reproduction exceeded its old
+  three-second fixture limit before ATT setup began. Production and subsequent
+  two-second setup/intake deadlines are unchanged; hosted Windows still qualifies
+  the frozen candidate independently.
+
+- Report simulator advertising registration from the radio on state queries and
+  after injected disconnects. Failed reads remain explicit unknown outcomes;
+  registration is never presented as controller on-air evidence.
+
 ## [5.0.1] - 2026-10-08
 
 - Fix Expo Android readiness to use live native location-services and legacy

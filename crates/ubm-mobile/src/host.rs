@@ -117,12 +117,79 @@ pub(crate) struct PeerInfo {
 pub(crate) type StreamEnd = (&'static str, u64, u64);
 
 /// Result of draining one notification route for a bounded pump turn.
+/// `committed` means at least one polled group reached the session's outbox
+/// (admitted or refused), which is the cost a scope turn must not repeat.
 enum RouteDrain {
     /// The route is still installed. `pending` means the budget stopped the
     /// drain while the core still holds values.
-    Live { taken: usize, pending: bool },
-    /// The route reached a terminal answer after `taken` admitted values.
-    Ended { taken: usize, terminal: StreamEnd },
+    Live { committed: bool, pending: bool },
+    /// The route reached a terminal answer.
+    Ended {
+        committed: bool,
+        terminal: StreamEnd,
+    },
+}
+
+impl RouteDrain {
+    fn committed(&self) -> bool {
+        match self {
+            Self::Live { committed, .. } | Self::Ended { committed, .. } => *committed,
+        }
+    }
+}
+
+/// What ended one poll run of a value group, applied only after the values
+/// polled before it are committed.
+#[derive(Clone, Copy)]
+enum PollEnd {
+    /// The group is full; the core may still hold more.
+    Full,
+    Empty,
+    Ended(StreamEnd),
+}
+
+/// The terminal a refused value group ends its route with. Every polled value
+/// the group could not admit is counted once, together with the core's own
+/// terminal loss when it answered in the same poll run. `None` means only the
+/// cutoff value of a journal that stopped under the group was refused: it is
+/// counted in the handoff cutoff, not in a stream terminal, exactly as the
+/// next turn's poll would have refused later values.
+fn refusal_terminal(
+    rejected: &ubm_desktop::continuation_outbox::DataBatchRejection,
+    core: Option<StreamEnd>,
+) -> Option<StreamEnd> {
+    use ubm_desktop::continuation_outbox::DataIngressFailure as Failure;
+    let (core_items, core_bytes) = core.map_or((0, 0), |(_, items, bytes)| (items, bytes));
+    match rejected.failure {
+        // A full queue, or sealed before this group (the cutoff counted every
+        // value): the terminal reports them as overflow.
+        Failure::Overflow { .. } | Failure::Sealed { .. } => Some((
+            "overflow",
+            rejected.items.saturating_add(core_items),
+            rejected.bytes.saturating_add(core_bytes),
+        )),
+        // The session's journal failure retains the precise storage cause;
+        // closed is the frozen wire lifecycle name, never a fabricated queue
+        // overflow.
+        Failure::Storage { .. } => Some((
+            "closed",
+            rejected.items.saturating_add(core_items),
+            rejected.bytes.saturating_add(core_bytes),
+        )),
+        Failure::Stopped { bytes: cutoff } => {
+            let later = rejected.items.saturating_sub(1);
+            (later > 0).then(|| {
+                (
+                    "overflow",
+                    later.saturating_add(core_items),
+                    rejected
+                        .bytes
+                        .saturating_sub(cutoff as u64)
+                        .saturating_add(core_bytes),
+                )
+            })
+        }
+    }
 }
 
 enum HostSignal {
@@ -160,11 +227,14 @@ const SIGNALS_CAP: usize = 1024;
 /// the marker for another turn.
 const VALUE_SCOPE_BATCH: usize = 32;
 
-/// Journaled records one scope may admit during that same turn. Each record
-/// is its own committed SQLite transaction on the pump, so an unbounded
-/// drain holds every already-queued security and lifecycle signal until the
-/// whole backlog has been written.
-const VALUE_RECORD_BATCH: usize = 1;
+/// Journaled records one scope turn may commit, which is also the most one
+/// synced SQLite commit carries. The pump groups only values the core already
+/// holds, never waiting to fill a group, so a commit costs one sync chain
+/// instead of one per record. A scope turn commits at most one such group
+/// across all of its routes, then yields: an unbounded drain, or one group per
+/// route, would hold every already-queued security and lifecycle signal until
+/// the whole backlog had been written.
+const VALUE_RECORD_BATCH: usize = ubm_desktop::continuation_journal::APPEND_BATCH_MAX;
 
 /// One advertisement turn must yield to queued lifecycle/deadline markers.
 const ADVERTISEMENT_BATCH: usize = 32;
@@ -546,6 +616,10 @@ pub(crate) struct HostInner {
     /// Release builds omit it.
     #[cfg(debug_assertions)]
     route_turns: Mutex<Vec<String>>,
+    /// The consumers whose group each value scope turn committed, in order.
+    /// Debug tests read it. Release builds omit it.
+    #[cfg(debug_assertions)]
+    scope_turns: Mutex<Vec<Vec<String>>>,
     pub scan: tokio::sync::Mutex<ScanShare>,
     pub scan_members: Mutex<BTreeMap<u64, ScanMember>>,
     pub routes: Mutex<HashMap<InstanceKey, Vec<Route>>>,
@@ -991,7 +1065,7 @@ impl HostInner {
                 // leftovers requeue the marker for another turn.
                 let batch = self.signals.take_value_batch(VALUE_SCOPE_BATCH);
                 for scope in &batch {
-                    if self.flush_scope(scope, VALUE_RECORD_BATCH).await {
+                    if self.flush_scope(scope).await {
                         self.signals.push_value(scope.clone());
                     }
                 }
@@ -1144,40 +1218,74 @@ impl HostInner {
         })
     }
 
-    /// Move up to `limit` values the core holds for `scope` into the owning
-    /// sessions' outboxes, ending streams on terminal answers.
+    /// One value turn for `scope`: commit at most one already-polled group of
+    /// [`VALUE_RECORD_BATCH`] values, from the first route that holds any, and
+    /// end streams on terminal answers. Routes without a value are searched
+    /// without committing anything.
     ///
-    /// Returns whether the core still holds values for a live route, or a
-    /// later route was not visited because the budget was spent. The caller
-    /// requeues the scope so a queued control signal can run first.
-    async fn flush_scope(&self, scope: &InstanceKey, limit: usize) -> bool {
-        let mut remaining = limit;
-        for route in self.live_routes(scope) {
-            if remaining == 0 {
-                return true;
+    /// Returns whether more work remains for the scope: the committing route
+    /// may hold more values, or later routes were not visited. The caller
+    /// requeues the scope so a queued security or lifecycle signal runs
+    /// before the next commit.
+    async fn flush_scope(&self, scope: &InstanceKey) -> bool {
+        #[cfg(debug_assertions)]
+        let counted = {
+            let mut turns = lock(&self.scope_turns);
+            let room = turns.len() < 1024;
+            if room {
+                turns.push(Vec::new());
             }
-            match self.drain_route(&route, remaining).await {
-                // A full budget must not pin the next turn to this same
-                // route. Later consumers of the scope would never be polled
-                // while this one still has a backlog, and their core queues
-                // can overflow. The busy route goes to the back; the scope
-                // is requeued so a security or lifecycle signal runs first.
-                RouteDrain::Live { pending: true, .. } => {
-                    self.rotate_route_to_end(scope, &route);
-                    return true;
+            room
+        };
+        let routes = self.live_routes(scope);
+        for (index, route) in routes.iter().enumerate() {
+            let unvisited = index + 1 < routes.len();
+            let drain = self.drain_route(route, VALUE_RECORD_BATCH).await;
+            let committed = drain.committed();
+            #[cfg(debug_assertions)]
+            if committed
+                && counted
+                && let Some(turn) = lock(&self.scope_turns).last_mut()
+            {
+                turn.push(route.consumer.clone());
+            }
+            match drain {
+                // Nothing to commit: look at the next consumer.
+                RouteDrain::Live { pending, .. } if !committed && !pending => {}
+                // The committed route goes to the back so the next turn
+                // starts at a consumer this one did not serve. Otherwise a
+                // route with a standing backlog would be the first one
+                // polled every turn, and later consumers of the scope would
+                // never be polled while their core queues overflow.
+                RouteDrain::Live { pending, .. } => {
+                    self.rotate_route_to_end(scope, route);
+                    return pending || unvisited;
                 }
-                RouteDrain::Live {
-                    taken,
-                    pending: false,
-                } => remaining = remaining.saturating_sub(taken),
-                RouteDrain::Ended { taken, terminal } => {
-                    remaining = remaining.saturating_sub(taken);
-                    self.mark_ended(scope, &route, terminal);
-                    self.end_route(&route, terminal);
+                RouteDrain::Ended { terminal, .. } => {
+                    self.mark_ended(scope, route, terminal);
+                    self.end_route(route, terminal);
+                    if committed {
+                        return unvisited;
+                    }
                 }
             }
         }
         false
+    }
+
+    /// Drain every value the core holds for the live routes of `scope`, in
+    /// bounded commit groups, and return the routes that reached a terminal
+    /// answer. The streams are marked ended and not emitted: the caller
+    /// orders their terminals against lifecycle records.
+    async fn drain_scope(&self, scope: &InstanceKey) -> Vec<(Route, StreamEnd)> {
+        let mut ended = Vec::new();
+        for route in self.live_routes(scope) {
+            if let RouteDrain::Ended { terminal, .. } = self.drain_route(&route, usize::MAX).await {
+                self.mark_ended(scope, &route, terminal);
+                ended.push((route, terminal));
+            }
+        }
+        ended
     }
 
     /// Move `route` behind the other routes of `scope`. The next bounded
@@ -1210,11 +1318,17 @@ impl HostInner {
     }
 
     /// Move up to `limit` values the core holds for one consumer into its
-    /// session's outbox. A full budget returns with work still pending and
+    /// session's outbox, committing at most [`VALUE_RECORD_BATCH`] already
+    /// polled values per group (so an unlimited lifecycle drain is a series
+    /// of bounded commits). A full budget returns with work still pending and
     /// does not poll another value. A terminal answer is returned and not
     /// emitted; the caller orders it against lifecycle records. Lifecycle
     /// passes `usize::MAX` so values that arrived before the transition
     /// all land first.
+    ///
+    /// Every value polled before an empty/terminal/invalidated answer is
+    /// committed first, in order. A refused group's values are counted once in
+    /// the returned terminal: a rolled-back group is never reported accepted.
     async fn drain_route(&self, route: &Route, limit: usize) -> RouteDrain {
         #[cfg(debug_assertions)]
         {
@@ -1224,86 +1338,99 @@ impl HostInner {
             }
         }
         let mut taken = 0usize;
+        let mut committed = false;
         loop {
             if taken == limit {
                 return RouteDrain::Live {
-                    taken,
+                    committed,
                     pending: true,
                 };
             }
-            let poll = self
-                .central
-                .poll_notification(&route.peer_id, &route.selector, &route.core_consumer)
-                .await;
-            match poll {
-                Ok(NotificationPoll::Value(bytes)) => {
-                    let Some(session) = self.session(route.session_id) else {
-                        continue;
-                    };
-                    let record = object(vec![
-                        ("t", Value::from("value")),
-                        ("consumer", Value::from(route.consumer.as_str())),
-                        ("valueB64", Value::from(wire::encode_base64(&bytes))),
-                        ("delivery", Value::from(route.delivery)),
-                    ]);
-                    match session.outbox.push_data(record) {
-                        Ok(()) => taken += 1,
-                        Err(ubm_desktop::continuation_outbox::DataIngressFailure::Stopped {
-                            ..
-                        }) => {
-                            return RouteDrain::Live {
-                                taken,
-                                pending: false,
-                            };
-                        }
-                        Err(ubm_desktop::continuation_outbox::DataIngressFailure::Overflow {
-                            bytes,
-                        }) => {
-                            return RouteDrain::Ended {
-                                taken,
-                                terminal: ("overflow", 1, bytes as u64),
-                            };
-                        }
-                        // The session's journal failure retains the precise
-                        // storage cause; closed is the frozen wire lifecycle
-                        // name, never a fabricated queue overflow.
-                        Err(ubm_desktop::continuation_outbox::DataIngressFailure::Storage {
-                            bytes,
-                            ..
-                        }) => {
-                            return RouteDrain::Ended {
-                                taken,
-                                terminal: ("closed", 1, bytes as u64),
-                            };
-                        }
+            let group = (limit - taken).min(VALUE_RECORD_BATCH);
+            let mut records = Vec::with_capacity(group);
+            let mut session = None;
+            let mut ending = PollEnd::Full;
+            while records.len() < group {
+                let poll = self
+                    .central
+                    .poll_notification(&route.peer_id, &route.selector, &route.core_consumer)
+                    .await;
+                match poll {
+                    Ok(NotificationPoll::Value(bytes)) => {
+                        let Some(owner) = self.session(route.session_id) else {
+                            continue;
+                        };
+                        session = Some(owner);
+                        records.push(object(vec![
+                            ("t", Value::from("value")),
+                            ("consumer", Value::from(route.consumer.as_str())),
+                            ("valueB64", Value::from(wire::encode_base64(&bytes))),
+                            ("delivery", Value::from(route.delivery)),
+                        ]));
                     }
-                }
-                Ok(NotificationPoll::Empty) => {
-                    return RouteDrain::Live {
-                        taken,
-                        pending: false,
-                    };
-                }
-                Ok(NotificationPoll::Terminal(terminal)) => {
-                    return RouteDrain::Ended {
-                        taken,
-                        terminal: (
+                    Ok(NotificationPoll::Empty) => {
+                        ending = PollEnd::Empty;
+                        break;
+                    }
+                    Ok(NotificationPoll::Terminal(terminal)) => {
+                        ending = PollEnd::Ended((
                             "overflow",
                             terminal.dropped_items(),
                             terminal.dropped_bytes(),
-                        ),
+                        ));
+                        break;
+                    }
+                    Ok(NotificationPoll::Invalidated(_)) => {
+                        ending = PollEnd::Ended(("invalidated", 0, 0));
+                        break;
+                    }
+                    Ok(NotificationPoll::Closed) | Err(_) => {
+                        ending = PollEnd::Ended(("closed", 0, 0));
+                        break;
+                    }
+                }
+            }
+            if let Some(session) = session {
+                committed = true;
+                let outcome = session.outbox.push_data_batch(records);
+                taken += outcome.accepted;
+                if let Some(rejected) = outcome.rejected {
+                    let core = match ending {
+                        PollEnd::Ended(terminal) => Some(terminal),
+                        PollEnd::Full | PollEnd::Empty => None,
+                    };
+                    match refusal_terminal(&rejected, core) {
+                        Some(terminal) => {
+                            return RouteDrain::Ended {
+                                committed,
+                                terminal,
+                            };
+                        }
+                        // Only the stopped journal's cutoff value: nothing
+                        // more is polled this turn unless the core already
+                        // answered.
+                        None if matches!(ending, PollEnd::Full) => {
+                            return RouteDrain::Live {
+                                committed,
+                                pending: false,
+                            };
+                        }
+                        None => {}
+                    }
+                }
+            }
+            match ending {
+                PollEnd::Full => {}
+                PollEnd::Empty => {
+                    return RouteDrain::Live {
+                        committed,
+                        pending: false,
                     };
                 }
-                Ok(NotificationPoll::Invalidated(_)) => {
+                PollEnd::Ended(terminal) => {
                     return RouteDrain::Ended {
-                        taken,
-                        terminal: ("invalidated", 0, 0),
-                    };
-                }
-                Ok(NotificationPoll::Closed) | Err(_) => {
-                    return RouteDrain::Ended {
-                        taken,
-                        terminal: ("closed", 0, 0),
+                        committed,
+                        terminal,
                     };
                 }
             }
@@ -1377,14 +1504,7 @@ impl HostInner {
             .collect();
         let mut ended = Vec::new();
         for scope in &scopes {
-            for route in self.live_routes(scope) {
-                if let RouteDrain::Ended { terminal, .. } =
-                    self.drain_route(&route, usize::MAX).await
-                {
-                    self.mark_ended(scope, &route, terminal);
-                    ended.push((route, terminal));
-                }
-            }
+            ended.extend(self.drain_scope(scope).await);
         }
         match self.lifecycle_record(&event) {
             Some(record) => self.broadcast(&record),
@@ -1399,7 +1519,9 @@ impl HostInner {
         }
         // Hubs the core invalidated after the first pass end here.
         for scope in &scopes {
-            let _ = self.flush_scope(scope, usize::MAX).await;
+            for (route, terminal) in self.drain_scope(scope).await {
+                self.end_route(&route, terminal);
+            }
         }
     }
 
@@ -2158,6 +2280,8 @@ impl MobileHost {
             before_session_admission: Mutex::new(None),
             #[cfg(debug_assertions)]
             route_turns: Mutex::new(Vec::new()),
+            #[cfg(debug_assertions)]
+            scope_turns: Mutex::new(Vec::new()),
             scan: tokio::sync::Mutex::new(ScanShare::default()),
             scan_members: Mutex::new(BTreeMap::new()),
             routes: Mutex::new(HashMap::new()),
@@ -2389,14 +2513,21 @@ impl MobileHost {
         }
     }
 
-    /// Open one session lease (one RN manager) that is its own background
-    /// scope: `session.dispose` releases its background leases.
     /// Consumers polled by the pump, in order. Debug tests use it.
     #[cfg(debug_assertions)]
     pub fn route_turns(&self) -> Vec<String> {
         lock(&self.inner.route_turns).clone()
     }
 
+    /// The consumers whose group each value scope turn committed, in order.
+    /// Debug tests use it.
+    #[cfg(debug_assertions)]
+    pub fn scope_turns(&self) -> Vec<Vec<String>> {
+        lock(&self.inner.scope_turns).clone()
+    }
+
+    /// Open one session lease (one RN manager) that is its own background
+    /// scope: `session.dispose` releases its background leases.
     pub fn open_session(&self, owner: &str) -> Result<MobileSession, DesktopError> {
         self.open_session_in(owner, None, Arc::clone(&self.inner.wake))
     }
@@ -2907,6 +3038,66 @@ mod signal_tests {
 
     fn scope(peer: &str) -> InstanceKey {
         (peer.to_owned(), "180d".to_owned(), 0, "2a37".to_owned(), 0)
+    }
+
+    fn refused(
+        failure: ubm_desktop::continuation_outbox::DataIngressFailure,
+        items: u64,
+        bytes: u64,
+    ) -> ubm_desktop::continuation_outbox::DataBatchRejection {
+        ubm_desktop::continuation_outbox::DataBatchRejection {
+            failure,
+            items,
+            bytes,
+        }
+    }
+
+    /// Every value a refused group polled lands in its route terminal exactly
+    /// once, under the frozen lifecycle names, with the core's own loss.
+    #[test]
+    fn refused_group_terminals_count_each_polled_value_once() {
+        use ubm_desktop::continuation_outbox::DataIngressFailure as Failure;
+        let storage = Failure::Storage {
+            bytes: 10,
+            error: ubm_desktop::continuation_journal::JournalError {
+                kind: "storage.full",
+                detail: "capacity",
+                operation: "append",
+                sqlite_extended_code: None,
+                sqlite_code: None,
+            },
+        };
+        assert_eq!(
+            refusal_terminal(&refused(storage, 5, 70), None),
+            Some(("closed", 5, 70))
+        );
+        assert_eq!(
+            refusal_terminal(
+                &refused(Failure::Overflow { bytes: 10 }, 3, 30),
+                Some(("overflow", 4, 400))
+            ),
+            Some(("overflow", 7, 430))
+        );
+        // Already sealed: the cutoff counted the group and the terminal still
+        // reports it as overflow, exactly as the queue-full cause does.
+        assert_eq!(
+            refusal_terminal(&refused(Failure::Sealed { bytes: 10 }, 3, 30), None),
+            Some(("overflow", 3, 30))
+        );
+        // A stopped journal: the first value is the handoff cutoff itself.
+        let stopped = Failure::Stopped { bytes: 10 };
+        assert_eq!(
+            refusal_terminal(&refused(stopped.clone(), 1, 10), None),
+            None
+        );
+        assert_eq!(
+            refusal_terminal(&refused(stopped.clone(), 4, 45), None),
+            Some(("overflow", 3, 35))
+        );
+        assert_eq!(
+            refusal_terminal(&refused(stopped, 2, 25), Some(("overflow", 1, 8))),
+            Some(("overflow", 2, 23))
+        );
     }
 
     /// X-R6: a stalled pump (no pops) plus a burst stays bounded, and every

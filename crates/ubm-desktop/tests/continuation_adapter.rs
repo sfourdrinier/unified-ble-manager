@@ -1048,3 +1048,117 @@ async fn shutdown_refuses_native_restart_on_the_same_radio_owner() {
         "lifecycle.destroyed"
     );
 }
+
+/// Gives every journal commit a fixed cost inside its own transaction, as a
+/// slow synced filesystem does. Per-value commits then scale with the backlog
+/// while a bounded group pays it once. SQLite fixes `now` for a statement, so
+/// the cost is a row count calibrated against this machine.
+fn make_every_commit_cost(path: &std::path::Path, millis: u64) {
+    let connection = rusqlite::Connection::open(path).unwrap();
+    let spin = |rows: u64| {
+        let started = std::time::Instant::now();
+        connection
+            .query_row(
+                &format!(
+                    "WITH RECURSIVE s(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM s WHERE x<{rows}) \
+                     SELECT count(*) FROM s"
+                ),
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        started.elapsed()
+    };
+    let probe = 200_000u64;
+    let per_probe = spin(probe).max(spin(probe)).as_secs_f64().max(1e-6);
+    let rows = (probe as f64 * (millis as f64 / 1000.0) / per_probe) as u64;
+    connection
+        .execute_batch(&format!(
+            "CREATE VIEW slow_commit AS WITH RECURSIVE s(x) AS (\
+               SELECT 1 UNION ALL SELECT x+1 FROM s WHERE x<{rows}) \
+             SELECT count(*) AS n FROM s; \
+             CREATE TRIGGER slow_commit_cursor AFTER UPDATE OF next_ordinal ON journal \
+             BEGIN SELECT n FROM slow_commit; END;"
+        ))
+        .unwrap();
+    let started = std::time::Instant::now();
+    connection
+        .query_row("SELECT n FROM slow_commit", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert!(
+        started.elapsed() >= Duration::from_millis(millis * 3 / 4),
+        "the fixture must really cost {millis} ms per commit: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn setup_response_behind_a_recorded_backlog_is_acknowledged_within_its_deadline() {
+    let Some(directory) = isolated_fixture_process(
+        "setup_response_behind_a_recorded_backlog_is_acknowledged_within_its_deadline",
+    ) else {
+        return;
+    };
+    let (central, engine) = fixture().await;
+    central.boundary().set_mtu(PEER, 247);
+    central.boundary().block_op(ubm_desktop::FaultOp::Write);
+    engine.configure_recording_directory(&directory).unwrap();
+    let mut order: Value = serde_json::from_str(&declaration()).unwrap();
+    order["recording"] = json!({"id":"backlog","maxBytes":1048576,"maxRecords":1000});
+    order["setup"] = json!([{"selector":order["resubscribe"][0],"value":[2,0],"timeoutMs":2000,"response":{"subscriptionIndex":0,"prefix":[240,2,0],"minLength":4,"maxLength":4,"status":{"offset":3,"accepted":[0]}}}]);
+    let running = engine.clone();
+    let mut result = tokio::spawn(async move { running.execute(PEER, &order.to_string()).await });
+    tokio::select! {
+        () = central.boundary().wait_for_calls("write_characteristic", 1) => {}
+        finished = &mut result => panic!("setup ended before its write was held: {finished:?}"),
+        () = tokio::time::sleep(Duration::from_secs(5)) => panic!("setup never reached its write"),
+    }
+    // The journal exists and its setup observer is registered. Every later
+    // commit costs 40 ms: 121 per-value commits are ~4.8 s against the 2 s step
+    // deadline, a few bounded groups are a fraction of it.
+    make_every_commit_cost(&directory.join("backlog.sqlite"), 40);
+    let epoch = central.routing_epoch(PEER).await;
+    let notification = |value: Vec<u8>| RadioEvent::Notification {
+        peer_id: PEER.into(),
+        service_uuid: SERVICE.into(),
+        service_occurrence: 0,
+        characteristic_uuid: CHARACTERISTIC.into(),
+        characteristic_occurrence: 0,
+        value,
+        epoch,
+    };
+    for index in 0..120u8 {
+        central.boundary().push_event(notification(vec![0, index]));
+    }
+    central
+        .boundary()
+        .push_event(notification(vec![240, 2, 0, 0]));
+    central.boundary().unblock_op(ubm_desktop::FaultOp::Write);
+    let started = std::time::Instant::now();
+    result
+        .await
+        .unwrap()
+        .expect("the response behind the backlog is acknowledged inside its step deadline");
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "bounded groups, not {} per-value commits: {:?}",
+        121,
+        started.elapsed()
+    );
+    // Nothing was dropped to meet the deadline: every value is durable.
+    let status = engine.recording_status("backlog").unwrap();
+    assert!(
+        status["records"].as_u64().unwrap() >= 121,
+        "all 120 values and the response are retained: {status}"
+    );
+    assert_eq!(status["lostRecords"], 0);
+    engine.recording_stop("backlog").unwrap();
+    let claim = engine.prepare_claim(256, 65536).await.unwrap();
+    engine
+        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .await
+        .unwrap();
+    central.shutdown().await;
+    drop(engine);
+    complete_fixture_process(&directory);
+}

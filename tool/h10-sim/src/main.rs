@@ -1838,12 +1838,7 @@ async fn handle_control(
             Ok(()) => ControlReply::ok(),
             Err(error) => ControlReply::failed(error),
         },
-        ControlCommand::GetState => ControlReply {
-            ok: true,
-            error: None,
-            note: None,
-            state: Some(sim.snapshot()),
-        },
+        ControlCommand::GetState => get_state(radio, sim, log).await,
         ControlCommand::Help => ControlReply {
             ok: true,
             error: None,
@@ -1907,6 +1902,42 @@ async fn load_profile_into(
     Ok(())
 }
 
+/// Reads the radio's advertisement registration for a report. Logs a failed
+/// read as `radio-error` (like every other `is-advertising` failure) and
+/// returns it as `Unknown` — the caller reports it, never defaults it.
+async fn observe_advertising(
+    radio: &mut impl PeripheralRadio,
+    log: &mut EventLog,
+) -> radio::AdvertisingObservation {
+    let observation = radio::AdvertisingObservation::from_query(radio.is_advertising().await);
+    if let radio::AdvertisingObservation::Unknown(error) = &observation {
+        log.log(
+            "radio-error",
+            json!({"op": "is-advertising", "error": error}),
+        );
+    }
+    observation
+}
+
+/// `get-state`: the simulator snapshot plus the observed advertisement
+/// registration. A failed read is reported inside `advertising` and does not
+/// fail the rest of the state.
+async fn get_state(
+    radio: &mut impl PeripheralRadio,
+    sim: &SimState,
+    log: &mut EventLog,
+) -> ControlReply {
+    let advertising = observe_advertising(radio, log).await;
+    let mut state = sim.snapshot();
+    state["advertising"] = advertising.to_json();
+    ControlReply {
+        ok: true,
+        error: None,
+        note: None,
+        state: Some(state),
+    }
+}
+
 async fn set_advertising(
     radio: &mut PlatformRadio,
     sim: &SimState,
@@ -1928,13 +1959,15 @@ async fn set_advertising(
 }
 
 /// Builds the drop-link note and state from the tracked clients, the
-/// allowlist, the disconnect report and the connected strangers. Pure so
-/// the report wording is pinned by tests without a radio.
+/// allowlist, the disconnect report, the connected strangers and the
+/// advertisement registration read after the disconnect. Pure so the report
+/// wording is pinned by tests without a radio.
 fn summarize_drop(
     clients: &[String],
     allowlist: &[String],
     report: &radio::DisconnectReport,
     connected: &[String],
+    advertising: &radio::AdvertisingObservation,
 ) -> (String, serde_json::Value) {
     let targets = radio::drop_targets(clients, allowlist);
     let mut skipped = report.skipped.clone();
@@ -1950,13 +1983,22 @@ fn summarize_drop(
         "targets": targets,
         "dropped": report.dropped,
         "skipped": skipped,
+        "advertising": advertising.to_json(),
     });
+    // Registration is what the radio reported after the disconnect; it is
+    // never presented as on-air state, which userspace cannot observe.
+    let observed = format!(
+        "advertising registration observed after disconnect: {} (on-air \
+         state is not observable from userspace)",
+        advertising.describe(),
+    );
     let note = if targets.is_empty() {
-        "ECG halted; no simulator clients observed and no drop-link allowlist \
-         is configured (--drop-link-allow), so no central was disconnected — \
-         streams stop but any peer stays connected. Advertising and the GATT \
-         database are unchanged"
-            .to_string()
+        format!(
+            "ECG halted; no simulator clients observed and no drop-link \
+             allowlist is configured (--drop-link-allow), so no central was \
+             disconnected — streams stop but any peer stays connected; \
+             {observed}"
+        )
     } else {
         let mut note = format!(
             "ECG halted, {} of {} target(s) disconnected",
@@ -1969,25 +2011,26 @@ fn summarize_drop(
         for skip in &skipped {
             note.push_str(&format!("; {} skipped: {}", skip.address, skip.reason));
         }
-        note.push_str(
-            "; advertising and the GATT database are unchanged (BlueZ \
-             disconnects via Device1.Disconnect; on CoreBluetooth an \
-             already-connected central stays connected until it disconnects)",
-        );
+        note.push_str(&format!(
+            "; {observed} (BlueZ disconnects via Device1.Disconnect; on \
+             CoreBluetooth an already-connected central stays connected until \
+             it disconnects)"
+        ));
         note
     };
     (note, state)
 }
 
 async fn drop_link(
-    radio: &mut PlatformRadio,
+    radio: &mut impl PeripheralRadio,
     sim: &mut SimState,
     log: &mut EventLog,
 ) -> Result<ControlReply, String> {
-    // A simulated link loss drops the link, not the peripheral: advertising
-    // and the GATT database stay exactly as they were, so centrals see a
-    // lifecycle loss (peer-link-loss) with no Service Changed, and can
-    // reconnect immediately — like walking back into range of a real H10.
+    // A simulated link loss drops the link, not the peripheral: nothing here
+    // stops, restarts or re-registers advertising or the GATT application, so
+    // centrals see a lifecycle loss (peer-link-loss) with no Service Changed.
+    // The advertisement registration is read back after the disconnect and
+    // reported as observed; it is never assumed.
     sim.reset_pmd_session();
     // Only the sim's own clients go: centrals whose addresses touched this
     // peripheral's GATT application, plus the explicit `--drop-link-allow`
@@ -2015,7 +2058,8 @@ async fn drop_link(
             Vec::new()
         }
     };
-    let (note, state) = summarize_drop(&clients, &allowlist, &report, &connected);
+    let advertising = observe_advertising(radio, log).await;
+    let (note, state) = summarize_drop(&clients, &allowlist, &report, &connected, &advertising);
     sim.record_fault(
         "drop-link",
         json!({"dropped": report.dropped, "targets": targets}),
@@ -2027,6 +2071,7 @@ async fn drop_link(
             "clients": clients,
             "allowlisted": allowlist.len(),
             "skipped": state["skipped"],
+            "advertising": state["advertising"],
         }),
     );
     Ok(ControlReply {
@@ -2041,7 +2086,7 @@ async fn drop_link(
 /// bounces advertising (stop + start) so centrals run a full
 /// disconnect/reconnect cycle instead of resuming on the live advertisement.
 async fn flap_link(
-    radio: &mut PlatformRadio,
+    radio: &mut impl PeripheralRadio,
     sim: &mut SimState,
     log: &mut EventLog,
 ) -> Result<ControlReply, String> {
@@ -2054,8 +2099,19 @@ async fn flap_link(
     start_advertising(radio, sim, log).await?;
     sim.record_fault("flap-link", json!({}));
     log.log("link-flapped", json!({}));
+    // The drop-time observation predates the bounce: the reply reports the
+    // registration read after the restart (the drop-time one stays in the
+    // `link-dropped` log).
+    let advertising = observe_advertising(radio, log).await;
+    if let Some(state) = reply.state.as_mut() {
+        state["advertising"] = advertising.to_json();
+    }
     if let Some(note) = reply.note.take() {
-        reply.note = Some(format!("{note}; advertising bounced for a rapid reconnect"));
+        reply.note = Some(format!(
+            "{note}; advertising bounced for a rapid reconnect, registration \
+             observed after the bounce: {}",
+            advertising.describe(),
+        ));
     }
     Ok(reply)
 }
@@ -2679,6 +2735,269 @@ mod tests {
         }
     }
 
+    /// A radio that scripts exactly what the control handlers may read back:
+    /// the advertising-registration answers, the tracked clients, and the
+    /// disconnect result. Counts every start/stop so a test can prove a
+    /// handler observed registration without acting on it.
+    struct DropRadio {
+        advertising: std::collections::VecDeque<Result<bool, radio::RadioError>>,
+        clients: Vec<String>,
+        starts: usize,
+        stops: usize,
+    }
+
+    impl DropRadio {
+        fn new(advertising: Vec<Result<bool, radio::RadioError>>, clients: &[&str]) -> Self {
+            Self {
+                advertising: advertising.into(),
+                clients: clients.iter().map(|client| client.to_string()).collect(),
+                starts: 0,
+                stops: 0,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PeripheralRadio for DropRadio {
+        async fn open(_: tokio::sync::mpsc::Sender<RadioEvent>) -> Result<Self, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_powered(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_advertising(&mut self) -> Result<bool, radio::RadioError> {
+            self.advertising.pop_front().expect("unexpected query")
+        }
+        async fn start_advertising(
+            &mut self,
+            _: &str,
+            _: &[Uuid],
+        ) -> Result<(), radio::RadioError> {
+            self.starts += 1;
+            Ok(())
+        }
+        async fn stop_advertising(&mut self) -> Result<(), radio::RadioError> {
+            self.stops += 1;
+            Ok(())
+        }
+        async fn add_service(&mut self, _: &radio::ServiceSpec) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn notification_payload_capacity(
+            &self,
+            _: Uuid,
+        ) -> Result<Option<usize>, radio::RadioError> {
+            unreachable!()
+        }
+        async fn notify(&mut self, _: Uuid, _: Vec<u8>) -> Result<SendOutcome, radio::RadioError> {
+            unreachable!()
+        }
+        fn simulator_clients(&self) -> Vec<String> {
+            self.clients.clone()
+        }
+        async fn disconnect_centrals(
+            &mut self,
+            targets: &[String],
+        ) -> Result<radio::DisconnectReport, radio::RadioError> {
+            let mut report = radio::DisconnectReport::new();
+            for target in targets {
+                report.add_dropped(target.clone());
+            }
+            Ok(report)
+        }
+    }
+
+    const CLIENT: &str = "40:89:C6:85:71:89";
+
+    /// Every scripted answer of `is_advertising` and the `advertising`
+    /// object it must produce: registered true, false, and an error that is
+    /// `null`, never `false`.
+    type ObservationCase = (
+        Result<bool, radio::RadioError>,
+        Option<bool>,
+        Option<&'static str>,
+    );
+
+    fn observation_cases() -> Vec<ObservationCase> {
+        vec![
+            (Ok(true), Some(true), None),
+            (Ok(false), Some(false), None),
+            (
+                Err(radio::RadioError("ActiveInstances unreadable".into())),
+                None,
+                Some("ActiveInstances unreadable"),
+            ),
+        ]
+    }
+
+    fn drain(
+        events: &mut tokio::sync::mpsc::Receiver<serde_json::Value>,
+    ) -> Vec<serde_json::Value> {
+        let mut drained = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            drained.push(event);
+        }
+        drained
+    }
+
+    fn assert_observed(
+        advertising: &serde_json::Value,
+        registered: Option<bool>,
+        error: Option<&str>,
+        context: &str,
+    ) {
+        match registered {
+            Some(value) => assert_eq!(advertising["registered"], value, "{context}"),
+            None => assert!(
+                advertising["registered"].is_null(),
+                "an unreadable registration must be null, never false: {context}"
+            ),
+        }
+        match error {
+            Some(message) => assert!(
+                advertising["error"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(message)),
+                "the read error must be carried: {context}: {advertising}"
+            ),
+            None => assert!(advertising["error"].is_null(), "{context}"),
+        }
+        assert_eq!(
+            advertising["onAirObservable"], false,
+            "registration is never reported as on-air state: {context}"
+        );
+    }
+
+    #[tokio::test]
+    async fn drop_link_reports_the_observed_advertising_registration() {
+        for (answer, registered, error) in observation_cases() {
+            let context = format!("{answer:?}");
+            let mut sim = SimState::new(SimConfig::default());
+            let mut radio = DropRadio::new(vec![answer], &[CLIENT]);
+            let mut log = EventLog::new();
+            let (sender, mut events) = tokio::sync::mpsc::channel(16);
+            log.add_listener(sender);
+
+            let reply = drop_link(&mut radio, &mut sim, &mut log)
+                .await
+                .expect("the drop itself succeeded");
+
+            assert!(reply.ok, "{context}");
+            let state = reply.state.expect("drop-link state");
+            assert_eq!(state["dropped"], serde_json::json!([CLIENT]), "{context}");
+            assert_observed(&state["advertising"], registered, error, &context);
+            let events = drain(&mut events);
+            let dropped = events
+                .iter()
+                .find(|event| event["kind"] == "link-dropped")
+                .expect("link-dropped log");
+            assert_eq!(
+                dropped["advertising"], state["advertising"],
+                "the log carries the same observation as the reply: {context}"
+            );
+            assert_eq!(
+                events.iter().any(|event| event["kind"] == "radio-error"),
+                error.is_some(),
+                "a failed read is logged loudly, a good one is not: {context}"
+            );
+            // Observation only: no restart, no stop, no re-registration.
+            assert_eq!((radio.starts, radio.stops), (0, 0), "{context}");
+            assert!(radio.advertising.is_empty(), "exactly one read: {context}");
+        }
+    }
+
+    #[tokio::test]
+    async fn drop_link_note_states_the_observation_not_an_assumption() {
+        for (answer, _, _) in observation_cases() {
+            for clients in [&[CLIENT][..], &[][..]] {
+                let context = format!("{answer:?} clients={clients:?}");
+                let mut sim = SimState::new(SimConfig::default());
+                let mut radio = DropRadio::new(vec![answer.clone()], clients);
+                let mut log = EventLog::new();
+                let note = drop_link(&mut radio, &mut sim, &mut log)
+                    .await
+                    .expect("drop")
+                    .note
+                    .expect("note");
+                let lower = note.to_lowercase();
+                assert!(
+                    !lower.contains("unchanged"),
+                    "advertising is never asserted unchanged: {context}: {note}"
+                );
+                assert!(
+                    lower.contains("advertising registration"),
+                    "the note names the observed registration: {context}: {note}"
+                );
+                assert!(
+                    lower.contains("on-air state is not observable"),
+                    "the note says what registration does not prove: {context}: {note}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn get_state_reports_the_observed_advertising_registration() {
+        for (answer, registered, error) in observation_cases() {
+            let context = format!("{answer:?}");
+            let sim = SimState::new(SimConfig::default());
+            let mut radio = DropRadio::new(vec![answer], &[]);
+            let mut log = EventLog::new();
+            let (sender, mut events) = tokio::sync::mpsc::channel(16);
+            log.add_listener(sender);
+
+            let reply = get_state(&mut radio, &sim, &mut log).await;
+
+            assert!(reply.ok, "a failed read still answers the rest: {context}");
+            assert!(reply.error.is_none(), "{context}");
+            let state = reply.state.expect("get-state state");
+            assert_eq!(state["name"], sim.config.name, "existing fields stay");
+            assert_eq!(state["hrRecovery"], sim.snapshot()["hrRecovery"]);
+            assert_observed(&state["advertising"], registered, error, &context);
+            assert_eq!(
+                drain(&mut events)
+                    .iter()
+                    .any(|event| event["kind"] == "radio-error"),
+                error.is_some(),
+                "{context}"
+            );
+            assert_eq!((radio.starts, radio.stops), (0, 0), "{context}");
+        }
+    }
+
+    #[tokio::test]
+    async fn flap_link_reports_registration_observed_after_the_bounce() {
+        // drop-link reads once, the restart reads once more while replacing
+        // the running advertisement (not registered: nothing to stop), and
+        // the final read is what the reply must carry — not the stale read
+        // from before the bounce.
+        for (after, registered, error) in observation_cases() {
+            let context = format!("{after:?}");
+            let mut sim = SimState::new(SimConfig::default());
+            let mut radio = DropRadio::new(vec![Ok(true), Ok(false), after], &[CLIENT]);
+            let mut log = EventLog::new();
+            let (sender, mut events) = tokio::sync::mpsc::channel(16);
+            log.add_listener(sender);
+
+            let reply = flap_link(&mut radio, &mut sim, &mut log)
+                .await
+                .expect("flap");
+
+            let state = reply.state.expect("flap state");
+            assert_observed(&state["advertising"], registered, error, &context);
+            assert_eq!((radio.starts, radio.stops), (1, 1), "{context}");
+            let events = drain(&mut events);
+            let dropped = events
+                .iter()
+                .find(|event| event["kind"] == "link-dropped")
+                .expect("link-dropped log");
+            assert_eq!(
+                dropped["advertising"]["registered"], true,
+                "the drop-time log keeps its own observation: {context}"
+            );
+        }
+    }
+
     fn comparison_report(passed: bool, complete: bool) -> compare::ComparisonReport {
         compare::ComparisonReport {
             passed,
@@ -2805,12 +3124,66 @@ mod tests {
     #[test]
     fn drop_summary_with_no_targets_says_no_simulator_clients() {
         let report = radio::DisconnectReport::new();
-        let (note, state) = summarize_drop(&[], &[], &report, &[]);
+        let (note, state) = summarize_drop(
+            &[],
+            &[],
+            &report,
+            &[],
+            &radio::AdvertisingObservation::Registered,
+        );
         assert!(
             note.contains("no simulator clients"),
             "empty targets must never read as a silent success: {note}"
         );
         assert_eq!(state["dropped"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn drop_summary_carries_the_advertising_observation_in_state_and_note() {
+        let mut report = radio::DisconnectReport::new();
+        report.add_dropped("AA:AA:AA:AA:AA:AA".to_string());
+        let clients = ["AA:AA:AA:AA:AA:AA".to_string()];
+        for (observation, registered, described) in [
+            (
+                radio::AdvertisingObservation::Registered,
+                Some(true),
+                "registered",
+            ),
+            (
+                radio::AdvertisingObservation::NotRegistered,
+                Some(false),
+                "not registered",
+            ),
+            (
+                radio::AdvertisingObservation::Unknown("radio error: bus gone".into()),
+                None,
+                "unknown (radio error: bus gone)",
+            ),
+        ] {
+            let (note, state) = summarize_drop(&clients, &[], &report, &[], &observation);
+            assert_eq!(
+                state["advertising"]["registered"],
+                serde_json::json!(registered)
+            );
+            assert_eq!(state["advertising"]["onAirObservable"], false);
+            assert!(
+                note.contains(&format!(
+                    "registration observed after disconnect: {described}"
+                )),
+                "{note}"
+            );
+            assert!(!note.to_lowercase().contains("unchanged"), "{note}");
+            // The no-target note speaks the same observation.
+            let (note, state) =
+                summarize_drop(&[], &[], &radio::DisconnectReport::new(), &[], &observation);
+            assert_eq!(state["advertising"], observation.to_json());
+            assert!(
+                note.contains(&format!(
+                    "registration observed after disconnect: {described}"
+                )),
+                "{note}"
+            );
+        }
     }
 
     #[test]
@@ -2827,7 +3200,13 @@ mod tests {
         );
         let clients = ["AA:AA:AA:AA:AA:AA".to_string()];
         let allowlist = ["BB:BB:BB:BB:BB:BB".to_string()];
-        let (note, state) = summarize_drop(&clients, &allowlist, &report, &[]);
+        let (note, state) = summarize_drop(
+            &clients,
+            &allowlist,
+            &report,
+            &[],
+            &radio::AdvertisingObservation::NotRegistered,
+        );
         assert!(note.contains("AA:AA:AA:AA:AA:AA"), "{note}");
         assert_eq!(state["dropped"], serde_json::json!(["AA:AA:AA:AA:AA:AA"]));
         assert_eq!(state["skipped"].as_array().unwrap().len(), 2);
