@@ -3234,7 +3234,7 @@ class OwnedAndroidGattRadio private constructor(
         cb?.invoke(
           Result.failure(
             classifyAndroidGattOperationFailure(
-              if (matchedKey?.startsWith("cccd:") == true) "cccd-write" else "descriptor-write",
+              if (matchedKey.startsWith("cccd:")) "cccd-write" else "descriptor-write",
               status
             )
           )

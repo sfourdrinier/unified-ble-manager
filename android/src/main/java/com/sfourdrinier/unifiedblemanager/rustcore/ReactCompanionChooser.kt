@@ -153,6 +153,7 @@ class ReactCompanionChooser @JvmOverloads constructor(
     pendingActivity = activity
     try {
       manager.associate(request, object : CompanionDeviceManager.Callback() {
+      @Deprecated("Deprecated in API 33; use onAssociationPending on API 33+. Retained for API 30-32 compatibility.")
       override fun onDeviceFound(intentSender: IntentSender) = launch(activity, intentSender, onResult, requestCode)
       override fun onAssociationPending(intentSender: IntentSender) = launch(activity, intentSender, onResult, requestCode)
       override fun onAssociationCreated(associationInfo: AssociationInfo) = created(onResult, associationInfo)
