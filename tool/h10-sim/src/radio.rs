@@ -449,6 +449,53 @@ impl DisconnectReport {
     }
 }
 
+/// What one read of [`PeripheralRadio::is_advertising`] observed about the
+/// advertisement *registration* — never about the air. The answer is the
+/// radio's own result: a failed read is `Unknown` carrying its error, not a
+/// defaulted `false`, and a registered advertisement is not claimed to be
+/// on the air (the controller's enable state is not observable from here).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdvertisingObservation {
+    Registered,
+    NotRegistered,
+    Unknown(String),
+}
+
+impl AdvertisingObservation {
+    pub fn from_query(result: Result<bool, RadioError>) -> Self {
+        match result {
+            Ok(true) => Self::Registered,
+            Ok(false) => Self::NotRegistered,
+            Err(error) => Self::Unknown(error.to_string()),
+        }
+    }
+
+    /// `registered` is `null` — never `false` — when the read failed, `error`
+    /// carries the radio's message, and `onAirObservable` is always `false`:
+    /// registration says nothing about whether the controller is advertising.
+    pub fn to_json(&self) -> serde_json::Value {
+        let (registered, error) = match self {
+            Self::Registered => (Some(true), None),
+            Self::NotRegistered => (Some(false), None),
+            Self::Unknown(error) => (None, Some(error.as_str())),
+        };
+        serde_json::json!({
+            "registered": registered,
+            "error": error,
+            "onAirObservable": false,
+        })
+    }
+
+    /// Report-note wording for the observed registration.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Registered => "registered".to_string(),
+            Self::NotRegistered => "not registered".to_string(),
+            Self::Unknown(error) => format!("unknown ({error})"),
+        }
+    }
+}
+
 /// Characteristic properties the simulator needs. Every backend maps these
 /// exhaustively onto its own GATT types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1047,6 +1094,29 @@ mod tests {
         assert_ne!(old, current);
         assert!(!ledger.is_current(characteristic, old));
         assert!(ledger.is_current(characteristic, current));
+    }
+
+    #[test]
+    fn advertising_observation_reports_the_radios_own_answer() {
+        let registered = AdvertisingObservation::from_query(Ok(true));
+        assert_eq!(registered, AdvertisingObservation::Registered);
+        assert_eq!(
+            registered.to_json(),
+            serde_json::json!({"registered": true, "error": null, "onAirObservable": false})
+        );
+        let absent = AdvertisingObservation::from_query(Ok(false));
+        assert_eq!(absent, AdvertisingObservation::NotRegistered);
+        assert_eq!(
+            absent.to_json(),
+            serde_json::json!({"registered": false, "error": null, "onAirObservable": false})
+        );
+        // A failed read is unknown with the error — never `false`.
+        let unknown = AdvertisingObservation::from_query(Err(RadioError("bus gone".into())));
+        let json = unknown.to_json();
+        assert!(json["registered"].is_null());
+        assert_eq!(json["error"], "radio error: bus gone");
+        assert_eq!(json["onAirObservable"], false);
+        assert_eq!(unknown.describe(), "unknown (radio error: bus gone)");
     }
 
     #[test]
