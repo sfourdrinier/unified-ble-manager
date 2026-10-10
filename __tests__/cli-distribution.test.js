@@ -5,6 +5,7 @@ const { runUnifiedBleCli } = require('../src/cli')
 const { TAURI_PLUGIN_COMPATIBILITY } = require('../src/tauri')
 const { createTestBleEnvironment } = require('../src/testing')
 const { UNIFIED_BLE_IMPLEMENTATION_VERSION } = require('../src/implementation-version')
+const semver = require('semver')
 
 describe('PR11 distribution tooling and CLI taxonomy', () => {
   test('ubm doctor without a backend reports the consumer package and labels the proof boundary', async () => {
@@ -139,12 +140,12 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         proofBoundary: 'compile-config-loadability',
         cratePublished: false,
         compatibility: expect.objectContaining({
-          npmRange: `^${UNIFIED_BLE_IMPLEMENTATION_VERSION}`,
-          crateRange: `^${UNIFIED_BLE_IMPLEMENTATION_VERSION}`,
           ipcProtocol: 6
         })
       })
     )
+    expect(semver.satisfies(UNIFIED_BLE_IMPLEMENTATION_VERSION, result.data.compatibility.npmRange)).toBe(true)
+    expect(semver.satisfies(UNIFIED_BLE_IMPLEMENTATION_VERSION, result.data.compatibility.crateRange)).toBe(true)
   })
 
   test('ubm inspect capabilities --host tauri reports protocol compatibility without a backend', async () => {
@@ -243,17 +244,15 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
 
 describe('PR11 Tauri crate and testkit contracts', () => {
   test('exports machine-readable npm/crate/protocol compatibility', () => {
-    const currentCandidateRange = new RegExp(
-      `\\^${UNIFIED_BLE_IMPLEMENTATION_VERSION.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}`
-    )
+    const currentCandidate = UNIFIED_BLE_IMPLEMENTATION_VERSION
     expect(TAURI_PLUGIN_COMPATIBILITY).toEqual(
       expect.objectContaining({
-        npmRange: expect.stringMatching(currentCandidateRange),
-        crateRange: expect.stringMatching(currentCandidateRange),
         ipcProtocol: 6,
         contractRevision: require('../contracts/src/version').CONTRACT_REVISION
       })
     )
+    expect(semver.satisfies(currentCandidate, TAURI_PLUGIN_COMPATIBILITY.npmRange)).toBe(true)
+    expect(semver.satisfies(currentCandidate, TAURI_PLUGIN_COMPATIBILITY.crateRange)).toBe(true)
   })
 
   test('createTestBleEnvironment returns a public manager without importing a native radio', async () => {

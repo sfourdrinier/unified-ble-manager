@@ -64,7 +64,10 @@
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
-            <p>This source targets <code>5.0.1</code>; verify the published version in the npm registry.</p>
+            <p>
+              This source targets the unpublished <code>5.0.2</code> candidate; verify the published version in the npm
+              registry.
+            </p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -137,7 +140,7 @@
               registry before installing: source preparation is not publication. Install the exact release and commit
               the resolved lockfile for a known native rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.1
+            <pre><code>pnpm add unified-ble-manager@5.0.2
 </code></pre>
             <p>
               Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
@@ -146,9 +149,9 @@
             <h4>Expo / CNG v2</h4>
             <p>
               The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. Install
-              <code>5.0.1</code> and keep that exact version in your lockfile while validating the native build:
+              <code>5.0.2</code> and keep that exact version in your lockfile while validating the native build:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.1
+            <pre><code>pnpm add unified-ble-manager@5.0.2
 </code></pre>
             <p>The package does not run in Expo Go.</p>
             <p>Expo also needs a native build and development client:</p>
@@ -1009,15 +1012,15 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in this <code>5.0.1</code> source. Those options match the schema introduced at
-              <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
+              Use the v2 plugin options in this unpublished <code>5.0.2</code> candidate. Those options match the schema
+              introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
             <p>
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.1
+            <pre><code>pnpm add unified-ble-manager@5.0.2
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios

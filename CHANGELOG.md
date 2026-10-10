@@ -4,6 +4,10 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.0.2] - 2026-10-10
 
+- Preserve adapter-loss causality during an in-flight desktop release or
+  disconnect. CoreBluetooth and WinRT now end the affected link as lost without
+  failing the whole manager on an unannounced private disconnecting state.
+
 - Read Android manifest metadata through typed AndroidX accessors while preserving
   Boolean/string flag handling, defaults and invalid-policy rejection. Build
   foreground notifications and decode acknowledgements through AndroidX APIs.
