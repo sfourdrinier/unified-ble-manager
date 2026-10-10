@@ -2,6 +2,12 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [Unreleased]
+
+- Map an awaited WinRT direct-address factory result with no
+  `BluetoothLEDevice` (HRESULT 0) to `peer.not-found`, while preserving
+  nonzero WinRT HRESULT failures.
+
 ## [5.0.1] - 2026-10-08
 
 - Fix Expo Android readiness to use live native location-services and legacy
