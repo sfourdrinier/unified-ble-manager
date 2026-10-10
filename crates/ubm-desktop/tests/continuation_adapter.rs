@@ -1106,19 +1106,28 @@ fn calibrate_commit_cost(connection: &rusqlite::Connection, rows: &mut u64, mill
             ))
             .unwrap();
         let measure = || {
+            // Measure the actual UPDATE-trigger path, while rolling back the
+            // probe so calibration cannot persist journal state.
+            connection
+                .execute_batch("SAVEPOINT commit_cost_probe")
+                .unwrap();
             let started = std::time::Instant::now();
             connection
-                .query_row("SELECT n FROM slow_commit", [], |row| row.get::<_, i64>(0))
+                .execute("UPDATE journal SET next_ordinal=next_ordinal+1", [])
                 .unwrap();
-            started.elapsed()
+            let elapsed = started.elapsed();
+            connection
+                .execute_batch("ROLLBACK TO commit_cost_probe; RELEASE commit_cost_probe")
+                .unwrap();
+            elapsed
         };
         let observed = measure().min(measure());
-        if observed >= Duration::from_millis(floor_ms) {
+        if observed >= Duration::from_millis(millis) {
             return;
         }
         assert!(
             adjustment < MAX_ADJUSTMENTS,
-            "the fixture must really cost at least {floor_ms} ms per commit; observed {observed:?}"
+            "the fixture must really cost at least {millis} ms per commit; observed {observed:?}"
         );
         let actual_ms = observed.as_secs_f64() * 1000.0;
         let factor = (millis as f64 / actual_ms.max(0.001)) * 1.15;
@@ -1143,14 +1152,30 @@ fn commit_cost_calibration_adjusts_from_a_short_initial_probe() {
         .unwrap();
     let mut rows = 1;
     calibrate_commit_cost(&connection, &mut rows, 40);
+    assert_eq!(
+        connection
+            .query_row("SELECT next_ordinal FROM journal", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "calibration probes must roll back journal state"
+    );
     let started = std::time::Instant::now();
     connection
         .execute("UPDATE journal SET next_ordinal=next_ordinal+1", [])
         .unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(
+        connection
+            .query_row("SELECT next_ordinal FROM journal", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "the real journal update must still increment the ordinal"
+    );
     assert!(
-        started.elapsed() >= Duration::from_millis(30),
-        "calibrated trigger must cost at least 30 ms: {:?} (rows={rows})",
-        started.elapsed()
+        elapsed >= Duration::from_millis(30),
+        "calibrated trigger must cost at least 30 ms: {elapsed:?} (rows={rows})"
     );
 }
 
