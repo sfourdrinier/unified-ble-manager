@@ -11,6 +11,8 @@ All notable changes to `unified-ble-manager` are documented here.
   5.0.2 release line.
 - Retry failed Android physical cleanup or scoped core release without admitting
   a replacement connection early or releasing an already retired owner twice.
+  Joined disconnects share the scoped release result, and reserved cancellation
+  claims compensation once before any reentrant cleanup can join it.
 - Reset ephemeral security observations for the exact connection generation
   while preserving bonds, and distinguish stopped or sealed queue cutoffs from
   actual overflow and storage-loss observations.

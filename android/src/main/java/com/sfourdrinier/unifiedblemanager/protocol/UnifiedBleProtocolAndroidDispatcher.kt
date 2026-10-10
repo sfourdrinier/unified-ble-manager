@@ -934,6 +934,7 @@ constructor(
         if (cancelledBeforeAdmission) {
           reservation.lease = lease
           reservation.generation = connectAdmission.generation
+          reservation.cleanupStarted = true
           compensateConnectAfterAdmission = true
         } else if (admittedPending == null || admittedPending.command !== command || reservation == null ||
           reservation.command !== command || reservation.phase == DispatchPhase.Withdrawn
@@ -975,7 +976,7 @@ constructor(
       }
       val withdrawn = synchronized(ownershipGuard) {
         val reservation = dispatchReservations[peerId.uppercase()]
-        if (reservation == null || reservation.phase == DispatchPhase.Withdrawn) true
+        if (reservation == null || reservation.command !== command || reservation.phase != DispatchPhase.Reserved) true
         else {
           reservation.phase = DispatchPhase.Dispatching
           reservation.nativeStarted = true
@@ -1142,10 +1143,13 @@ constructor(
     val deferred = synchronized(ownershipGuard) {
       dispatchReservations[peerId.uppercase()]?.takeIf {
         (it.phase == DispatchPhase.Withdrawn || it.phase == DispatchPhase.Cleaning) &&
-          !it.cleanupStarted && it.lease == lease
+          reservationConnectionMatches(it, requestedConnection) && it.lease == lease
       }?.also {
         it.disconnectWaiters += completion
-        if (it.phase == DispatchPhase.Withdrawn && it.nativeReturned) {
+        if (it.cleanupStarted) {
+          // The current cleanup owner will deliver this waiter with the same
+          // result; never start a second physical or core teardown.
+        } else if (it.phase == DispatchPhase.Withdrawn && it.nativeReturned) {
           it.phase = DispatchPhase.Cleaning
           it.cleanupStarted = true
           startDeferredCleanup = true
@@ -1587,6 +1591,7 @@ constructor(
     val radioOperationId = radioOperationIds[operationKey]
     try {
       var cleanupNow = false
+      var reservedCancellation = false
       var reservedCompensation = false
       val withdrawnConnect = if (commandKind == "connect") {
         val deviceId = command.requiredRecord(10).requiredString(2)
@@ -1595,10 +1600,11 @@ constructor(
             ?.takeIf { it.command === command }
           reservation?.let {
             val wasReserved = reservation.phase == DispatchPhase.Reserved
+            reservedCancellation = wasReserved
             cleanupNow = reservation.phase == DispatchPhase.Returned
-            reservedCompensation = wasReserved
+            reservedCompensation = wasReserved && reservation.lease.isNotEmpty() && !reservation.cleanupStarted
             reservation.phase = if (cleanupNow || wasReserved) DispatchPhase.Cleaning else DispatchPhase.Withdrawn
-            if (cleanupNow) reservation.cleanupStarted = true
+            if (cleanupNow || reservedCompensation) reservation.cleanupStarted = true
             if (cleanupNow) {
               returnedReservations.remove(operationKey(command), it)
               dispatchReservations[deviceId.uppercase()] = it
@@ -1634,7 +1640,7 @@ constructor(
       }
       if (commandKind == "connect") {
         val deviceId = command.requiredRecord(10).requiredString(2)
-        if (withdrawnConnect != null && withdrawnConnect.lease.isNotEmpty() && !reservedCompensation) {
+        if (withdrawnConnect != null && withdrawnConnect.lease.isNotEmpty() && !reservedCancellation) {
           val shadow = coreShadow
           if (shadow != null) {
             attestCoreTransition(

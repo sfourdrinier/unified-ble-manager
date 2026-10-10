@@ -711,6 +711,86 @@ class UnifiedBleProtocolAndroidDispatcherConnectAttemptTest {
   }
 
   @Test
+  fun joiningExplicitDisconnectsShareCoreReleaseFailureAndRetryBeforeReplacement() = Harness(true).use { h ->
+    val first = h.gatt()
+    val replacement = h.gatt()
+    h.connectGattReturns(first, replacement)
+    h.connect("cleanup-owner")
+    val connection = connectionFor(
+      peer,
+      "conn-1",
+      "android-link-${peer.uppercase()}-1:cleanup-owner",
+      "test-generation"
+    )
+    h.jni.failNextLinkRelease = true
+
+    h.disconnect("first-disconnect", connection)
+    h.disconnect("joining-disconnect", connection)
+    h.native(first, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_DISCONNECTED)
+
+    val failures = h.results().filter { it.errorCode == "disconnectCleanupFailed" }
+    assertEquals("both explicit disconnects receive the one cleanup failure", 2, failures.size)
+    assertEquals("neither initial disconnect succeeds: ${h.results()}", 0, h.results().count { it.resultKind == "accepted" && it.outcome == "succeeded" })
+    assertEquals("physical cleanup is owned once", 1, Mockito.mockingDetails(first).invocations.count { it.method.name == "disconnect" })
+    assertEquals("the GATT is closed once", 1, Mockito.mockingDetails(first).invocations.count { it.method.name == "close" })
+    assertEquals("the initial scoped release is attempted once", 1, h.coreLines("link.released.scoped|").size)
+
+    h.connect("replacement-before-core-retry")
+    assertEquals("replacement remains blocked by failed cleanup", 1, h.connectGattCalls())
+    assertEquals("blocked replacement reports an explicit failure", 1, h.results().count { it.resultKind == "connected" && it.outcome == "failed" })
+    h.disconnect("retry-core-only", connection)
+    assertEquals("core-only retry releases the retained owner", 2, h.coreLines("link.released.scoped|").size)
+    assertEquals("retry produces one accepted terminal", 1, h.results().count { it.resultKind == "accepted" && it.outcome == "succeeded" })
+    assertEquals("retry does not repeat physical disconnect", 1, Mockito.mockingDetails(first).invocations.count { it.method.name == "disconnect" })
+    assertEquals("retry does not repeat GATT close", 1, Mockito.mockingDetails(first).invocations.count { it.method.name == "close" })
+
+    h.connect("replacement-after-core-retry")
+    assertEquals(2, h.connectGattCalls())
+    h.native(replacement, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+    assertEquals(1, h.results().count { it.resultKind == "connected" && it.outcome == "succeeded" })
+    val scopedReleaseCount = h.coreLines("link.released.scoped|").size
+    h.native(first, 8, BluetoothProfile.STATE_DISCONNECTED)
+    h.native(first, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+    assertEquals("late A callbacks cannot damage B", 1, h.results().count { it.resultKind == "connected" && it.outcome == "succeeded" })
+    assertEquals(scopedReleaseCount, h.coreLines("link.released.scoped|").size)
+  }
+
+  @Test
+  fun reentrantDisconnectJoinsReservedCancellationCompensation() = Harness(true).use { h ->
+    val replacement = h.gatt()
+    h.connectGattReturns(replacement)
+    var joined = false
+    h.jni.afterEnqueue = {
+      val wire = h.jni.enqueued.lastOrNull()
+      if (wire?.startsWith("connect|") == true && !joined) {
+        h.cancel(1L, "reserved-cancel-reentrant")
+      } else if (wire?.startsWith("disconnect|") == true && !joined) {
+        joined = true
+        h.disconnect(
+          "reentrant-disconnect",
+          connectionFor(
+            peer,
+            "conn-1",
+            "android-link-${peer.uppercase()}-1:reserved-cancel-reentrant",
+            "test-generation"
+          )
+        )
+        assertEquals("joining disconnect waits for the owner scoped release", 0, h.results().count { it.resultKind == "accepted" })
+      }
+    }
+
+    h.connect("reserved-cancel-reentrant")
+
+    assertEquals("reserved cancellation never opens native radio", 0, h.connectGattCalls())
+    assertEquals(1, h.results().count { it.resultKind == "cancelled" })
+    assertEquals(1, h.results().count { it.resultKind == "accepted" && it.outcome == "succeeded" })
+    assertEquals("one scoped release owns the cancellation compensation", 1, h.coreLines("link.released.scoped|").size)
+    h.connect("replacement-after-cancellation")
+    h.native(replacement, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+    assertEquals(1, h.results().count { it.resultKind == "connected" && it.outcome == "succeeded" })
+  }
+
+  @Test
   fun connectionLossReentranceAdmitsReplacementBeforeOldOwnerSweepAndReplacementSettles() = Harness(true).use { h ->
     val oldGatt = h.gatt()
     val replacementGatt = h.gatt()
