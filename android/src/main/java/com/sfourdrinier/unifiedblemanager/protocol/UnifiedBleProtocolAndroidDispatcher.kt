@@ -9,6 +9,7 @@ import android.os.SystemClock
 import com.sfourdrinier.unifiedblemanager.protocol.generated.NATIVE_PROTOCOL_VERSION
 import com.sfourdrinier.unifiedblemanager.protocol.generated.ConnectionIntents
 import com.sfourdrinier.unifiedblemanager.protocol.generated.RecordKind
+import com.sfourdrinier.unifiedblemanager.radio.GattConnectAttempt
 import com.sfourdrinier.unifiedblemanager.radio.GattObservation
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
@@ -258,7 +259,18 @@ constructor(
 
   private fun coreLeaseFor(deviceId: String): String = "android-link-${deviceId.uppercase()}"
   private val pendingCommands = ConcurrentHashMap<String, ProtocolWireRecord>()
-  private val pendingConnects = ConcurrentHashMap<String, ProtocolWireRecord>()
+  /**
+   * A connect command and the radio attempt token it handed to `radio.connect`. The token is what
+   * ties a GATT observation to this command: a prior generation's loss for the same peer carries a
+   * different (or no) token and can never settle this command.
+   */
+  private class PendingProtocolConnect(val command: ProtocolWireRecord, val attempt: GattConnectAttempt)
+
+  private val pendingConnects = ConcurrentHashMap<String, PendingProtocolConnect>()
+
+  private fun removePendingConnect(deviceKey: String, command: ProtocolWireRecord) {
+    pendingConnects[deviceKey]?.takeIf { it.command === command }?.let { pendingConnects.remove(deviceKey, it) }
+  }
   private val establishedConnections = ConcurrentHashMap<String, ProtocolWireRecord>()
   private val activeDatabases = ConcurrentHashMap<String, ProtocolWireRecord>()
   private val activeSubscriptions = ConcurrentHashMap<String, SubscriptionRoute>()
@@ -299,9 +311,16 @@ constructor(
     }
     radio.registerBondStateReceiver()
     radio.registerAdapterStateReceiver()
-    radio.onConnectionState = { deviceId, connected, status ->
+    radio.onConnectionOutcome = { deviceId, connected, status, attempt ->
       val deviceKey = deviceId.uppercase()
-      val command = pendingConnects.remove(deviceKey)
+      // Only the GATT this command's own radio.connect opened can settle it. An observation of a
+      // prior generation (its teardown, a forced close, a late callback) for the same peer is
+      // still an observation, handled below, but it is not this connect's outcome.
+      val pending = pendingConnects[deviceKey]
+      val command = pending
+        ?.takeIf { attempt != null && it.attempt === attempt && pendingConnects.remove(deviceKey, it) }
+        ?.command
+      val replacement = if (command == null) pending?.command else null
       if (command != null) {
         // The admission record is still present: no terminal has been emitted
         // for this connect yet (emitters remove it). A missing record means a
@@ -334,15 +353,25 @@ constructor(
           emitFailure(command, "connectionFailed", "Android GATT connection failed with status $status")
         }
       }
+      if (replacement != null && connected) {
+        UnifiedBleProtocolJsiBinding.emitDiagnostic(
+          nativeHandle,
+          "staleConnectionOutcome",
+          "Android GATT connected for a superseded connect while a replacement connect is pending for $deviceId"
+        )
+      }
       if (!connected) {
         val established = establishedConnections.remove(deviceKey)
         activeDatabases.remove(deviceKey)
-        failPendingCommandsForDevice(deviceKey, "Android GATT link was lost")
+        // The replacement connect is not on the link that was lost: it stays pending.
+        failPendingCommandsForDevice(deviceKey, "Android GATT link was lost", except = replacement)
         if (established != null) {
           clearSubscriptionRoutesForDevice(deviceId)
           coreShadow?.postLinkReleased(deviceId)
           emitConnectionLost(established, status)
-        } else if (command == null) {
+        } else if (command == null && replacement == null) {
+          // With a replacement pending the core peer record belongs to its admitted connect: a
+          // peer-loss for the prior link would retire that connect (Connecting -> Lost).
           coreShadow?.postPeerLoss(deviceId)
         }
       }
@@ -421,7 +450,7 @@ constructor(
     }
     pendingConnects.entries.toList().forEach { entry ->
       if (pendingConnects.remove(entry.key, entry.value)) {
-        emitFailure(entry.value, failure.code, failure.message)
+        emitFailure(entry.value.command, failure.code, failure.message)
       }
     }
     establishedConnections.clear()
@@ -627,7 +656,8 @@ constructor(
   private fun connect(command: ProtocolWireRecord) {
     val connection = command.requiredRecord(10)
     val peerId = connection.requiredString(2)
-    val prior = pendingConnects.putIfAbsent(peerId.uppercase(), command)
+    val attempt = GattConnectAttempt()
+    val prior = pendingConnects.putIfAbsent(peerId.uppercase(), PendingProtocolConnect(command, attempt))
     require(prior == null) { "A protocol connect is already pending for this peer" }
     val lease = coreLeaseFor(peerId)
     var admittedShadow: UbmGattCoreBinding? = null
@@ -636,7 +666,7 @@ constructor(
       val admission = admitCoreCommand(command, "connect") { shadow ->
         shadow.postConnect(peerId, lease)
       } ?: run {
-        pendingConnects.remove(peerId.uppercase(), command)
+        removePendingConnect(peerId.uppercase(), command)
         return
       }
       admittedShadow = admission.shadow
@@ -644,7 +674,7 @@ constructor(
         ConnectionIntents.DIRECT -> false
         ConnectionIntents.WHEN_AVAILABLE -> true
       }
-      radio.connect(peerId, autoConnect)
+      radio.connect(peerId, autoConnect, 0, attempt)
     } catch (error: Exception) {
       // Core-first compensation: the admitted core connect has no radio peer,
       // so release it rather than orphaning the core op. Best effort — the
@@ -661,7 +691,7 @@ constructor(
           "Android core connect compensation failed after radio refusal for $peerId"
         )
       }
-      pendingConnects.remove(peerId.uppercase(), command)
+      removePendingConnect(peerId.uppercase(), command)
       throw error
     }
   }
@@ -1090,7 +1120,7 @@ constructor(
       }
       if (commandKind == "connect") {
         val deviceId = command.requiredRecord(10).requiredString(2)
-        pendingConnects.remove(deviceId.uppercase(), command)
+        removePendingConnect(deviceId.uppercase(), command)
         radio.disconnect(deviceId)?.let { failure -> radio.reportCleanupFailure(failure) }
       }
       if (commandKind == "scanStop") {
@@ -1522,9 +1552,16 @@ constructor(
     }
   }
 
-  private fun failPendingCommandsForDevice(deviceId: String, message: String) {
+  private fun failPendingCommandsForDevice(
+    deviceId: String,
+    message: String,
+    except: ProtocolWireRecord? = null
+  ) {
     pendingCommands.values.toList().forEach { command ->
-      if (command.requiredString(3) != "disconnect" && commandDeviceId(command).equals(deviceId, ignoreCase = true)) {
+      if (command !== except &&
+        command.requiredString(3) != "disconnect" &&
+        commandDeviceId(command).equals(deviceId, ignoreCase = true)
+      ) {
         emitFailure(command, "connectionLost", message)
       }
     }

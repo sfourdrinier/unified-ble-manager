@@ -86,6 +86,9 @@ describe('Android RN 0.86 unified protocol boundary', () => {
   test('ships only the current protocol source graph and no legacy Android bridge', () => {
     expect(sourceFilesBelow(androidJavaRoot)).toEqual(
       [
+        // Shared typed metadata access keeps manifest values safe at every
+        // Android bundle boundary; it is part of the current source graph.
+        'AndroidBundleMetadata.java',
         'BlePlxForegroundService.java',
         'BlePlxPackage.java',
         'background/AndroidConnectedDeviceForegroundServiceDriver.java',
@@ -146,6 +149,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
         'protocol/generated/NativeProtocolV2Schema.kt',
         // Runtime-gated public Android encryption/subrate API adapters.
         'radio/AndroidEncryptionApi.kt',
+        'radio/AndroidGattDisconnectOwners.kt',
         'radio/AndroidSubrateApi.kt',
         'radio/DeferredCoreShadow.kt',
         'radio/GattCentralWire.kt',

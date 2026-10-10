@@ -291,11 +291,18 @@ fixture, select the client adapter explicitly (for example `hci1`), not the
 adapter hosting the simulator. Run this separately from phone qualification;
 its result does not prove mobile OS background execution.
 The default BlueZ `drop-link` is not an RF supervision-timeout simulation.
-For non-trusted LE peers, `Device1.Disconnect` disables incoming connections
-until `Device1.Connect` is called again. Keeping advertising enabled therefore
-does not guarantee immediate reconnection. This is an additional host policy,
-not proof of a central recovery defect; see the
+For non-trusted LE peers, `Device1.Disconnect` stops BlueZ's own passive-scan
+(central-role) auto-connection to that peer
+until `Device1.Connect` is called again; see the
 [BlueZ Device API](https://github.com/bluez/bluez/blob/5.85/doc/org.bluez.Device.rst).
+That governs BlueZ connecting out.
+It is not a gate on a remote central connecting in to this peripheral,
+so it does not explain a central that is slow to reconnect to the simulator.
+This is BlueZ 5.85 source inspection, not controller-trace evidence; it does
+not establish the cause of a slow reconnect. `drop-link` never stops, restarts
+or re-registers advertising; it reads the advertisement **registration** back
+after the disconnect and reports it as `state.advertising` (see
+[Advertising registration](#advertising-registration)).
 Any controller-level fault used by a qualification harness must be explicitly
 supplied by the host, restricted to the test adapter and peer, and report its
 actual termination reason. It must not silently escalate privileges, change
@@ -608,7 +615,7 @@ printf '{"cmd":"get-state"}\n' | nc 127.0.0.1 17935
 | `{"cmd":"pair-policy","policy":"disabled"}`                                  | Pairing policy `just-works`/`disabled`                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `{"cmd":"load-profile","path":"…"}`                                          | Load a profile file live (re-advertises when advertising)                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `{"cmd":"set-advertising","on":false}`                                       | Stop/start advertising                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `{"cmd":"drop-link"}`                                                        | [adversarial] Halt ECG and disconnect the simulator's tracked GATT clients plus any `--drop-link-allow` extras, reporting `dropped`/`skipped` per address in `state` (no targets reports the note `no simulator clients` and disconnects nothing). Advertising and the GATT database stay up, but BlueZ `Device1.Disconnect` also changes incoming-connection policy for non-trusted LE peers; see the qualification caveat above. On CoreBluetooth a connected central stays connected — no disconnect API. |
+| `{"cmd":"drop-link"}`                                                        | [adversarial] Halt ECG and disconnect the simulator's tracked GATT clients plus any `--drop-link-allow` extras, reporting `dropped`/`skipped` per address in `state` (no targets reports the note `no simulator clients` and disconnects nothing). Nothing stops or restarts advertising; the reply reports the advertisement registration read back after the disconnect as `state.advertising` and in the note, and the `link-dropped` log carries the same object. Registration is not on-air state; see [Advertising registration](#advertising-registration). On CoreBluetooth a connected central stays connected — no disconnect API. |
 | `{"cmd":"set-silent","on":true}`                                             | [adversarial] Stop notifying while keeping the link up                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `{"cmd":"reject-next-pmd","status":3}`                                       | [adversarial] Fail the next PMD command with a status code, then clear                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `{"cmd":"clear-pmd-fault"}`                                                  | [adversarial] Disarm without firing                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -619,7 +626,7 @@ printf '{"cmd":"get-state"}\n' | nc 127.0.0.1 17935
 | `{"cmd":"constrain-delivery","keepEvery":4}`                                 | [adversarial] Deliver every `keepEvery`-th ECG frame only (`1` disables)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":1.78,"ecgFrameSamples":73}` | HR rate and ECG dispatch opportunities (`hrHz` 0.1–10, `ecgFramesPerSec` 0.5–10, configured samples 1–167, further limited by the acquired writer's capacity; defaults 1 Hz / 73 samples / 130/73 opportunities per second). ECG acquisition stays 130 Hz; each opportunity may emit zero/multiple frames, with bounded backlog and explicit shedding.                                                                                                                                                                                             |
 | `{"cmd":"run-record"}`                                                       | Report this run's seed/profile, `--mode` and injected fault sequence with timestamps (telemetry, available in every mode)                                                                                                                                                                                                                                                                                                                                                                                    |
-| `{"cmd":"get-state"}`                                                        | Current state snapshot                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `{"cmd":"get-state"}`                                                        | Current state snapshot, including the observed `advertising` registration (see [Advertising registration](#advertising-registration)) |
 | `{"cmd":"help"}`                                                             | Command list (generated from the same table the driver hello uses)                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 Unknown commands and out-of-range values get `{"ok":false,"error":"…"}`.
@@ -679,6 +686,31 @@ that a central received or persisted a value; the macOS/Windows peripheral API
 can stage a characteristic update even without a subscriber. Battery and PMD
 traffic do not contribute to these HR-only counters. Existing timestamped
 event logs remain the source for detailed ordering across a link drop.
+
+### Advertising registration
+
+`get-state` and `drop-link` (and `flap-link`, after its advertising bounce)
+report an `advertising` object read from the radio at that moment:
+
+```json
+{"registered": true, "error": null, "onAirObservable": false}
+```
+
+- `registered` is the radio's own answer: `true`/`false`, or `null` when the
+  read failed — never defaulted to `false`. On BlueZ it means
+  `LEAdvertisingManager1.ActiveInstances > 0` **and** the simulator still holds
+  its advertisement handle.
+- `error` carries the failed read's message (and a `radio-error` log with
+  `op: "is-advertising"` is written); otherwise `null`. A failed read does not
+  fail `get-state` or `drop-link`.
+- `onAirObservable` is always `false`. A registered advertisement is not proof
+  that the controller is advertising: the on-air state is not observable from
+  userspace, and `btmgmt info`'s `advertising`/`connectable` settings do not
+  reflect `LEAdvertisement1` instances. Only a controller trace (for example
+  `btmon` showing *LE Set Extended Advertising Enable*) establishes it.
+- The simulator observes registration only; it does not restart or
+  re-register advertising on its own after a drop. `flap-link` and
+  `set-advertising` remain the explicit, caller-requested bounces.
 
 ### Authentication
 
@@ -890,10 +922,11 @@ install` / `systemctl enable --now` commands and how to remove it.
   sit near ~100 ms. The timing model follows the `pmdResponseMs`
   distribution it is built from; the steady-state fast path is documented
   here, not modelled.
-- `drop-link` drops the link, not the peripheral: advertising and the GATT
-  database stay up, but reconnection remains subject to the BlueZ incoming
-  admission policy described above. On CoreBluetooth it cannot force-disconnect an
-  active central (no disconnect API); BlueZ disconnects via
+- `drop-link` drops the link, not the peripheral: it does not stop, restart or
+  re-register advertising or the GATT application, and the reply reports the
+  advertisement registration it read back afterwards (`state.advertising`),
+  not an assumption and not on-air state. On CoreBluetooth it cannot
+  force-disconnect an active central (no disconnect API); BlueZ disconnects via
   `Device1.Disconnect` (counted in the reply).
 - No encryption-gated characteristics: like the real H10, PMD streams without
   a bond; `--pair-policy disabled` is policy state, not a BlueZ pairing

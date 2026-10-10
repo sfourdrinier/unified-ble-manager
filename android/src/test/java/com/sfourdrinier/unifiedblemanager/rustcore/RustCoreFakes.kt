@@ -3,6 +3,7 @@
 package com.sfourdrinier.unifiedblemanager.rustcore
 
 import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredPeer
+import com.sfourdrinier.unifiedblemanager.radio.GattConnectAttempt
 import com.ubm.core.MobileCoreBridge
 import java.util.concurrent.Executor
 
@@ -176,7 +177,7 @@ class FakeCore : MobileCorePort {
 }
 
 /** Scripted OS driver: records calls; tests answer callbacks explicitly. */
-class FakeRadio : AndroidRadioPort {
+internal class FakeRadio : AndroidRadioPort {
   private var installedEvents: RadioPortEvents? = null
   val events: RadioPortEvents get() = installedEvents ?: throw AssertionError("adapter did not install events")
   val calls = mutableListOf<String>()
@@ -219,8 +220,12 @@ class FakeRadio : AndroidRadioPort {
 
   override fun supportsConnectPhy(): Boolean = connectPhySupported
 
-  override fun connect(peerId: String, autoConnect: Boolean, phyMask: Int) {
+  /** The attempt token of the latest `connect` per peer (what a real driver retains for that generation). */
+  val attempts = mutableMapOf<String, GattConnectAttempt>()
+
+  override fun connect(peerId: String, autoConnect: Boolean, phyMask: Int, attempt: GattConnectAttempt) {
     calls.add(if (phyMask == 0) "connect:$peerId:$autoConnect" else "connect:$peerId:$autoConnect:phy=$phyMask")
+    attempts[peerId] = attempt
     connectFailure?.let { throw it }
   }
 

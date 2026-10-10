@@ -898,6 +898,14 @@ impl<B: RadioBoundary> CoreAuthority for DesktopCentral<B> {
     }
 }
 
+fn acquired_unsupported() -> DesktopError {
+    DesktopError::new(
+        ubm_core::contracts::BleErrorCode::CapabilityUnsupported,
+        ubm_core::contracts::BleErrorDomain::Capability,
+        "gatt.acquire",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1021,12 +1029,4 @@ mod tests {
         assert_eq!(operation, "desktop.open");
         assert_eq!(detail, "no adapter");
     }
-}
-
-fn acquired_unsupported() -> DesktopError {
-    DesktopError::new(
-        ubm_core::contracts::BleErrorCode::CapabilityUnsupported,
-        ubm_core::contracts::BleErrorDomain::Capability,
-        "gatt.acquire",
-    )
 }

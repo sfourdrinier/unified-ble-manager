@@ -955,7 +955,7 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     assertTrue(dispatcher.contains("command.requiredString(20)"))
     assertTrue(dispatcher.contains("ConnectionIntents.DIRECT"))
     assertTrue(dispatcher.contains("ConnectionIntents.WHEN_AVAILABLE"))
-    assertTrue(dispatcher.contains("radio.connect(peerId, autoConnect)"))
+    assertTrue(dispatcher.contains("radio.connect(peerId, autoConnect, 0, attempt)"))
     assertFalse(dispatcher.contains("command.optionalString(20) ?: \"direct\""))
   }
 
@@ -1431,12 +1431,21 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       radio.indexOf("private fun cancelSafeClose")
     )
 
-    val connectionLossIndex = timeout.indexOf("dispatchConnectionState(key, false, BluetoothGatt.GATT_FAILURE)")
-    val failPendingIndex = timeout.indexOf("failPendingForDevice(key, \"disconnected timeout\")")
-    val teardownIndex = timeout.indexOf("val teardownFailure = completeGattTeardown(key, gatt)")
+    assertTrue(timeout.contains("forceCloseWithoutDisconnectedCallback(key, gatt)"))
+
+    val forcedClose = radio.substring(
+      radio.indexOf("private fun forceCloseWithoutDisconnectedCallback"),
+      radio.indexOf("/** Opens the reconnect that was queued behind a clean prior teardown")
+    )
+    val connectionLossIndex = forcedClose.indexOf(
+      "dispatchConnectionState(key, false, BluetoothGatt.GATT_FAILURE, attempt)"
+    )
+    val failPendingIndex = forcedClose.indexOf("failPendingForDevice(key, \"disconnected timeout\")")
+    val teardownIndex = forcedClose.indexOf("val teardownFailure = completeGattTeardown(key, gatt)")
+    assertTrue(forcedClose.contains("runEvery("))
     assertTrue(connectionLossIndex >= 0)
     assertTrue(connectionLossIndex < failPendingIndex)
-    assertTrue(connectionLossIndex < teardownIndex)
+    assertTrue(failPendingIndex < teardownIndex)
   }
 
   @Test
@@ -1491,7 +1500,6 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     assertTrue(transition.contains("pendingReconnect.clear()"))
     assertTrue(transition.contains("failPendingForDevice(key, \"adapter unavailable\")"))
     assertTrue(transition.contains("completeGattTeardown(key, gatt)"))
-    assertTrue(transition.contains("pendingDisconnectCallbacks.remove(key)?.invoke(teardownFailure)"))
     assertFalse(transition.contains("scheduleSafeClose"))
     assertFalse(transition.contains("dispatchConnectionState"))
   }
@@ -1523,7 +1531,7 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
 
     val retainedIndex = disconnect.indexOf("pendingGattTeardowns[key]")
     val unavailableIndex = disconnect.indexOf("requiresImmediateGattTeardownOnAdapterState(adapter?.state)")
-    val safetyCloseIndex = disconnect.indexOf("scheduleSafeClose(key, g)")
+    val safetyCloseIndex = disconnect.indexOf("joinGattDisconnect(key, g, generation")
     assertTrue(retainedIndex >= 0)
     assertTrue(unavailableIndex > retainedIndex)
     assertTrue(safetyCloseIndex > unavailableIndex)
@@ -1551,8 +1559,11 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     assertTrue(cleanup.contains("activeDatabases.clear()"))
     assertTrue(cleanup.contains("activeSubscriptions.clear()"))
     assertTrue(cleanup.contains("pendingConnects.entries.toList()"))
-    assertTrue(cleanup.contains("pendingConnects.remove(entry.key, entry.value)"))
-    assertTrue(cleanup.contains("emitFailure(entry.value, failure.code, failure.message)"))
+    val removePendingIndex = cleanup.indexOf("pendingConnects.remove(entry.key, entry.value)")
+    val emitFailureIndex = cleanup.indexOf("emitFailure(entry.value.command, failure.code, failure.message)")
+    assertTrue(removePendingIndex >= 0)
+    assertTrue(emitFailureIndex >= 0)
+    assertTrue(removePendingIndex < emitFailureIndex)
   }
 
   @Test

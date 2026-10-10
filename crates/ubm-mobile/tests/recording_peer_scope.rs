@@ -381,11 +381,15 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
             _ => None,
         })
         .collect();
-    let producer_host = host.clone();
     let epoch = epochs[POLAR];
-    let producer = tokio::spawn(async move {
-        for sequence in 0u16..250 {
-            producer_host.ingest(RadioIngress::Notification {
+    // The setup acknowledgement stays behind these drains. Each one has to
+    // finish while the source peer is still journaling, and the setup
+    // deadline is 20s. This is a fairness/deadline check, not a guarantee
+    // that 250 durable commits fit within 20s on every filesystem.
+    let mut worst = std::time::Duration::ZERO;
+    for turn in 0u16..5 {
+        for sequence in (turn * 50)..((turn + 1) * 50) {
+            host.ingest(RadioIngress::Notification {
                 instance: Instance {
                     peer_id: POLAR.into(),
                     service_uuid: HR_SERVICE.into(),
@@ -396,17 +400,8 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
                 epoch,
                 value: sequence.to_le_bytes().to_vec(),
             });
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
-    });
-    // The setup acknowledgement stays behind these drains. Each one has to
-    // finish while the source peer is still journaling, and the setup
-    // deadline is 20s. The pump admits one journaled record per value turn
-    // so a queued security or lifecycle signal is not stuck behind the
-    // whole backlog.
-    let mut worst = std::time::Duration::ZERO;
-    for turn in 0..5 {
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // Enqueue foreign work immediately so the source burst is still pending.
         host.ingest(RadioIngress::Notification {
             instance: Instance {
                 peer_id: OTHER.into(),
@@ -432,6 +427,13 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
             fixture_started.elapsed().as_millis(),
             started.elapsed().as_millis()
         );
+        if turn == 0 {
+            commit_response(&host, epoch);
+            eprintln!(
+                "recording-fairness phase=ack-admitted elapsed_ms={}",
+                fixture_started.elapsed().as_millis()
+            );
+        }
     }
     let started = std::time::Instant::now();
     host.ingest(RadioIngress::ServicesChanged {
@@ -448,13 +450,6 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
         fixture_started.elapsed().as_millis(),
         started.elapsed().as_millis()
     );
-    producer.await.unwrap();
-    eprintln!(
-        "recording-fairness phase=response-admitted elapsed_ms={} status={:?}",
-        fixture_started.elapsed().as_millis(),
-        engine.recording_status("fairness")
-    );
-    commit_response(&host, epoch);
     let result = execution.await.unwrap();
     if let Err(error) = &result {
         eprintln!(
@@ -465,26 +460,53 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
         );
     }
     result.unwrap();
-    let status = engine.recording_status("fairness").unwrap();
     let counters = ok(&call(&other, "counters.describe", "{}").await);
-    assert_eq!(status["lostRecords"], 0);
     assert_eq!(
         counters["process"]["native"]["ingressDrops"]["notification"],
         0
     );
-    assert_eq!(status["records"], 252);
-    let batch = engine.recording_prepare("fairness", 1000, 1048576).unwrap();
-    let payloads: Vec<Value> = batch["records"]
-        .as_array()
+    let retention_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    let status = loop {
+        let status = tokio::time::timeout_at(
+            retention_deadline,
+            tokio::task::spawn_blocking({
+                let engine = engine.clone();
+                move || engine.recording_status("fairness")
+            }),
+        )
+        .await
         .unwrap()
+        .unwrap()
+        .unwrap();
+        assert_eq!(status["lostRecords"], 0);
+        assert!(status["runtimeFailure"].is_null());
+        assert!(status["collectionFailure"].is_null());
+        assert!(status["records"].as_u64().unwrap() <= 252);
+        if status["records"] == 252 {
+            break status;
+        }
+        assert!(
+            tokio::time::Instant::now() < retention_deadline,
+            "durable recording did not reach 252 rows within the bounded retention phase: {status}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    let batch = engine.recording_prepare("fairness", 1000, 1048576).unwrap();
+    let records = batch["records"].as_array().unwrap();
+    assert_eq!(records.len(), 252);
+    let acknowledgements = records
         .iter()
-        .filter(|row| row["record"]["t"] == "value")
+        .filter(|row| row["record"]["t"] == "value" && row["record"]["valueB64"] == "/wA=")
+        .count();
+    assert_eq!(acknowledgements, 1);
+    let payloads: Vec<Value> = records
+        .iter()
+        .filter(|row| row["record"]["t"] == "value" && row["record"]["valueB64"] != "/wA=")
         .map(|row| row["record"]["valueB64"].clone())
         .collect();
-    let mut expected: Vec<Value> = (0u16..250)
+    let expected: Vec<Value> = (0u16..250)
         .map(|sequence| json!(ubm_mobile::wire::encode_base64(&sequence.to_le_bytes())))
         .collect();
-    expected.push(json!("/wA="));
     assert_eq!(
         payloads, expected,
         "all source values must remain ordered under load"

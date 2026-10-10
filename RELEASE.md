@@ -247,21 +247,41 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
-## Releasing 5.0.1
+## Releasing 5.0.2
 
 Unpublished patch candidate.
 
-The prepared `5.0.1` candidate is unpublished. Its exact source, packed
+The prepared `5.0.2` candidate is unpublished. Its exact source, packed
 artifact, and validation receipts must be reviewed before any tag or trusted
-publisher action. This patch is scoped to Expo Android legacy location
-readiness and the explicit API 31+ `legacyLocation: 'required'` permission
-policy; it does not promote Fire TV or any other backend to a support label.
+publisher action. This patch includes the awaited WinRT null-device correction,
+Android callback and metadata ownership fixes, and Tauri characteristic
+attachment cleanup. Source-inventory assertions and the recording contention
+fixture are corrected without reducing observation retention or production
+durability. Package SemVer does not promote any backend to a support label.
+Adapter-reset causality is also preserved during pending desktop release.
 
-Required remaining release steps are: refresh the full current gates from the
-exact source commit, confirm the sealed tarball SHA512 and packed-consumer
-contract, complete the authorized final physical receipt if requested, then
-obtain release-owner approval for the normal tag-driven trusted publisher.
+Required remaining release steps are: refresh the applicable gates from the
+exact source commit, confirm the packed-consumer contract and both digests for
+the same sealed tarball, complete the authorized final physical receipt if
+requested, then use the normal tag-driven trusted publisher under release-owner
+authorization. Retain the publisher workflow's SHA-256 digest and calculate
+the requested independent SHA-512 receipt from that exact file, for example:
+
+```sh
+sha256sum .release-package/canonical.tgz
+sha512sum .release-package/canonical.tgz
+```
+
 No npm publication, tag, push, or registry claim is made by this checklist.
+
+## Published 5.0.1
+
+`v5.0.1` was published on 2026-10-09 at 18:18:46 UTC through the normal
+[GitHub release](https://github.com/sfourdrinier/unified-ble-manager/releases/tag/v5.0.1).
+The registry independently returns `unified-ble-manager@5.0.1` with integrity
+`sha512-QMlW+cdUNxtmLPoKCNXo1IVwLWDRAhpLcqjdc/FWrgDm4jAakBNL5rrAtD7BFToMDXUplZmZ+LAFmTaF3x2ikg==`.
+The tag and package are immutable. Later corrections belong to `5.0.2`; this
+publication does not promote Fire TV or any other backend to a support label.
 
 ## Releasing 5.0.0
 
@@ -1151,7 +1171,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.1
+version=5.0.2
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -1162,7 +1182,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- for stable `5.0.1`, npm `latest` resolves to `5.0.1` and `next` retains the
+- for stable `5.0.2`, npm `latest` resolves to `5.0.2` and `next` retains the
   separately published rc.21; for a numbered RC, verify `next` resolves to that
   exact candidate without changing `latest`;
 - the npm package page shows provenance for the published artifact;
@@ -1171,8 +1191,8 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.1` explicitly and import the documented host
-  entrypoints. A separate bare install must select npm `latest` (`5.0.0` after
+  `unified-ble-manager@5.0.2` explicitly and import the documented host
+  entrypoints. A separate bare install must select npm `latest` (`5.0.2` after
   stable publication). For RC verification, pin the actual numbered candidate
   instead and verify `next` separately. This
   catches a packaging gap the repository's

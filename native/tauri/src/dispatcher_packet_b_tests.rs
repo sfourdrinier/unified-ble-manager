@@ -1346,12 +1346,15 @@ async fn peer_directory_bonded_preserves_native_fact_without_link_ownership() {
 
 #[tokio::test]
 async fn peer_directory_native_inventory_keeps_backend_scope_and_foreign_link_unowned() {
-    let cases: [(
+    type DirectoryRegistration =
+        fn(&mut ubm_core::central::Central) -> Result<(), ubm_core::contracts::CoreError>;
+    type DirectoryCase = (
         ubm_desktop::DesktopOs,
-        &str,
-        &str,
-        fn(&mut ubm_core::central::Central) -> Result<(), ubm_core::contracts::CoreError>,
-    ); 2] = [
+        &'static str,
+        &'static str,
+        DirectoryRegistration,
+    );
+    let cases: [DirectoryCase; 2] = [
         (
             ubm_desktop::DesktopOs::Windows,
             "unified-ble:winrt",
@@ -5653,6 +5656,61 @@ async fn finding_57_the_previous_attachment_fails_backend_reset_before_native_io
 
 // Finding 58 — admission errors from the core cross unchanged: code,
 // domain, operation, detail, retryability and commit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn adapter_reset_refuses_route_before_gatt_reservation_without_pump_rebind() {
+    let harness = Harness::with_radio(os_radio(AdmissionPolicy::LifecycleOnly)).await;
+    let link = harness.connect("peer-a").await;
+    let database = harness.discover(&link).await;
+    // Deterministically deliver link invalidation before attachment rebinding,
+    // the two independent reset/lifecycle receivers selected by the pump.
+    let pump = harness
+        .dispatcher
+        .lifecycle_pump
+        .lock()
+        .unwrap()
+        .take()
+        .unwrap();
+    pump.abort();
+    assert!(
+        pump.await.is_err(),
+        "the test owns a stopped lifecycle pump"
+    );
+    let mut lifecycle = harness.central.lifecycle_events();
+    harness.lose_adapter().await;
+    let event = tokio::time::timeout(WAIT, lifecycle.recv())
+        .await
+        .expect("adapter loss lifecycle event")
+        .expect("lifecycle event");
+    assert!(matches!(event.kind, LifecycleKind::AdapterLost));
+    harness.dispatcher.apply_lifecycle_event(&event).await;
+    let reads = count(&harness.radio().calls(), "read");
+
+    let error = harness
+        .route(
+            "gatt.read",
+            "reset-before-reservation",
+            Harness::gatt_entries(&link, &database, CONTROL_POINT),
+            None,
+        )
+        .await
+        .expect_err("old attachment cannot reserve a GATT operation");
+
+    assert_eq!(
+        error.identity(),
+        (
+            "backend.reset",
+            "adapter",
+            "tauri.route-attachment".to_owned()
+        )
+    );
+    assert_eq!(error.commit, Some(CommitState::NotDispatched));
+    assert_eq!(
+        count(&harness.radio().calls(), "read"),
+        reads,
+        "no native I/O"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn finding_58_admission_refusals_cross_verbatim() {
     for (power, authorization, expected) in [

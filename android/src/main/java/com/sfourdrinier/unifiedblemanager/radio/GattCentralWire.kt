@@ -225,7 +225,7 @@ object GattCentralWire {
     require(value.size <= NOTIFY_MAX_BYTES) {
       "GATT notify value exceeds $NOTIFY_MAX_BYTES bytes"
     }
-    val line = "notify.deliver|${u64(pathIndex.toLong(), "pathIndex")}|${hexOf(value)}"
+    val line = "notify.deliver|${u64(pathIndex, "pathIndex")}|${hexOf(value)}"
     require(line.length <= WIRE_MAX) {
       "GATT wire line exceeds $WIRE_MAX chars"
     }

@@ -6,7 +6,7 @@ Use `unified-ble-manager/web` to run the public UBM manager directly in a browse
 
 The complete runnable TypeScript/Vite application is in [`example-web/`](../example-web/).
 
-This guide targets `5.0.1`. Web Bluetooth support still depends on the browser, operating system, adapter, and peripheral. UBM reports those runtime boundaries; it does not fabricate a fallback backend.
+This guide targets the unpublished `5.0.2` candidate. Web Bluetooth support still depends on the browser, operating system, adapter, and peripheral. UBM reports those runtime boundaries; it does not fabricate a fallback backend.
 
 ## Requirements
 
@@ -24,7 +24,7 @@ identity, diagnostics limits, and caller-supplied entropy for ephemeral IDs.
 ## Install and create the manager
 
 ```sh
-pnpm add unified-ble-manager@5.0.1
+pnpm add unified-ble-manager@5.0.2
 ```
 
 ```ts
@@ -186,11 +186,7 @@ The pending attempt is released when the failure settles, so a retry cannot over
 try {
   await manager.connect(peer, { timeoutMs: 60_000 })
 } catch (error) {
-  if (
-    error instanceof BleError &&
-    error.code === 'connection.failed' &&
-    error.operation === 'web-connection.connect'
-  ) {
+  if (error instanceof BleError && error.code === 'connection.failed' && error.operation === 'web-connection.connect') {
     // The pending attempt was already released; retry on the same manager and peer.
     return manager.connect(peer, { timeoutMs: 60_000 })
   }
