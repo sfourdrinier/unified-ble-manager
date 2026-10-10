@@ -38,6 +38,16 @@ the physical close result. Waiter or diagnostic-observer exceptions propagate
 only after cleanup and all waiter settlements; they cannot skip a queued
 reconnect after a clean close.
 
+Connect requests carry an internal attempt identity through the radio and host
+adapter. A prior generation's disconnection is still reported and its host
+resources released, but cannot settle a replacement connect or retire its core
+state. Only the replacement's own outcome settles that request. A connect that
+throws withdraws its queued reconnect intent; failed physical cleanup remains
+owned for retry. A reconnect joining an existing teardown waits for its terminal
+result without requesting native disconnect a second time. These changes are
+unreleased and require qualification of the exact consumer artifact before
+claiming device-level recovery evidence.
+
 ## Exact packed Apple TV consumer
 
 On an Apple Silicon Mac with Xcode and the required tvOS SDK installed, point

@@ -2,6 +2,8 @@
 
 package com.sfourdrinier.unifiedblemanager.rustcore
 
+import com.sfourdrinier.unifiedblemanager.radio.GattConnectAttempt
+
 /**
  * The Android OS driver as the Rust radio adapter sees it: plain values and
  * callbacks, no `android.bluetooth` types. Production is [OwnedRadioPort]
@@ -13,7 +15,7 @@ package com.sfourdrinier.unifiedblemanager.rustcore
  * [RadioPortFailure]; anything else is classified by
  * [RustRadioHostAdapter.classify].
  */
-interface AndroidRadioPort {
+internal interface AndroidRadioPort {
   fun setEvents(events: RadioPortEvents)
   fun adapterState(): AdapterFacts
 
@@ -32,8 +34,13 @@ interface AndroidRadioPort {
    * Opens the link; the outcome arrives through [RadioPortEvents.onConnection].
    * [phyMask] is `BluetoothDevice.PHY_LE_*_MASK` bits to establish the link on (0 = no
    * preference); the caller only passes one where [supportsConnectPhy] and never with [autoConnect].
+   *
+   * [attempt] identifies this request. The driver retains it for the link generation this connect
+   * opens and hands it back with that generation's [RadioPortEvents.onConnection] observations, so
+   * the caller settles the request on its own outcome and never on a prior generation's loss for
+   * the same peer.
    */
-  fun connect(peerId: String, autoConnect: Boolean, phyMask: Int)
+  fun connect(peerId: String, autoConnect: Boolean, phyMask: Int, attempt: GattConnectAttempt)
 
   /** Releases the link; [onComplete] receives the teardown failure, or null once the OS confirmed. */
   fun disconnect(peerId: String, onComplete: (Throwable?) -> Unit)
@@ -75,9 +82,15 @@ interface AndroidRadioPort {
 }
 
 /** Unsolicited OS facts from the driver. */
-interface RadioPortEvents {
+internal interface RadioPortEvents {
   fun onAdvertisement(advertisement: AdvertisementFacts)
-  fun onConnection(peerId: String, connected: Boolean, gattStatus: Int)
+
+  /**
+   * A link observation. [attempt] is the connect request the observed generation was opened for,
+   * or null when it was opened without one; an observation whose token is not the pending
+   * request's own is a different generation's fact, never that request's outcome.
+   */
+  fun onConnection(peerId: String, connected: Boolean, gattStatus: Int, attempt: GattConnectAttempt?)
   fun onServicesChanged(peerId: String)
   fun onNotification(instance: CharacteristicInstance, value: ByteArray)
   fun onAdapterState(state: AdapterFacts)

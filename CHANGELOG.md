@@ -11,6 +11,11 @@ All notable changes to `unified-ble-manager` are documented here.
 - Fail closed if Android refuses or throws while scheduling the disconnect
   deadline. Finish physical cleanup and settle every waiter before propagating
   observer errors; resume queued reconnects only after a clean close.
+- Correlate Android connect outcomes with the exact GATT generation that the
+  request opened, in both the active RustCore host adapter and legacy protocol
+  dispatcher. A prior link's loss cannot fail an admitted replacement connect.
+  Withdraw failed reconnect intents so they cannot open unowned links later;
+  joining an existing teardown does not request native disconnect again.
 
 ## [5.0.1] - 2026-10-08
 
