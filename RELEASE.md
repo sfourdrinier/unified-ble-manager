@@ -258,12 +258,22 @@ Android callback and metadata ownership fixes, and Tauri characteristic
 attachment cleanup. Source-inventory assertions and the recording contention
 fixture are corrected without reducing observation retention or production
 durability. Package SemVer does not promote any backend to a support label.
+Adapter-reset causality is also preserved during pending desktop release.
 
-Required remaining release steps are: refresh the full current gates from the
+Required remaining release steps are: refresh the applicable gates from the
 exact source commit, confirm the sealed tarball SHA512 and packed-consumer
 contract, complete the authorized final physical receipt if requested, then
 use the normal tag-driven trusted publisher under release-owner authorization.
 No npm publication, tag, push, or registry claim is made by this checklist.
+
+## Published 5.0.1
+
+`v5.0.1` was published on 2026-10-09 at 18:18:46 UTC through the normal
+[GitHub release](https://github.com/sfourdrinier/unified-ble-manager/releases/tag/v5.0.1).
+The registry independently returns `unified-ble-manager@5.0.1` with integrity
+`sha512-QMlW+cdUNxtmLPoKCNXo1IVwLWDRAhpLcqjdc/FWrgDm4jAakBNL5rrAtD7BFToMDXUplZmZ+LAFmTaF3x2ikg==`.
+The tag and package are immutable. Later corrections belong to `5.0.2`; this
+publication does not promote Fire TV or any other backend to a support label.
 
 ## Releasing 5.0.0
 

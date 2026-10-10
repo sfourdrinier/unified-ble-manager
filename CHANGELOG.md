@@ -7,6 +7,9 @@ All notable changes to `unified-ble-manager` are documented here.
 - Map an awaited WinRT direct-address factory result with no
   `BluetoothLEDevice` (HRESULT 0) to `peer.not-found`, while preserving
   nonzero WinRT HRESULT failures.
+- Preserve adapter-loss causality during an in-flight desktop release or
+  disconnect. CoreBluetooth and WinRT now end the affected link as lost without
+  failing the whole manager on an unannounced private disconnecting state.
 
 - Read Android manifest metadata through typed AndroidX accessors while preserving
   Boolean/string flag handling, defaults and invalid-policy rejection. Build

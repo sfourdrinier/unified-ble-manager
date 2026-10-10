@@ -35,6 +35,21 @@ describe('UBM5 TCK factory seam', () => {
     expect(String(PINNED_TS_REFERENCE.baseSha)).toBe('8c8195dd0430ff847d9492ce32f4e63ea3a5df1d')
   })
 
+  test('the reviewed literal pin matches the current source backend version', async () => {
+    const definition = baseTckScenarios[0]
+    if (definition === undefined) {
+      throw new Error('base TCK definition is missing')
+    }
+    const factory = createDeterministicBackendTckFactory()
+    const fixture = await factory.create(Object.freeze({ scenarioId: definition.id }))
+    try {
+      expect(fixture.backend.identity.runtime.implementationVersion).toBe('5.0.2')
+      expect(PINNED_TS_REFERENCE.implementationVersion).toBe('5.0.2')
+    } finally {
+      expect(await fixture.dispose()).toEqual({ state: 'released', failures: [] })
+    }
+  })
+
   test('reference seam injects public-manager construction for the SAME public scenarios', async () => {
     const seam = createTsReferenceManagerSeam()
     expect(seam.kind).toBe('ts-reference')

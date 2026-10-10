@@ -22,7 +22,8 @@ root import does not pick a radio. Package SemVer and backend support labels are
 independent: each radio backend keeps its evidence-derived label. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
-This source tree is versioned `5.0.2`. Install the exact version shown in the npm
+This source tree is versioned `5.0.2`. It is an unpublished candidate; verify the
+published version in the npm
 registry. During release preparation, the version in `package.json` can be ahead
 of npm until the matching tag-driven workflow publishes it; the registry and
 GitHub release remain authoritative.
@@ -403,7 +404,7 @@ after disconnect, service change, or rediscovery.
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship the Node-API desktop-core prebuild for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
-`5.0.2` is prepared for npm `latest`; after publication, a bare install selects
+`5.0.2` is prepared as an unpublished candidate for npm `latest`; after publication, a bare install selects
 the stable 5.0 line. Numbered 5.x RCs use `next`. Publication uses npm trusted
 publishing/OIDC with provenance.
 

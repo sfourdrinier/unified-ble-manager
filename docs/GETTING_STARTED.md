@@ -4,7 +4,7 @@
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 
-This source targets `5.0.2`; verify the published version in the npm registry.
+This source targets the unpublished `5.0.2` candidate; verify the published version in the npm registry.
 
 ## Pick a host
 

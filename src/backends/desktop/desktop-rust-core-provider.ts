@@ -2090,10 +2090,16 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
    * end `source-failed` and its databases go stale; CoreBluetooth and WinRT
    * announce `connection-state-changed` with reason `adapter`, BlueZ ends it
    * silently (the legacy per-OS sequence, `ADAPTER_LOSS_SEQUENCE`).
+   *
+   * The transition's `previous` is the last state announced to the core, which
+   * this provider only ever tells of terminal transitions: `connected`, also
+   * while the caller's own release is in flight. `disconnecting` is the
+   * provider's private marker for that release; announcing it breaks the
+   * core's previous-state invariant and ends the whole manager
+   * `backend-failure` instead of ending this link `adapter-loss`.
    */
   private applyAdapterLostLink(record: ConnectionRecord): void {
     if (record.state !== 'connected' && record.state !== 'disconnecting') return
-    const previous = record.state
     record.state = 'lost'
     for (const subscriptionId of record.subscriptions) {
       const subscription = this.subscriptions.get(subscriptionId)
@@ -2119,7 +2125,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         attachmentId: this.attachment.attachmentId,
         ingressOrdinal: this.nextEventOrdinal(),
         connection: record.path,
-        previous,
+        previous: 'connected',
         current: 'lost',
         reason: 'adapter'
       })
