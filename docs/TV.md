@@ -1,3 +1,5 @@
+<!-- docs/TV.md -->
+
 # TV hosts
 
 Status: Current 5.x consumer guidance. See
@@ -21,6 +23,31 @@ The reference app and shared test driver live in
 [`example-expo`](../example-expo/README.md#apple-tv-tvos). TV staging copies the
 same sources and uses a measured, focusable list viewport. It does not fork the
 BLE driver, inject a mock radio, or alter the phone projects.
+
+### Android disconnect ownership
+
+In the current unreleased Android implementation, disconnect requests for the
+same concrete GATT generation share one native disconnect and one safety
+deadline. A later request joins that deadline instead of extending it. Native
+disconnection, adapter loss or forced close settles all joined callers once;
+an old deadline cannot close a replacement link. A failed physical close stays
+owned for retry, and prevents reconnect until cleanup succeeds. This is shared
+phone/TV radio behavior, not a TV-specific reconnect policy. If Android refuses
+the close deadline, the generation is closed immediately and callers receive
+the physical close result. Waiter or diagnostic-observer exceptions propagate
+only after all connection observers, cleanup and waiter settlements, including
+native failed-connect and disconnect callbacks; they cannot skip a queued
+reconnect after a clean close.
+
+Connect requests carry an internal attempt identity through the radio and host
+adapter. A prior generation's disconnection is still reported and its host
+resources released, but cannot settle a replacement connect or retire its core
+state. Only the replacement's own outcome settles that request. A connect that
+throws withdraws its queued reconnect intent; failed physical cleanup remains
+owned for retry. A reconnect joining an existing teardown waits for its terminal
+result without requesting native disconnect a second time. These changes are
+unreleased and require qualification of the exact consumer artifact before
+claiming device-level recovery evidence.
 
 ## Exact packed Apple TV consumer
 

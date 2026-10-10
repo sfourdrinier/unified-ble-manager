@@ -5,6 +5,7 @@ package com.sfourdrinier.unifiedblemanager.rustcore
 import com.sfourdrinier.unifiedblemanager.background.ForegroundServiceControlException
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattNotSubmitted
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattOperationFailure
+import com.sfourdrinier.unifiedblemanager.radio.GattConnectAttempt
 import com.sfourdrinier.unifiedblemanager.presence.PresencePort
 import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredPeer
 import com.ubm.core.MobileCoreBridge
@@ -34,9 +35,17 @@ class RustRadioHostAdapterTest {
     return radio.events
   }
 
+  /** An OS link observation for [peer]; by default for the generation of the latest connect. */
+  private fun observe(
+    peerId: String,
+    connected: Boolean,
+    status: Int,
+    attempt: GattConnectAttempt? = radio.attempts[peerId]
+  ) = events().onConnection(peerId, connected, status, attempt)
+
   private fun connect(requestId: Long = 1) {
     adapter.connect(requestId, peer, false, NO_PHY)
-    events().onConnection(peer, true, 0)
+    observe(peer, true, 0)
     core.calls.clear()
     radio.calls.clear()
   }
@@ -142,7 +151,7 @@ class RustRadioHostAdapterTest {
     adapter.connect(1, peer, true, NO_PHY)
     assertEquals(listOf("connect:$peer:true"), radio.calls)
     assertTrue(core.calls.isEmpty())
-    events().onConnection(peer, true, 0)
+    observe(peer, true, 0)
     assertEquals(listOf("unit:1", "link:$peer:true:0"), core.calls)
   }
 
@@ -150,7 +159,7 @@ class RustRadioHostAdapterTest {
   fun connectEstablishesTheLinkOnThePreferredPhys() {
     adapter.connect(1, peer, false, arrayOf("le-2m", "le-coded"))
     assertEquals(listOf("connect:$peer:false:phy=6"), radio.calls)
-    events().onConnection(peer, true, 0)
+    observe(peer, true, 0)
     assertEquals(listOf("unit:1", "link:$peer:true:0"), core.calls)
   }
 
@@ -180,7 +189,7 @@ class RustRadioHostAdapterTest {
   @Test
   fun failedConnectAnswersGattStatusWithoutInventingALink() {
     adapter.connect(1, peer, false, NO_PHY)
-    events().onConnection(peer, false, 133)
+    observe(peer, false, 133)
     assertEquals(listOf("failure:1:gatt-status:133"), core.calls)
   }
 
@@ -193,7 +202,7 @@ class RustRadioHostAdapterTest {
   fun aTransientConnectFailureCrossesWithItsStatusAndIsNeverRetried() {
     for ((requestId, status) in listOf(1L to 133, 2L to 62)) {
       adapter.connect(requestId, peer, false, NO_PHY)
-      events().onConnection(peer, false, status)
+      observe(peer, false, status)
       assertEquals(listOf("failure:$requestId:gatt-status:$status"), core.calls)
       assertEquals(1, radio.calls.count { it.startsWith("connect:") })
       core.calls.clear()
@@ -221,7 +230,7 @@ class RustRadioHostAdapterTest {
     adapter.connect(1, peer, false, NO_PHY)
     adapter.cancel(1)
     assertEquals(listOf("connect:$peer:false", "disconnect:$peer"), radio.calls)
-    events().onConnection(peer, false, 0)
+    observe(peer, false, 0)
     assertEquals(listOf("failure:1:cancelled:null"), core.calls)
   }
 
@@ -264,7 +273,7 @@ class RustRadioHostAdapterTest {
     connect()
     adapter.disconnect(2, peer)
     assertEquals(listOf("unit:2"), core.calls)
-    events().onConnection(peer, false, 0)
+    observe(peer, false, 0)
     assertEquals(listOf("unit:2", "link:$peer:false:0"), core.calls)
   }
 
@@ -513,7 +522,7 @@ class RustRadioHostAdapterTest {
     radio.answer("notify:$HR_MEASUREMENT:true:notification", Result.success(Unit))
     events().onServicesChanged(peer)
     events().onNotification(heartRate, byteArrayOf(1))
-    events().onConnection(peer, false, 8)
+    observe(peer, false, 8)
     assertEquals(
       listOf("notify:1:notification", "services-changed:$peer", "dropped:notification", "link:$peer:false:8"),
       core.calls

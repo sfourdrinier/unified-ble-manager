@@ -6,6 +6,14 @@ Tauri webviews use the zero-plumbing `createTauriBleManager()` factory, which re
 
 The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The webview never loads a Node addon.
 
+After an adapter reset, commands from the ended attachment report `backend.reset`
+before resolving GATT handles or reserving native work. This also applies when
+the lifecycle event invalidates the database before the caller is rebound.
+Release commands remain available to settle retained ownership. Non-GATT
+operations are tracked before waiting for authority admission so cancellation
+can settle them without dispatching native I/O.
+
+
 ## Install
 
 ```sh

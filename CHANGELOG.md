@@ -2,11 +2,37 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## [Unreleased]
+## Unreleased
 
 - Map an awaited WinRT direct-address factory result with no
   `BluetoothLEDevice` (HRESULT 0) to `peer.not-found`, while preserving
   nonzero WinRT HRESULT failures.
+
+- Read Android manifest metadata through typed AndroidX accessors while preserving
+  Boolean/string flag handling, defaults and invalid-policy rejection. Build
+  foreground notifications and decode acknowledgements through AndroidX APIs.
+- Require the API 33 association record on both Android chooser routes; missing
+  metadata fails closed and releases pending ownership instead of reporting a
+  legacy result with an incomplete association identity.
+
+- Share one Android disconnect owner and immutable safety deadline per GATT
+  generation. Concurrent callers all receive the terminal close result once,
+  including adapter loss, native disconnect exceptions and teardown races.
+  Retain failed physical closes for retry and fence old deadlines from new links.
+- Fail closed if Android refuses or throws while scheduling the disconnect
+  deadline. Finish physical cleanup and settle every waiter before propagating
+  observer errors; resume queued reconnects only after a clean close. Deliver
+  every connection observer even when another throws, including native failed
+  connect and disconnect callbacks.
+- Correlate Android connect outcomes with the exact GATT generation that the
+  request opened, in both the active RustCore host adapter and legacy protocol
+  dispatcher. A prior link's loss cannot fail an admitted replacement connect.
+  Withdraw failed reconnect intents so they cannot open unowned links later;
+  joining an existing teardown does not request native disconnect again.
+
+- Reject a reset Tauri attachment before GATT handle resolution and queue
+  reservation, including when link invalidation arrives before caller rebinding.
+  Releases remain admitted; stale work reports `backend.reset` without native I/O.
 
 ## [5.0.1] - 2026-10-08
 

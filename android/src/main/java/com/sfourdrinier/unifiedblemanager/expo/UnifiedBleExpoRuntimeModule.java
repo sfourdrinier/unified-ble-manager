@@ -25,6 +25,7 @@ import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.modules.core.PermissionAwareActivity;
 import com.facebook.react.modules.core.PermissionListener;
 import com.facebook.react.module.annotations.ReactModule;
+import com.sfourdrinier.unifiedblemanager.AndroidBundleMetadata;
 import com.sfourdrinier.unifiedblemanager.NativeUnifiedBleExpoRuntimeSpec;
 
 import java.nio.charset.StandardCharsets;
@@ -233,13 +234,12 @@ public final class UnifiedBleExpoRuntimeModule extends NativeUnifiedBleExpoRunti
 
   private String legacyLocationPolicy() {
     final Bundle metadata = applicationMetadata();
-    final Object value = metadata.get(LEGACY_LOCATION_POLICY_METADATA);
+    final String value = AndroidBundleMetadata.optionalString(metadata, LEGACY_LOCATION_POLICY_METADATA);
     if (value == null) return "none";
-    if (!(value instanceof String) ||
-        !("auto".equals(value) || "required".equals(value) || "none".equals(value))) {
+    if (!("auto".equals(value) || "required".equals(value) || "none".equals(value))) {
       throw new IllegalStateException("The native Android legacy location policy is invalid; rebuild the app.");
     }
-    return (String) value;
+    return value;
   }
 
   private boolean androidLocationPermissionGranted() {
@@ -262,7 +262,8 @@ public final class UnifiedBleExpoRuntimeModule extends NativeUnifiedBleExpoRunti
   }
 
   private void requireConfigurationMarker() {
-    final Object marker = applicationMetadata().get(CONFIGURATION_MARKER_METADATA);
+    final String marker = AndroidBundleMetadata.optionalString(
+        applicationMetadata(), CONFIGURATION_MARKER_METADATA);
     if (!CONFIGURATION_MARKER.equals(marker)) {
       throw new IllegalStateException(
           "The Unified BLE Expo plugin configuration marker is absent; run expo prebuild and rebuild the native app.");
@@ -289,10 +290,7 @@ public final class UnifiedBleExpoRuntimeModule extends NativeUnifiedBleExpoRunti
    * digests identically - which defeats the purpose of a digest that exists to detect drift.
    */
   private static boolean metadataFlag(Bundle metadata, String key, boolean fallback) {
-    final Object value = metadata.get(key);
-    if (value instanceof Boolean) return (Boolean) value;
-    if (value instanceof String) return Boolean.parseBoolean((String) value);
-    return fallback;
+    return AndroidBundleMetadata.booleanOrDefault(metadata, key, fallback);
   }
 
   private String configurationDigest(String legacyLocationPolicy) {

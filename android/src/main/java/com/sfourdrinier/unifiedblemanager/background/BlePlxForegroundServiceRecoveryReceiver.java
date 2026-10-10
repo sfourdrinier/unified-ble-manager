@@ -1,3 +1,4 @@
+// android/src/main/java/com/sfourdrinier/unifiedblemanager/background/BlePlxForegroundServiceRecoveryReceiver.java
 package com.sfourdrinier.unifiedblemanager.background;
 
 import android.content.BroadcastReceiver;
@@ -7,6 +8,7 @@ import android.os.Build;
 import android.util.Log;
 
 import com.sfourdrinier.unifiedblemanager.BlePlxForegroundService;
+import com.sfourdrinier.unifiedblemanager.AndroidBundleMetadata;
 
 /** Restores only the configured foreground service; it never scans or reconnects. */
 public final class BlePlxForegroundServiceRecoveryReceiver extends BroadcastReceiver {
@@ -51,8 +53,8 @@ public final class BlePlxForegroundServiceRecoveryReceiver extends BroadcastRece
       final java.util.Map<String, String> metadata = new java.util.HashMap<>();
       if (application.metaData != null) {
         for (String key : application.metaData.keySet()) {
-          final Object value = application.metaData.get(key);
-          if (value instanceof String) metadata.put(key, (String) value);
+          final String value = AndroidBundleMetadata.stringOrNull(application.metaData, key);
+          if (value != null) metadata.put(key, value);
         }
       }
       return ForegroundServiceNotificationConfiguration.fromMetadata(metadata);

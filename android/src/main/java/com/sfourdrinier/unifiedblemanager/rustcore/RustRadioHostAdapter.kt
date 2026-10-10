@@ -8,6 +8,7 @@ import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredPeer
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattLinkLost
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattNotSubmitted
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattOperationFailure
+import com.sfourdrinier.unifiedblemanager.radio.GattConnectAttempt
 import com.ubm.core.MobileCoreBridge
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
@@ -34,7 +35,7 @@ import java.util.concurrent.atomic.AtomicLong
  * dropped ingress, host closed, no host) is counted in [statusCounts] and
  * logged — never discarded silently.
  */
-class RustRadioHostAdapter(
+class RustRadioHostAdapter internal constructor(
   private val core: MobileCorePort,
   private val radio: AndroidRadioPort,
   private val background: BackgroundPort,
@@ -55,11 +56,19 @@ class RustRadioHostAdapter(
 
   private data class Enablement(val instance: CharacteristicInstance, val epoch: Long)
 
+  /**
+   * A connect request and the driver token it handed to `radio.connect`. The token, not the peer
+   * address, ties a link observation to the request: a prior generation's loss for the same peer
+   * carries a different (or no) token and can never settle this request. Identity-compared, so a
+   * release or claim removes exactly this entry and never a later request's.
+   */
+  private class PendingConnect(val requestId: Long, val attempt: GattConnectAttempt)
+
   private val inFlight = ConcurrentHashMap.newKeySet<Long>()
   private val cancelRequested = ConcurrentHashMap.newKeySet<Long>()
   private val started = ConcurrentHashMap.newKeySet<Long>()
   private val driverOperations = ConcurrentHashMap<Long, Long>()
-  private val pendingConnects = ConcurrentHashMap<String, Long>()
+  private val pendingConnects = ConcurrentHashMap<String, PendingConnect>()
   private val pendingAssociations = ConcurrentHashMap<Long, Pair<CompanionPort, (Result<CompanionAssociation>) -> Unit>>()
   private val connectedPeers = ConcurrentHashMap.newKeySet<String>()
   private val enablements = ConcurrentHashMap<InstanceKey, Enablement>()
@@ -158,14 +167,16 @@ class RustRadioHostAdapter(
       answer(requestId, "unit") { core.completeUnit(requestId) }
       return@perform
     }
-    val prior = pendingConnects.putIfAbsent(key, requestId)
-    if (prior != null) {
+    // Installed before radio.connect: the driver can publish a prior generation's loss from
+    // inside connect(), and that observation must find the request already owned (and not its own).
+    val pending = PendingConnect(requestId, GattConnectAttempt())
+    if (pendingConnects.putIfAbsent(key, pending) != null) {
       throw RadioPortFailure(RadioFailureKind.BUSY, "a connect is already pending for $peerId")
     }
     try {
-      radio.connect(peerId, autoConnect, phyMask)
+      radio.connect(peerId, autoConnect, phyMask, pending.attempt)
     } catch (error: Throwable) {
-      pendingConnects.remove(key, requestId)
+      pendingConnects.remove(key, pending)
       throw error
     }
   }
@@ -635,8 +646,9 @@ class RustRadioHostAdapter(
       // must not fabricate a completed native cleanup.
       return
     }
-    val connectPeer = pendingConnects.entries.firstOrNull { it.value == requestId }?.key
-    if (connectPeer != null && pendingConnects.remove(connectPeer, requestId)) {
+    val connect = pendingConnects.entries.firstOrNull { it.value.requestId == requestId }
+    val connectPeer = connect?.key
+    if (connectPeer != null && pendingConnects.remove(connectPeer, connect.value)) {
       // Android cannot abort connectGatt in place: release the pending GATT
       // (legacy cancellation did the same) and report the cancellation.
       radio.disconnect(connectPeer) { failure ->
@@ -785,10 +797,24 @@ class RustRadioHostAdapter(
     override fun onAdvertisement(advertisement: AdvertisementFacts) =
       recordIngress("advertisement", core.ingestAdvertisement(advertisement))
 
-    override fun onConnection(peerId: String, connected: Boolean, gattStatus: Int) {
+    override fun onConnection(peerId: String, connected: Boolean, gattStatus: Int, attempt: GattConnectAttempt?) {
       val key = peerKey(peerId)
-      val pending = pendingConnects.remove(key)
+      // Only the generation this request's own radio.connect opened can settle it. Any other
+      // observation of the peer (a prior generation's teardown, a forced close, a late callback)
+      // is processed below as what it is, but is not this request's outcome.
+      val current = pendingConnects[key]
+      val owned = current != null && attempt != null && current.attempt === attempt &&
+        pendingConnects.remove(key, current)
+      val pending = if (owned) current.requestId else null
+      val replacementPending = !owned && pendingConnects.containsKey(key)
       if (connected && gattStatus == GATT_SUCCESS) {
+        if (replacementPending) {
+          // A superseded generation connected while its replacement is pending. The driver is
+          // already tearing it down; ingesting it would let the peer-keyed core record bind the
+          // replacement's connect to a link that is not its own.
+          supersededOutcome(peerId, "connected", gattStatus)
+          return
+        }
         connectedPeers.add(key)
         if (pending != null) answer(pending, "unit") { core.completeUnit(pending) }
         recordIngress("connection", core.ingestConnection(peerId, true, gattStatus))
@@ -806,12 +832,24 @@ class RustRadioHostAdapter(
           )
         )
       }
+      if (replacementPending) {
+        // The loss belongs to a generation the admitted replacement did not open. Its host state
+        // is released above and it is reported; the peer-keyed core record is the replacement's
+        // own, so a core link loss for the prior generation would retire that admitted connect.
+        supersededOutcome(peerId, if (wasConnected) "link lost" else "lost", gattStatus)
+        return
+      }
       if (wasConnected) {
         recordIngress("connection", core.ingestConnection(peerId, false, gattStatus))
       } else if (pending == null) {
         bump("disconnect-without-link")
         log("disconnect for $peerId without a live link or pending connect (status $gattStatus)")
       }
+    }
+
+    private fun supersededOutcome(peerId: String, what: String, gattStatus: Int) {
+      bump("superseded-connect-outcome")
+      log("superseded Android GATT generation $what for $peerId (status $gattStatus) while a replacement connect is pending")
     }
 
     override fun onServicesChanged(peerId: String) {
@@ -841,7 +879,7 @@ class RustRadioHostAdapter(
       // per-link callback: report each link's end and each pending connect.
       pendingConnects.entries.toList().forEach { entry ->
         if (pendingConnects.remove(entry.key, entry.value)) {
-          fail(entry.value, adapterLossFailure(state))
+          fail(entry.value.requestId, adapterLossFailure(state))
         }
       }
       if (state.power == "on") return
