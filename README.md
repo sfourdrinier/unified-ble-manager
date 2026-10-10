@@ -22,7 +22,7 @@ root import does not pick a radio. Package SemVer and backend support labels are
 independent: each radio backend keeps its evidence-derived label. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
-This source tree is versioned `5.0.1`. Install the exact version shown in the npm
+This source tree is versioned `5.0.2`. Install the exact version shown in the npm
 registry. During release preparation, the version in `package.json` can be ahead
 of npm until the matching tag-driven workflow publishes it; the registry and
 GitHub release remain authoritative.
@@ -56,7 +56,7 @@ links in one fetch. Agents contributing to this repository start at
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.1
+pnpm add unified-ble-manager@5.0.2
 ```
 
 Installable with npm, yarn, or Bun. This repository uses pnpm. Bun 1.4.2 loads the same desktop Node-API addon as Node. `bun scripts/ci/bun-desktop-host-smoke.js` opens the synthetic central and closes it. `--list-adapters` lists the OS adapters; on glibc Linux x64 it returned both host adapters. `scripts/ci/bun-desktop-h10-session.js` is an opt-in session for a simulator named exactly `SIM Polar H10 0001`. On macOS Apple Silicon that session scanned, connected, read, wrote, notified, and disconnected. On glibc Linux x64 the same GATT session completed and `setEventWaker` ran. Against the installed `5.87-ubm.4` daemon, disconnect after discovery returned `lease-released-protected` and left the link up, as Node does on that stack. Source `5.87-ubm.6` ends a finished read or write hold when the call completes. That daemon was installed and the same H10 session then returned `lease-released-indeterminate` and left the link up, because profile-probe auto-connect bookkeeping was recorded as an unknown holder. Source `5.87-ubm.7` does not treat that bookkeeping as a hold on an exclusive link this process created, and that exclusive release stops kernel auto-connect for an untrusted device. Installing it changed the same H10 disconnect to `lease-released-protected` and left the link up: the controller had already initiated the bonded link, and the lease adopted it as borrowed. Source `5.87-ubm.8` releases a locally initiated link when no other application hold remains. Installing it, the same H10 session reported disconnect `released` and close `released`, and the link was down. Source `5.87-ubm.9` leaves an unbonded link up when an encrypted attribute returns Insufficient Encryption. Installing it, the unbonded Linux session, the macOS session, and two back-to-back Windows sessions on source digest `0b31ce8e` each completed the same exchange and left the link down. Neither the smoke nor those receipts is a platform evidence label.
@@ -403,7 +403,7 @@ after disconnect, service change, or rediscovery.
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship the Node-API desktop-core prebuild for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
-`5.0.1` is prepared for npm `latest`; after publication, a bare install selects
+`5.0.2` is prepared for npm `latest`; after publication, a bare install selects
 the stable 5.0 line. Numbered 5.x RCs use `next`. Publication uses npm trusted
 publishing/OIDC with provenance.
 

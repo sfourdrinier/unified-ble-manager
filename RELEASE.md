@@ -247,20 +247,22 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
-## Releasing 5.0.1
+## Releasing 5.0.2
 
 Unpublished patch candidate.
 
-The prepared `5.0.1` candidate is unpublished. Its exact source, packed
+The prepared `5.0.2` candidate is unpublished. Its exact source, packed
 artifact, and validation receipts must be reviewed before any tag or trusted
-publisher action. This patch is scoped to Expo Android legacy location
-readiness and the explicit API 31+ `legacyLocation: 'required'` permission
-policy; it does not promote Fire TV or any other backend to a support label.
+publisher action. This patch includes the awaited WinRT null-device correction,
+Android callback and metadata ownership fixes, and Tauri characteristic
+attachment cleanup. Source-inventory assertions and the recording contention
+fixture are corrected without reducing observation retention or production
+durability. Package SemVer does not promote any backend to a support label.
 
 Required remaining release steps are: refresh the full current gates from the
 exact source commit, confirm the sealed tarball SHA512 and packed-consumer
 contract, complete the authorized final physical receipt if requested, then
-obtain release-owner approval for the normal tag-driven trusted publisher.
+use the normal tag-driven trusted publisher under release-owner authorization.
 No npm publication, tag, push, or registry claim is made by this checklist.
 
 ## Releasing 5.0.0
@@ -1151,7 +1153,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.1
+version=5.0.2
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -1162,7 +1164,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- for stable `5.0.1`, npm `latest` resolves to `5.0.1` and `next` retains the
+- for stable `5.0.2`, npm `latest` resolves to `5.0.2` and `next` retains the
   separately published rc.21; for a numbered RC, verify `next` resolves to that
   exact candidate without changing `latest`;
 - the npm package page shows provenance for the published artifact;
@@ -1171,7 +1173,7 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.1` explicitly and import the documented host
+  `unified-ble-manager@5.0.2` explicitly and import the documented host
   entrypoints. A separate bare install must select npm `latest` (`5.0.0` after
   stable publication). For RC verification, pin the actual numbered candidate
   instead and verify `next` separately. This
