@@ -19,6 +19,10 @@ All notable changes to `unified-ble-manager` are documented here.
   Withdraw failed reconnect intents so they cannot open unowned links later;
   joining an existing teardown does not request native disconnect again.
 
+- Reject a reset Tauri attachment before GATT handle resolution and queue
+  reservation, including when link invalidation arrives before caller rebinding.
+  Releases remain admitted; stale work reports `backend.reset` without native I/O.
+
 ## [5.0.1] - 2026-10-08
 
 - Fix Expo Android readiness to use live native location-services and legacy
