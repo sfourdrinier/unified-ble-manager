@@ -4,6 +4,13 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Unreleased
 
+- Read Android manifest metadata through typed AndroidX accessors while preserving
+  Boolean/string flag handling, defaults and invalid-policy rejection. Build
+  foreground notifications and decode acknowledgements through AndroidX APIs.
+- Require the API 33 association record on both Android chooser routes; missing
+  metadata fails closed and releases pending ownership instead of reporting a
+  legacy result with an incomplete association identity.
+
 - Share one Android disconnect owner and immutable safety deadline per GATT
   generation. Concurrent callers all receive the terminal close result once,
   including adapter loss, native disconnect exceptions and teardown races.

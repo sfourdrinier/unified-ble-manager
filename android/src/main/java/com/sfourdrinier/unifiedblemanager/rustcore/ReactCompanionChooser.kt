@@ -2,9 +2,7 @@
 
 package com.sfourdrinier.unifiedblemanager.rustcore
 
-import android.Manifest
 import android.app.Activity
-import android.bluetooth.BluetoothDevice
 import android.bluetooth.le.ScanFilter
 import android.companion.AssociationInfo
 import android.companion.AssociationRequest
@@ -153,8 +151,6 @@ class ReactCompanionChooser @JvmOverloads constructor(
     pendingActivity = activity
     try {
       manager.associate(request, object : CompanionDeviceManager.Callback() {
-      @Deprecated("Deprecated in API 33; use onAssociationPending on API 33+. Retained for API 30-32 compatibility.")
-      override fun onDeviceFound(intentSender: IntentSender) = launch(activity, intentSender, onResult, requestCode)
       override fun onAssociationPending(intentSender: IntentSender) = launch(activity, intentSender, onResult, requestCode)
       override fun onAssociationCreated(associationInfo: AssociationInfo) = created(onResult, associationInfo)
       override fun onFailure(error: CharSequence?) {
@@ -277,15 +273,22 @@ class ReactCompanionChooser @JvmOverloads constructor(
       )
       return
     }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      val info = data.getParcelableExtra(CompanionDeviceManager.EXTRA_ASSOCIATION, AssociationInfo::class.java)
-      if (info != null) {
-        resolve(info.id, info.deviceMacAddress?.toString(), info.displayName?.toString())
-        return
-      }
-      val device = legacyCompanionDevice(data)
-      resolve(pendingAssociationId, deviceAddress(device), deviceName(device))
+    val info = if (sdkInt >= Build.VERSION_CODES.TIRAMISU) {
+      data.getParcelableExtra(CompanionDeviceManager.EXTRA_ASSOCIATION, AssociationInfo::class.java)
+    } else {
+      null
     }
+    if (info != null) {
+      resolve(info.id, info.deviceMacAddress?.toString(), info.displayName?.toString())
+      return
+    }
+    reject(
+      RadioPortFailure(
+        RadioFailureKind.UNSUPPORTED,
+        "Android did not return the API 33 Companion Device Manager association record",
+        nativeCode = "unsupportedAssociationMetadata"
+      )
+    )
   }
 
   override fun onNewIntent(intent: Intent) {}
@@ -325,22 +328,6 @@ class ReactCompanionChooser @JvmOverloads constructor(
     uiLaunched = false
     pendingActivity = null
   }
-
-  private fun connectPermitted(): Boolean =
-    Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
-      reactContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
-
-  /** Legacy chooser result route retained when the OS does not expose AssociationInfo. */
-  @Suppress("DEPRECATION")
-  private fun legacyCompanionDevice(intent: Intent): BluetoothDevice? =
-    intent.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE, BluetoothDevice::class.java)
-
-  private fun deviceAddress(device: BluetoothDevice?): String? =
-    if (device == null || !connectPermitted()) null else device.address
-
-  @Suppress("MissingPermission")
-  private fun deviceName(device: BluetoothDevice?): String? =
-    if (device == null || !connectPermitted()) null else device.name
 
   private companion object {
     const val FIRST_REQUEST_CODE = 0x5552
