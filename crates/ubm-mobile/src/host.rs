@@ -56,6 +56,41 @@ pub struct HostOptions {
     pub adapter_label: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SecurityEntry {
+    pub state: SecurityState,
+    pub owner_generation: Option<String>,
+}
+
+impl SecurityEntry {
+    pub(crate) fn new(state: SecurityState) -> Self {
+        Self {
+            state,
+            owner_generation: None,
+        }
+    }
+}
+
+fn reset_security_for_generation(
+    entry: &mut SecurityEntry,
+    generation: &str,
+) -> Option<SecurityState> {
+    if entry.owner_generation.as_deref() != Some(generation) {
+        return None;
+    }
+    if entry.state.encryption != crate::radio::EncryptionState::Unsupported {
+        entry.state.encryption = crate::radio::EncryptionState::Unknown;
+    }
+    if entry.state.authentication != crate::radio::AuthenticationState::Unsupported {
+        entry.state.authentication = crate::radio::AuthenticationState::Unknown;
+    }
+    if entry.state.secure_connections != crate::radio::SecureConnectionsState::Unsupported {
+        entry.state.secure_connections = crate::radio::SecureConnectionsState::Unknown;
+    }
+    entry.owner_generation = None;
+    Some(entry.state.clone())
+}
+
 /// One route from a characteristic instance to one session consumer.
 #[derive(Debug, Clone)]
 pub(crate) struct Route {
@@ -150,10 +185,9 @@ enum PollEnd {
 
 /// The terminal a refused value group ends its route with. Every polled value
 /// the group could not admit is counted once, together with the core's own
-/// terminal loss when it answered in the same poll run. `None` means only the
-/// cutoff value of a journal that stopped under the group was refused: it is
-/// counted in the handoff cutoff, not in a stream terminal, exactly as the
-/// next turn's poll would have refused later values.
+/// terminal loss when it answered in the same poll run. `None` means a journal
+/// cutoff refused the whole remaining group: those values are counted in the
+/// handoff cutoff, not in a fabricated stream terminal.
 fn refusal_terminal(
     rejected: &ubm_desktop::continuation_outbox::DataBatchRejection,
     core: Option<StreamEnd>,
@@ -161,9 +195,9 @@ fn refusal_terminal(
     use ubm_desktop::continuation_outbox::DataIngressFailure as Failure;
     let (core_items, core_bytes) = core.map_or((0, 0), |(_, items, bytes)| (items, bytes));
     match rejected.failure {
-        // A full queue, or sealed before this group (the cutoff counted every
-        // value): the terminal reports them as overflow.
-        Failure::Overflow { .. } | Failure::Sealed { .. } => Some((
+        // A full queue remains a genuine overflow and includes this group's
+        // refused values in its terminal loss.
+        Failure::Overflow { .. } => Some((
             "overflow",
             rejected.items.saturating_add(core_items),
             rejected.bytes.saturating_add(core_bytes),
@@ -176,19 +210,10 @@ fn refusal_terminal(
             rejected.items.saturating_add(core_items),
             rejected.bytes.saturating_add(core_bytes),
         )),
-        Failure::Stopped { bytes: cutoff } => {
-            let later = rejected.items.saturating_sub(1);
-            (later > 0).then(|| {
-                (
-                    "overflow",
-                    later.saturating_add(core_items),
-                    rejected
-                        .bytes
-                        .saturating_sub(cutoff as u64)
-                        .saturating_add(core_bytes),
-                )
-            })
-        }
+        // Stopped and sealed journal cutoffs have already counted every
+        // rejected record after the cutoff. Do not turn later records into a
+        // fabricated overflow; preserve only a genuine core terminal.
+        Failure::Stopped { .. } | Failure::Sealed { .. } => core,
     }
 }
 
@@ -630,7 +655,7 @@ pub(crate) struct HostInner {
     /// restoration identifiers once per process): a later manager never
     /// adopts the same peer again. Lock after `restored`.
     pub restoration_claims: Mutex<BTreeMap<String, u64>>,
-    pub security: Mutex<HashMap<String, SecurityState>>,
+    pub security: Mutex<HashMap<String, SecurityEntry>>,
     pub security_failures: Mutex<BTreeMap<Option<String>, (u64, DesktopError)>>,
     pub security_failure_revision: AtomicU64,
     pub adapter: Mutex<Option<(AdapterSnapshot, u64)>>,
@@ -988,7 +1013,7 @@ impl HostInner {
         let restored = lock(&self.restored).get(peer_id).cloned();
         let bond = lock(&self.security)
             .get(peer_id)
-            .map(|state| state.bond)
+            .map(|entry| entry.state.bond)
             .map_or("unknown", |bond| match bond {
                 BondState::Bonded => "bonded",
                 BondState::NotBonded => "not-bonded",
@@ -1406,9 +1431,9 @@ impl HostInner {
                                 terminal,
                             };
                         }
-                        // Only the stopped journal's cutoff value: nothing
-                        // more is polled this turn unless the core already
-                        // answered.
+                        // The stopped journal counted the refused group in its
+                        // cutoff; nothing more is polled this turn unless the
+                        // core already answered.
                         None if matches!(ending, PollEnd::Full) => {
                             return RouteDrain::Live {
                                 committed,
@@ -1497,6 +1522,7 @@ impl HostInner {
     /// Order per peer: values that arrived before the transition, then the
     /// transition record, then the stream ends it caused.
     async fn route_lifecycle(&self, event: LifecycleEvent) {
+        self.reconcile_security_lifecycle(&event);
         let scopes: Vec<InstanceKey> = lock(&self.routes)
             .keys()
             .filter(|scope| scope.0 == event.peer_id)
@@ -1522,6 +1548,103 @@ impl HostInner {
             for (route, terminal) in self.drain_scope(scope).await {
                 self.end_route(&route, terminal);
             }
+        }
+    }
+
+    fn reconcile_security_lifecycle(&self, event: &LifecycleEvent) {
+        if !matches!(
+            event.kind,
+            ubm_desktop::LifecycleKind::LinkLost
+                | ubm_desktop::LifecycleKind::Released { .. }
+                | ubm_desktop::LifecycleKind::AdapterLost
+        ) {
+            return;
+        }
+        let Some(generation) = event.connection_generation.as_deref() else {
+            return;
+        };
+        let Some(state) = (|| {
+            let mut security = lock(&self.security);
+            let entry = security.get_mut(&event.peer_id)?;
+            reset_security_for_generation(entry, generation)
+        })() else {
+            return;
+        };
+        self.signals
+            .push(HostSignal::Security(event.peer_id.clone(), state));
+    }
+
+    pub(crate) fn stamp_security_generation(&self, peer_id: &str, generation: &str) -> bool {
+        if generation.is_empty() {
+            return false;
+        }
+        let mut security = lock(&self.security);
+        let entry = security.entry(peer_id.to_owned()).or_insert_with(|| {
+            SecurityEntry::new(SecurityState {
+                bond: BondState::Unknown,
+                encryption: crate::radio::EncryptionState::Unknown,
+                authentication: crate::radio::AuthenticationState::Unknown,
+                secure_connections: crate::radio::SecureConnectionsState::Unknown,
+                pairing_possible: None,
+            })
+        });
+        if entry.owner_generation.as_deref() == Some(generation) {
+            return false;
+        }
+        if entry.state.encryption != crate::radio::EncryptionState::Unsupported {
+            entry.state.encryption = crate::radio::EncryptionState::Unknown;
+        }
+        if entry.state.authentication != crate::radio::AuthenticationState::Unsupported {
+            entry.state.authentication = crate::radio::AuthenticationState::Unknown;
+        }
+        if entry.state.secure_connections != crate::radio::SecureConnectionsState::Unsupported {
+            entry.state.secure_connections = crate::radio::SecureConnectionsState::Unknown;
+        }
+        entry.owner_generation = Some(generation.to_owned());
+        true
+    }
+
+    pub(crate) fn security_owner(&self, peer_id: &str) -> Option<String> {
+        lock(&self.security)
+            .get(peer_id)
+            .and_then(|entry| entry.owner_generation.clone())
+    }
+
+    pub(crate) fn set_security_state_if_owner(
+        &self,
+        peer_id: &str,
+        expected_owner: Option<&str>,
+        state: SecurityState,
+        operation: &'static str,
+    ) -> Result<(), DesktopError> {
+        let mut security = lock(&self.security);
+        let current_owner = security
+            .get(peer_id)
+            .and_then(|entry| entry.owner_generation.as_deref());
+        if current_owner != expected_owner {
+            return Err(DesktopError::new(
+                BleErrorCode::ConnectionStale,
+                BleErrorDomain::Connection,
+                operation,
+            ));
+        }
+        let owner_generation = current_owner.map(str::to_owned);
+        security.insert(
+            peer_id.to_owned(),
+            SecurityEntry {
+                state,
+                owner_generation,
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn clear_security_generation(&self, peer_id: &str, generation: &str) {
+        let mut security = lock(&self.security);
+        if let Some(entry) = security.get_mut(peer_id)
+            && entry.owner_generation.as_deref() == Some(generation)
+        {
+            entry.owner_generation = None;
         }
     }
 
@@ -2304,6 +2427,9 @@ impl MobileHost {
             continuation_closed: AtomicBool::new(false),
             continuation_admission: Mutex::new(()),
         });
+        inner
+            .radio
+            .set_connect_generation_hook(Arc::downgrade(&inner));
         let worker = runtime.spawn(pump(Arc::downgrade(&inner), signals));
         *lock(&inner.pump) = Some(worker);
         Ok(Self { inner })
@@ -2389,26 +2515,6 @@ impl MobileHost {
                 connected,
                 status,
             } => {
-                if !connected {
-                    let mut security = lock(&inner.security);
-                    if let Some(state) = security.get_mut(&peer_id) {
-                        if state.encryption != crate::radio::EncryptionState::Unsupported {
-                            state.encryption = crate::radio::EncryptionState::Unknown;
-                        }
-                        if state.authentication != crate::radio::AuthenticationState::Unsupported {
-                            state.authentication = crate::radio::AuthenticationState::Unknown;
-                        }
-                        if state.secure_connections
-                            != crate::radio::SecureConnectionsState::Unsupported
-                        {
-                            state.secure_connections =
-                                crate::radio::SecureConnectionsState::Unknown;
-                        }
-                        inner
-                            .signals
-                            .push(HostSignal::Security(peer_id.clone(), state.clone()));
-                    }
-                }
                 inner.radio.push_event(if connected {
                     RadioEvent::Connected(peer_id)
                 } else if status.is_some_and(|status| status != 0) {
@@ -2419,6 +2525,24 @@ impl MobileHost {
                 } else {
                     RadioEvent::Disconnected(peer_id)
                 })
+            }
+            RadioIngress::ConnectionScoped {
+                peer_id,
+                expected_generation,
+                connected,
+                status,
+            } => {
+                if expected_generation.is_empty() {
+                    inner.radio.note_drop(IngressClass::Control);
+                    Err(IngressClass::Control)
+                } else {
+                    inner.radio.push_event(RadioEvent::ConnectionScoped {
+                        peer_id,
+                        expected_generation,
+                        connected,
+                        errored: status.is_some_and(|status| status != 0),
+                    })
+                }
             }
             RadioIngress::ServicesChanged { peer_id } => {
                 inner.radio.push_event(RadioEvent::ServicesChanged(peer_id))
@@ -2466,20 +2590,12 @@ impl MobileHost {
                 Ok(())
             }
             RadioIngress::SecurityChanged { peer_id, state } => {
-                lock(&inner.security_failures).remove(&Some(peer_id.clone()));
-                lock(&inner.security_failures).remove(&None);
-                lock(&inner.security).insert(peer_id.clone(), state.clone());
                 inner.signals.push(HostSignal::Security(peer_id, state));
                 Ok(())
             }
             RadioIngress::SecurityFailed { peer_id, failure } => {
                 let error =
                     failure.to_error(crate::radio::RequestKind::SecurityState, inner.platform);
-                if let Some(peer) = &peer_id {
-                    lock(&inner.security).remove(peer);
-                } else {
-                    lock(&inner.security).clear();
-                }
                 let revision = inner
                     .security_failure_revision
                     .fetch_add(1, Ordering::SeqCst);
@@ -2962,6 +3078,230 @@ mod signal_tests {
         assert_eq!(failures[0]["resourceKind"], "subscription");
         assert_eq!(failures[0]["code"], "gatt.subscribe-failed");
     }
+    #[test]
+    fn stale_lifecycle_generation_cannot_reset_new_security_owner() {
+        let mut entry = super::SecurityEntry {
+            state: crate::radio::SecurityState {
+                bond: crate::radio::BondState::Bonded,
+                encryption: crate::radio::EncryptionState::Encrypted,
+                authentication: crate::radio::AuthenticationState::Authenticated,
+                secure_connections: crate::radio::SecureConnectionsState::Yes,
+                pairing_possible: Some(true),
+            },
+            owner_generation: Some("generation-b".into()),
+        };
+        assert!(super::reset_security_for_generation(&mut entry, "generation-a").is_none());
+        assert_eq!(
+            entry.state.encryption,
+            crate::radio::EncryptionState::Encrypted
+        );
+        assert_eq!(
+            entry.state.authentication,
+            crate::radio::AuthenticationState::Authenticated
+        );
+        assert_eq!(
+            entry.state.secure_connections,
+            crate::radio::SecureConnectionsState::Yes
+        );
+        assert_eq!(entry.state.bond, crate::radio::BondState::Bonded);
+        let reset = super::reset_security_for_generation(&mut entry, "generation-b")
+            .expect("current owner lifecycle resets security");
+        assert_eq!(reset.encryption, crate::radio::EncryptionState::Unknown);
+        assert_eq!(
+            reset.authentication,
+            crate::radio::AuthenticationState::Unknown
+        );
+        assert_eq!(
+            reset.secure_connections,
+            crate::radio::SecureConnectionsState::Unknown
+        );
+        assert_eq!(reset.bond, crate::radio::BondState::Bonded);
+        assert!(entry.owner_generation.is_none());
+    }
+
+    #[test]
+    fn same_generation_join_does_not_take_or_clear_security_ownership() {
+        let mut entry = super::SecurityEntry {
+            state: crate::radio::SecurityState {
+                bond: crate::radio::BondState::Bonded,
+                encryption: crate::radio::EncryptionState::Encrypted,
+                authentication: crate::radio::AuthenticationState::Authenticated,
+                secure_connections: crate::radio::SecureConnectionsState::Yes,
+                pairing_possible: Some(true),
+            },
+            owner_generation: Some("generation-a".into()),
+        };
+        assert!(super::reset_security_for_generation(&mut entry, "generation-b").is_none());
+        assert_eq!(entry.owner_generation.as_deref(), Some("generation-a"));
+        assert_eq!(
+            entry.state.encryption,
+            crate::radio::EncryptionState::Encrypted
+        );
+        assert!(super::reset_security_for_generation(&mut entry, "generation-a").is_some());
+    }
+
+    #[derive(Default)]
+    struct HoldConnect {
+        cancels: std::sync::Mutex<Vec<crate::RequestId>>,
+    }
+
+    impl super::PlatformRadio for HoldConnect {
+        fn submit(&self, _: crate::RadioRequest) {}
+
+        fn cancel(&self, request_id: crate::RequestId) {
+            self.cancels.lock().unwrap().push(request_id);
+        }
+    }
+
+    #[tokio::test]
+    async fn dropped_connect_releases_only_its_generation_admission() {
+        let radio = std::sync::Arc::new(HoldConnect::default());
+        let host = super::MobileHost::open(
+            radio.clone(),
+            std::sync::Arc::new(NoWake),
+            super::HostOptions {
+                platform: crate::MobilePlatform::Android,
+                owner: "test".into(),
+                adapter_label: "test".into(),
+            },
+            tokio::runtime::Handle::current(),
+        )
+        .await
+        .unwrap();
+
+        let mut first = Box::pin(ubm_desktop::RadioBoundary::connect(
+            &host.inner.radio,
+            "peer",
+            "generation-a",
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(first.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert_eq!(
+            super::lock(&host.inner.security)
+                .get("peer")
+                .and_then(|entry| entry.owner_generation.as_deref()),
+            Some("generation-a")
+        );
+        drop(first);
+        assert_eq!(radio.cancels.lock().unwrap().as_slice(), &[1]);
+        assert!(
+            super::lock(&host.inner.security)
+                .get("peer")
+                .and_then(|entry| entry.owner_generation.as_deref())
+                .is_none(),
+            "dropping the connect future must compensate its reservation"
+        );
+
+        let mut abandoned_a = Box::pin(ubm_desktop::RadioBoundary::connect(
+            &host.inner.radio,
+            "peer",
+            "generation-a",
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(abandoned_a.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        host.inner.stamp_security_generation("peer", "generation-b");
+        drop(abandoned_a);
+        assert_eq!(
+            super::lock(&host.inner.security)
+                .get("peer")
+                .and_then(|entry| entry.owner_generation.as_deref()),
+            Some("generation-b"),
+            "an abandoned A must not clear a newer B owner"
+        );
+        host.ingest(crate::RadioIngress::SecurityChanged {
+            peer_id: "peer".into(),
+            state: crate::radio::SecurityState {
+                bond: crate::BondState::Bonded,
+                encryption: crate::EncryptionState::Encrypted,
+                authentication: crate::AuthenticationState::Authenticated,
+                secure_connections: crate::SecureConnectionsState::Yes,
+                pairing_possible: Some(true),
+            },
+        });
+        assert_eq!(
+            super::lock(&host.inner.security)
+                .get("peer")
+                .and_then(|entry| entry.owner_generation.as_deref()),
+            Some("generation-b"),
+            "unscoped security observations do not overwrite the owned snapshot"
+        );
+        host.ingest(crate::RadioIngress::SecurityFailed {
+            peer_id: Some("peer".into()),
+            failure: crate::PlatformFailure::new(
+                crate::radio::FailureKind::Platform,
+                "security observation failed",
+            ),
+        });
+        assert_eq!(
+            super::lock(&host.inner.security)
+                .get("peer")
+                .and_then(|entry| entry.owner_generation.as_deref()),
+            Some("generation-b"),
+            "unscoped failures do not clear the owned snapshot"
+        );
+        assert_eq!(
+            host.inner
+                .set_security_state_if_owner(
+                    "peer",
+                    Some("generation-a"),
+                    crate::radio::SecurityState {
+                        bond: crate::BondState::Bonded,
+                        encryption: crate::EncryptionState::Encrypted,
+                        authentication: crate::AuthenticationState::Authenticated,
+                        secure_connections: crate::SecureConnectionsState::Yes,
+                        pairing_possible: Some(true),
+                    },
+                    "security.state",
+                )
+                .unwrap_err()
+                .code(),
+            ubm_core::contracts::BleErrorCode::ConnectionStale
+        );
+
+        super::lock(&host.inner.security)
+            .get_mut("peer")
+            .expect("security owner")
+            .state = crate::radio::SecurityState {
+            bond: crate::BondState::Bonded,
+            encryption: crate::EncryptionState::Encrypted,
+            authentication: crate::AuthenticationState::Authenticated,
+            secure_connections: crate::SecureConnectionsState::Yes,
+            pairing_possible: Some(true),
+        };
+        let mut joined = Box::pin(ubm_desktop::RadioBoundary::connect(
+            &host.inner.radio,
+            "peer",
+            "generation-b",
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(joined.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(joined);
+        let entry = super::lock(&host.inner.security)
+            .get("peer")
+            .cloned()
+            .expect("security owner");
+        assert_eq!(entry.owner_generation.as_deref(), Some("generation-b"));
+        assert_eq!(entry.state.encryption, crate::EncryptionState::Encrypted);
+        assert_eq!(
+            entry.state.authentication,
+            crate::AuthenticationState::Authenticated
+        );
+        assert_eq!(
+            entry.state.secure_connections,
+            crate::SecureConnectionsState::Yes
+        );
+        host.shutdown().await;
+    }
+
     struct NoRadio;
     impl super::PlatformRadio for NoRadio {
         fn submit(&self, _: crate::RadioRequest) {
@@ -3078,11 +3418,11 @@ mod signal_tests {
             ),
             Some(("overflow", 7, 430))
         );
-        // Already sealed: the cutoff counted the group and the terminal still
-        // reports it as overflow, exactly as the queue-full cause does.
+        // Already sealed: the cutoff counted the group and must not fabricate
+        // an overflow terminal, exactly like a stopped journal.
         assert_eq!(
             refusal_terminal(&refused(Failure::Sealed { bytes: 10 }, 3, 30), None),
-            Some(("overflow", 3, 30))
+            None
         );
         // A stopped journal: the first value is the handoff cutoff itself.
         let stopped = Failure::Stopped { bytes: 10 };
@@ -3090,14 +3430,118 @@ mod signal_tests {
             refusal_terminal(&refused(stopped.clone(), 1, 10), None),
             None
         );
+        // A stopped journal has already counted every refused value after its
+        // cutoff. A multi-record batch must not manufacture an overflow
+        // terminal for the later records.
         assert_eq!(
             refusal_terminal(&refused(stopped.clone(), 4, 45), None),
-            Some(("overflow", 3, 35))
+            None
         );
         assert_eq!(
             refusal_terminal(&refused(stopped, 2, 25), Some(("overflow", 1, 8))),
-            Some(("overflow", 2, 23))
+            Some(("overflow", 1, 8))
         );
+    }
+
+    #[test]
+    fn stopped_batch_accounting_uses_the_real_outbox_cutoff_across_bounded_groups() {
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-mobile-stopped-batch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("recording.sqlite");
+        let quota = ubm_desktop::continuation_journal::JournalQuota {
+            max_bytes: 1 << 20,
+            max_records: 1000,
+        };
+        let journal = std::sync::Arc::new(
+            ubm_desktop::continuation_journal::ContinuationJournal::open(
+                &path,
+                "stopped-batch",
+                &serde_json::json!({"onAppearance":"native"}),
+                quota,
+            )
+            .unwrap(),
+        );
+        let outbox = Outbox::new(1, Arc::new(NoWake));
+        outbox
+            .attach_journal(journal.clone(), serde_json::json!({"epoch":"a"}))
+            .unwrap();
+        outbox
+            .register_journal_consumer("c", serde_json::json!({"generation":"a"}))
+            .unwrap();
+        ubm_desktop::continuation_journal::ContinuationJournal::open(
+            &path,
+            "stopped-batch",
+            &serde_json::json!({"onAppearance":"native"}),
+            quota,
+        )
+        .unwrap()
+        .stop()
+        .unwrap();
+        let records: Vec<Value> = (0..70)
+            .map(|index| serde_json::json!({"t":"value", "consumer":"c", "n":index}))
+            .collect();
+        let expected_bytes = records
+            .iter()
+            .map(|record| record.to_string().len() as u64)
+            .sum::<u64>();
+        let outcome = outbox.push_data_batch(records);
+        assert_eq!(outcome.accepted, 0);
+        let rejected = outcome
+            .rejected
+            .expect("the stopped journal rejects the batch");
+        assert!(matches!(
+            rejected.failure,
+            ubm_desktop::continuation_outbox::DataIngressFailure::Stopped { .. }
+        ));
+        assert_eq!((rejected.items, rejected.bytes), (70, expected_bytes));
+        assert_eq!(
+            outbox.after_cutoff_loss(),
+            ubm_desktop::continuation_outbox::AfterCutoffLoss {
+                items: 70,
+                bytes: expected_bytes,
+            }
+        );
+
+        assert_eq!(refusal_terminal(&rejected, None), None);
+        assert_eq!(
+            refusal_terminal(&rejected, Some(("overflow", 1, 8))),
+            Some(("overflow", 1, 8))
+        );
+        let late_records: Vec<Value> = (70..73)
+            .map(|index| serde_json::json!({"t":"value", "consumer":"c", "n":index}))
+            .collect();
+        let late_bytes = late_records
+            .iter()
+            .map(|record| record.to_string().len() as u64)
+            .sum::<u64>();
+        let late = outbox.push_data_batch(late_records);
+        assert_eq!(late.accepted, 0);
+        let late_rejected = late
+            .rejected
+            .expect("a post-cutoff batch is sealed and rejected");
+        assert!(matches!(
+            late_rejected.failure,
+            ubm_desktop::continuation_outbox::DataIngressFailure::Sealed { .. }
+        ));
+        assert_eq!((late_rejected.items, late_rejected.bytes), (3, late_bytes));
+        assert_eq!(refusal_terminal(&late_rejected, None), None);
+        assert_eq!(
+            outbox.after_cutoff_loss(),
+            ubm_desktop::continuation_outbox::AfterCutoffLoss {
+                items: 73,
+                bytes: expected_bytes + late_bytes,
+            }
+        );
+        drop(outbox);
+        drop(journal);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     /// X-R6: a stalled pump (no pops) plus a burst stays bounded, and every

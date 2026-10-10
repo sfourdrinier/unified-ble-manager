@@ -1441,7 +1441,7 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       "dispatchConnectionState(key, false, BluetoothGatt.GATT_FAILURE, attempt)"
     )
     val failPendingIndex = forcedClose.indexOf("failPendingForDevice(key, \"disconnected timeout\")")
-    val teardownIndex = forcedClose.indexOf("val teardownFailure = completeGattTeardown(key, gatt)")
+    val teardownIndex = forcedClose.indexOf("val teardownFailure = completeGattTeardown(key, gatt, generation")
     assertTrue(forcedClose.contains("runEvery("))
     assertTrue(connectionLossIndex >= 0)
     assertTrue(connectionLossIndex < failPendingIndex)

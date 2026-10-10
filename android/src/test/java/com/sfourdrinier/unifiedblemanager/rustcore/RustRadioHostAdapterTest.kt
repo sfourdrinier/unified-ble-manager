@@ -44,7 +44,7 @@ class RustRadioHostAdapterTest {
   ) = events().onConnection(peerId, connected, status, attempt)
 
   private fun connect(requestId: Long = 1) {
-    adapter.connect(requestId, peer, false, NO_PHY)
+    adapter.connect(requestId, peer, false, NO_PHY, "test-generation-$requestId")
     observe(peer, true, 0)
     core.calls.clear()
     radio.calls.clear()
@@ -148,7 +148,7 @@ class RustRadioHostAdapterTest {
 
   @Test
   fun connectCompletesFromTheOsCallbackThenIngestsTheLink() {
-    adapter.connect(1, peer, true, NO_PHY)
+    adapter.connect(1, peer, true, NO_PHY, "test-generation-1")
     assertEquals(listOf("connect:$peer:true"), radio.calls)
     assertTrue(core.calls.isEmpty())
     observe(peer, true, 0)
@@ -157,7 +157,7 @@ class RustRadioHostAdapterTest {
 
   @Test
   fun connectEstablishesTheLinkOnThePreferredPhys() {
-    adapter.connect(1, peer, false, arrayOf("le-2m", "le-coded"))
+    adapter.connect(1, peer, false, arrayOf("le-2m", "le-coded"), "test-generation-1")
     assertEquals(listOf("connect:$peer:false:phy=6"), radio.calls)
     observe(peer, true, 0)
     assertEquals(listOf("unit:1", "link:$peer:true:0"), core.calls)
@@ -166,7 +166,7 @@ class RustRadioHostAdapterTest {
   @Test
   fun aPhyPreferenceToALiveLinkIsRefusedBeforeAnyEffect() {
     connect()
-    adapter.connect(2, peer, false, arrayOf("le-2m"))
+    adapter.connect(2, peer, false, arrayOf("le-2m"), "test-generation-2")
     assertTrue(radio.calls.isEmpty())
     assertEquals(listOf("failure:2:unsupported:null"), core.calls)
     assertFalse(core.failures.getValue(2).dispatched)
@@ -175,9 +175,9 @@ class RustRadioHostAdapterTest {
   @Test
   fun aPhyPreferenceTheOsCannotApplyIsRefusedBeforeAnyEffect() {
     radio.connectPhySupported = false
-    adapter.connect(1, peer, false, arrayOf("le-1m"))
-    adapter.connect(2, peer, true, arrayOf("le-2m"))
-    adapter.connect(3, peer, false, arrayOf("le-3m"))
+    adapter.connect(1, peer, false, arrayOf("le-1m"), "test-generation-1")
+    adapter.connect(2, peer, true, arrayOf("le-2m"), "test-generation-2")
+    adapter.connect(3, peer, false, arrayOf("le-3m"), "test-generation-3")
     assertTrue(radio.calls.isEmpty())
     assertEquals(
       listOf("failure:1:unsupported:null", "failure:2:unsupported:null", "failure:3:unsupported:null"),
@@ -188,7 +188,7 @@ class RustRadioHostAdapterTest {
 
   @Test
   fun failedConnectAnswersGattStatusWithoutInventingALink() {
-    adapter.connect(1, peer, false, NO_PHY)
+    adapter.connect(1, peer, false, NO_PHY, "test-generation-1")
     observe(peer, false, 133)
     assertEquals(listOf("failure:1:gatt-status:133"), core.calls)
   }
@@ -201,7 +201,7 @@ class RustRadioHostAdapterTest {
   @Test
   fun aTransientConnectFailureCrossesWithItsStatusAndIsNeverRetried() {
     for ((requestId, status) in listOf(1L to 133, 2L to 62)) {
-      adapter.connect(requestId, peer, false, NO_PHY)
+      adapter.connect(requestId, peer, false, NO_PHY, "test-generation-$requestId")
       observe(peer, false, status)
       assertEquals(listOf("failure:$requestId:gatt-status:$status"), core.calls)
       assertEquals(1, radio.calls.count { it.startsWith("connect:") })
@@ -213,21 +213,21 @@ class RustRadioHostAdapterTest {
   @Test
   fun connectToALiveLinkAnswersWithoutASecondConnectGatt() {
     connect()
-    adapter.connect(2, peer, false, NO_PHY)
+    adapter.connect(2, peer, false, NO_PHY, "test-generation-2")
     assertTrue(radio.calls.isEmpty())
     assertEquals(listOf("unit:2"), core.calls)
   }
 
   @Test
   fun secondConcurrentConnectIsBusy() {
-    adapter.connect(1, peer, false, NO_PHY)
-    adapter.connect(2, peer, false, NO_PHY)
+    adapter.connect(1, peer, false, NO_PHY, "test-generation-1")
+    adapter.connect(2, peer, false, NO_PHY, "test-generation-2")
     assertEquals(listOf("failure:2:busy:null"), core.calls)
   }
 
   @Test
   fun cancelPendingConnectReleasesTheGattAndReportsCancelledOnce() {
-    adapter.connect(1, peer, false, NO_PHY)
+    adapter.connect(1, peer, false, NO_PHY, "test-generation-1")
     adapter.cancel(1)
     assertEquals(listOf("connect:$peer:false", "disconnect:$peer"), radio.calls)
     observe(peer, false, 0)
@@ -238,7 +238,7 @@ class RustRadioHostAdapterTest {
   fun cancelBeforeDispatchHasNoEffect() {
     val queued = QueuedExecutor()
     radioExecutor = queued
-    adapter.connect(1, peer, false, NO_PHY)
+    adapter.connect(1, peer, false, NO_PHY, "test-generation-1")
     adapter.cancel(1)
     queued.runAll()
     assertTrue(radio.calls.isEmpty())
@@ -396,13 +396,13 @@ class RustRadioHostAdapterTest {
 
   @Test
   fun adapterLossUsesTheExactLegacyCodes() {
-    adapter.connect(1, peer, false, NO_PHY)
+    adapter.connect(1, peer, false, NO_PHY, "test-generation-1")
     events().onAdapterState(AdapterFacts("available", "granted", "resetting", null))
-    adapter.connect(2, peer, false, NO_PHY)
+    adapter.connect(2, peer, false, NO_PHY, "test-generation-2")
     events().onAdapterState(AdapterFacts("available", "restricted", "unknown", null))
-    adapter.connect(3, peer, false, NO_PHY)
+    adapter.connect(3, peer, false, NO_PHY, "test-generation-3")
     events().onAdapterState(AdapterFacts("available", "not-determined", "unknown", null))
-    adapter.connect(4, peer, false, NO_PHY)
+    adapter.connect(4, peer, false, NO_PHY, "test-generation-4")
     events().onAdapterState(AdapterFacts("unavailable", "granted", "unknown", "gone"))
     assertEquals(
       listOf("adapter-resetting", "permission-restricted", "permission-not-determined", "adapter-unavailable"),
@@ -772,7 +772,7 @@ class RustRadioHostAdapterTest {
   @Test
   fun adapterLossEndsLinksAndPendingConnects() {
     connect()
-    adapter.connect(2, "11:22:33:44:55:66", false, NO_PHY)
+    adapter.connect(2, "11:22:33:44:55:66", false, NO_PHY, "test-generation-2")
     events().onAdapterState(AdapterFacts("available", "granted", "off", null))
     assertEquals(
       listOf("adapter-state:off", "failure:2:adapter-off:null", "link:$peer:false:null"),

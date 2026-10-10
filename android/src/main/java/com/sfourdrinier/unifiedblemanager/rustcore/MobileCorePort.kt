@@ -78,6 +78,7 @@ interface MobileCorePort {
 
   fun ingestAdvertisement(advertisement: AdvertisementFacts): Int
   fun ingestConnection(peerId: String, connected: Boolean, status: Int?): Int
+  fun ingestConnectionForGeneration(peerId: String, expectedGeneration: String, connected: Boolean, status: Int?): Int
   fun ingestServicesChanged(peerId: String): Int
   fun ingestNotification(instance: CharacteristicInstance, epoch: Long, value: ByteArray): Int
   fun ingestAdapterState(state: AdapterFacts): Int
@@ -243,6 +244,9 @@ object JniMobileCorePort : MobileCorePort {
 
   override fun ingestConnection(peerId: String, connected: Boolean, status: Int?): Int =
     MobileCoreBridge.nativeIngestConnection(peerId, connected, optional(status))
+
+  override fun ingestConnectionForGeneration(peerId: String, expectedGeneration: String, connected: Boolean, status: Int?): Int =
+    MobileCoreBridge.nativeIngestConnectionForGeneration(peerId, expectedGeneration, connected, optional(status))
 
   override fun ingestServicesChanged(peerId: String): Int = MobileCoreBridge.nativeIngestServicesChanged(peerId)
 

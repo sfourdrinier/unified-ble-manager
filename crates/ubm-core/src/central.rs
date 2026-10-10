@@ -2862,6 +2862,16 @@ impl Central {
         Ok(())
     }
 
+    /// Establish the link only when the callback names the current generation.
+    pub fn note_link_established_for_generation(
+        &mut self,
+        peer_key: &str,
+        generation: &str,
+    ) -> Result<(), CoreError> {
+        self.require_connection_generation(peer_key, generation, "connection.established")?;
+        self.note_link_established(peer_key)
+    }
+
     /// Transfer a lease between authenticated clients. Empty fields (source,
     /// destination, or generation) fail with `ownership.denied`; a stale
     /// generation fails with `connection.stale`. The epoch mirrors the
@@ -3097,6 +3107,18 @@ impl Central {
         Ok(next)
     }
 
+    /// Record peer loss only when the callback names the current generation.
+    pub fn note_peer_loss_for_generation(
+        &mut self,
+        peer_key: &str,
+        generation: &str,
+        now: MonotonicTime,
+        out: &mut EffectBatch,
+    ) -> Result<ConnectionState, CoreError> {
+        self.require_connection_generation(peer_key, generation, "connection.peer-loss")?;
+        self.note_peer_loss(peer_key, now, out)
+    }
+
     /// The platform confirms link release after disconnect.
     pub fn note_link_released(&mut self, peer_key: &str) -> Result<(), CoreError> {
         let index = self.connection_position(peer_key).ok_or_else(|| {
@@ -3114,6 +3136,36 @@ impl Central {
         self.disconnect_failures
             .retain(|(failed_peer, _)| failed_peer != peer_key);
         Ok(())
+    }
+
+    /// Confirm link release only when the callback names the current generation.
+    pub fn note_link_released_for_generation(
+        &mut self,
+        peer_key: &str,
+        generation: &str,
+    ) -> Result<(), CoreError> {
+        self.require_connection_generation(peer_key, generation, "connection.link-released")?;
+        self.note_link_released(peer_key)
+    }
+
+    fn require_connection_generation(
+        &self,
+        peer_key: &str,
+        generation: &str,
+        operation: &'static str,
+    ) -> Result<(), CoreError> {
+        let current = self
+            .connection_position(peer_key)
+            .and_then(|index| self.connections.get(index))
+            .map(|connection| connection.connection_generation.as_str());
+        if current == Some(generation) {
+            return Ok(());
+        }
+        Err(err(
+            BleErrorCode::ConnectionStale,
+            BleErrorDomain::Connection,
+            operation,
+        ))
     }
 
     /// Explicit disconnect failed (CLN-01): ownership of the failed cleanup
@@ -8086,6 +8138,131 @@ mod tests {
             central.connection_state(&peer) == Some(ConnectionState::Lost),
             "terminal holds",
         );
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_connection_generation_rejects_stale_replacement_events() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, _) = live_characteristic(&mut central, &mut out)?;
+        let generation_a = central.connection_generation(&peer).ok_or_else(|| {
+            err(
+                BleErrorCode::ConnectionNotFound,
+                BleErrorDomain::Connection,
+                "test.generation",
+            )
+        })?;
+        central.disconnect(&peer, "client-1", 2000, &mut out)?;
+        central.note_link_released(&peer)?;
+        let op = central.connect(&peer, "client-2", 5000, 2001, &mut out)?;
+        central.dispatch_op(&op, &mut out)?;
+        central.settle_op(&op, ContenderKind::Success, true, 0, 2002, &mut out)?;
+        let generation_b = central.connection_generation(&peer).ok_or_else(|| {
+            err(
+                BleErrorCode::ConnectionNotFound,
+                BleErrorDomain::Connection,
+                "test.generation",
+            )
+        })?;
+        assert_ne!(generation_a, generation_b);
+
+        let before = central.resource_counters();
+        expect_code(
+            central.note_link_established_for_generation(&peer, &generation_a),
+            BleErrorCode::ConnectionStale,
+            BleErrorDomain::Connection,
+        )?;
+        assert_eq!(
+            central.connection_state(&peer),
+            Some(ConnectionState::Connecting)
+        );
+        assert_eq!(central.resource_counters(), before);
+        central.note_link_established_for_generation(&peer, &generation_b)?;
+        assert_eq!(
+            central.connection_state(&peer),
+            Some(ConnectionState::Connected)
+        );
+
+        let before_loss = central.resource_counters();
+        expect_code(
+            central.note_peer_loss_for_generation(&peer, &generation_a, 2003, &mut out),
+            BleErrorCode::ConnectionStale,
+            BleErrorDomain::Connection,
+        )?;
+        assert_eq!(
+            central.connection_state(&peer),
+            Some(ConnectionState::Connected)
+        );
+        assert_eq!(central.resource_counters(), before_loss);
+        central.disconnect(&peer, "client-2", 2004, &mut out)?;
+        let before_release = central.resource_counters();
+        expect_code(
+            central.note_link_released_for_generation(&peer, &generation_a),
+            BleErrorCode::ConnectionStale,
+            BleErrorDomain::Connection,
+        )?;
+        assert_eq!(
+            central.connection_state(&peer),
+            Some(ConnectionState::Disconnecting)
+        );
+        assert_eq!(central.resource_counters(), before_release);
+        central.note_link_released_for_generation(&peer, &generation_b)?;
+        assert_eq!(
+            central.connection_state(&peer),
+            Some(ConnectionState::Disconnected)
+        );
+
+        let mut loss_central = fixture_central()?;
+        let mut loss_out = batch();
+        let (loss_peer, _) = live_characteristic(&mut loss_central, &mut loss_out)?;
+        loss_central.disconnect(&loss_peer, "client-1", 2007, &mut loss_out)?;
+        loss_central.note_link_released(&loss_peer)?;
+        let loss_op = loss_central.connect(&loss_peer, "client-2", 5000, 2008, &mut loss_out)?;
+        loss_central.dispatch_op(&loss_op, &mut loss_out)?;
+        loss_central.settle_op(
+            &loss_op,
+            ContenderKind::Success,
+            true,
+            0,
+            2009,
+            &mut loss_out,
+        )?;
+        let loss_generation = loss_central
+            .connection_generation(&loss_peer)
+            .ok_or_else(|| {
+                err(
+                    BleErrorCode::ConnectionNotFound,
+                    BleErrorDomain::Connection,
+                    "test.generation",
+                )
+            })?;
+        assert_eq!(
+            loss_central.note_peer_loss_for_generation(
+                &loss_peer,
+                &loss_generation,
+                2010,
+                &mut loss_out,
+            )?,
+            ConnectionState::Lost
+        );
+
+        let unknown = "missing-peer";
+        expect_code(
+            central.note_link_established_for_generation(unknown, &generation_a),
+            BleErrorCode::ConnectionStale,
+            BleErrorDomain::Connection,
+        )?;
+        expect_code(
+            central.note_peer_loss_for_generation(unknown, &generation_a, 2005, &mut out),
+            BleErrorCode::ConnectionStale,
+            BleErrorDomain::Connection,
+        )?;
+        expect_code(
+            central.note_link_released_for_generation(unknown, &generation_a),
+            BleErrorCode::ConnectionStale,
+            BleErrorDomain::Connection,
+        )?;
         Ok(())
     }
 

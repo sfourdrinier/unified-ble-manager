@@ -2819,6 +2819,8 @@ public enum MobileRadioIngress: Equatable, Hashable {
     )
     case connection(peerId: String, connected: Bool, status: Int32?
     )
+    case connectionScoped(peerId: String, expectedGeneration: String, connected: Bool, status: Int32?
+    )
     case servicesChanged(peerId: String
     )
     case notification(instance: MobileInstance, epoch: UInt64, value: Data
@@ -2862,28 +2864,31 @@ public struct FfiConverterTypeMobileRadioIngress: FfiConverterRustBuffer {
         case 2: return .connection(peerId: try FfiConverterString.read(from: &buf), connected: try FfiConverterBool.read(from: &buf), status: try FfiConverterOptionInt32.read(from: &buf)
         )
 
-        case 3: return .servicesChanged(peerId: try FfiConverterString.read(from: &buf)
+        case 3: return .connectionScoped(peerId: try FfiConverterString.read(from: &buf), expectedGeneration: try FfiConverterString.read(from: &buf), connected: try FfiConverterBool.read(from: &buf), status: try FfiConverterOptionInt32.read(from: &buf)
         )
 
-        case 4: return .notification(instance: try FfiConverterTypeMobileInstance.read(from: &buf), epoch: try FfiConverterUInt64.read(from: &buf), value: try FfiConverterData.read(from: &buf)
+        case 4: return .servicesChanged(peerId: try FfiConverterString.read(from: &buf)
         )
 
-        case 5: return .adapterState(snapshot: try FfiConverterTypeMobileAdapterSnapshot.read(from: &buf)
+        case 5: return .notification(instance: try FfiConverterTypeMobileInstance.read(from: &buf), epoch: try FfiConverterUInt64.read(from: &buf), value: try FfiConverterData.read(from: &buf)
         )
 
-        case 6: return .scanFailed(detail: try FfiConverterString.read(from: &buf)
+        case 6: return .adapterState(snapshot: try FfiConverterTypeMobileAdapterSnapshot.read(from: &buf)
         )
 
-        case 7: return .securityChanged(peerId: try FfiConverterString.read(from: &buf), state: try FfiConverterTypeMobileSecurityState.read(from: &buf)
+        case 7: return .scanFailed(detail: try FfiConverterString.read(from: &buf)
         )
 
-        case 8: return .writeReadiness(peerId: try FfiConverterString.read(from: &buf), ready: try FfiConverterBool.read(from: &buf)
+        case 8: return .securityChanged(peerId: try FfiConverterString.read(from: &buf), state: try FfiConverterTypeMobileSecurityState.read(from: &buf)
         )
 
-        case 9: return .restored(peers: try FfiConverterSequenceTypeMobileRestoredPeer.read(from: &buf)
+        case 9: return .writeReadiness(peerId: try FfiConverterString.read(from: &buf), ready: try FfiConverterBool.read(from: &buf)
         )
 
-        case 10: return .dropped(ingressClass: try FfiConverterString.read(from: &buf), detail: try FfiConverterString.read(from: &buf)
+        case 10: return .restored(peers: try FfiConverterSequenceTypeMobileRestoredPeer.read(from: &buf)
+        )
+
+        case 11: return .dropped(ingressClass: try FfiConverterString.read(from: &buf), detail: try FfiConverterString.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2906,47 +2911,55 @@ public struct FfiConverterTypeMobileRadioIngress: FfiConverterRustBuffer {
             FfiConverterOptionInt32.write(status, into: &buf)
 
 
-        case let .servicesChanged(peerId):
+        case let .connectionScoped(peerId,expectedGeneration,connected,status):
             writeInt(&buf, Int32(3))
+            FfiConverterString.write(peerId, into: &buf)
+            FfiConverterString.write(expectedGeneration, into: &buf)
+            FfiConverterBool.write(connected, into: &buf)
+            FfiConverterOptionInt32.write(status, into: &buf)
+
+
+        case let .servicesChanged(peerId):
+            writeInt(&buf, Int32(4))
             FfiConverterString.write(peerId, into: &buf)
 
 
         case let .notification(instance,epoch,value):
-            writeInt(&buf, Int32(4))
+            writeInt(&buf, Int32(5))
             FfiConverterTypeMobileInstance.write(instance, into: &buf)
             FfiConverterUInt64.write(epoch, into: &buf)
             FfiConverterData.write(value, into: &buf)
 
 
         case let .adapterState(snapshot):
-            writeInt(&buf, Int32(5))
+            writeInt(&buf, Int32(6))
             FfiConverterTypeMobileAdapterSnapshot.write(snapshot, into: &buf)
 
 
         case let .scanFailed(detail):
-            writeInt(&buf, Int32(6))
+            writeInt(&buf, Int32(7))
             FfiConverterString.write(detail, into: &buf)
 
 
         case let .securityChanged(peerId,state):
-            writeInt(&buf, Int32(7))
+            writeInt(&buf, Int32(8))
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterTypeMobileSecurityState.write(state, into: &buf)
 
 
         case let .writeReadiness(peerId,ready):
-            writeInt(&buf, Int32(8))
+            writeInt(&buf, Int32(9))
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterBool.write(ready, into: &buf)
 
 
         case let .restored(peers):
-            writeInt(&buf, Int32(9))
+            writeInt(&buf, Int32(10))
             FfiConverterSequenceTypeMobileRestoredPeer.write(peers, into: &buf)
 
 
         case let .dropped(ingressClass,detail):
-            writeInt(&buf, Int32(10))
+            writeInt(&buf, Int32(11))
             FfiConverterString.write(ingressClass, into: &buf)
             FfiConverterString.write(detail, into: &buf)
 
@@ -2980,7 +2993,7 @@ public enum MobileRadioRequest: Equatable, Hashable {
     )
     case stopScan(id: UInt64
     )
-    case connect(id: UInt64, peerId: String, autoConnect: Bool, preferredPhy: [String]
+    case connect(id: UInt64, peerId: String, autoConnect: Bool, preferredPhy: [String], expectedGeneration: String
     )
     case disconnect(id: UInt64, peerId: String
     )
@@ -3076,7 +3089,7 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
         case 3: return .stopScan(id: try FfiConverterUInt64.read(from: &buf)
         )
 
-        case 4: return .connect(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), autoConnect: try FfiConverterBool.read(from: &buf), preferredPhy: try FfiConverterSequenceString.read(from: &buf)
+        case 4: return .connect(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf), autoConnect: try FfiConverterBool.read(from: &buf), preferredPhy: try FfiConverterSequenceString.read(from: &buf), expectedGeneration: try FfiConverterString.read(from: &buf)
         )
 
         case 5: return .disconnect(id: try FfiConverterUInt64.read(from: &buf), peerId: try FfiConverterString.read(from: &buf)
@@ -3205,12 +3218,13 @@ public struct FfiConverterTypeMobileRadioRequest: FfiConverterRustBuffer {
             FfiConverterUInt64.write(id, into: &buf)
 
 
-        case let .connect(id,peerId,autoConnect,preferredPhy):
+        case let .connect(id,peerId,autoConnect,preferredPhy,expectedGeneration):
             writeInt(&buf, Int32(4))
             FfiConverterUInt64.write(id, into: &buf)
             FfiConverterString.write(peerId, into: &buf)
             FfiConverterBool.write(autoConnect, into: &buf)
             FfiConverterSequenceString.write(preferredPhy, into: &buf)
+            FfiConverterString.write(expectedGeneration, into: &buf)
 
 
         case let .disconnect(id,peerId):

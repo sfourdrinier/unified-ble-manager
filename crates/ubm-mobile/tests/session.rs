@@ -635,14 +635,13 @@ async fn continuation_quiesce_seals_real_notification_intake_for_handoff() {
     let after_cutoff_bytes = final_seal["afterCutoffBytes"]
         .as_u64()
         .expect("after-cutoff byte accounting is numeric");
-    assert!(after_cutoff_bytes > 0);
+    assert_eq!(after_cutoff_bytes, 85);
 
-    // The refused post-cutoff value ends its route. The stream end is the one
-    // home of that loss: one item, with the bytes the cutoff counted.
-    let records = drain_until(&session, |records| {
-        !of_type(records, "stream-end").is_empty()
-    })
-    .await;
+    // The refused post-cutoff value belongs to the handoff receipt. It does
+    // not end the old route or manufacture a stream terminal. Drain only the
+    // value that crossed the cutoff; waiting for a terminal would wait for an
+    // event the contract deliberately does not emit.
+    let records = drain_until(&session, |records| !of_type(records, "value").is_empty()).await;
     let values = of_type(&records, "value");
     assert_eq!(
         values.len(),
@@ -650,19 +649,54 @@ async fn continuation_quiesce_seals_real_notification_intake_for_handoff() {
         "only the pre-cutoff notification transfers"
     );
     assert_eq!(values[0]["valueB64"], "AQ==");
-    let ends = of_type(&records, "stream-end");
-    assert_eq!(ends.len(), 1, "one terminal per route: {records:#?}");
-    assert_eq!(ends[0]["consumer"], "continuation-0");
-    assert_eq!(ends[0]["reason"], "overflow");
-    assert_eq!(ends[0]["droppedItems"], 1);
-    assert_eq!(ends[0]["droppedBytes"], after_cutoff_bytes);
+    assert!(
+        of_type(&records, "stream-end").is_empty(),
+        "sealed cutoff must not manufacture a terminal: {records:#?}"
+    );
+
+    // Later arrivals remain part of the same bounded handoff accounting. Two
+    // separate fences make each increment observable and prove the count is
+    // cumulative rather than re-counted or silently dropped.
+    host.ingest(hr_value(&[0x04], epoch));
+    let second_seal = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let sealed = ok(&call(&session, "session.quiesce", "{}").await);
+            if sealed["afterCutoffItems"] == 2 {
+                return sealed;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first later post-cutoff notification is accounted");
+    let second_bytes = second_seal["afterCutoffBytes"]
+        .as_u64()
+        .expect("cumulative after-cutoff bytes are numeric");
+    assert_eq!(second_bytes, 170);
+
+    host.ingest(hr_value(&[0x05, 0x06, 0x07], epoch));
+    let third_seal = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let sealed = ok(&call(&session, "session.quiesce", "{}").await);
+            if sealed["afterCutoffItems"] == 3 {
+                return sealed;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("second later post-cutoff notification is accounted");
+    let total_after_cutoff_bytes = third_seal["afterCutoffBytes"]
+        .as_u64()
+        .expect("final after-cutoff bytes are numeric");
+    assert_eq!(total_after_cutoff_bytes, 255);
     assert!(session.drain(256, 65536).contains("\"records\":[]"));
 
     let disposed = ok(&call(&session, "session.continuation-dispose", "{}").await);
     assert_eq!(disposed["state"], "released");
     assert_eq!(disposed["failures"], json!([]));
-    assert_eq!(disposed["afterCutoffItems"], 1);
-    assert_eq!(disposed["afterCutoffBytes"], after_cutoff_bytes);
+    assert_eq!(disposed["afterCutoffItems"], 3);
+    assert_eq!(disposed["afterCutoffBytes"], total_after_cutoff_bytes);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2652,23 +2686,28 @@ async fn reconcile_answers_every_fact_a_lost_control_record_carried() {
     );
 
     // security: the platform's last report.
-    let bonded = ubm_mobile::SecurityState {
-        bond: ubm_mobile::BondState::Bonded,
-        encryption: ubm_mobile::EncryptionState::Encrypted,
-        authentication: ubm_mobile::AuthenticationState::Unauthenticated,
-        secure_connections: ubm_mobile::SecureConnectionsState::Yes,
-        pairing_possible: None,
-    };
-    host.ingest(RadioIngress::SecurityChanged {
-        peer_id: POLAR.to_owned(),
-        state: bonded,
-    });
-    let records = drain_until(&session, |r| !of_type(r, "security").is_empty()).await;
-    let security = of_type(&records, "security")[0].clone();
+    radio.set_responder(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::SecurityState { .. } => {
+            Reply::Now(RadioCompletion::Security(ubm_mobile::SecurityState {
+                bond: ubm_mobile::BondState::Bonded,
+                encryption: ubm_mobile::EncryptionState::Encrypted,
+                authentication: ubm_mobile::AuthenticationState::Unauthenticated,
+                secure_connections: ubm_mobile::SecureConnectionsState::Yes,
+                pairing_possible: None,
+            }))
+        }
+        other => polar_responder(other),
+    }));
+    let security = ok(&call(
+        &session,
+        "security.state",
+        &json!({"peerId": POLAR, "operationId": "security-state"}).to_string(),
+    )
+    .await);
     let snapshot = reconcile(&session).await;
     assert_eq!(
         snapshot["security"],
-        json!([{"peerId": POLAR, "state": security["state"]}])
+        json!([{"peerId": POLAR, "state": security}])
     );
 
     // link loss, then a reconnect under a new generation: both are visible.
@@ -2705,6 +2744,138 @@ async fn reconcile_answers_every_fact_a_lost_control_record_carried() {
         link_of(&snapshot, &first["connectionGeneration"])["state"],
         "ended"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scoped_connection_callback_preserves_replacement_generation() {
+    async fn replacement(
+        host: &std::sync::Arc<ubm_mobile::MobileHost>,
+        session: &ubm_mobile::MobileSession,
+        prefix: &str,
+    ) -> (Value, Value) {
+        let first = connect(session, &format!("{prefix}-a")).await;
+        host.ingest(RadioIngress::Connection {
+            peer_id: POLAR.to_owned(),
+            connected: false,
+            status: Some(8),
+        });
+        drain_until(session, |records| !of_type(records, "link").is_empty()).await;
+        ok(&call(
+            session,
+            "connection.disconnect",
+            &json!({"peerId": POLAR, "lease": "lease-1", "operationId": format!("{prefix}-release")})
+                .to_string(),
+        )
+        .await);
+        let second = connect(session, &format!("{prefix}-b")).await;
+        (first, second)
+    }
+
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("scoped").expect("session");
+    let (first, second) = replacement(&host, &session, "scoped").await;
+    radio.set_responder(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::SecurityState { .. } => {
+            Reply::Now(RadioCompletion::Security(ubm_mobile::SecurityState {
+                bond: ubm_mobile::BondState::Bonded,
+                encryption: ubm_mobile::EncryptionState::Encrypted,
+                authentication: ubm_mobile::AuthenticationState::Authenticated,
+                secure_connections: ubm_mobile::SecureConnectionsState::Yes,
+                pairing_possible: Some(true),
+            }))
+        }
+        other => polar_responder(other),
+    }));
+    ok(&call(
+        &session,
+        "security.state",
+        &json!({"peerId": POLAR, "operationId": "scoped-security"}).to_string(),
+    )
+    .await);
+    host.ingest(RadioIngress::ConnectionScoped {
+        peer_id: POLAR.to_owned(),
+        expected_generation: first["connectionGeneration"]
+            .as_str()
+            .expect("first generation")
+            .to_owned(),
+        connected: false,
+        status: Some(8),
+    });
+    let snapshot = reconcile(&session).await;
+    assert_eq!(
+        link_of(&snapshot, &second["connectionGeneration"])["state"],
+        "connected",
+        "a stale scoped loss must preserve B"
+    );
+    assert_eq!(
+        snapshot["security"][0]["state"],
+        json!({
+            "bond": "bonded",
+            "encryption": "encrypted",
+            "authentication": "authenticated",
+            "secureConnections": "yes",
+            "pairingPossible": true
+        }),
+        "stale A must not reset B's security entry"
+    );
+    host.ingest(RadioIngress::ConnectionScoped {
+        peer_id: POLAR.to_owned(),
+        expected_generation: second["connectionGeneration"]
+            .as_str()
+            .expect("second generation")
+            .to_owned(),
+        connected: false,
+        status: Some(8),
+    });
+    let records = drain_until(&session, |records| !of_type(records, "link").is_empty()).await;
+    assert_eq!(of_type(&records, "link").len(), 1);
+    let security_records = of_type(&records, "security");
+    assert_eq!(
+        security_records.len(),
+        1,
+        "B loss emits one security update"
+    );
+    assert_eq!(
+        security_records[0]["state"],
+        json!({
+            "bond": "bonded",
+            "encryption": "unknown",
+            "authentication": "unknown",
+            "secureConnections": "unknown",
+            "pairingPossible": true
+        })
+    );
+    assert_eq!(
+        link_of(&reconcile(&session).await, &second["connectionGeneration"])["state"],
+        "ended"
+    );
+    host.shutdown().await;
+
+    // Counterfactual: the legacy peer-only ingress has no generation fence and
+    // therefore mutates B, proving the scoped assertion above is meaningful.
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("unscoped").expect("session");
+    let (first, second) = replacement(&host, &session, "unscoped").await;
+    host.ingest(RadioIngress::Connection {
+        peer_id: POLAR.to_owned(),
+        connected: false,
+        status: Some(8),
+    });
+    let records = drain_until(&session, |records| !of_type(records, "link").is_empty()).await;
+    assert_eq!(of_type(&records, "link").len(), 1);
+    let snapshot = reconcile(&session).await;
+    assert_eq!(
+        link_of(&snapshot, &second["connectionGeneration"])["state"],
+        "ended",
+        "peer-only loss is the mutation counterfactual"
+    );
+    assert_ne!(
+        first["connectionGeneration"],
+        second["connectionGeneration"]
+    );
+    host.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3863,6 +4034,66 @@ async fn a_newer_security_failure_survives_an_older_successful_probe() {
     let snapshot = ok(&call(&session, "session.reconcile", "{}").await);
     assert_eq!(snapshot["securityFailures"].as_array().unwrap().len(), 1);
     assert!(snapshot["security"].as_array().unwrap().is_empty());
+    assert_eq!(parse(&host.shutdown().await)["state"], "released");
+}
+
+#[tokio::test]
+async fn owned_security_query_ignores_unscoped_failure_and_keeps_it_durable() {
+    let radio = Scripted::new(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::SecurityState { .. } => Reply::Hold,
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("owned-security-race").unwrap();
+    connect(&session, "owned-security-connect").await;
+    let query_args = json!({"peerId": POLAR, "operationId": "owned-security-query"}).to_string();
+    let query = call(&session, "security.state", &query_args);
+    let failure = async {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while radio.held_of(RequestKind::SecurityState).is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("owned security query dispatches");
+        host.ingest(RadioIngress::SecurityFailed {
+            peer_id: Some(POLAR.into()),
+            failure: PlatformFailure::new(
+                FailureKind::PermissionDenied,
+                "stale A security observation",
+            ),
+        });
+        host.ingest(RadioIngress::SecurityChanged {
+            peer_id: POLAR.into(),
+            state: ubm_mobile::SecurityState {
+                bond: ubm_mobile::BondState::Bonded,
+                encryption: ubm_mobile::EncryptionState::Encrypted,
+                authentication: ubm_mobile::AuthenticationState::Authenticated,
+                secure_connections: ubm_mobile::SecureConnectionsState::Yes,
+                pairing_possible: Some(true),
+            },
+        });
+        let id = radio.held_of(RequestKind::SecurityState)[0];
+        radio.answer(
+            id,
+            RadioCompletion::Security(ubm_mobile::SecurityState {
+                bond: ubm_mobile::BondState::Bonded,
+                encryption: ubm_mobile::EncryptionState::Encrypted,
+                authentication: ubm_mobile::AuthenticationState::Authenticated,
+                secure_connections: ubm_mobile::SecureConnectionsState::Yes,
+                pairing_possible: Some(true),
+            }),
+        );
+    };
+    let (answer, ()) = tokio::join!(query, failure);
+    assert_eq!(
+        ok(&answer)["encryption"],
+        "encrypted",
+        "B's typed query completes despite stale A failure"
+    );
+    let snapshot = ok(&call(&session, "session.reconcile", "{}").await);
+    assert_eq!(snapshot["security"][0]["state"]["encryption"], "encrypted");
+    assert_eq!(snapshot["securityFailures"].as_array().unwrap().len(), 1);
     assert_eq!(parse(&host.shutdown().await)["state"], "released");
 }
 

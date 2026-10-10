@@ -2,20 +2,26 @@
 
 package com.sfourdrinier.unifiedblemanager.protocol
 
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.content.pm.PackageManager
 import com.sfourdrinier.unifiedblemanager.protocol.generated.RecordKind
 import com.sfourdrinier.unifiedblemanager.radio.GattObservation
 import com.sfourdrinier.unifiedblemanager.radio.UbmGattCoreBinding
 import java.util.Collections
-import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import org.mockito.Mockito
+import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.eq
 
 /**
  * R02 Android authority proofs (HOST-JVM unit tests, local Gradle runnable).
@@ -45,7 +51,7 @@ class UnifiedBleProtocolAndroidDispatcherAuthorityTest {
     drains: List<String> = emptyList()
   ) : UbmGattCoreBinding.CoreJni {
     val enqueued = Collections.synchronizedList(mutableListOf<String>())
-    private val drainQueue = ConcurrentLinkedQueue(drains)
+    private val drainQueue = drains.toMutableList()
 
     override fun open(revision: String): Long = 7L
     override fun revision(): String = linkedRevision
@@ -53,7 +59,16 @@ class UnifiedBleProtocolAndroidDispatcherAuthorityTest {
       enqueued.add(wire)
       return enqueued.size
     }
-    override fun drain(handle: Long): String = drainQueue.poll() ?: ""
+    override fun drain(handle: Long): String {
+      val event = enqueued.lastOrNull()?.substringBefore('|') ?: return ""
+      val marker = "\"event\":\"$event\""
+      val index = drainQueue.indexOfFirst { response -> response.contains(marker) }
+      if (index < 0) return ""
+      val response = drainQueue.removeAt(index)
+      if (event != "connect") return response
+      val lease = enqueued.lastOrNull()?.split('|')?.getOrNull(2) ?: return response
+      return response.replace(Regex("\\\"lease\\\":\\\"[^\\\"]+\\\""), "\\\"lease\\\":\\\"$lease\\\"")
+    }
     override fun depth(handle: Long): Int = enqueued.size
     override fun close(handle: Long) {}
 
@@ -66,10 +81,25 @@ class UnifiedBleProtocolAndroidDispatcherAuthorityTest {
     val diagnostics: MutableList<String> = Collections.synchronizedList(mutableListOf()),
     val rejections: MutableList<GattObservation> = Collections.synchronizedList(mutableListOf())
   ) {
-    val context: Context = permittedContext()
+    val adapter: BluetoothAdapter = Mockito.mock(BluetoothAdapter::class.java)
+    val device: BluetoothDevice = Mockito.mock(BluetoothDevice::class.java)
+    val gatt: BluetoothGatt = Mockito.mock(BluetoothGatt::class.java)
+    var callback: BluetoothGattCallback? = null
+    val context: Context = permittedContext(adapter)
+
+    init {
+      Mockito.`when`(adapter.state).thenReturn(BluetoothAdapter.STATE_ON)
+      Mockito.`when`(adapter.getRemoteDevice("AA:BB:CC:DD:EE:FF")).thenReturn(device)
+      Mockito.`when`(device.address).thenReturn("AA:BB:CC:DD:EE:FF")
+      Mockito.`when`(gatt.device).thenReturn(device)
+      Mockito.doAnswer { invocation ->
+        callback = invocation.getArgument(2)
+        gatt
+      }.`when`(device).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+    }
 
     fun dispatcher(coreShadowFactory: ((Context, (GattObservation) -> Unit) -> UbmGattCoreBinding?)?): UnifiedBleProtocolAndroidDispatcher =
-      UnifiedBleProtocolAndroidDispatcher(context, NATIVE_HANDLE, coreShadowFactory)
+      UnifiedBleProtocolAndroidDispatcher(context, NATIVE_HANDLE, coreShadowFactory, null)
 
     fun healthyFactory(): (Context, (GattObservation) -> Unit) -> UbmGattCoreBinding? =
       { ctx, onRejection ->
@@ -84,6 +114,23 @@ class UnifiedBleProtocolAndroidDispatcherAuthorityTest {
           clockMs = { 1000L }
         )
       }
+
+    fun establish(dispatcher: UnifiedBleProtocolAndroidDispatcher) {
+      dispatcher.dispatch(
+        commandBytes(
+          "connect", 10L, "establish",
+          mapOf(
+            10 to ProtocolWireValue.RecordValue(connectionRecord("AA:BB:CC:DD:EE:FF")),
+            20 to ProtocolWireValue.StringValue("direct")
+          )
+        )
+      )
+      (callback ?: error("connectGatt callback was not captured")).onConnectionStateChange(
+        gatt,
+        BluetoothGatt.GATT_SUCCESS,
+        BluetoothProfile.STATE_CONNECTED
+      )
+    }
   }
 
   // -- the three proofs ------------------------------------------------------
@@ -93,39 +140,54 @@ class UnifiedBleProtocolAndroidDispatcherAuthorityTest {
     val harness = Harness(
       FakeJni(
         drains = listOf(
-          "{\"ok\":false,\"event\":\"disconnect\",\"code\":\"link.busy\",\"domain\":\"connection\"," +
-            "\"operation\":\"gatt-drain\",\"detail\":\"teardown-refused\",\"effects\":[],\"observations\":[]}"
+          "{\"ok\":true,\"event\":\"connect\",\"peer\":\"public-address:AA:BB:CC:DD:EE:FF\",\"lease\":\"android-link-AA:BB:CC:DD:EE:FF\",\"generation\":\"test-generation\",\"op\":\"connection.connect\",\"effects\":[],\"observations\":[]}",
+          "{\"ok\":false,\"event\":\"disconnect\",\"code\":\"link.busy\",\"domain\":\"connection\",\"operation\":\"gatt-drain\",\"detail\":\"teardown-refused\",\"effects\":[],\"observations\":[]}"
         )
       )
     )
     mockJsi(harness).use {
       val dispatcher = harness.dispatcher(harness.healthyFactory())
       try {
+        harness.establish(dispatcher)
         dispatcher.dispatch(disconnectCommand(epoch = 11L, nonce = "rejection-binds"))
       } finally {
         dispatcher.close()
       }
     }
-    // The core was consulted: the exact disconnect line reached the core queue.
     assertTrue(
-      "core line must be enqueued, was ${harness.jni.enqueued}",
-      harness.jni.enqueued.any { line ->
-        line.startsWith("disconnect|public-address:AA:BB:CC:DD:EE:FF|android-link-AA:BB:CC:DD:EE:FF|")
+      "disconnect line must be enqueued: ${harness.jni.enqueued}",
+      harness.jni.enqueued.any {
+        it.startsWith("disconnect|public-address:AA:BB:CC:DD:EE:FF|android-link-AA:BB:CC:DD:EE:FF-")
       }
     )
-    // The rejection arrived through the binding sink (diagnostic path intact).
     assertEquals(1, harness.rejections.size)
     assertEquals("link.busy", harness.rejections.single().code)
-    // Authority: exactly one terminal, a failure naming the core refusal —
-    // the radio-only "accepted" success must not appear.
-    val terminals = parseTerminals(harness.emitted)
-    assertEquals("one terminal, was $terminals", 1, terminals.size)
-    assertEquals("failed", terminals.single().outcome)
-    assertEquals(CoreCommandAuthority.CODE_REJECTED, terminals.single().errorCode)
+    val terminals = parseTerminals(harness.emitted.filter { parseRecord(it, 0).kindWire == RecordKind.RESULT.wireValue })
+    assertEquals("connect plus rejected disconnect, was $terminals", 2, terminals.size)
+    val rejected = terminals.filter { it.errorCode != null }
+    assertEquals("exactly one failed disconnect, terminals=$terminals", 1, rejected.size)
+    assertTrue(rejected.single().errorMessage.contains("link.busy"))
+    assertTrue(terminals.none { it.resultKind == "accepted" && it.outcome == "succeeded" })
+  }
+
+  @Test
+  fun unknownDisconnectIsRejectedBeforeCoreOrRadioTouch() {
+    val harness = Harness(FakeJni())
+    mockJsi(harness).use {
+      val dispatcher = harness.dispatcher(harness.healthyFactory())
+      try {
+        dispatcher.dispatch(disconnectCommand(epoch = 14L, nonce = "unknown-disconnect"))
+      } finally {
+        dispatcher.close()
+      }
+    }
     assertTrue(
-      "rejection detail must quote the core identity, was $terminals",
-      terminals.single().errorMessage.contains("link.busy")
+      "unknown disconnect must not enqueue a disconnect: ${harness.jni.enqueued}",
+      harness.jni.enqueued.none { line -> line.startsWith("disconnect|") }
     )
+    val terminals = parseTerminals(harness.emitted.filter { parseRecord(it, 0).kindWire == RecordKind.RESULT.wireValue })
+    assertEquals(1, terminals.size)
+    assertEquals(CoreCommandAuthority.CODE_REJECTED, terminals.single().errorCode)
   }
 
   @Test
@@ -148,7 +210,7 @@ class UnifiedBleProtocolAndroidDispatcherAuthorityTest {
     // single-threaded in DeferredCoreShadowCauseTest / DeferredCoreShadowTest.
     // Fail loud: one actionable terminal quoting the cause — never the
     // radio-only "accepted" success the mirror path would have emitted.
-    val terminals = parseTerminals(harness.emitted)
+    val terminals = parseTerminals(harness.emitted.filter { parseRecord(it, 0).kindWire == RecordKind.RESULT.wireValue })
     assertEquals("one terminal, was $terminals", 1, terminals.size)
     assertEquals("failed", terminals.single().outcome)
     assertEquals(CoreCommandAuthority.CODE_UNAVAILABLE, terminals.single().errorCode)
@@ -163,6 +225,7 @@ class UnifiedBleProtocolAndroidDispatcherAuthorityTest {
     val harness = Harness(
       FakeJni(
         drains = listOf(
+          "{\"ok\":true,\"event\":\"connect\",\"peer\":\"public-address:AA:BB:CC:DD:EE:FF\",\"lease\":\"android-link-AA:BB:CC:DD:EE:FF\",\"generation\":\"test-generation\",\"op\":\"connection.connect\",\"effects\":[],\"observations\":[]}",
           "{\"ok\":true,\"event\":\"disconnect\",\"effects\":[],\"observations\":[]}"
         )
       )
@@ -170,26 +233,23 @@ class UnifiedBleProtocolAndroidDispatcherAuthorityTest {
     mockJsi(harness).use {
       val dispatcher = harness.dispatcher(harness.healthyFactory())
       try {
+        harness.establish(dispatcher)
         dispatcher.dispatch(disconnectCommand(epoch = 13L, nonce = "attested"))
       } finally {
         dispatcher.close()
       }
     }
-    // Attestation: the exact wire line reached the core queue ...
     assertTrue(
-      "core line must be enqueued, was ${harness.jni.enqueued}",
-      harness.jni.enqueued.any { line ->
-        line.startsWith("disconnect|public-address:AA:BB:CC:DD:EE:FF|android-link-AA:BB:CC:DD:EE:FF|")
+      "disconnect line must be enqueued: ${harness.jni.enqueued}",
+      harness.jni.enqueued.any {
+        it.startsWith("disconnect|public-address:AA:BB:CC:DD:EE:FF|android-link-AA:BB:CC:DD:EE:FF-")
       }
     )
-    // ... its drain observation was consumed (no stranded verdict) ...
-    assertEquals("drain observation must be consumed", 0, harness.jni.drainsRemaining())
-    assertTrue("no core rejection expected, was ${harness.rejections}", harness.rejections.isEmpty())
-    // ... and the radio success is reported with the core admitted.
-    val terminals = parseTerminals(harness.emitted)
-    assertEquals("one terminal, was $terminals", 1, terminals.size)
-    assertEquals("succeeded", terminals.single().outcome)
-    assertEquals("accepted", terminals.single().resultKind)
+    assertEquals("connect/disconnect drains consumed", 0, harness.jni.drainsRemaining())
+    val terminals = parseTerminals(harness.emitted.filter { parseRecord(it, 0).kindWire == RecordKind.RESULT.wireValue })
+    assertEquals("connect and disconnect terminals, was $terminals", 2, terminals.size)
+    assertTrue("connect success missing: $terminals", terminals.any { it.resultKind == "connected" && it.outcome == "succeeded" })
+    assertTrue("disconnect success missing: $terminals", terminals.any { it.resultKind == "accepted" && it.outcome == "succeeded" })
   }
 
   // -- harness ---------------------------------------------------------------
@@ -203,7 +263,7 @@ class UnifiedBleProtocolAndroidDispatcherAuthorityTest {
     return mocked
   }
 
-  private fun permittedContext(): Context {
+  private fun permittedContext(adapter: BluetoothAdapter): Context {
     val context = Mockito.mock(Context::class.java)
     Mockito.`when`(context.applicationContext).thenReturn(context)
     Mockito.`when`(context.checkSelfPermission(Mockito.anyString())).thenReturn(
@@ -211,8 +271,7 @@ class UnifiedBleProtocolAndroidDispatcherAuthorityTest {
     )
     val bluetoothManager = Mockito.mock(BluetoothManager::class.java)
     Mockito.`when`(context.getSystemService(Context.BLUETOOTH_SERVICE)).thenReturn(bluetoothManager)
-    // No adapter on HOST-JVM: radio paths needing hardware throw fail-closed.
-    Mockito.`when`(bluetoothManager.adapter).thenReturn(null)
+    Mockito.`when`(bluetoothManager.adapter).thenReturn(adapter)
     return context
   }
 

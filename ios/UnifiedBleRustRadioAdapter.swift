@@ -220,6 +220,7 @@ struct UnifiedBleRustRadioAdapterCounters: Equatable {
   var mismatchedCompletions: UInt64 = 0
   var ingressAfterClose: UInt64 = 0
   var cancelledRequests: UInt64 = 0
+  var unknownConnectionLosses: UInt64 = 0
 }
 
 final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCoreBluetoothProtocolRadioDelegate,
@@ -257,6 +258,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
   private var subscriptionByInstance = [InstanceKey: String]()
   private var announcedRestoredPeers = Set<String>()
   private var pendingRestoredPeers = [MobileRestoredPeer]()
+  private var establishedGenerations = [String: String]()
   private var scanActive = false
   private var counters = UnifiedBleRustRadioAdapterCounters()
 
@@ -328,7 +330,10 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
         if error == nil || noScanActive { self.scanActive = false }
         self.finishUnit(id, noScanActive ? nil : error, verb: .stopScan)
       }
-    case let .connect(_, peerId, autoConnect, preferredPhy):
+    case let .connect(_, peerId, autoConnect, preferredPhy, expectedGeneration):
+      guard !expectedGeneration.isEmpty else {
+        return finish(id, Self.platformFailure("connect requires an admitted core generation"))
+      }
       guard !autoConnect else {
         return finish(id, Self.unsupported("CoreBluetooth has no when-available (autoConnect) connection intent"))
       }
@@ -339,6 +344,10 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
       }
       whenReady(id, verb: .connect) {
         self.driver.connect(peerIdentifier: peerId, operationIdentifier: operationIdentifier) { error in
+          let ownsOperation = self.inFlight[id] == operationIdentifier
+          if error == nil && ownsOperation {
+            self.establishedGenerations[peerId] = expectedGeneration
+          }
           self.finishUnit(id, error, verb: .connect)
         }
       }
@@ -653,6 +662,9 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
 
   func protocolRadioDidUpdateAdapterState(_ snapshot: NSDictionary) {
     let adapter = Self.adapterSnapshot(snapshot)
+    if adapter.power != "on" {
+      establishedGenerations.removeAll()
+    }
     ingest(.adapterState(snapshot: adapter))
     // CoreBluetooth ends every scan when the adapter leaves powered-on and
     // never resumes it: report the loss and clear the radio's scan owner.
@@ -673,7 +685,17 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
   }
 
   func protocolRadioDidDisconnectPeer(_ peerIdentifier: String, error: NSError?) {
-    ingest(.connection(peerId: peerIdentifier, connected: false, status: error.flatMap { Int32(exactly: $0.code) }))
+    guard let expectedGeneration = establishedGenerations.removeValue(forKey: peerIdentifier) else {
+      counters.unknownConnectionLosses += 1
+      NSLog("[UnifiedBleRustRadioAdapter] CoreBluetooth reported an unowned disconnect for %@", peerIdentifier)
+      return
+    }
+    ingest(.connectionScoped(
+      peerId: peerIdentifier,
+      expectedGeneration: expectedGeneration,
+      connected: false,
+      status: error.flatMap { Int32(exactly: $0.code) }
+    ))
   }
 
   func protocolRadioDidModifyServices(_ peerIdentifier: String) {
@@ -943,7 +965,7 @@ final class UnifiedBleRustRadioAdapter: NSObject, MobilePlatformRadio, OwnedCore
     switch request {
     case let .adapterState(id), let .stopScan(id), let .bondedPeers(id), let .close(id):
       return id
-    case let .resolvePeer(id, _), let .connectedPeers(id, _), let .startScan(id, _, _, _, _, _, _, _), let .connect(id, _, _, _), let .disconnect(id, _), let .discover(id, _),
+    case let .resolvePeer(id, _), let .connectedPeers(id, _), let .startScan(id, _, _, _, _, _, _, _), let .connect(id, _, _, _, _), let .disconnect(id, _), let .discover(id, _),
       let .read(id, _), let .write(id, _, _, _), let .readDescriptor(id, _, _, _), let .writeDescriptor(id, _, _, _, _),
       let .enableNotifications(id, _, _, _, _), let .disableNotifications(id, _), let .readMtu(id, _),
       let .readWriteLimits(id, _), let .readWriteReadiness(id, _),

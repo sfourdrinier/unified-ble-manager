@@ -38,6 +38,24 @@ import org.mockito.Mockito.verify
  */
 class OwnedAndroidGattDisconnectOwnerTest {
   @Test
+  fun mismatchedClosingOwnerIsDistinctFromAnAbsentOwnerAndPreservesItsWaiter() {
+    val owners = AndroidGattDisconnectOwners()
+    val first = Any()
+    val replacement = Any()
+    val results = mutableListOf<OwnedRadioTeardownFailure?>()
+    val admitted = owners.join("peer", first, 1L, { results.add(it) })
+    val absent = owners.markClosing("other", Any(), 3L)
+    val mismatch = owners.markClosing("peer", replacement, 2L)
+    assertFalse("a mismatched owner must not authorize native close", absent == mismatch)
+    assertFalse(owners.isClosing("peer", replacement, 2L))
+    assertTrue(owners.isCurrent("peer", admitted.token))
+    val waiters = owners.retire("peer", first, 1L)
+    assertEquals(1, waiters.size)
+    waiters.single().invoke(null)
+    assertEquals(listOf<OwnedRadioTeardownFailure?>(null), results)
+  }
+
+  @Test
   fun twoDisconnectCallersBothCompleteOnceWhenAndroidReportsDisconnected() {
     val f = GattRadioFixture()
     val gatt = f.connected()
@@ -489,10 +507,14 @@ class OwnedAndroidGattDisconnectOwnerTest {
     val f = GattRadioFixture()
     val gatt = f.connected()
     val joinedMidClose = GattDisconnectResults()
-    // The first retire has already happened when close() runs, but the generation is still
-    // current: a disconnect arriving now creates an owner that only the sweep can retire.
+    val losses = mutableListOf<Int>()
+    f.radio.onConnectionState = { _, connected, status -> if (!connected) losses.add(status) }
+    // Close is fenced before the native call: a disconnect arriving reentrantly joins the
+    // closing owner and cannot create a second deadline or native disconnect.
     doAnswer {
+      f.nativeDisconnected(gatt)
       assertNull(f.radio.disconnect(f.peer, joinedMidClose.callback))
+      assertEquals(1, f.closeDeadlines().size)
       null
     }.`when`(gatt).close()
     val starter = GattDisconnectResults()
@@ -502,6 +524,7 @@ class OwnedAndroidGattDisconnectOwnerTest {
 
     assertEquals(listOf<OwnedRadioTeardownFailure?>(null), starter.values)
     assertEquals(listOf<OwnedRadioTeardownFailure?>(null), joinedMidClose.values)
+    assertEquals(listOf(BluetoothGatt.GATT_SUCCESS), losses)
     verify(gatt, times(1)).close()
     // The orphaned owner's deadline is inert and a replacement is not blamed for it.
     val replacement = f.connected()
@@ -519,6 +542,10 @@ class OwnedAndroidGattDisconnectOwnerTest {
     val f = GattRadioFixture()
     val gatt = f.connected()
     f.refuseDeadline = true
+    doAnswer {
+      f.nativeDisconnected(gatt)
+      null
+    }.`when`(gatt).close()
     val lost = mutableListOf<Int>()
     f.radio.onConnectionState = { _, connected, status -> if (!connected) lost.add(status) }
     val waiter = GattDisconnectResults()

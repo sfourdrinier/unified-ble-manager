@@ -1,3 +1,4 @@
+// crates/ubm-desktop/tests/reconnect_without_rescan.rs
 //! Reconnect without rescan (finding 127) against the production radio.
 //!
 //! The legacy backends reconnected without a new scan: CoreBluetooth via
@@ -52,7 +53,7 @@ async fn open_radio() -> BtleplugRadio {
 async fn a_never_observed_peer_is_not_found_without_a_scan() {
     let radio = open_radio().await;
     let error = radio
-        .connect(NEVER_SEEN_PEER)
+        .connect(NEVER_SEEN_PEER, "unobserved-peer-generation")
         .await
         .expect_err("a never-observed peer must not connect");
     assert_eq!(

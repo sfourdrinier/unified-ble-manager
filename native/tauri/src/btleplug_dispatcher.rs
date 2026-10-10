@@ -1512,19 +1512,33 @@ impl BtleplugDispatcher {
             | "gatt.read"
             | "gatt.subscribe"
             | "gatt.acquire-write"
-            | "gatt.acquire-notifications" => {
-                Some(self.gatt_target(&caller, &payload).await?.peer_id)
-            }
-            "gatt.acquired-write" => Some(self.acquired_writer(&caller, &payload).await?.peer_id),
+            | "gatt.acquire-notifications" => Some(
+                self.resolve_after_attachment_check(&route_attachment, &command, || {
+                    self.gatt_target(&caller, &payload)
+                })
+                .await?
+                .peer_id,
+            ),
+            "gatt.acquired-write" => Some(
+                self.resolve_after_attachment_check(&route_attachment, &command, || {
+                    self.acquired_writer(&caller, &payload)
+                })
+                .await?
+                .peer_id,
+            ),
             "gatt.descriptor.read" | "gatt.descriptor.write" => Some(
-                self.descriptor_target(&caller, &payload, "tauri.gatt-admission")
-                    .await?
-                    .0,
+                self.resolve_after_attachment_check(&route_attachment, &command, || {
+                    self.descriptor_target(&caller, &payload, "tauri.gatt-admission")
+                })
+                .await?
+                .0,
             ),
             "gatt.discover" => Some(
-                self.connection(&caller, &payload, "tauri.gatt-admission")
-                    .await?
-                    .peer_id,
+                self.resolve_after_attachment_check(&route_attachment, &command, || {
+                    self.connection(&caller, &payload, "tauri.gatt-admission")
+                })
+                .await?
+                .peer_id,
             ),
             "gatt.unsubscribe" => {
                 let handle =
@@ -1782,6 +1796,22 @@ impl BtleplugDispatcher {
             return Err(stale_attachment(route_attachment, &current));
         }
         Ok(())
+    }
+
+    async fn resolve_after_attachment_check<T, F, Fut>(
+        &self,
+        route_attachment: &Attachment,
+        command: &str,
+        resolve: F,
+    ) -> Result<T, DispatchError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T, DispatchError>>,
+    {
+        let result = resolve().await;
+        self.refuse_stale_attachment(route_attachment, command)
+            .await?;
+        result
     }
 
     async fn validate_expected_lease(

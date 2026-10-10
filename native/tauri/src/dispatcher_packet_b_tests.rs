@@ -5654,6 +5654,80 @@ async fn finding_57_the_previous_attachment_fails_backend_reset_before_native_io
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gatt_resolution_reset_takes_precedence_over_stale_target_error() {
+    let harness = Harness::with_radio(os_radio(AdmissionPolicy::LifecycleOnly)).await;
+    let attachment = harness.attachment.clone();
+    harness
+        .dispatcher
+        .refuse_stale_attachment(&attachment, "gatt.read")
+        .await
+        .expect("the initial attachment check passes");
+    let resolving = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let dispatcher = harness.dispatcher.clone();
+    let resolving_task = Arc::clone(&resolving);
+    let release_task = Arc::clone(&release);
+    let resolution = tokio::spawn(async move {
+        dispatcher
+            .resolve_after_attachment_check(&attachment, "gatt.read", || async move {
+                resolving_task.notify_one();
+                release_task.notified().await;
+                Err::<(), _>(DispatchError::new(
+                    BleErrorCode::GattStaleHandle,
+                    "gatt",
+                    "tauri.characteristic-database-generation",
+                ))
+            })
+            .await
+    });
+    resolving.notified().await;
+    let reset = harness.lose_adapter().await;
+    harness
+        .dispatcher
+        .rebind_callers(reset.previous.attachment_id().as_str(), &reset.current)
+        .await;
+    release.notify_one();
+    let error = resolution
+        .await
+        .expect("resolution task joins")
+        .expect_err("reset takes precedence over stale target");
+    assert_eq!(
+        error.identity(),
+        (
+            "backend.reset",
+            "adapter",
+            "tauri.route-attachment".to_owned()
+        )
+    );
+    assert_eq!(error.commit, Some(CommitState::NotDispatched));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gatt_resolution_preserves_error_when_attachment_is_unchanged() {
+    let harness = Harness::with_radio(os_radio(AdmissionPolicy::LifecycleOnly)).await;
+    let error = harness
+        .dispatcher
+        .resolve_after_attachment_check(&harness.attachment, "gatt.read", || async {
+            Err::<(), _>(DispatchError::new(
+                BleErrorCode::GattNotFound,
+                "gatt",
+                "tauri.characteristic-handle",
+            ))
+        })
+        .await
+        .expect_err("resolution error propagates");
+    assert_eq!(
+        error.identity(),
+        (
+            "gatt.not-found",
+            "gatt",
+            "tauri.characteristic-handle".to_owned()
+        )
+    );
+    assert_eq!(error.commit, None);
+}
+
 // Finding 58 — admission errors from the core cross unchanged: code,
 // domain, operation, detail, retryability and commit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

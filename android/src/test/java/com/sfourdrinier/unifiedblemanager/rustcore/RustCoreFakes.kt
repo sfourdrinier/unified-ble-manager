@@ -158,10 +158,20 @@ class FakeCore : MobileCorePort {
     failures.put(requestId, failure).let { record("failure:$requestId:${failure.kind.wire}:${failure.gattStatus}") }
 
   val advertisements = mutableListOf<AdvertisementFacts>()
+  val connectionGenerationIngress = mutableListOf<Triple<String, String, Boolean>>()
 
   override fun ingestAdvertisement(advertisement: AdvertisementFacts) =
     advertisements.add(advertisement).let { ingress("adv:${advertisement.peerId}") }
   override fun ingestConnection(peerId: String, connected: Boolean, status: Int?) = ingress("link:$peerId:$connected:$status")
+  override fun ingestConnectionForGeneration(
+    peerId: String,
+    expectedGeneration: String,
+    connected: Boolean,
+    status: Int?
+  ): Int {
+    connectionGenerationIngress.add(Triple(peerId, expectedGeneration, connected))
+    return ingress("link:$peerId:$connected:$status")
+  }
   override fun ingestServicesChanged(peerId: String) = ingress("services-changed:$peerId")
   override fun ingestNotification(instance: CharacteristicInstance, epoch: Long, value: ByteArray) =
     ingress("value:${instance.peerId}:${instance.characteristicUuid}#${instance.characteristicOccurrence}:$epoch:${value.toList()}")

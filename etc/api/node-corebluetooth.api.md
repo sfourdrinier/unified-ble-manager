@@ -5,7 +5,7 @@
 
 - `ADAPTER_INITIALIZATION_TIMEOUT_MS :: 10000`
 - `COREBLUETOOTH_BACKEND_ID :: "unified-ble:corebluetooth"`
-- `COREBLUETOOTH_IMPLEMENTATION_VERSION :: "5.0.2"`
+- `COREBLUETOOTH_IMPLEMENTATION_VERSION :: "5.0.3"`
 - `COREBLUETOOTH_PLATFORM_ID :: "unified-ble:macos-corebluetooth"`
 - `ContinuationBacklog :: { readonly recording?: { readonly id: string; } | undefined; readonly selectors: readonly BackgroundContinuationResubscribeSelector[]; readonly values: readonly ContinuationBacklogValue[]; readonly streamEnds: readonly ContinuationBacklogStreamEnd[]; readonly control: readonly WireDrainRecord[]; readonly controlLost: number; readonly afterCutoffLoss: { readonly items: number; readonly bytes: number; }; readonly disposed: boolean; readonly disposeFailure: string | null }`
 - `ContinuationBacklogStreamEnd :: { readonly consumer: string; readonly reason: "overflow" | "closed" | "invalidated"; readonly droppedItems: number; readonly droppedBytes: number }`
@@ -17,7 +17,7 @@
 - `ContinuationRecordingPrepareOptions :: { readonly maxItems: number; readonly maxBytes: number }`
 - `ContinuationRecordingStatus :: { readonly recordingId: string; readonly phase: "stopped" | "recording" | "capacity-reached"; readonly accepting: boolean; readonly records: number; readonly bytes: number; readonly lostRecords: number; readonly maxBytes: number; readonly maxRecords: number; readonly encrypted: false; readonly runtimeFailure: (ContinuationRecordingFailure & { readonly persisted: false; }) | null; readonly collectionFailure: (ContinuationRecordingFailure & { readonly persisted: boolean; readonly persistenceFailure?: ContinuationRecordingFailure | undefined; }) | null }`
 - `CoreBluetoothBleManagerAppOptions :: { readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`
-- `DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.2"`
+- `DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.3"`
 - `DESKTOP_RUST_CORE_PROFILES :: Readonly<Record<DesktopRustCorePlatform, DesktopRustCoreProfile>>`
 - `DesktopCoreHost :: { readonly platform: DesktopRustCorePlatform; readonly operationPrefix: string }`
 - `DesktopCoreManagerOptions :: { readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`

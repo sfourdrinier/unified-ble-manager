@@ -2,6 +2,24 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.0.3] - 2026-10-10
+
+- Preserve connection-generation ownership across Apple, Android, desktop, and
+  Tauri disconnect, reset, cancellation, and stale-callback paths.
+- Close the reviewed Android disconnect-owner and callback cleanup races, and
+  retain the scoped Tauri reset and recording durability fixes from the
+  5.0.2 release line.
+- Retry failed Android physical cleanup or scoped core release without admitting
+  a replacement connection early or releasing an already retired owner twice.
+  Joined disconnects share the scoped release result, and reserved cancellation
+  claims compensation once before any reentrant cleanup can join it.
+- Reset ephemeral security observations for the exact connection generation
+  while preserving bonds, and distinguish stopped or sealed queue cutoffs from
+  actual overflow and storage-loss observations.
+- Keep package identity, native metadata, generated documentation, and release
+  artifacts aligned for this unpublished patch candidate. Backend support labels
+  and physical-radio qualification remain evidence-derived and unchanged.
+
 ## [5.0.2] - 2026-10-10
 
 - Map an awaited WinRT direct-address factory result with no
