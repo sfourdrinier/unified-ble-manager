@@ -1,3 +1,4 @@
+// __tests__/backends/desktop/desktop-public-release-observation.test.js
 'use strict'
 
 // Actual public manager/provider/NAPI/Rust flow over the synthetic radio.
@@ -32,7 +33,7 @@ async function waitUntil(condition, label, timeoutMs = 5000) {
  * for the native worker running the call later than the JS call that issued it
  * (`take*` polls and `disconnect` are all dispatched that way).
  */
-function parkNextNativeCall(harness, method) {
+function parkNextNativeCall(harness, method, { retainNonNull = false } = {}) {
   let armed = false
   let resume
   const resumed = new Promise(resolve => {
@@ -54,7 +55,18 @@ function parkNextNativeCall(harness, method) {
             armed = false
             signalParked()
             await resumed
-            return Reflect.apply(value, target, args)
+            let result = await Reflect.apply(value, target, args)
+            if (!retainNonNull || (result !== null && result !== undefined)) return result
+            // The Rust reset report is published after native link teardown.
+            // Retain the actual report here before returning to an outer gate;
+            // a null poll is a valid early answer, not the report itself.
+            const deadline = Date.now() + 5000
+            while (result === null || result === undefined) {
+              if (Date.now() > deadline) throw new Error(`${method} did not return a native report within 5000 ms`)
+              await sleep(1)
+              result = await Reflect.apply(value, target, args)
+            }
+            return result
           }
         }
         return typeof value === 'function' ? (...args) => Reflect.apply(value, target, args) : value
@@ -225,20 +237,28 @@ test.each(
 })
 
 // The native event polls run on a worker after the JS call that issued them.
-// A reset poll already in flight when the gate closes consumes the reset the
-// test stages next: the gate has to keep it, or the provider learns of the
-// reset before the release and reports adapter-loss (the preflight failure
-// of 892d9571). Deterministic interleaving, not timing.
+// Model an in-flight poll whose real reset report reaches the delivery gate
+// after it closes. Rust can clear the link before publishing that report, so
+// this fixture waits for a positive native report before completing the
+// controlled response; ordinary native polls may correctly return empty.
 test.each(PLATFORMS)(
   '%s a reset poll already in flight when delivery is held stays held until the gate opens',
   async platform => {
     await withConnectedPeer(
       platform,
       harness => {
-        const reset = parkNextNativeCall(harness, 'takeAdapterResetEvent')
+        const reset = parkNextNativeCall(harness, 'takeAdapterResetEvent', { retainNonNull: true })
         const delivered = []
         const gate = h.gateNativeEventQueues(harness, { onDeliver: queue => delivered.push(queue) })
-        return { reset, gate, delivered, beforeDestroy: () => gate.open() }
+        return {
+          reset,
+          gate,
+          delivered,
+          beforeDestroy: () => {
+            gate.open()
+            reset.resume()
+          }
+        }
       },
       async ({ reset, gate, delivered, stage, connection, events }) => {
         reset.arm()
@@ -272,6 +292,48 @@ test.each(PLATFORMS)(
     )
   }
 )
+
+// A failed setup must free its controlled native call before destroying the
+// manager; otherwise cleanup itself waits on the poll the fixture parked.
+test.each(PLATFORMS)('%s cleanup unblocks a parked reset poll after a fixture failure', async platform => {
+  const failure = new Error('controlled fixture failure before reset resume')
+  let parkedReset
+  let nativeHarness
+  const operation = withConnectedPeer(
+    platform,
+    harness => {
+      nativeHarness = harness
+      const reset = parkNextNativeCall(harness, 'takeAdapterResetEvent', { retainNonNull: true })
+      parkedReset = reset
+      const gate = h.gateNativeEventQueues(harness)
+      return {
+        reset,
+        gate,
+        beforeDestroy: () => {
+          gate.open()
+          reset.resume()
+        }
+      }
+    },
+    async ({ reset, gate, stage }) => {
+      reset.arm()
+      await stage.stageAdapterState('powered-on', true)
+      await reset.parked()
+      gate.hold()
+      await stage.stageAdapterReset('powered-off')
+      await awaitNativeLinkCleared(stage)
+      throw failure
+    }
+  )
+  try {
+    await expect(h.withTimeout(operation, 5000, 'fixture failure cleanup')).rejects.toBe(failure)
+    expect(nativeHarness.calls).toContainEqual(['close', []])
+  } finally {
+    // Free the test-owned barrier even when the regression detects a failure.
+    parkedReset?.resume()
+    await expect(operation).rejects.toBe(failure)
+  }
+})
 
 // The other order: the OS reset reaches the provider while the caller's own
 // release is still waiting for its native answer. The loss ended the link, so
