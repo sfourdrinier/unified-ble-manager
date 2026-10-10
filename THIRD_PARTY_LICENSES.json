@@ -9,7 +9,7 @@
   "source": {
     "method": "pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared metadata plus exact reviewed cargo license-file evidence) + reviewed bundled source-asset manifests (not linked runtime dependencies)",
     "lockfile": "pnpm-lock.yaml",
-    "lockfileSha256": "503c3db14119e9532319fae77e44dddb1256ae11e23ef829d1e36fa38dbd2ae3",
+    "lockfileSha256": "751a6a894c9b1ec872d6e0b21049c885e45b4333d6b9b2f10e090a3dd96fe77d",
     "cargoLockfile": "Cargo.lock",
     "cargoLockfileSha256": "237ea61d22b8547a4690b5aef48944fa9599bd3726baf7ec14b61b7648f1340f"
   },

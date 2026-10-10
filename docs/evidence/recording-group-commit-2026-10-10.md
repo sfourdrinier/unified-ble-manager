@@ -38,3 +38,21 @@ Parent logs: /tmp/ubm502-group-final-parent-tests.log,
 /tmp/ubm502-restored-startup-red.log and /tmp/ubm502-restored-startup-green.log.
 The committed regressions preserve these contracts for CI; the local log paths
 are session evidence, not distributable artifacts or CI receipts.
+
+The subsequent combined candidate d360d5a9 passed the Mac desktop/mobile native
+run: 78 result summaries, 903 reported passing tests, zero failed and three
+hardware-only ignored tests. Hosted commit60e9234f separately failed the new
+40ms commit-cost fixture because its measured cost was only28.36ms. Calibration
+now measures the installed view twice, uses the faster result and makes at most
+six bounded row-count adjustments, preserving the30ms minimum cost floor and
+all original setup/backlog response deadlines. A real SQLite UPDATE regression
+starts with one recursive row to require this adjustment path. A units mutation
+fails that regression; the corrected complete continuation-adapter suite passes
+27 tests. Native source identity remains unchanged by this test-only correction.
+
+Clean Windows package validation also exposed an undeclared direct Babel preset;
+the package now declares the matching React Native0.86 development preset.
+Canonical dependency artifact generation updates only the lockfile hash in SBOM
+and license inventory. The initial Linux package run reported four stale-artifact
+failures before that refresh; those failures remain recorded. Fresh final-candidate
+package, hosted and Windows gates are still required before publication.

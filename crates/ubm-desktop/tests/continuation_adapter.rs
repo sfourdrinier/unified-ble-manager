@@ -1070,24 +1070,86 @@ fn make_every_commit_cost(path: &std::path::Path, millis: u64) {
         started.elapsed()
     };
     let probe = 200_000u64;
-    let per_probe = spin(probe).max(spin(probe)).as_secs_f64().max(1e-6);
-    let rows = (probe as f64 * (millis as f64 / 1000.0) / per_probe) as u64;
+    let per_probe = spin(probe).min(spin(probe)).as_secs_f64().max(1e-6);
+    let mut rows = (probe as f64 * (millis as f64 / 1000.0) / per_probe)
+        .ceil()
+        .max(1.0) as u64;
+    calibrate_commit_cost(&connection, &mut rows, millis);
+}
+
+fn calibrate_commit_cost(connection: &rusqlite::Connection, rows: &mut u64, millis: u64) {
+    let floor_ms = millis
+        .checked_mul(3)
+        .and_then(|value| value.checked_div(4))
+        .expect("commit-cost floor overflowed");
+    assert!(
+        floor_ms >= 30,
+        "the commit-cost calibration requires a floor of at least 30 ms"
+    );
+
+    const MAX_ADJUSTMENTS: usize = 6;
+    const MAX_ROWS: u64 = 50_000_000;
+    for adjustment in 0..=MAX_ADJUSTMENTS {
+        assert!(
+            *rows <= MAX_ROWS,
+            "commit-cost calibration exceeded row bound"
+        );
+        connection
+            .execute_batch(&format!(
+                "DROP TRIGGER IF EXISTS slow_commit_cursor; DROP VIEW IF EXISTS slow_commit; \
+                 CREATE VIEW slow_commit AS WITH RECURSIVE s(x) AS (\
+                   SELECT 1 UNION ALL SELECT x+1 FROM s WHERE x<{}) \
+                 SELECT count(*) AS n FROM s; \
+                 CREATE TRIGGER slow_commit_cursor AFTER UPDATE OF next_ordinal ON journal \
+                 BEGIN SELECT n FROM slow_commit; END;",
+                *rows
+            ))
+            .unwrap();
+        let measure = || {
+            let started = std::time::Instant::now();
+            connection
+                .query_row("SELECT n FROM slow_commit", [], |row| row.get::<_, i64>(0))
+                .unwrap();
+            started.elapsed()
+        };
+        let observed = measure().min(measure());
+        if observed >= Duration::from_millis(floor_ms) {
+            return;
+        }
+        assert!(
+            adjustment < MAX_ADJUSTMENTS,
+            "the fixture must really cost at least {floor_ms} ms per commit; observed {observed:?}"
+        );
+        let actual_ms = observed.as_secs_f64() * 1000.0;
+        let factor = (millis as f64 / actual_ms.max(0.001)) * 1.15;
+        let next = ((*rows as f64) * factor).ceil();
+        assert!(
+            next.is_finite() && next >= *rows as f64 && next <= MAX_ROWS as f64,
+            "invalid commit-cost adjustment"
+        );
+        *rows = next as u64;
+    }
+    unreachable!("bounded commit-cost calibration exhausted");
+}
+
+#[test]
+fn commit_cost_calibration_adjusts_from_a_short_initial_probe() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
     connection
-        .execute_batch(&format!(
-            "CREATE VIEW slow_commit AS WITH RECURSIVE s(x) AS (\
-               SELECT 1 UNION ALL SELECT x+1 FROM s WHERE x<{rows}) \
-             SELECT count(*) AS n FROM s; \
-             CREATE TRIGGER slow_commit_cursor AFTER UPDATE OF next_ordinal ON journal \
-             BEGIN SELECT n FROM slow_commit; END;"
-        ))
+        .execute_batch(
+            "CREATE TABLE journal(next_ordinal INTEGER); \
+             INSERT INTO journal VALUES(0);",
+        )
         .unwrap();
+    let mut rows = 1;
+    calibrate_commit_cost(&connection, &mut rows, 40);
     let started = std::time::Instant::now();
     connection
-        .query_row("SELECT n FROM slow_commit", [], |row| row.get::<_, i64>(0))
+        .execute("UPDATE journal SET next_ordinal=next_ordinal+1", [])
         .unwrap();
     assert!(
-        started.elapsed() >= Duration::from_millis(millis * 3 / 4),
-        "the fixture must really cost {millis} ms per commit: {:?}",
+        started.elapsed() >= Duration::from_millis(30),
+        "calibrated trigger must cost at least 30 ms: {:?} (rows={rows})",
         started.elapsed()
     );
 }
