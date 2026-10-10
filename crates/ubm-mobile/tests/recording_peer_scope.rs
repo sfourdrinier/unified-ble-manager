@@ -401,9 +401,9 @@ async fn sustained_recording_intake_allows_second_peer_and_control_progress() {
     });
     // The setup acknowledgement stays behind these drains. Each one has to
     // finish while the source peer is still journaling, and the setup
-    // deadline is 20s. The pump admits one journaled record per value turn
-    // so a queued security or lifecycle signal is not stuck behind the
-    // whole backlog.
+    // deadline is 20s. The pump commits one bounded group of already-held
+    // values per value turn, so a queued security or lifecycle signal is not
+    // stuck behind the whole backlog and a commit costs one sync chain.
     let mut worst = std::time::Duration::ZERO;
     for turn in 0..5 {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
