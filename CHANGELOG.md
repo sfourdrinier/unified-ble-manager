@@ -2,7 +2,7 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## Unreleased
+## [5.0.2] - 2026-10-10
 
 - Map an awaited WinRT direct-address factory result with no
   `BluetoothLEDevice` (HRESULT 0) to `peer.not-found`, while preserving
