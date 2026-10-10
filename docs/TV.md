@@ -35,7 +35,8 @@ owned for retry, and prevents reconnect until cleanup succeeds. This is shared
 phone/TV radio behavior, not a TV-specific reconnect policy. If Android refuses
 the close deadline, the generation is closed immediately and callers receive
 the physical close result. Waiter or diagnostic-observer exceptions propagate
-only after cleanup and all waiter settlements; they cannot skip a queued
+only after all connection observers, cleanup and waiter settlements, including
+native failed-connect and disconnect callbacks; they cannot skip a queued
 reconnect after a clean close.
 
 Connect requests carry an internal attempt identity through the radio and host

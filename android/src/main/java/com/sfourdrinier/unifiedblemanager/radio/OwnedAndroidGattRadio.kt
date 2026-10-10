@@ -3468,9 +3468,12 @@ class OwnedAndroidGattRadio private constructor(
     gattStatus: Int,
     attempt: GattConnectAttempt?
   ) {
-    connectionListeners[id.uppercase()]?.invoke(id, connected, gattStatus)
-    onConnectionState?.invoke(id, connected, gattStatus)
-    onConnectionOutcome?.invoke(id, connected, gattStatus, attempt)
+    // Observers are independent: diagnostics cannot prevent the attempt owner settling.
+    runEvery(
+      { connectionListeners[id.uppercase()]?.invoke(id, connected, gattStatus) },
+      { onConnectionState?.invoke(id, connected, gattStatus) },
+      { onConnectionOutcome?.invoke(id, connected, gattStatus, attempt) }
+    )?.let { throw it }
   }
 
   private val gattCallback = object : BluetoothGattCallback() {
@@ -3486,29 +3489,35 @@ class OwnedAndroidGattRadio private constructor(
           dispatchConnectionState(id, true, status, attempt)
         } else {
           // Non-success while "connected" is a failed connect — surface status and tear down.
-          dispatchConnectionState(id, false, status, attempt)
-          failPendingForDevice(key, "connect failed status=$status")
-          completeGattTeardown(key, gatt, generation).orThrow()
+          runEvery(
+            { dispatchConnectionState(id, false, status, attempt) },
+            { failPendingForDevice(key, "connect failed status=$status") },
+            { completeGattTeardown(key, gatt, generation).orThrow() }
+          )?.let { throw it }
         }
       } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
         connectedEncryptionGenerations.remove(key, generation)
-        try {
-          onSecurityState?.invoke(id, OwnedAndroidSecurityState(
-            when (gatt.device.bondState) {
-              BluetoothDevice.BOND_BONDED -> "bonded"
-              BluetoothDevice.BOND_BONDING -> "bonding"
-              BluetoothDevice.BOND_NONE -> "notBonded"
-              else -> "unknown"
-            }, hasBluetoothConnectPermission(), if (securitySdkInt >= 36) "unknown" else "unsupported"))
-        } catch (error: Exception) { onSecurityFailure?.invoke(id, error) }
-        // Always pass gatt status: status 133 etc. means failed connect, not clean disconnect.
-        // R3-F003: close() only after STATE_DISCONNECTED (not from disconnect()/connect prior).
-        dispatchConnectionState(id, false, status, attempt)
-        failPendingForDevice(key, "disconnected status=$status", status)
-        // Reconnect that waited for a clean prior teardown; a waiter that threw while the
-        // close was settled neither skips it nor is swallowed.
-        completeGattTeardown(key, gatt, generation)
-          .thenWhenClean { resumeQueuedReconnect(id, key, "reconnect after DISCONNECTED") }
+        runEvery(
+          {
+            try {
+              onSecurityState?.invoke(id, OwnedAndroidSecurityState(
+                when (gatt.device.bondState) {
+                  BluetoothDevice.BOND_BONDED -> "bonded"
+                  BluetoothDevice.BOND_BONDING -> "bonding"
+                  BluetoothDevice.BOND_NONE -> "notBonded"
+                  else -> "unknown"
+                }, hasBluetoothConnectPermission(), if (securitySdkInt >= 36) "unknown" else "unsupported"))
+            } catch (error: Exception) { onSecurityFailure?.invoke(id, error) }
+          },
+          // Pass native status: a failed connection is not a clean disconnect.
+          { dispatchConnectionState(id, false, status, attempt) },
+          { failPendingForDevice(key, "disconnected status=$status", status) },
+          {
+            // A throwing observer or waiter cannot skip physical cleanup or a queued reconnect.
+            completeGattTeardown(key, gatt, generation)
+              .thenWhenClean { resumeQueuedReconnect(id, key, "reconnect after DISCONNECTED") }
+          }
+        )?.let { throw it }
       }
     }
 

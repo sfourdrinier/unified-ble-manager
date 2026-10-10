@@ -10,7 +10,9 @@ All notable changes to `unified-ble-manager` are documented here.
   Retain failed physical closes for retry and fence old deadlines from new links.
 - Fail closed if Android refuses or throws while scheduling the disconnect
   deadline. Finish physical cleanup and settle every waiter before propagating
-  observer errors; resume queued reconnects only after a clean close.
+  observer errors; resume queued reconnects only after a clean close. Deliver
+  every connection observer even when another throws, including native failed
+  connect and disconnect callbacks.
 - Correlate Android connect outcomes with the exact GATT generation that the
   request opened, in both the active RustCore host adapter and legacy protocol
   dispatcher. A prior link's loss cannot fail an admitted replacement connect.
