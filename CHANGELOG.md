@@ -2,7 +2,7 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## Unreleased
+## [5.0.2] - 2026-10-10
 
 - Read Android manifest metadata through typed AndroidX accessors while preserving
   Boolean/string flag handling, defaults and invalid-policy rejection. Build
