@@ -2489,7 +2489,7 @@ impl MobileSession {
         .await?
         {
             RadioCompletion::Security(state) => {
-                if expected_owner.is_none() && self.host.security_owner(&peer_id).is_some() {
+                if expected_owner.is_none() && self.host.security_owner(peer_id).is_some() {
                     return Err(DesktopError::new(
                         BleErrorCode::ConnectionStale,
                         BleErrorDomain::Connection,
@@ -2509,7 +2509,7 @@ impl MobileSession {
                     }
                 }
                 self.host.set_security_state_if_owner(
-                    &peer_id,
+                    peer_id,
                     expected_owner.as_deref(),
                     state.clone(),
                     "security.state",

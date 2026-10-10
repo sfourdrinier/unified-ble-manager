@@ -435,7 +435,7 @@ impl CoreSession {
                 json_escape_into(&mut extra, lease);
                 extra.push_str("\",\"generation\":\"");
                 json_escape_into(&mut extra, &generation);
-                extra.push_str("\"");
+                extra.push('"');
                 Ok(extra)
             }
             "link.established" => {
