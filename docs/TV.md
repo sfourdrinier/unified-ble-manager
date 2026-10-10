@@ -32,7 +32,11 @@ deadline. A later request joins that deadline instead of extending it. Native
 disconnection, adapter loss or forced close settles all joined callers once;
 an old deadline cannot close a replacement link. A failed physical close stays
 owned for retry, and prevents reconnect until cleanup succeeds. This is shared
-phone/TV radio behavior, not a TV-specific reconnect policy.
+phone/TV radio behavior, not a TV-specific reconnect policy. If Android refuses
+the close deadline, the generation is closed immediately and callers receive
+the physical close result. Waiter or diagnostic-observer exceptions propagate
+only after cleanup and all waiter settlements; they cannot skip a queued
+reconnect after a clean close.
 
 ## Exact packed Apple TV consumer
 

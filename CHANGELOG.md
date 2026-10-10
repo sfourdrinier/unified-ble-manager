@@ -8,6 +8,9 @@ All notable changes to `unified-ble-manager` are documented here.
   generation. Concurrent callers all receive the terminal close result once,
   including adapter loss, native disconnect exceptions and teardown races.
   Retain failed physical closes for retry and fence old deadlines from new links.
+- Fail closed if Android refuses or throws while scheduling the disconnect
+  deadline. Finish physical cleanup and settle every waiter before propagating
+  observer errors; resume queued reconnects only after a clean close.
 
 ## [5.0.1] - 2026-10-08
 

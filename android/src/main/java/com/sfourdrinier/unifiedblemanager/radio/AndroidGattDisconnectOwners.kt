@@ -94,3 +94,33 @@ internal class AndroidGattDisconnectOwners {
     owners.clear()
   }
 }
+
+/** [first] with [second] suppressed, or whichever is non-null: an error is never lost or replaced. */
+internal fun mergeErrors(first: Throwable?, second: Throwable?): Throwable? {
+  if (first == null) return second
+  if (second != null && second !== first) first.addSuppressed(second)
+  return first
+}
+
+/** Runs [step] and returns what it threw, so the caller can finish its cleanup before rethrowing. */
+internal inline fun errorOf(step: () -> Unit): Throwable? =
+  try {
+    step()
+    null
+  } catch (throwable: Throwable) {
+    throwable
+  }
+
+/** Runs every step even when one throws; returns the first error with the later ones suppressed. */
+internal fun runEvery(vararg steps: () -> Unit): Throwable? {
+  var held: Throwable? = null
+  steps.forEach { step -> held = mergeErrors(held, errorOf(step)) }
+  return held
+}
+
+/** Runs [action] for every element even when one throws, then rethrows the first error. */
+internal inline fun <T> Iterable<T>.forEachSettled(action: (T) -> Unit) {
+  var held: Throwable? = null
+  forEach { element -> held = mergeErrors(held, errorOf { action(element) }) }
+  held?.let { throw it }
+}

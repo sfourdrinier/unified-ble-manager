@@ -709,14 +709,60 @@ class OwnedAndroidGattRadio private constructor(
     val generation: Long
   )
 
+  /**
+   * One physical teardown of a GATT generation. [failure] is what the close did:
+   * non-null means it failed and ownership is retained. [callbackError] is the
+   * first error a waiter or diagnostic observer threw while the teardown was being
+   * settled; it is held back so every cleanup and settlement step completes first.
+   */
+  private class GattTeardown(
+    val failure: OwnedRadioTeardownFailure?,
+    val callbackError: Throwable? = null
+  ) {
+    fun withCallbackError(error: Throwable?): GattTeardown =
+      GattTeardown(failure, mergeErrors(error, callbackError))
+
+    /** Rethrows the held-back [callbackError]; otherwise returns the close outcome. */
+    fun orThrow(): OwnedRadioTeardownFailure? {
+      callbackError?.let { throw it }
+      return failure
+    }
+
+    /**
+     * Runs [afterCleanClose] only when the close was clean, even if a waiter threw
+     * while settling it, and then rethrows every error that occurred.
+     */
+    fun thenWhenClean(afterCleanClose: () -> Unit) {
+      if (failure != null) {
+        orThrow()
+        return
+      }
+      mergeErrors(callbackError, errorOf(afterCleanClose))?.let { throw it }
+    }
+  }
+
+  /** The deadline scheduler refused the request (returned false) rather than throwing. */
+  private class DeadlineRefused(key: String) :
+    IllegalStateException("Android refused to schedule the GATT close deadline for $key")
+
   /** How a disconnect request relates to its GATT generation's owner. */
-  private enum class GattDisconnectJoin {
-    /** This call created the owner: it alone requests the native disconnect. */
-    STARTED,
-    /** An owner already requested the disconnect; the waiter is settled by it. */
-    JOINED,
-    /** The generation's own teardown already ran: nothing was recorded. */
-    REJECTED
+  private class GattDisconnectJoin(
+    val kind: Kind,
+    /** Error a superseded waiter threw, or the scheduler threw; surfaced after this call's own work. */
+    val heldError: Throwable? = null,
+    /** [Kind.FORCED_CLOSE]: the physical close that ran because no deadline could be armed. */
+    val forcedClose: GattTeardown? = null
+  ) {
+    enum class Kind {
+      /** This call created the owner: it alone requests the native disconnect. */
+      STARTED,
+      /** An owner already requested the disconnect; the waiter is settled by it. */
+      JOINED,
+      /** The generation's own teardown already ran: nothing was recorded. */
+      REJECTED,
+      /** The deadline could not be armed, so the generation was closed explicitly instead. */
+      FORCED_CLOSE
+    }
   }
 
   fun currentState(): String = mapAdapterState(adapter?.state)
@@ -831,17 +877,20 @@ class OwnedAndroidGattRadio private constructor(
 
   private fun handleAdapterStateTransition(state: Int) {
     if (state == BluetoothAdapter.STATE_ON) {
-      pendingGattTeardowns.keys.toList().forEach { key -> retryGattTeardown(key) }
+      pendingGattTeardowns.keys.toList().forEachSettled { key -> retryGattTeardown(key).orThrow() }
       return
     }
     if (!requiresImmediateGattTeardownOnAdapterState(state)) return
 
     pendingReconnect.clear()
-    (gatts.keys + pendingGattTeardowns.keys).toSet().forEach { key ->
-      failPendingForDevice(key, "adapter unavailable")
+    (gatts.keys + pendingGattTeardowns.keys).toSet().forEachSettled { key ->
+      val pendingError = errorOf { failPendingForDevice(key, "adapter unavailable") }
       val owner = pendingGattTeardowns[key]
-      val gatt = gatts[key] ?: owner?.gatt ?: return@forEach
-      completeGattTeardown(key, gatt)
+      val gatt = gatts[key] ?: owner?.gatt ?: run {
+        pendingError?.let { throw it }
+        return@forEachSettled
+      }
+      mergeErrors(pendingError, completeGattTeardown(key, gatt).callbackError)?.let { throw it }
     }
   }
 
@@ -1320,18 +1369,49 @@ class OwnedAndroidGattRadio private constructor(
       deviceQueues.remove(key)?.clear()
       discovered.remove(key)
       pendingReconnect[key] = PendingConnect(autoConnect, phyMask)
-      gattGenerationByInstance[prior]?.let { generation -> joinGattDisconnect(key, prior, generation, null) }
+      // A prior without a generation was already torn down by its own callback.
+      val joined = gattGenerationByInstance[prior]
+        ?.let { generation -> joinGattDisconnect(key, prior, generation, null) }
+        ?: GattDisconnectJoin(GattDisconnectJoin.Kind.REJECTED)
+      if (joined.kind == GattDisconnectJoin.Kind.REJECTED) {
+        // The prior generation's own teardown ran before this call could join it, so there is
+        // no disconnect to request on a closed GATT. If that teardown already opened the queued
+        // reconnect the entry is gone; otherwise re-evaluate against what the radio holds now
+        // (a retained close failure is refused here and leaves nothing queued).
+        if (pendingReconnect.remove(key) != null) connect(deviceId, autoConnect, phyMask)
+        return
+      }
+      val forcedClose = joined.forcedClose
+      if (forcedClose != null) {
+        // No deadline could be armed, so the prior generation was closed right here: there is no
+        // native DISCONNECTED to wait for and no disconnect to request on a closed GATT.
+        val held = mergeErrors(joined.heldError, forcedClose.callbackError)
+        val failure = forcedClose.failure
+        if (failure != null) {
+          // The queued reconnect stays owned by the retained close and opens once it is clean.
+          throw IllegalStateException("Android GATT cleanup failed before reconnect", failure.throwable)
+            .also { error -> if (held != null) error.addSuppressed(held) }
+        }
+        mergeErrors(
+          held,
+          errorOf { pendingReconnect.remove(key)?.let { openGatt(deviceId, key, it.autoConnect, it.phyMask) } }
+        )?.let { throw it }
+        return
+      }
       try {
         prior.disconnect()
       } catch (t: Throwable) {
         OwnedAndroidLog.e("connect disconnect prior gatt", t)
-        val teardownFailure = completeGattTeardown(key, prior)
+        val teardown = completeGattTeardown(key, prior)
+        val teardownFailure = teardown.failure
         if (teardownFailure != null) throw IllegalStateException(
           "Android GATT cleanup failed before reconnect",
           teardownFailure.throwable
-        )
+        ).also { error -> teardown.callbackError?.let { error.addSuppressed(it) } }
+        teardown.callbackError?.let { throw it }
         openGatt(deviceId, key, autoConnect, phyMask)
       }
+      joined.heldError?.let { throw it }
       return
     }
     openGatt(deviceId, key, autoConnect, phyMask)
@@ -1352,53 +1432,76 @@ class OwnedAndroidGattRadio private constructor(
     val generation = g?.let { gattGenerationByInstance[it] }
     if (g == null || generation == null) {
       discovered.remove(key)
-      val failure = cleanupFailure ?: retryGattTeardown(key)
-      onComplete(failure)
-      return failure
+      val teardown = retryGattTeardown(key)
+      return deliverDisconnectResult(cleanupFailure ?: teardown.failure, teardown.callbackError, onComplete)
     }
     if (pendingGattTeardowns[key] != null) {
-      val teardownFailure = retryGattTeardown(key)
-      val failure = cleanupFailure ?: teardownFailure
-      onComplete(failure)
-      return failure
+      val teardown = retryGattTeardown(key)
+      return deliverDisconnectResult(cleanupFailure ?: teardown.failure, teardown.callbackError, onComplete)
     }
     if (requiresImmediateGattTeardownOnAdapterState(adapter?.state)) {
-      val teardownFailure = completeGattTeardown(key, g)
-      val failure = cleanupFailure ?: teardownFailure
-      onComplete(failure)
-      return failure
+      val teardown = completeGattTeardown(key, g)
+      return deliverDisconnectResult(cleanupFailure ?: teardown.failure, teardown.callbackError, onComplete)
     }
     // R3-F003: only disconnect(); close() waits for STATE_DISCONNECTED (or the one safety deadline).
     // A ledger failure is this caller's own result: it must not complete other waiters.
     val joined = joinGattDisconnect(key, g, generation, if (cleanupFailure == null) onComplete else null)
-    if (joined == GattDisconnectJoin.REJECTED) {
-      // The generation's own teardown (native DISCONNECTED, deadline, adapter loss) ran
-      // between the read above and the join, so no owner exists to settle this caller.
-      // Its outcome is that exact generation's: a retained close failure is retried and
-      // reported; otherwise the close was clean. A GATT opened since is not this call's.
-      val retained = pendingGattTeardowns[key]
-      val teardownFailure =
-        if (retained != null && retained.gatt === g && retained.generation == generation) retryGattTeardown(key)
-        else null
-      val failure = cleanupFailure ?: teardownFailure
-      onComplete(failure)
-      return failure
-    }
-    if (joined == GattDisconnectJoin.STARTED) {
-      try {
-        g.disconnect()
-      } catch (t: Throwable) {
-        OwnedAndroidLog.e("disconnect", t)
-        // No disconnect was accepted, so no DISCONNECTED will arrive: always close and settle
-        // the owner. A ledger failure only wins the result; it never skips the physical close.
-        val teardownFailure = completeGattTeardown(key, g)
-        val failure = cleanupFailure ?: teardownFailure
-        if (cleanupFailure != null) onComplete(failure)
-        return failure
+    // From here the joined waiter (when there is one) is settled by the owner, never by this caller.
+    val ownCallback = if (cleanupFailure != null) onComplete else null
+    when (joined.kind) {
+      GattDisconnectJoin.Kind.REJECTED -> {
+        // The generation's own teardown (native DISCONNECTED, deadline, adapter loss) ran
+        // between the read above and the join, so no owner exists to settle this caller.
+        // Its outcome is that exact generation's: a retained close failure is retried and
+        // reported; otherwise the close was clean. A GATT opened since is not this call's.
+        val retained = pendingGattTeardowns[key]
+        val teardown =
+          if (retained != null && retained.gatt === g && retained.generation == generation) retryGattTeardown(key)
+          else GattTeardown(null)
+        return deliverDisconnectResult(cleanupFailure ?: teardown.failure, teardown.callbackError, onComplete)
       }
+      GattDisconnectJoin.Kind.FORCED_CLOSE -> {
+        // No deadline could be armed, so the generation was closed explicitly instead of
+        // waiting for a callback nothing bounds. It is closed: no native disconnect follows.
+        val teardown = checkNotNull(joined.forcedClose)
+        return deliverDisconnectResult(
+          cleanupFailure ?: teardown.failure,
+          mergeErrors(joined.heldError, teardown.callbackError),
+          ownCallback
+        )
+      }
+      GattDisconnectJoin.Kind.STARTED -> {
+        try {
+          g.disconnect()
+        } catch (t: Throwable) {
+          OwnedAndroidLog.e("disconnect", t)
+          // No disconnect was accepted, so no DISCONNECTED will arrive: always close and settle
+          // the owner. A ledger failure only wins the result; it never skips the physical close.
+          val teardown = completeGattTeardown(key, g)
+          return deliverDisconnectResult(
+            cleanupFailure ?: teardown.failure,
+            mergeErrors(joined.heldError, teardown.callbackError),
+            ownCallback
+          )
+        }
+      }
+      GattDisconnectJoin.Kind.JOINED -> Unit
     }
-    if (cleanupFailure != null) onComplete(cleanupFailure)
-    return cleanupFailure
+    return deliverDisconnectResult(cleanupFailure, joined.heldError, ownCallback)
+  }
+
+  /**
+   * Hands this caller its own result, then rethrows an error a waiter or observer threw while
+   * the teardown was settled: the caller is never starved by it and the error is never lost.
+   */
+  private fun deliverDisconnectResult(
+    failure: OwnedRadioTeardownFailure?,
+    heldError: Throwable?,
+    onComplete: ((OwnedRadioTeardownFailure?) -> Unit)?
+  ): OwnedRadioTeardownFailure? {
+    val completionError = onComplete?.let { callback -> errorOf { callback(failure) } }
+    mergeErrors(heldError, completionError)?.let { throw it }
+    return failure
   }
 
   private fun openGatt(deviceId: String, key: String, autoConnect: Boolean, phyMask: Int) {
@@ -1434,9 +1537,13 @@ class OwnedAndroidGattRadio private constructor(
    * and retires the generation's disconnect owner, completing every waiter once
    * with the close result. Safe to call from DISCONNECTED callback or after a
    * failed disconnect.
+   *
+   * Never throws for a waiter or observer error: the physical close, the retained
+   * ownership and every waiter's settlement all happen first, and the error comes
+   * back in [GattTeardown.callbackError] for the caller to rethrow.
    */
-  private fun completeGattTeardown(key: String, gatt: BluetoothGatt): OwnedRadioTeardownFailure? {
-    val generation = gattGenerationByInstance[gatt] ?: return null
+  private fun completeGattTeardown(key: String, gatt: BluetoothGatt): GattTeardown {
+    val generation = gattGenerationByInstance[gatt] ?: return GattTeardown(null)
     return completeGattTeardown(key, gatt, generation)
   }
 
@@ -1444,9 +1551,9 @@ class OwnedAndroidGattRadio private constructor(
     key: String,
     gatt: BluetoothGatt,
     generation: Long
-  ): OwnedRadioTeardownFailure? {
+  ): GattTeardown {
     if (gatts[key] !== gatt || gattGenerations[key] != generation || gattGenerationByInstance[gatt] != generation) {
-      return null
+      return GattTeardown(null)
     }
     cancelSafeClose(key)
     // Retiring the owner is what ends its deadline and hands every waiter one result.
@@ -1457,11 +1564,14 @@ class OwnedAndroidGattRadio private constructor(
       OwnedAndroidLog.e("completeGattTeardown close for $key", throwable)
       val failure = OwnedRadioTeardownFailure("closeGatt:$key:generation=$generation", throwable)
       pendingGattTeardowns[key] = GattTeardownOwner(gatt, generation)
-      reportCleanupFailure(failure)
       // A disconnect that joined after the first retire (its generation was still current)
       // would otherwise keep an owner nothing retires; its waiter gets this same result.
-      settleDisconnectWaiters(waiters + disconnectOwners.retire(key, gatt, generation), failure)
-      return failure
+      val joinedLate = disconnectOwners.retire(key, gatt, generation)
+      // Waiters are settled before the diagnostic observer runs, and the observer runs even if
+      // a waiter threw: neither can starve the other, and neither error is dropped.
+      val settleError = settleDisconnectWaiters(waiters + joinedLate, failure)
+      val observerError = errorOf { reportCleanupFailure(failure) }
+      return GattTeardown(failure, mergeErrors(settleError, observerError))
     }
     pendingGattTeardowns.remove(key, GattTeardownOwner(gatt, generation))
     gatts.remove(key, gatt)
@@ -1476,8 +1586,7 @@ class OwnedAndroidGattRadio private constructor(
     deviceQueues.remove(key)?.clear()
     // State is now closed, so any joiner from here on is rejected; sweep one that joined
     // between the first retire and the mutation above.
-    settleDisconnectWaiters(waiters + disconnectOwners.retire(key, gatt, generation), null)
-    return null
+    return GattTeardown(null, settleDisconnectWaiters(waiters + disconnectOwners.retire(key, gatt, generation), null))
   }
 
   /**
@@ -1498,39 +1607,55 @@ class OwnedAndroidGattRadio private constructor(
     val admission = disconnectOwners.join(key, gatt, generation, waiter) {
       isCurrentGatt(key, gatt, generation) && !pendingGattTeardowns.containsKey(key)
     }
-    if (admission.rejected) return GattDisconnectJoin.REJECTED
-    if (admission.superseded.isNotEmpty()) {
-      settleDisconnectWaiters(
+    if (admission.rejected) return GattDisconnectJoin(GattDisconnectJoin.Kind.REJECTED)
+    // A superseded waiter that throws is held, not thrown: the new owner still gets its
+    // deadline (or explicit close) below, so it cannot be left without one.
+    val supersededError =
+      if (admission.superseded.isEmpty()) null
+      else settleDisconnectWaiters(
         admission.superseded,
         OwnedRadioTeardownFailure(
           "disconnectSuperseded:$key",
           IllegalStateException("Android GATT generation was replaced before its disconnect completed")
         )
       )
-    }
-    if (admission.created) scheduleSafeClose(key, gatt, admission.token)
-    return if (admission.created) GattDisconnectJoin.STARTED else GattDisconnectJoin.JOINED
+    if (!admission.created) return GattDisconnectJoin(GattDisconnectJoin.Kind.JOINED, supersededError)
+    val refusal = scheduleSafeClose(key, gatt, admission.token)
+      ?: return GattDisconnectJoin(GattDisconnectJoin.Kind.STARTED, supersededError)
+    // Nothing bounds the native DISCONNECTED callback, so the owner must not wait for it: close the
+    // generation now. That retires the owner and settles its waiters with the real close outcome
+    // (a failed close stays retained and reported, never a release).
+    OwnedAndroidLog.e("GATT close deadline could not be armed for $key; closing without waiting", refusal)
+    val closed = forceCloseWithoutDisconnectedCallback(key, gatt)
+    // A scheduler that refused by returning false has no error of its own to surface.
+    val schedulerError = refusal.takeUnless { it is DeadlineRefused }
+    return GattDisconnectJoin(
+      GattDisconnectJoin.Kind.FORCED_CLOSE,
+      mergeErrors(supersededError, schedulerError),
+      closed
+    )
   }
 
-  /** Completes every waiter once; one throwing waiter cannot starve the others. */
+  /**
+   * Completes every waiter once; one throwing waiter cannot starve the others.
+   * Returns the first error (later ones suppressed) for the caller to rethrow once
+   * all of its own cleanup is done.
+   */
   private fun settleDisconnectWaiters(
     waiters: List<(OwnedRadioTeardownFailure?) -> Unit>,
     failure: OwnedRadioTeardownFailure?
-  ) {
-    val thrown = mutableListOf<Throwable>()
-    waiters.forEach { waiter ->
-      try {
-        waiter(failure)
-      } catch (throwable: Throwable) {
-        thrown.add(throwable)
-      }
-    }
-    val first = thrown.firstOrNull() ?: return
-    thrown.drop(1).forEach { first.addSuppressed(it) }
-    throw first
+  ): Throwable? {
+    var held: Throwable? = null
+    waiters.forEach { waiter -> held = mergeErrors(held, errorOf { waiter(failure) }) }
+    return held
   }
 
-  private fun scheduleSafeClose(key: String, gatt: BluetoothGatt, token: Long) {
+  /**
+   * Arms the one close deadline. Returns null when armed; otherwise why it could not
+   * be: the scheduler's own error, or [DeadlineRefused] when it returned false. A
+   * deadline that is not armed leaves nothing registered, and the caller must not wait.
+   */
+  private fun scheduleSafeClose(key: String, gatt: BluetoothGatt, token: Long): Throwable? {
     cancelSafeClose(key)
     val r =
       Runnable {
@@ -1538,27 +1663,50 @@ class OwnedAndroidGattRadio private constructor(
         // on whichever GATT the key names now.
         if (disconnectOwners.isCurrent(key, token) && gatts[key] === gatt) {
           OwnedAndroidLog.i("GATT close safety timeout; cleanup callback absent, forced close proceeding for $key")
-          dispatchConnectionState(key, false, BluetoothGatt.GATT_FAILURE)
-          failPendingForDevice(key, "disconnected timeout")
-          val teardownFailure = completeGattTeardown(key, gatt)
-          if (teardownFailure != null) return@Runnable
-          // If a reconnect was queued, attempt it after forced teardown.
-          pendingReconnect.remove(key)?.let { pending ->
-            try {
-              // device address is the key uppercased; openGatt needs original or upper — both OK.
-              openGatt(key, key, pending.autoConnect, pending.phyMask)
-            } catch (t: Throwable) {
-              OwnedAndroidLog.e("reconnect after close timeout", t)
-              dispatchConnectionState(key, false, BluetoothGatt.GATT_FAILURE)
-            }
-          }
+          // If a reconnect was queued, attempt it after a clean forced close, even when a
+          // waiter or observer threw while the close was settled.
+          forceCloseWithoutDisconnectedCallback(key, gatt)
+            .thenWhenClean { resumeQueuedReconnect(key, key, "reconnect after close timeout") }
         }
       }
     closeTimeouts[key] = r
-    val scheduled = scheduleDelayed?.invoke(GATT_CLOSE_TIMEOUT_MS) { r.run() }
-      ?: mainHandler?.postDelayed(r, GATT_CLOSE_TIMEOUT_MS)
-      ?: false
-    if (!scheduled) closeTimeouts.remove(key, r)
+    val scheduled = try {
+      scheduleDelayed?.invoke(GATT_CLOSE_TIMEOUT_MS) { r.run() }
+        ?: mainHandler?.postDelayed(r, GATT_CLOSE_TIMEOUT_MS)
+        ?: false
+    } catch (throwable: Throwable) {
+      closeTimeouts.remove(key, r)
+      return throwable
+    }
+    if (scheduled) return null
+    closeTimeouts.remove(key, r)
+    return DeadlineRefused(key)
+  }
+
+  /**
+   * Closes [gatt] without a native DISCONNECTED callback: publishes the connection loss,
+   * fails pending operations and tears the generation down, running every step even if an
+   * observer throws in an earlier one so the owner cannot be left without a terminal result.
+   */
+  private fun forceCloseWithoutDisconnectedCallback(key: String, gatt: BluetoothGatt): GattTeardown {
+    val observerError = runEvery(
+      { dispatchConnectionState(key, false, BluetoothGatt.GATT_FAILURE) },
+      { failPendingForDevice(key, "disconnected timeout") }
+    )
+    val teardownFailure = completeGattTeardown(key, gatt)
+    return teardownFailure.withCallbackError(observerError)
+  }
+
+  /** Opens the reconnect that was queued behind a clean prior teardown, exactly once. */
+  private fun resumeQueuedReconnect(deviceId: String, key: String, failureLabel: String) {
+    pendingReconnect.remove(key)?.let { pending ->
+      try {
+        openGatt(deviceId, key, pending.autoConnect, pending.phyMask)
+      } catch (t: Throwable) {
+        OwnedAndroidLog.e(failureLabel, t)
+        dispatchConnectionState(deviceId, false, BluetoothGatt.GATT_FAILURE)
+      }
+    }
   }
 
   private fun cancelSafeClose(key: String) {
@@ -1582,8 +1730,8 @@ class OwnedAndroidGattRadio private constructor(
     retryableCleanups.putIfAbsent(key, cleanup)
   }
 
-  private fun retryGattTeardown(key: String): OwnedRadioTeardownFailure? {
-    val owner = pendingGattTeardowns[key] ?: return null
+  private fun retryGattTeardown(key: String): GattTeardown {
+    val owner = pendingGattTeardowns[key] ?: return GattTeardown(null)
     return completeGattTeardown(key, owner.gatt, owner.generation)
   }
 
@@ -2680,11 +2828,15 @@ class OwnedAndroidGattRadio private constructor(
     // waiter is completed by destroy and no deadline can act afterwards.
     disconnectOwners.discardAll()
     // Force-close immediately on destroy — no need to wait for DISCONNECTED callbacks.
+    var callbackError: Throwable? = null
     (gatts.keys + pendingGattTeardowns.keys).toSet().forEach { key ->
       val owner = pendingGattTeardowns[key]
       val gatt = gatts[key] ?: owner?.gatt ?: return@forEach
       val generation = gattGenerations[key] ?: owner?.generation ?: return@forEach
-      completeGattTeardown(key, gatt, generation)?.let { failure -> failures.add(failure) }
+      val teardown = completeGattTeardown(key, gatt, generation)
+      teardown.failure?.let { failure -> failures.add(failure) }
+      // One generation's observer error must not stop the remaining generations from closing.
+      callbackError = mergeErrors(callbackError, teardown.callbackError)
     }
     closeTimeouts.values.forEach { runnable -> mainHandler?.removeCallbacks(runnable) }
     closeTimeouts.clear()
@@ -2718,6 +2870,8 @@ class OwnedAndroidGattRadio private constructor(
       exactDescriptorWritePending.clear()
       activeNativeSubscriptionOwnership.clear()
     }
+    // Every generation is closed and every observer ran: only now is a held error rethrown.
+    callbackError?.let { throw it }
     return OwnedRadioTeardownResult(failures)
   }
 
@@ -3231,7 +3385,7 @@ class OwnedAndroidGattRadio private constructor(
           // Non-success while "connected" is a failed connect — surface status and tear down.
           dispatchConnectionState(id, false, status)
           failPendingForDevice(key, "connect failed status=$status")
-          completeGattTeardown(key, gatt, generation)
+          completeGattTeardown(key, gatt, generation).orThrow()
         }
       } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
         connectedEncryptionGenerations.remove(key, generation)
@@ -3248,17 +3402,10 @@ class OwnedAndroidGattRadio private constructor(
         // R3-F003: close() only after STATE_DISCONNECTED (not from disconnect()/connect prior).
         dispatchConnectionState(id, false, status)
         failPendingForDevice(key, "disconnected status=$status", status)
-        val teardownFailure = completeGattTeardown(key, gatt, generation)
-        if (teardownFailure != null) return
-        // Reconnect that waited for a clean prior teardown.
-        pendingReconnect.remove(key)?.let { pending ->
-          try {
-            openGatt(id, key, pending.autoConnect, pending.phyMask)
-          } catch (t: Throwable) {
-            OwnedAndroidLog.e("reconnect after DISCONNECTED", t)
-            dispatchConnectionState(id, false, BluetoothGatt.GATT_FAILURE)
-          }
-        }
+        // Reconnect that waited for a clean prior teardown; a waiter that threw while the
+        // close was settled neither skips it nor is swallowed.
+        completeGattTeardown(key, gatt, generation)
+          .thenWhenClean { resumeQueuedReconnect(id, key, "reconnect after DISCONNECTED") }
       }
     }
 

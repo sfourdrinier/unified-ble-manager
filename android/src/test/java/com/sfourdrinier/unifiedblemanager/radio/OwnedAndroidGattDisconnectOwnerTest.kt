@@ -31,6 +31,7 @@ import org.mockito.Mockito.doNothing
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.doThrow
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.mockingDetails
 import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
@@ -52,6 +53,10 @@ class OwnedAndroidGattDisconnectOwnerTest {
     val timers = mutableListOf<Timer>()
     var now = 0L
 
+    /** Close deadlines are refused (`false`) or rejected (thrown) instead of armed. */
+    var refuseDeadline = false
+    var rejectDeadline: Throwable? = null
+
     init {
       doReturn(manager).`when`(context).getSystemService(Context.BLUETOOTH_SERVICE)
       doReturn(adapter).`when`(manager).adapter
@@ -63,7 +68,16 @@ class OwnedAndroidGattDisconnectOwnerTest {
     val radio = OwnedAndroidGattRadio(
       context,
       post = { action -> action(); true },
-      scheduleDelayed = { delayMs, action -> timers.add(Timer(now + delayMs, delayMs, action)); true }
+      scheduleDelayed = { delayMs, action ->
+        val isCloseDeadline = delayMs == OwnedAndroidGattRadio.GATT_CLOSE_TIMEOUT_MS
+        if (isCloseDeadline) rejectDeadline?.let { throw it }
+        if (isCloseDeadline && refuseDeadline) {
+          false
+        } else {
+          timers.add(Timer(now + delayMs, delayMs, action))
+          true
+        }
+      }
     )
 
     fun gatt(): BluetoothGatt {
@@ -614,5 +628,309 @@ class OwnedAndroidGattDisconnectOwnerTest {
     assertEquals(1, starter.values.size)
     assertEquals(listOf<OwnedRadioTeardownFailure?>(null), replacementWaiter.values)
     verify(replacement, times(1)).close()
+  }
+
+  private fun connectGattReturns(f: Fixture, gatt: BluetoothGatt) {
+    doReturn(gatt).`when`(f.device)
+      .connectGatt(eq(f.context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
+  }
+
+  private fun connectGattCalls(f: Fixture): Int {
+    var calls = 0
+    mockingDetails(f.device).invocations.forEach { if (it.method.name == "connectGatt") calls += 1 }
+    return calls
+  }
+
+  private fun thrownBy(block: () -> Unit): Throwable? =
+    try {
+      block()
+      null
+    } catch (error: Throwable) {
+      error
+    }
+
+  @Test
+  fun refusedCloseDeadlineClosesTheGenerationExplicitlyAndSettlesTheWaiterOnce() {
+    val f = Fixture()
+    val gatt = f.connected()
+    f.refuseDeadline = true
+    val lost = mutableListOf<Int>()
+    f.radio.onConnectionState = { _, connected, status -> if (!connected) lost.add(status) }
+    val waiter = Results()
+
+    // No deadline can bound the native callback, so nothing may wait for it.
+    assertNull(f.radio.disconnect(f.peer, waiter.callback))
+
+    assertEquals(listOf<OwnedRadioTeardownFailure?>(null), waiter.values)
+    verify(gatt, times(1)).close()
+    verify(gatt, never()).disconnect()
+    assertEquals(listOf(BluetoothGatt.GATT_FAILURE), lost)
+    assertTrue(f.closeDeadlines().isEmpty())
+    // A late native DISCONNECTED and a later disconnect are inert: no stranded owner remains.
+    f.nativeDisconnected(gatt)
+    val later = Results()
+    assertNull(f.radio.disconnect(f.peer, later.callback))
+    assertEquals(listOf<OwnedRadioTeardownFailure?>(null), later.values)
+    assertEquals(1, waiter.values.size)
+    verify(gatt, times(1)).close()
+    val replacement = f.gatt()
+    connectGattReturns(f, replacement)
+    f.radio.connect(f.peer, false)
+    assertEquals(1, connectGattCalls(f))
+  }
+
+  @Test
+  fun refusedCloseDeadlineWithCloseFailureRetainsOwnershipAndNeverReportsRelease() {
+    val f = Fixture()
+    val gatt = f.connected()
+    f.refuseDeadline = true
+    val closeRefusal = IllegalStateException("close refused")
+    doThrow(closeRefusal).doNothing().`when`(gatt).close()
+    val cleanup = mutableListOf<OwnedRadioTeardownFailure>()
+    f.radio.onCleanupFailure = { cleanup.add(it) }
+    val waiter = Results()
+
+    val failure = f.radio.disconnect(f.peer, waiter.callback)
+
+    assertNotNull(failure)
+    assertSame(closeRefusal, failure?.throwable)
+    assertEquals(listOf(failure), waiter.values)
+    assertEquals(1, cleanup.size)
+    verify(gatt, never()).disconnect()
+    assertTrue(f.closeDeadlines().isEmpty())
+    try {
+      f.radio.connect(f.peer, false)
+      throw AssertionError("connect must refuse while GATT cleanup is retained")
+    } catch (error: IllegalStateException) {
+      assertTrue(error.message!!.contains("cleanup is still pending"))
+    }
+    val retry = Results()
+    assertNull(f.radio.disconnect(f.peer, retry.callback))
+    assertEquals(listOf<OwnedRadioTeardownFailure?>(null), retry.values)
+    verify(gatt, times(2)).close()
+    assertEquals(1, waiter.values.size)
+  }
+
+  @Test
+  fun rejectedCloseDeadlineSchedulerFailsClosedThenRethrowsTheSchedulerError() {
+    val f = Fixture()
+    val gatt = f.connected()
+    val rejection = java.util.concurrent.RejectedExecutionException("scheduler is shut down")
+    f.rejectDeadline = rejection
+    val waiter = Results()
+
+    val thrown = thrownBy { f.radio.disconnect(f.peer, waiter.callback) }
+
+    // Cleanup and settlement happened first; the scheduler error is never swallowed.
+    assertSame(rejection, thrown)
+    assertEquals(listOf<OwnedRadioTeardownFailure?>(null), waiter.values)
+    verify(gatt, times(1)).close()
+    verify(gatt, never()).disconnect()
+    f.nativeDisconnected(gatt)
+    assertEquals(1, waiter.values.size)
+    verify(gatt, times(1)).close()
+  }
+
+  @Test
+  fun refusedCloseDeadlineWithLedgerFailureStillClosesAndReportsTheLedgerFailureOnce() {
+    val f = Fixture()
+    val sub = subscribed(f)
+    f.radio.nativeGattCallback().onServiceChanged(sub.gatt)
+    f.refuseDeadline = true
+    val caller = Results()
+
+    val failure = f.radio.disconnect(f.peer, caller.callback)
+
+    assertNotNull(failure)
+    assertEquals(listOf(failure), caller.values)
+    verify(sub.gatt, times(1)).close()
+    verify(sub.gatt, never()).disconnect()
+    assertTrue(f.closeDeadlines().isEmpty())
+  }
+
+  @Test
+  fun refusedCloseDeadlineDuringQueuedReconnectReopensExactlyOnceAfterTheCleanClose() {
+    val f = Fixture()
+    val prior = f.connected()
+    val replacement = f.gatt()
+    connectGattReturns(f, replacement)
+    f.refuseDeadline = true
+
+    f.radio.connect(f.peer, false)
+
+    verify(prior, times(1)).close()
+    verify(prior, never()).disconnect()
+    assertEquals(1, connectGattCalls(f))
+    assertTrue(f.closeDeadlines().isEmpty())
+    f.nativeDisconnected(prior)
+    f.advanceTo(OwnedAndroidGattRadio.GATT_CLOSE_TIMEOUT_MS)
+    assertEquals(1, connectGattCalls(f))
+    verify(replacement, never()).close()
+  }
+
+  @Test
+  fun refusedCloseDeadlineWithFailedCloseKeepsTheQueuedReconnectUntilTheRetriedCloseIsClean() {
+    val f = Fixture()
+    val prior = f.connected()
+    val closeRefusal = IllegalStateException("close refused")
+    doThrow(closeRefusal).doNothing().`when`(prior).close()
+    connectGattReturns(f, f.gatt())
+    f.refuseDeadline = true
+
+    val error = thrownBy { f.radio.connect(f.peer, false) }
+
+    assertTrue(error is IllegalStateException)
+    assertSame(closeRefusal, error?.cause)
+    assertEquals(0, connectGattCalls(f))
+    verify(prior, never()).disconnect()
+    // The retained generation's own native DISCONNECTED retries the close; only then does
+    // the queued reconnect open, once.
+    f.nativeDisconnected(prior)
+    verify(prior, times(2)).close()
+    assertEquals(1, connectGattCalls(f))
+    f.nativeDisconnected(prior)
+    assertEquals(1, connectGattCalls(f))
+  }
+
+  private class Boom(message: String) : RuntimeException(message)
+
+  @Test
+  fun throwingCleanupObserverCannotStarveWaitersOfAFailedClose() {
+    val f = Fixture()
+    val gatt = f.connected()
+    val closeRefusal = IllegalStateException("close refused")
+    doThrow(closeRefusal).doNothing().`when`(gatt).close()
+    val observer = Boom("diagnostic observer")
+    var reports = 0
+    f.radio.onCleanupFailure = { reports += 1; throw observer }
+    val first = Results()
+    val second = Results()
+    f.radio.disconnect(f.peer, first.callback)
+    f.radio.disconnect(f.peer, second.callback)
+
+    val thrown = thrownBy { f.nativeDisconnected(gatt) }
+
+    // Every waiter was settled once before the observer's error left the radio.
+    assertSame(observer, thrown)
+    assertEquals(1, reports)
+    assertEquals(1, first.values.size)
+    assertEquals(1, second.values.size)
+    assertSame(closeRefusal, first.values.single()?.throwable)
+    assertSame(first.values.single(), second.values.single())
+    // Ownership stays retained and no deadline acts on it.
+    f.advanceTo(OwnedAndroidGattRadio.GATT_CLOSE_TIMEOUT_MS)
+    assertEquals(1, first.values.size)
+    assertEquals(1, second.values.size)
+    assertTrue(thrownBy { f.radio.connect(f.peer, false) }?.message!!.contains("cleanup is still pending"))
+    val retry = Results()
+    assertNull(f.radio.disconnect(f.peer, retry.callback))
+    verify(gatt, times(2)).close()
+  }
+
+  @Test
+  fun observerAndWaiterErrorsAreBothPreservedAndTheOtherWaiterStillSettles() {
+    val f = Fixture()
+    val gatt = f.connected()
+    doThrow(IllegalStateException("close refused")).doNothing().`when`(gatt).close()
+    val observer = Boom("diagnostic observer")
+    f.radio.onCleanupFailure = { throw observer }
+    val waiterBoom = Boom("waiter")
+    val survivor = Results()
+    f.radio.disconnect(f.peer) { throw waiterBoom }
+    f.radio.disconnect(f.peer, survivor.callback)
+
+    val thrown = thrownBy { f.nativeDisconnected(gatt) }
+
+    assertSame(waiterBoom, thrown)
+    assertTrue(thrown!!.suppressed.any { it === observer })
+    assertEquals(1, survivor.values.size)
+    assertNotNull(survivor.values.single())
+  }
+
+  @Test
+  fun throwingWaiterAfterACleanCloseStillOpensTheQueuedReconnectExactlyOnce() {
+    val f = Fixture()
+    val prior = f.connected()
+    val waiterBoom = Boom("waiter")
+    f.radio.disconnect(f.peer) { throw waiterBoom }
+    connectGattReturns(f, f.gatt())
+    f.radio.connect(f.peer, false)
+    assertEquals(0, connectGattCalls(f))
+
+    val thrown = thrownBy { f.nativeDisconnected(prior) }
+
+    assertSame(waiterBoom, thrown)
+    verify(prior, times(1)).close()
+    assertEquals(1, connectGattCalls(f))
+    f.advanceTo(OwnedAndroidGattRadio.GATT_CLOSE_TIMEOUT_MS)
+    assertEquals(1, connectGattCalls(f))
+  }
+
+  @Test
+  fun throwingConnectionObserverCannotStarveTheDeadlinesForcedClose() {
+    val f = Fixture()
+    val gatt = f.connected()
+    val observer = Boom("connection observer")
+    f.radio.onConnectionState = { _, connected, _ -> if (!connected) throw observer }
+    val first = Results()
+    val second = Results()
+    f.radio.disconnect(f.peer, first.callback)
+    f.radio.disconnect(f.peer, second.callback)
+
+    val thrown = thrownBy { f.advanceTo(OwnedAndroidGattRadio.GATT_CLOSE_TIMEOUT_MS) }
+
+    assertSame(observer, thrown)
+    assertEquals(listOf<OwnedRadioTeardownFailure?>(null), first.values)
+    assertEquals(listOf<OwnedRadioTeardownFailure?>(null), second.values)
+    verify(gatt, times(1)).close()
+    f.nativeDisconnected(gatt)
+    assertEquals(1, first.values.size)
+  }
+
+  /**
+   * Runs [binderTeardown] while `connect()` fails the prior generation's pending
+   * operations, i.e. after it read the prior GATT and before it joins the owner.
+   */
+  private fun interleaveInsideConnect(f: Fixture, gatt: BluetoothGatt, binderTeardown: () -> Unit) {
+    doReturn(true).`when`(gatt).readRemoteRssi()
+    f.radio.readRemoteRssi(f.peer) { binderTeardown() }
+  }
+
+  @Test
+  fun connectRacingThePriorGenerationsOwnCleanTeardownReopensOnceWithoutNativeDisconnect() {
+    val f = Fixture()
+    val prior = f.connected()
+    connectGattReturns(f, f.gatt())
+    interleaveInsideConnect(f, prior) { f.nativeDisconnected(prior) }
+
+    f.radio.connect(f.peer, false)
+
+    verify(prior, times(1)).close()
+    verify(prior, never()).disconnect()
+    assertEquals(1, connectGattCalls(f))
+    assertTrue(f.closeDeadlines().isEmpty())
+    f.nativeDisconnected(prior)
+    f.advanceTo(OwnedAndroidGattRadio.GATT_CLOSE_TIMEOUT_MS)
+    assertEquals(1, connectGattCalls(f))
+  }
+
+  @Test
+  fun connectRacingARetainedCloseFailureIsRefusedAndLeavesNoReconnectQueued() {
+    val f = Fixture()
+    val prior = f.connected()
+    doThrow(IllegalStateException("close refused")).doNothing().`when`(prior).close()
+    connectGattReturns(f, f.gatt())
+    interleaveInsideConnect(f, prior) { f.nativeDisconnected(prior) }
+
+    val error = thrownBy { f.radio.connect(f.peer, false) }
+
+    assertTrue(error is IllegalStateException)
+    assertTrue(error!!.message!!.contains("cleanup is still pending"))
+    verify(prior, never()).disconnect()
+    assertEquals(0, connectGattCalls(f))
+    // connect() reported failure, so the retried clean close must not open a link behind it.
+    f.nativeDisconnected(prior)
+    verify(prior, times(2)).close()
+    assertEquals(0, connectGattCalls(f))
   }
 }
