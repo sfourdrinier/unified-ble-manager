@@ -22,8 +22,10 @@ describe('Android GATT cache recovery source guard', () => {
     expect(source).toContain('clearCharCacheForDevice(key)')
     expect(source).toContain('discovered.remove(key)')
     // The reconnect-after-teardown path keeps the caller's connect parameters
-    // (autoConnect, and since PR210-54 the PHY mask) and reopens with them.
-    expect(source).toContain('pendingReconnect[key] = PendingConnect(autoConnect, phyMask)')
-    expect(source.match(/openGatt\([^)]*pending\.autoConnect, pending\.phyMask\)/g)).toHaveLength(2)
+    // and the attempt identity used to correlate the replacement's own outcome.
+    // Runtime ordering and cleanup are pinned by OwnedAndroidGattConnectOwnershipTest.
+    expect(source).toContain('val queued = PendingConnect(autoConnect, phyMask, attempt)')
+    expect(source).toContain('pendingReconnect[key] = queued')
+    expect(source).toContain('openGatt(deviceId, key, pending.autoConnect, pending.phyMask, pending.attempt)')
   })
 })

@@ -99,6 +99,7 @@ describe('Unified Android native protocol structure', () => {
       'protocol/generated/NativeProtocolV2Schema.kt',
       // Runtime-gated public Android encryption/subrate API adapters.
       'radio/AndroidEncryptionApi.kt',
+      'radio/AndroidGattDisconnectOwners.kt',
       'radio/AndroidSubrateApi.kt',
       'radio/DeferredCoreShadow.kt',
       'radio/GattCentralWire.kt',
