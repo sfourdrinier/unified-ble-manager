@@ -805,7 +805,7 @@ class RustRadioHostAdapter internal constructor(
       val current = pendingConnects[key]
       val owned = current != null && attempt != null && current.attempt === attempt &&
         pendingConnects.remove(key, current)
-      val pending = if (owned) current?.requestId else null
+      val pending = if (owned) current.requestId else null
       val replacementPending = !owned && pendingConnects.containsKey(key)
       if (connected && gattStatus == GATT_SUCCESS) {
         if (replacementPending) {
