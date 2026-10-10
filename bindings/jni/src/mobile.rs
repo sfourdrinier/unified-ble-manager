@@ -239,6 +239,7 @@ pub fn request_call(request: &RadioRequest) -> (&'static str, Vec<Arg>) {
             peer_id,
             auto_connect,
             preferred_phy,
+            expected_generation,
             ..
         } => (
             "connect",
@@ -252,6 +253,7 @@ pub fn request_call(request: &RadioRequest) -> (&'static str, Vec<Arg>) {
                         .map(|phy| phy.as_str().to_owned())
                         .collect(),
                 ),
+                text(expected_generation),
             ],
         ),
         RadioRequest::Disconnect { peer_id, .. } => ("disconnect", vec![rid, text(peer_id)]),
@@ -1864,6 +1866,25 @@ ingress_native!(
 );
 
 ingress_native!(
+    Java_com_ubm_core_MobileCoreBridge_nativeIngestConnectionForGeneration,
+    "mobile.ingest.connection-scoped",
+    (peer_id: JString<'caller>, expected_generation: JString<'caller>, connected: jboolean, status: jint),
+    |env| {
+        const OP: &str = "mobile.ingest.connection-scoped";
+        let expected_generation = read_text(env, &expected_generation, OP)?;
+        if expected_generation.is_empty() {
+            return Err(invalid(OP, "expected generation must not be empty"));
+        }
+        Ok(RadioIngress::ConnectionScoped {
+            peer_id: read_text(env, &peer_id, OP)?,
+            expected_generation,
+            connected,
+            status: optional_int(status),
+        })
+    }
+);
+
+ingress_native!(
     Java_com_ubm_core_MobileCoreBridge_nativeIngestServicesChanged,
     "mobile.ingest.services-changed",
     (peer_id: JString<'caller>),
@@ -2088,11 +2109,12 @@ mod tests {
             peer_id: "p".to_owned(),
             auto_connect: false,
             preferred_phy: vec![ubm_mobile::Phy::Le2m, ubm_mobile::Phy::LeCoded],
+            expected_generation: "cg-1".to_owned(),
         });
         assert_eq!(method, "connect");
         assert_eq!(
             signature(&args),
-            "(JLjava/lang/String;Z[Ljava/lang/String;)V"
+            "(JLjava/lang/String;Z[Ljava/lang/String;Ljava/lang/String;)V"
         );
         assert_eq!(
             args[3],
@@ -2134,6 +2156,7 @@ mod tests {
                 peer_id: "p".to_owned(),
                 auto_connect: false,
                 preferred_phy: Vec::new(),
+                expected_generation: "cg-1".to_owned(),
             },
         ];
         for request in requests {

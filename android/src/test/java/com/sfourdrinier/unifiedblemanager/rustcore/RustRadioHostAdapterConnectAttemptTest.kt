@@ -32,6 +32,22 @@ import org.mockito.Mockito.verify
 class RustRadioHostAdapterConnectAttemptTest {
   private val noPhy = emptyArray<String>()
 
+  private class ReentrantRadio(private val delegate: FakeRadio = FakeRadio()) : AndroidRadioPort by delegate {
+    var connectHook: (() -> Unit)? = null
+    var delayedDisconnect: ((Throwable?) -> Unit)? = null
+    val calls: MutableList<String> get() = delegate.calls
+
+    override fun connect(peerId: String, autoConnect: Boolean, phyMask: Int, attempt: GattConnectAttempt) {
+      delegate.connect(peerId, autoConnect, phyMask, attempt)
+      connectHook?.invoke()
+    }
+
+    override fun disconnect(peerId: String, onComplete: (Throwable?) -> Unit) {
+      calls.add("disconnect:$peerId")
+      delayedDisconnect = onComplete
+    }
+  }
+
   private class Stack(refuseCloseDeadline: Boolean = false) {
     val fixture = GattRadioFixture().also { it.refuseDeadline = refuseCloseDeadline }
     val core = FakeCore()
@@ -70,7 +86,7 @@ class RustRadioHostAdapterConnectAttemptTest {
     val replacement = s.fixture.gatt()
     connectGattReturns(s.fixture, replacement)
 
-    s.adapter.connect(1, s.peer, false, noPhy)
+    s.adapter.connect(1, s.peer, false, noPhy, "test-generation-1")
     assertEquals("the replacement waits for the prior teardown", 0, connectGattCalls(s.fixture))
 
     s.loss(prior)
@@ -97,7 +113,7 @@ class RustRadioHostAdapterConnectAttemptTest {
 
     // The scheduler refuses the close deadline: the prior is force-closed inside connect(), its
     // loss is published (status 257) and the replacement opens without any throw.
-    s.adapter.connect(1, s.peer, false, noPhy)
+    s.adapter.connect(1, s.peer, false, noPhy, "test-generation-1")
     assertEquals(1, connectGattCalls(s.fixture))
     assertEquals("the forced close must not settle the replacement: ${s.core.calls}", emptyList<String>(), s.settlements())
     assertEquals(1L, s.adapter.statusCounts()["superseded-connect-outcome"])
@@ -113,7 +129,7 @@ class RustRadioHostAdapterConnectAttemptTest {
     val prior = s.priorGatt()
     val replacement = s.fixture.gatt()
     connectGattReturns(s.fixture, replacement)
-    s.adapter.connect(1, s.peer, false, noPhy)
+    s.adapter.connect(1, s.peer, false, noPhy, "test-generation-1")
 
     s.loss(prior)
     assertEquals(emptyList<String>(), s.settlements())
@@ -125,7 +141,7 @@ class RustRadioHostAdapterConnectAttemptTest {
     s.core.calls.clear()
     val next = s.fixture.gatt()
     connectGattReturns(s.fixture, next)
-    s.adapter.connect(2, s.peer, false, noPhy)
+    s.adapter.connect(2, s.peer, false, noPhy, "test-generation-2")
     assertTrue("a settled connect leaves no ownership: ${s.core.calls}", s.core.calls.none { it.startsWith("failure:2") })
   }
 
@@ -134,7 +150,7 @@ class RustRadioHostAdapterConnectAttemptTest {
     val prior = s.priorGatt()
     doThrow(SecurityException("BLUETOOTH_CONNECT revoked")).`when`(s.fixture.device)
       .connectGatt(eq(s.fixture.context), eq(false), any(), eq(android.bluetooth.BluetoothDevice.TRANSPORT_LE))
-    s.adapter.connect(1, s.peer, false, noPhy)
+    s.adapter.connect(1, s.peer, false, noPhy, "test-generation-1")
     assertEquals(emptyList<String>(), s.settlements())
 
     s.loss(prior)
@@ -144,7 +160,7 @@ class RustRadioHostAdapterConnectAttemptTest {
     val retry = s.fixture.gatt()
     connectGattReturns(s.fixture, retry)
     s.core.calls.clear()
-    s.adapter.connect(2, s.peer, false, noPhy)
+    s.adapter.connect(2, s.peer, false, noPhy, "test-generation-2")
     assertTrue("no ownership left behind: ${s.core.calls}", s.core.calls.none { it.startsWith("failure:2") })
   }
 
@@ -153,7 +169,7 @@ class RustRadioHostAdapterConnectAttemptTest {
     val prior = s.priorGatt()
     val replacement = s.fixture.gatt()
     connectGattReturns(s.fixture, replacement)
-    s.adapter.connect(1, s.peer, false, noPhy)
+    s.adapter.connect(1, s.peer, false, noPhy, "test-generation-1")
 
     s.adapter.cancel(1)
     assertEquals(listOf("failure:1:cancelled:null"), s.settlements())
@@ -169,7 +185,7 @@ class RustRadioHostAdapterConnectAttemptTest {
     val prior = s.priorGatt()
     val replacement = s.fixture.gatt()
     connectGattReturns(s.fixture, replacement)
-    s.adapter.connect(1, s.peer, false, noPhy)
+    s.adapter.connect(1, s.peer, false, noPhy, "test-generation-1")
     s.loss(prior)
     s.connected(replacement)
     s.core.calls.clear()
@@ -177,7 +193,7 @@ class RustRadioHostAdapterConnectAttemptTest {
     // A late callback of the superseded generation is fenced by the radio and never reaches Rust.
     s.loss(prior, 8)
     assertEquals("no loss for the live link: ${s.core.calls}", emptyList<String>(), s.core.calls)
-    s.adapter.connect(2, s.peer, false, noPhy)
+    s.adapter.connect(2, s.peer, false, noPhy, "test-generation-2")
     assertEquals("the link is still established", listOf("unit:2"), s.core.calls)
   }
 
@@ -188,8 +204,8 @@ class RustRadioHostAdapterConnectAttemptTest {
     val radio = FakeRadio()
     val peer = "AA:BB:CC:DD:EE:FF"
     val adapter = RustRadioHostAdapter(core, radio, FakeBackground(), { null }, { null }, DirectExecutor, DirectExecutor) { }
-    adapter.connect(1, peer, false, noPhy)
-    adapter.connect(2, "11:22:33:44:55:66", false, noPhy)
+    adapter.connect(1, peer, false, noPhy, "test-generation-1")
+    adapter.connect(2, "11:22:33:44:55:66", false, noPhy, "test-generation-2")
     val own = radio.attempts.getValue(peer)
     assertNotSame("each request carries its own identity", own, radio.attempts.getValue("11:22:33:44:55:66"))
 
@@ -214,7 +230,7 @@ class RustRadioHostAdapterConnectAttemptTest {
     val radio = FakeRadio()
     val peer = "AA:BB:CC:DD:EE:FF"
     val adapter = RustRadioHostAdapter(core, radio, FakeBackground(), { null }, { null }, DirectExecutor, DirectExecutor) { }
-    adapter.connect(1, peer, false, noPhy)
+    adapter.connect(1, peer, false, noPhy, "test-generation-1")
     val own = radio.attempts.getValue(peer)
 
     radio.events.onAdapterState(AdapterFacts("available", "granted", "off", null))
@@ -222,7 +238,7 @@ class RustRadioHostAdapterConnectAttemptTest {
     // The OS then reports the force-closed link for the same request: nothing is answered twice.
     radio.events.onConnection(peer, false, 0, own)
     assertEquals(1, core.calls.count { it.startsWith("failure:1") })
-    adapter.connect(2, peer, false, noPhy)
+    adapter.connect(2, peer, false, noPhy, "test-generation-2")
     assertTrue("ownership was released: ${core.calls}", core.calls.none { it.startsWith("failure:2") })
   }
 
@@ -233,10 +249,66 @@ class RustRadioHostAdapterConnectAttemptTest {
     radio.connectFailure = RadioPortFailure(RadioFailureKind.PLATFORM, "refused")
     val peer = "AA:BB:CC:DD:EE:FF"
     val adapter = RustRadioHostAdapter(core, radio, FakeBackground(), { null }, { null }, DirectExecutor, DirectExecutor) { }
-    adapter.connect(1, peer, false, noPhy)
+    adapter.connect(1, peer, false, noPhy, "test-generation-1")
     assertEquals(1, core.calls.count { it.startsWith("failure:1:platform") })
     radio.connectFailure = null
-    adapter.connect(2, peer, false, noPhy)
+    adapter.connect(2, peer, false, noPhy, "test-generation-2")
     assertTrue("a refused connect is not busy-owned: ${core.calls}", core.calls.none { it.startsWith("failure:2") })
+  }
+
+  @Test
+  fun explicitDisconnectWithdrawsPendingConnectBeforeAllowingRetry() {
+    val core = FakeCore()
+    val radio = FakeRadio()
+    val peer = "AA:BB:CC:DD:EE:FF"
+    val adapter = RustRadioHostAdapter(core, radio, FakeBackground(), { null }, { null }, DirectExecutor, DirectExecutor) { }
+
+    adapter.connect(1, peer, false, noPhy, "test-generation-1")
+    adapter.disconnect(2, peer)
+
+    assertEquals("failure:1:cancelled:null", core.calls.single { it.startsWith("failure:1") })
+    assertEquals("unit:2", core.calls.single { it.startsWith("unit:2") })
+    assertEquals(listOf("connect:$peer:false", "disconnect:$peer"), radio.calls)
+
+    adapter.connect(3, peer, false, noPhy, "test-generation-2")
+    assertTrue("cleanup releases the reservation for retry: ${core.calls}", core.calls.none { it.startsWith("failure:3") })
+  }
+
+  @Test
+  fun cancellationInsideConnectDispatchDefersCleanupUntilDispatchReturns() {
+    val core = FakeCore()
+    val radio = ReentrantRadio()
+    val peer = "AA:BB:CC:DD:EE:FF"
+    lateinit var adapter: RustRadioHostAdapter
+    adapter = RustRadioHostAdapter(core, radio, FakeBackground(), { null }, { null }, DirectExecutor, DirectExecutor) { }
+    radio.connectHook = {
+      adapter.cancel(1)
+    }
+
+    adapter.connect(1, peer, false, noPhy, "test-generation-1")
+
+    assertEquals(listOf("failure:1:cancelled:null"), core.calls.filter { it.startsWith("failure:1") })
+    assertEquals(listOf("connect:$peer:false", "disconnect:$peer"), radio.calls)
+  }
+
+  @Test
+  fun repeatedDisconnectsJoinDelayedCleanupAndPreserveFailure() {
+    val core = FakeCore()
+    val radio = ReentrantRadio()
+    val peer = "AA:BB:CC:DD:EE:FF"
+    val adapter = RustRadioHostAdapter(core, radio, FakeBackground(), { null }, { null }, DirectExecutor, DirectExecutor) { }
+
+    adapter.connect(1, peer, false, noPhy, "test-generation-1")
+    adapter.disconnect(2, peer)
+    adapter.disconnect(3, peer)
+    assertEquals(listOf("failure:1:cancelled:null"), core.calls.filter { it.startsWith("failure:1") })
+    assertTrue("cleanup is single-shot: ${radio.calls}", radio.calls.count { it == "disconnect:$peer" } == 1)
+    assertTrue("waiters remain pending until native cleanup returns", core.calls.none { it == "unit:2" || it == "unit:3" })
+
+    radio.delayedDisconnect?.invoke(RadioPortFailure(RadioFailureKind.PLATFORM, "cleanup failed"))
+
+    assertEquals(listOf("failure:2:platform:null", "failure:3:platform:null"), core.calls.filter {
+      it.startsWith("failure:2") || it.startsWith("failure:3")
+    })
   }
 }

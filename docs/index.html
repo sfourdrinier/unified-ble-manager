@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 5.0.2 | Documentation</title>
+    <title>unified-ble-manager 5.0.3 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>5.0.2</code></div>
+          <div class="mb1"><code>5.0.3</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -65,7 +65,7 @@
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
             <p>
-              This source targets the unpublished <code>5.0.2</code> candidate; verify the published version in the npm
+              This source targets the unpublished <code>5.0.3</code> candidate; verify the published version in the npm
               registry.
             </p>
             <h2>Pick a host</h2>
@@ -140,7 +140,7 @@
               registry before installing: source preparation is not publication. Install the exact release and commit
               the resolved lockfile for a known native rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.2
+            <pre><code>pnpm add unified-ble-manager@5.0.3
 </code></pre>
             <p>
               Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
@@ -149,9 +149,9 @@
             <h4>Expo / CNG v2</h4>
             <p>
               The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. Install
-              <code>5.0.2</code> and keep that exact version in your lockfile while validating the native build:
+              <code>5.0.3</code> and keep that exact version in your lockfile while validating the native build:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.2
+            <pre><code>pnpm add unified-ble-manager@5.0.3
 </code></pre>
             <p>The package does not run in Expo Go.</p>
             <p>Expo also needs a native build and development client:</p>
@@ -1012,7 +1012,7 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in this unpublished <code>5.0.2</code> candidate. Those options match the schema
+              Use the v2 plugin options in this unpublished <code>5.0.3</code> candidate. Those options match the schema
               introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
@@ -1020,7 +1020,7 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.0.2
+            <pre><code>pnpm add unified-ble-manager@5.0.3
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
@@ -1351,7 +1351,7 @@ await manager.background.updateNotification({
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              This source targets <code>5.0.2</code>. Main executes the shared Rust core (<code>DesktopCentral</code>)
+              This source targets <code>5.0.3</code>. Main executes the shared Rust core (<code>DesktopCentral</code>)
               through one N-API addon. Tagged releases ship it prebuilt for macOS Apple Silicon (<code>arm64</code>) and
               Windows/Linux <code>arm64</code>/<code>x64</code>. The addon is Node-API, so one binary serves Node and
               modern Electron alike.

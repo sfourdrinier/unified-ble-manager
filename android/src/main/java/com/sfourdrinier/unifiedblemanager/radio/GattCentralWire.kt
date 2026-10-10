@@ -103,14 +103,29 @@ object GattCentralWire {
   fun linkEstablished(peerKey: String): String =
     "link.established|${arg(peerKey, "peerKey")}"
 
+  fun linkEstablishedScoped(peerKey: String, generation: String): String =
+    "link.established.scoped|${arg(peerKey, "peerKey")}|${arg(generation, "generation")}".also {
+      require(generation.isNotEmpty()) { "GATT wire field generation must not be empty" }
+    }
+
   fun linkReleased(peerKey: String): String =
     "link.released|${arg(peerKey, "peerKey")}"
+
+  fun linkReleasedScoped(peerKey: String, generation: String): String =
+    "link.released.scoped|${arg(peerKey, "peerKey")}|${arg(generation, "generation")}".also {
+      require(generation.isNotEmpty()) { "GATT wire field generation must not be empty" }
+    }
 
   fun disconnect(peerKey: String, lease: String, nowMs: Long): String =
     "disconnect|${arg(peerKey, "peerKey")}|${arg(lease, "lease")}|${u64(nowMs, "nowMs")}"
 
   fun peerLoss(peerKey: String, nowMs: Long): String =
     "peer.loss|${arg(peerKey, "peerKey")}|${u64(nowMs, "nowMs")}"
+
+  fun peerLossScoped(peerKey: String, generation: String, nowMs: Long): String {
+    require(generation.isNotEmpty()) { "GATT wire field generation must not be empty" }
+    return "peer.loss.scoped|${arg(peerKey, "peerKey")}|${arg(generation, "generation")}|${u64(nowMs, "nowMs")}"
+  }
 
   fun discoveryBegin(peerKey: String): String =
     "discovery.begin|${arg(peerKey, "peerKey")}"
@@ -258,14 +273,58 @@ object GattCentralWire {
     // the verdict. Rust emits {"ok":true,...} / {"ok":false,...} exactly.
     val ok = line.startsWith("{\"ok\":true") && (line.length == 10 || line[10] == ',' || line[10] == '}')
     val event = field("event") ?: ""
+    val connectPeer = if (event == "connect") field("peer") else null
+    val connectLease = if (event == "connect") field("lease") else null
     // F01: kernel effects plus typed observations ride every drained line.
     // A present-but-malformed section fails the line closed (a truncated
     // section must never read as "no effects"); absent sections parse as
     // empty (pre-F01 lines only).
     val effects = parseEffectSection(line, "effects")
-      ?: return GattObservation(false, event, "platform.failure", "gatt", "gatt-drain", "effects-malformed", line)
+      ?: return GattObservation(
+        false,
+        event,
+        "platform.failure",
+        "gatt",
+        "gatt-drain",
+        "effects-malformed",
+        line,
+        connectPeer = connectPeer,
+        connectLease = connectLease
+      )
     val observations = parseEffectSection(line, "observations")
-      ?: return GattObservation(false, event, "platform.failure", "gatt", "gatt-drain", "observations-malformed", line)
+      ?: return GattObservation(
+        false,
+        event,
+        "platform.failure",
+        "gatt",
+        "gatt-drain",
+        "observations-malformed",
+        line,
+        connectPeer = connectPeer,
+        connectLease = connectLease
+      )
+    val admission = if (ok && event == "connect") {
+      val peer = connectPeer
+      val op = field("op")
+      val generation = field("generation")
+      val lease = connectLease
+      if (peer.isNullOrEmpty() || op.isNullOrEmpty() || generation.isNullOrEmpty() || lease.isNullOrEmpty()) {
+        return GattObservation(
+          false,
+          event,
+          "argument.invalid",
+          "core",
+          "gatt-drain",
+          "connect-admission-malformed",
+          line,
+          connectPeer = connectPeer,
+          connectLease = connectLease
+        )
+      }
+      ConnectAdmission(peer, lease, op, generation)
+    } else {
+      null
+    }
     return GattObservation(
       ok = ok,
       event = event,
@@ -275,7 +334,10 @@ object GattCentralWire {
       detail = field("detail"),
       raw = line,
       effects = effects,
-      observations = observations
+      observations = observations,
+      connectAdmission = admission,
+      connectPeer = connectPeer,
+      connectLease = connectLease
     )
   }
 
@@ -404,6 +466,19 @@ data class GattEffect(
 )
 
 /** One parsed drain observation line. */
+data class ConnectAdmission(
+  val peer: String,
+  val lease: String,
+  val operationId: String,
+  val generation: String
+)
+
+sealed interface ConnectAdmissionResult {
+  data class Admitted(val admission: ConnectAdmission) : ConnectAdmissionResult
+  data class Rejected(val detail: String) : ConnectAdmissionResult
+  object Missing : ConnectAdmissionResult
+}
+
 data class GattObservation(
   val ok: Boolean,
   val event: String,
@@ -413,5 +488,8 @@ data class GattObservation(
   val detail: String?,
   val raw: String,
   val effects: List<GattEffect> = emptyList(),
-  val observations: List<GattEffect> = emptyList()
+  val observations: List<GattEffect> = emptyList(),
+  val connectAdmission: ConnectAdmission? = null,
+  val connectPeer: String? = null,
+  val connectLease: String? = null
 )

@@ -17,6 +17,11 @@ package com.sfourdrinier.unifiedblemanager.radio
  * handle, so [isCurrent] is the fence a timer must pass before it acts.
  */
 internal class AndroidGattDisconnectOwners {
+  internal enum class ClosingMark {
+    MARKED,
+    ALREADY_CLOSING,
+    OWNER_MISMATCH
+  }
   /**
    * Result of [join]: [token] identifies the owner's deadline when [created].
    * [rejected] means the generation was no longer joinable: no owner was created
@@ -34,7 +39,8 @@ internal class AndroidGattDisconnectOwners {
     val gatt: Any,
     val generation: Long,
     val token: Long,
-    val waiters: MutableList<(OwnedRadioTeardownFailure?) -> Unit> = mutableListOf()
+    val waiters: MutableList<(OwnedRadioTeardownFailure?) -> Unit> = mutableListOf(),
+    var closing: Boolean = false
   )
 
   private val owners = HashMap<String, Owner>()
@@ -77,7 +83,31 @@ internal class AndroidGattDisconnectOwners {
 
   /** Whether the deadline identified by [token] still belongs to the device's live owner. */
   @Synchronized
-  fun isCurrent(key: String, token: Long): Boolean = owners[key]?.token == token
+  fun isCurrent(key: String, token: Long): Boolean =
+    owners[key]?.let { owner -> owner.token == token && !owner.closing } == true
+
+  /** Whether callbacks for this exact generation are fenced by an in-flight close. */
+  @Synchronized
+  fun isClosing(key: String, gatt: Any, generation: Long): Boolean =
+    owners[key]?.let { owner ->
+      owner.gatt === gatt && owner.generation == generation && owner.closing
+    } == true
+
+  /** Fences the owner before the native close begins; reentrant joiners still share its waiters. */
+  @Synchronized
+  fun markClosing(key: String, gatt: Any, generation: Long): ClosingMark {
+    val owner = owners[key]
+    if (owner == null) {
+      owners[key] = Owner(gatt, generation, nextToken++, closing = true)
+      // The owner was absent, but is installed in the closing state before the
+      // caller invokes native close so reentrant joiners cannot create a second one.
+      return ClosingMark.MARKED
+    }
+    if (owner.gatt !== gatt || owner.generation != generation) return ClosingMark.OWNER_MISMATCH
+    if (owner.closing) return ClosingMark.ALREADY_CLOSING
+    owner.closing = true
+    return ClosingMark.MARKED
+  }
 
   /** Removes the owner of exactly ([gatt], [generation]) and returns its waiters. */
   @Synchronized

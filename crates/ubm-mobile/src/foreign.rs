@@ -16,7 +16,7 @@
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use tokio::sync::{Notify, oneshot};
 use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
@@ -26,6 +26,7 @@ use ubm_desktop::{
     RadioBoundary, RadioCloseFailure, RadioEvent, ScanFilterSpec, ServiceSnapshot,
 };
 
+use crate::host::HostInner;
 use crate::radio::{
     AdapterAuthorization, AdapterAvailability, AdapterPower, AdapterSnapshot, DescriptorAddress,
     IngressClass, Instance, MobilePlatform, Phy, PlatformFailure, PlatformRadio, RadioCompletion,
@@ -139,6 +140,7 @@ struct Shared {
     notify: Notify,
     drops: [AtomicU64; 3],
     drop_hook: Mutex<Option<DropHook>>,
+    connect_generation_hook: Mutex<Option<Weak<HostInner>>>,
     staged_scan: Mutex<Option<ScanRequest>>,
     staged_connect: Mutex<HashMap<String, ConnectStaging>>,
     /// Per-peer connect sections (X-R3): at most one same-peer connect
@@ -151,6 +153,29 @@ struct Shared {
     staged_preference: Mutex<HashMap<Instance, DeliveryMode>>,
     close_failures: Mutex<Vec<RadioCloseFailure>>,
     close_error: Mutex<Option<DesktopError>>,
+}
+
+struct ConnectSecurityAdmission {
+    host: Weak<HostInner>,
+    peer_id: String,
+    generation: String,
+    owned: bool,
+}
+
+impl ConnectSecurityAdmission {
+    fn disarm(&mut self) {
+        self.owned = false;
+    }
+}
+
+impl Drop for ConnectSecurityAdmission {
+    fn drop(&mut self) {
+        if self.owned
+            && let Some(host) = self.host.upgrade()
+        {
+            host.clear_security_generation(&self.peer_id, &self.generation);
+        }
+    }
 }
 
 /// The central's radio boundary over the native adapter. Cloning shares
@@ -273,6 +298,7 @@ impl ForeignRadio {
                 notify: Notify::new(),
                 drops: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
                 drop_hook: Mutex::new(None),
+                connect_generation_hook: Mutex::new(None),
                 staged_scan: Mutex::new(None),
                 staged_connect: Mutex::new(HashMap::new()),
                 connect_sections: Mutex::new(HashMap::new()),
@@ -286,6 +312,10 @@ impl ForeignRadio {
     /// Install the callback that learns about every ingress drop.
     pub fn set_drop_hook(&self, hook: DropHook) {
         *lock(&self.shared.drop_hook) = Some(hook);
+    }
+
+    pub(crate) fn set_connect_generation_hook(&self, host: Weak<HostInner>) {
+        *lock(&self.shared.connect_generation_hook) = Some(host);
     }
 
     /// Issue one request and wait for its answer. The request id is minted
@@ -756,7 +786,14 @@ impl RadioBoundary for ForeignRadio {
         .with_detail("the mobile host keeps its own peer directory"))
     }
 
-    async fn connect(&self, peer_id: &str) -> Result<(), DesktopError> {
+    async fn connect(&self, peer_id: &str, expected_generation: &str) -> Result<(), DesktopError> {
+        if expected_generation.is_empty() {
+            return Err(DesktopError::new(
+                BleErrorCode::ConnectionStale,
+                BleErrorDomain::Connection,
+                "connection.connect",
+            ));
+        }
         let ConnectStaging {
             auto_connect,
             preferred_phy,
@@ -764,13 +801,40 @@ impl RadioBoundary for ForeignRadio {
             .remove(peer_id)
             .unwrap_or_default();
         let peer_id = peer_id.to_owned();
-        self.unit(|id| RadioRequest::Connect {
-            id,
-            peer_id,
-            auto_connect,
-            preferred_phy,
-        })
-        .await
+        let host = lock(&self.shared.connect_generation_hook).clone();
+        let mut admission = if let Some(host) = host.as_ref() {
+            let Some(host) = host.upgrade() else {
+                return Err(DesktopError::new(
+                    BleErrorCode::LifecycleDestroyed,
+                    BleErrorDomain::Core,
+                    "connection.connect",
+                )
+                .with_detail("mobile host closed before connect ownership admission"));
+            };
+            Some(ConnectSecurityAdmission {
+                owned: host.stamp_security_generation(&peer_id, expected_generation),
+                host: Arc::downgrade(&host),
+                peer_id: peer_id.clone(),
+                generation: expected_generation.to_owned(),
+            })
+        } else {
+            None
+        };
+        let result = self
+            .unit(|id| RadioRequest::Connect {
+                id,
+                peer_id: peer_id.clone(),
+                auto_connect,
+                preferred_phy,
+                expected_generation: expected_generation.to_owned(),
+            })
+            .await;
+        if result.is_ok()
+            && let Some(admission) = admission.as_mut()
+        {
+            admission.disarm();
+        }
+        result
     }
 
     async fn disconnect(&self, peer_id: &str) -> Result<(), DesktopError> {

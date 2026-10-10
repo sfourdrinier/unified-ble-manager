@@ -3722,6 +3722,22 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 confirmed_release_count(&self.inner, peer_id),
             )
         };
+        let expected_generation = connection_generation.as_deref().ok_or_else(|| {
+            contract_error(
+                BleErrorCode::LifecycleInvariantViolation,
+                BleErrorDomain::Core,
+                "connection.connect",
+            )
+            .with_detail("core admitted a connection without a generation")
+        })?;
+        if expected_generation.is_empty() {
+            return Err(contract_error(
+                BleErrorCode::LifecycleInvariantViolation,
+                BleErrorDomain::Core,
+                "connection.connect",
+            )
+            .with_detail("core admitted a connection with an empty generation"));
+        }
         // Finding 161: the bound the attempt runs under, for the deadline
         // fact when it expires before any link came up. A connect without
         // a caller budget waits as long as the OS does, so an expiry always
@@ -3744,9 +3760,15 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         );
         let acquisition = async {
             if deferred {
-                self.inner.boundary.connect_when_available(peer_id).await
+                self.inner
+                    .boundary
+                    .connect_when_available(peer_id, expected_generation)
+                    .await
             } else {
-                self.inner.boundary.connect(peer_id).await
+                self.inner
+                    .boundary
+                    .connect(peer_id, expected_generation)
+                    .await
             }
         };
         let result = match drive(&ctl.ticket, window, acquisition).await {
@@ -3758,7 +3780,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 let settled = {
                     let mut core = self.inner.core.lock().await;
                     let mut out = batch();
-                    if core.connection_generation(&peer_key) != connection_generation {
+                    if core.connection_generation(&peer_key).as_deref() != Some(expected_generation)
+                    {
                         return Err(contract_error(
                             BleErrorCode::ConnectionStale,
                             BleErrorDomain::Connection,
@@ -7314,6 +7337,25 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                     Some(RadioEvent::Connected(peer_id)) => {
                         reconcile_connected(&inner, &peer_id).await;
                     }
+                    Some(RadioEvent::ConnectionScoped {
+                        peer_id,
+                        expected_generation,
+                        connected,
+                        errored,
+                    }) => {
+                        if connected {
+                            reconcile_connected_scoped(&inner, &peer_id, Some(&expected_generation)).await;
+                        } else {
+                            reconcile_disconnected_scoped(
+                                &inner,
+                                &peer_id,
+                                errored,
+                                None,
+                                Some(&expected_generation),
+                            )
+                            .await;
+                        }
+                    }
                     Some(RadioEvent::Disconnected(peer_id)) => {
                         reconcile_disconnected(&inner, &peer_id, false).await;
                     }
@@ -7322,7 +7364,7 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                     }
                     #[cfg(target_os = "linux")]
                     Some(RadioEvent::LinuxPhysicalLost { peer_id, physical_generation, reason }) => {
-                        reconcile_disconnected_scoped(&inner, &peer_id, false, Some((physical_generation, reason))).await;
+                        reconcile_disconnected_scoped(&inner, &peer_id, false, Some((physical_generation, reason)), None).await;
                     }
                     Some(RadioEvent::ServicesChanged(peer_id)) => {
                         services_changed_invalidated(&inner, &peer_id).await;
@@ -7922,9 +7964,26 @@ fn push_evicting<T>(queue: &mut VecDeque<T>, item: T, cap: usize) -> bool {
 }
 
 async fn reconcile_connected<B: RadioBoundary>(inner: &Arc<Inner<B>>, peer_id: &str) {
+    reconcile_connected_scoped(inner, peer_id, None).await;
+}
+
+async fn reconcile_connected_scoped<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    peer_id: &str,
+    expected_generation: Option<&str>,
+) {
     let peer_key = inner.peers.lock().await.get(peer_id).cloned();
     if let Some(peer_key) = peer_key {
         let mut core = inner.core.lock().await;
+        if let Some(expected_generation) = expected_generation
+            && core.connection_generation(&peer_key).as_deref() != Some(expected_generation)
+        {
+            eprintln!(
+                "{}: stale scoped connected event refused for {peer_id}",
+                inner.identity.log_tag()
+            );
+            return;
+        }
         let _ = core.note_link_established(&peer_key);
     }
 }
@@ -7939,7 +7998,7 @@ async fn reconcile_disconnected<B: RadioBoundary>(
     peer_id: &str,
     errored: bool,
 ) {
-    reconcile_disconnected_scoped(inner, peer_id, errored, None).await;
+    reconcile_disconnected_scoped(inner, peer_id, errored, None, None).await;
 }
 
 async fn reconcile_disconnected_scoped<B: RadioBoundary>(
@@ -7947,6 +8006,7 @@ async fn reconcile_disconnected_scoped<B: RadioBoundary>(
     peer_id: &str,
     errored: bool,
     physical_generation: Option<(u64, u8)>,
+    core_generation: Option<&str>,
 ) {
     let peer_key = inner.peers.lock().await.get(peer_id).cloned();
     let Some(peer_key) = peer_key else {
@@ -7959,6 +8019,15 @@ async fn reconcile_disconnected_scoped<B: RadioBoundary>(
     let mut epochs = inner.epochs.lock().await;
     let event = {
         let mut core = inner.core.lock().await;
+        if let Some(expected_generation) = core_generation
+            && core.connection_generation(&peer_key).as_deref() != Some(expected_generation)
+        {
+            eprintln!(
+                "{}: stale scoped link-end event refused for {peer_id}",
+                inner.identity.log_tag()
+            );
+            return;
+        }
         #[cfg(target_os = "linux")]
         if let Some((generation, reason)) = physical_generation
             && !inner
@@ -8968,6 +9037,69 @@ mod adapter_tests {
     }
 
     #[tokio::test]
+    async fn scoped_old_generation_cannot_mutate_new_link() {
+        let central = open().await;
+        central.boundary().push_event(advertisement("scoped-peer"));
+        let old = central
+            .connect("scoped-peer", "lease-a", OpControl::unbounded())
+            .await
+            .expect("initial connection");
+        let old_generation = old
+            .connection_generation
+            .clone()
+            .expect("initial connection generation");
+        super::reconcile_disconnected(&central.inner, "scoped-peer", true).await;
+        let current = central
+            .connect("scoped-peer", "lease-b", OpControl::unbounded())
+            .await
+            .expect("replacement connection");
+        let current_generation = current
+            .connection_generation
+            .clone()
+            .expect("replacement connection generation");
+        assert_ne!(old_generation, current_generation);
+        let before_epoch = central
+            .inner
+            .epochs
+            .lock()
+            .await
+            .get("scoped-peer")
+            .copied()
+            .unwrap_or(0);
+        super::reconcile_connected_scoped(&central.inner, "scoped-peer", Some(&old_generation))
+            .await;
+        super::reconcile_disconnected_scoped(
+            &central.inner,
+            "scoped-peer",
+            true,
+            None,
+            Some(&old_generation),
+        )
+        .await;
+
+        assert_eq!(
+            central
+                .with_core(|core| core.connection_state(&current.peer_key))
+                .await,
+            Some(ConnectionState::Connected),
+            "stale connected/lost events cannot change replacement state"
+        );
+        assert_eq!(
+            central
+                .inner
+                .epochs
+                .lock()
+                .await
+                .get("scoped-peer")
+                .copied()
+                .unwrap_or(0),
+            before_epoch,
+            "stale loss cannot invalidate replacement routing"
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn connect_shares_live_link_by_default() {
         // FX1B: sharing is the default — a second connect leases the live
         // link instead of failing `connection.already-owned`.
@@ -9438,7 +9570,7 @@ mod adapter_tests {
                 );
             }
             super::reconcile_disconnected(&central.inner, "peer", true).await;
-            crate::boundary::RadioBoundary::connect(central.boundary(), "peer")
+            crate::boundary::RadioBoundary::connect(central.boundary(), "peer", "generation")
                 .await
                 .unwrap();
             let serial = super::confirmed_release_count(&central.inner, "peer");
@@ -9865,6 +9997,7 @@ mod adapter_tests {
             "lease-generation",
             false,
             Some((73, 2)),
+            None,
         )
         .await;
         assert_eq!(
@@ -9891,6 +10024,7 @@ mod adapter_tests {
             "lease-generation",
             false,
             Some((74, 2)),
+            None,
         )
         .await;
         let event = events.recv().await.unwrap();
@@ -9925,6 +10059,7 @@ mod adapter_tests {
             "lease-generation",
             false,
             Some((74, 2)),
+            None,
         )
         .await;
         assert!(
@@ -10237,6 +10372,7 @@ mod adapter_tests {
             "release-event-first",
             false,
             Some((73, 2)),
+            None,
         )
         .await;
         let event = events.recv().await.unwrap();

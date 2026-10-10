@@ -144,6 +144,116 @@ class UbmGattCoreBindingTest {
   }
 
   @Test
+  fun successfulConnectAdmissionIsTakenOnceByExactDeviceAndLease() {
+    val jni = FakeJni()
+    jni.drains.add(
+      "{\"ok\":true,\"event\":\"peer.resolve\",\"effects\":[],\"observations\":[]}"
+    )
+    jni.drains.add(
+      "{\"ok\":true,\"event\":\"connect\",\"op\":\"op-a\",\"peer\":\"public-address:AA:BB:CC:DD:EE:FF\",\"lease\":\"lease-a\",\"generation\":\"generation-a\",\"effects\":[],\"observations\":[]}"
+    )
+    val bound = binding(jni)
+    bound.postConnect("AA:BB:CC:DD:EE:FF", "lease-a")
+    assertEquals(
+      ConnectAdmissionResult.Admitted(
+        ConnectAdmission(
+          "public-address:AA:BB:CC:DD:EE:FF",
+          "lease-a",
+          "op-a",
+          "generation-a"
+        )
+      ),
+      bound.takeConnectAdmission("AA:BB:CC:DD:EE:FF", "lease-a")
+    )
+    assertEquals(
+      ConnectAdmissionResult.Missing,
+      bound.takeConnectAdmission("AA:BB:CC:DD:EE:FF", "lease-a")
+    )
+    assertEquals(
+      ConnectAdmissionResult.Missing,
+      bound.takeConnectAdmission("11:22:33:44:55:66", "lease-a")
+    )
+  }
+
+  @Test
+  fun duplicateLeaseAndAdmissionCapRefuseBeforeCoreConnectEnqueue() {
+    val jni = FakeJni()
+    val bound = binding(jni)
+    assertTrue(bound.postConnect("AA:BB:CC:DD:EE:FF", "lease-a") is UbmGattCentralBridge.PostResult.Queued)
+    val beforeDuplicate = jni.enqueued.size
+    assertTrue(
+      bound.postConnect("AA:BB:CC:DD:EE:FF", "lease-a") is UbmGattCentralBridge.PostResult.EnqueueFailed
+    )
+    assertEquals(beforeDuplicate, jni.enqueued.size)
+    repeat(UbmGattCoreBinding.CONNECT_ADMISSION_CAP - 1) { index ->
+      assertTrue(
+        bound.postConnect("AA:BB:CC:DD:EE:FF", "lease-${index + 1}") is UbmGattCentralBridge.PostResult.Queued
+      )
+    }
+    assertTrue(
+      bound.postConnect("AA:BB:CC:DD:EE:FF", "lease-over-cap") is UbmGattCentralBridge.PostResult.EnqueueFailed
+    )
+  }
+
+  @Test
+  fun resetDropsLateOldAdmissionButAcceptsAUniquePostResetLease() {
+    val jni = FakeJni()
+    val bound = binding(jni)
+    bound.postConnect("AA:BB:CC:DD:EE:FF", "lease-before-reset")
+    bound.postAdapterReset()
+    jni.drains.add(
+      "{\"ok\":true,\"event\":\"connect\",\"op\":\"old-op\",\"peer\":\"public-address:AA:BB:CC:DD:EE:FF\",\"lease\":\"lease-before-reset\",\"generation\":\"old-generation\",\"effects\":[],\"observations\":[]}"
+    )
+    bound.bridge.drainNow()
+    assertEquals(
+      ConnectAdmissionResult.Missing,
+      bound.takeConnectAdmission("AA:BB:CC:DD:EE:FF", "lease-before-reset")
+    )
+    jni.drains.add(
+      "{\"ok\":true,\"event\":\"connect\",\"op\":\"new-op\",\"peer\":\"public-address:AA:BB:CC:DD:EE:FF\",\"lease\":\"lease-after-reset\",\"generation\":\"new-generation\",\"effects\":[],\"observations\":[]}"
+    )
+    bound.postConnect("AA:BB:CC:DD:EE:FF", "lease-after-reset")
+    assertTrue(bound.takeConnectAdmission("AA:BB:CC:DD:EE:FF", "lease-after-reset") is ConnectAdmissionResult.Admitted)
+  }
+
+  @Test
+  fun malformedConnectReceiptConsumesReservationAsRejected() {
+    val jni = FakeJni()
+    jni.drains.add(
+      "{\"ok\":true,\"event\":\"peer.resolve\",\"effects\":[],\"observations\":[]}"
+    )
+    jni.drains.add(
+      "{\"ok\":true,\"event\":\"connect\",\"op\":\"op-a\",\"peer\":\"public-address:AA:BB:CC:DD:EE:FF\",\"lease\":\"lease-a\",\"effects\":[],\"observations\":[]}"
+    )
+    val bound = binding(jni)
+    bound.postConnect("AA:BB:CC:DD:EE:FF", "lease-a")
+    assertEquals(
+      ConnectAdmissionResult.Rejected("connect-admission-malformed"),
+      bound.takeConnectAdmission("AA:BB:CC:DD:EE:FF", "lease-a")
+    )
+  }
+
+  @Test
+  fun peerResolveScheduleFailureDoesNotEnqueueConnectAndCanBeWithdrawn() {
+    val jni = FakeJni()
+    val bound = UbmGattCoreBinding(
+      permittedContext(),
+      jni = jni,
+      worker = Executor { throw IllegalStateException("executor-rejected") }
+    )
+    assertTrue(
+      bound.postConnect("AA:BB:CC:DD:EE:FF", "lease-a") is UbmGattCentralBridge.PostResult.ScheduleFailed
+    )
+    assertEquals(1, jni.enqueued.size)
+    assertEquals("peer.resolve|public-address|AA:BB:CC:DD:EE:FF", jni.enqueued.single())
+    assertEquals(
+      ConnectAdmissionResult.Rejected("withdrawn"),
+      bound.withdrawConnectAdmission("AA:BB:CC:DD:EE:FF", "lease-a")
+    )
+    assertEquals(ConnectAdmissionResult.Missing, bound.takeConnectAdmission("AA:BB:CC:DD:EE:FF", "lease-a"))
+  }
+
+  @Test
   fun opaqueDeviceIdsUsePlatformGuid() {
     val jni = FakeJni()
     val bound = binding(jni)

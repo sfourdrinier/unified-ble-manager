@@ -100,7 +100,7 @@ public final class MobileCoreBridge {
          * (API &lt; 26, or the link is already up) answers {@link #nativeCompleteFailure} kind
          * {@code unsupported}, dispatched=false; it never connects without them.
          */
-        void connect(long requestId, String peerId, boolean autoConnect, String[] preferredPhy);
+        void connect(long requestId, String peerId, boolean autoConnect, String[] preferredPhy, String expectedGeneration);
 
         /** Answer: {@link #nativeCompleteUnit} once the OS confirms. */
         void disconnect(long requestId, String peerId);
@@ -373,6 +373,8 @@ public final class MobileCoreBridge {
 
     /** status: platform GATT status or ABSENT_INT. */
     public static native int nativeIngestConnection(String peerId, boolean connected, int status);
+
+    public static native int nativeIngestConnectionForGeneration(String peerId, String expectedGeneration, boolean connected, int status);
 
     public static native int nativeIngestServicesChanged(String peerId);
 

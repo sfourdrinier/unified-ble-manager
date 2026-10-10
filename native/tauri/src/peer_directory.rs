@@ -404,9 +404,11 @@ impl BtleplugDispatcher {
                     let child = OpControl::new(ctl.budget, OpTicket::new());
                     let resolved = tokio::select! {
                         biased;
-                        _ = ctl.ticket.cancelled() => return Err(DispatchError::from_core(&ctl.ticket.interruption(command))),
-                        result = authority.resolve_peer(&id, child) => result.map_err(|error| DispatchError::from_core(&error))?,
+                        _ = ctl.ticket.cancelled() => Err(DispatchError::from_core(&ctl.ticket.interruption(command))),
+                        result = authority.resolve_peer(&id, child) => result.map_err(|error| DispatchError::from_core(&error)),
                     };
+                    self.refuse_stale_attachment(attachment, command).await?;
+                    let resolved = resolved?;
                     if let Some(peer) = resolved {
                         if peer.peer_id != id {
                             return Err(malformed("peers.resolve.identity"));

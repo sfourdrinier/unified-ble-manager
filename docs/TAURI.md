@@ -16,7 +16,7 @@ can settle them without dispatching native I/O.
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.0.2 @tauri-apps/api
+pnpm add unified-ble-manager@5.0.3 @tauri-apps/api
 ```
 
 Use the Rust plugin source shipped in the same npm package. In the normal

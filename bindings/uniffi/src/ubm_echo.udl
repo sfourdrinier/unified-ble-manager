@@ -66,7 +66,7 @@ interface MobileRadioRequest {
     AdapterState(u64 id);
     StartScan(u64 id, sequence<string> service_uuids, sequence<string> device_addresses, string? scan_mode, string? callback_type, boolean? legacy, u32? report_delay_ms, string? phy);
     StopScan(u64 id);
-    Connect(u64 id, string peer_id, boolean auto_connect, sequence<string> preferred_phy);
+    Connect(u64 id, string peer_id, boolean auto_connect, sequence<string> preferred_phy, string expected_generation);
     Disconnect(u64 id, string peer_id);
     Discover(u64 id, string peer_id);
     Read(u64 id, MobileInstance instance);
@@ -225,6 +225,7 @@ dictionary MobileRestoredPeer {
 interface MobileRadioIngress {
     Advertisement(MobileAdvertisement advertisement);
     Connection(string peer_id, boolean connected, i32? status);
+    ConnectionScoped(string peer_id, string expected_generation, boolean connected, i32? status);
     ServicesChanged(string peer_id);
     Notification(MobileInstance instance, u64 epoch, bytes value);
     AdapterState(MobileAdapterSnapshot snapshot);

@@ -22,6 +22,7 @@ import com.sfourdrinier.unifiedblemanager.radio.nextUuidOccurrence
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -46,15 +47,25 @@ import java.util.concurrent.atomic.AtomicReference
  * command.
  */
 class UnifiedBleProtocolAndroidDispatcher
-// @JvmOverloads: the Java JSI binding cannot see Kotlin default
-// arguments — without generated overloads the 2-arg construction in
-// UnifiedBleProtocolJsiBinding fails to compile.
-@JvmOverloads
 constructor(
   context: Context,
   private val nativeHandle: Long,
-  coreShadowFactory: ((Context, (GattObservation) -> Unit) -> UbmGattCoreBinding?)? = null
+  coreShadowFactory: ((Context, (GattObservation) -> Unit) -> UbmGattCoreBinding?)? = null,
+  coreShadowOpener: Executor?
 ) {
+  constructor(context: Context, nativeHandle: Long) : this(context, nativeHandle, null, defaultCoreShadowOpener())
+
+  constructor(
+    context: Context,
+    nativeHandle: Long,
+    coreShadowFactory: ((Context, (GattObservation) -> Unit) -> UbmGattCoreBinding?)?
+  ) : this(context, nativeHandle, coreShadowFactory, defaultCoreShadowOpener())
+
+  companion object {
+    private fun defaultCoreShadowOpener(): Executor = Executors.newSingleThreadExecutor { runnable ->
+      Thread(runnable, "ubm-core-shadow-opener").apply { isDaemon = true }
+    }
+  }
   private val radio = OwnedAndroidGattRadio(context.applicationContext)
   // R02: the shadow opens off the constructing (JS) thread — construction
   // here must never touch JNI (first touch loads libubm5_jni_echo.so).
@@ -73,9 +84,7 @@ constructor(
     diagnose = { code, detail ->
       UnifiedBleProtocolJsiBinding.emitDiagnostic(nativeHandle, code, detail)
     },
-    opener = Executors.newSingleThreadExecutor { runnable ->
-      Thread(runnable, "ubm-core-shadow-opener").apply { isDaemon = true }
-    }
+    opener = coreShadowOpener
   )
   private val coreShadow: UbmGattCoreBinding?
     get() = shadowGate.current()
@@ -98,7 +107,11 @@ constructor(
   private val coreAdmissionSeqByOp = ConcurrentHashMap<String, Long>()
 
   /** The admitted core shadow plus the verdict sequence at admission time. */
-  private data class CoreAdmission(val shadow: UbmGattCoreBinding, val seqBefore: Long)
+  private data class CoreAdmission(
+    val shadow: UbmGattCoreBinding,
+    val seqBefore: Long,
+    val schedulerFailure: String? = null
+  )
 
   private fun onCoreRejection(observation: GattObservation) {
     UnifiedBleProtocolJsiBinding.emitDiagnostic(
@@ -243,11 +256,21 @@ constructor(
         CoreCommandAuthority.CODE_ENQUEUE_FAILED,
         "Android core failed to enqueue $commandKind (${result.message}); $commandKind was not executed"
       )
-      is UbmGattCentralBridge.PostResult.ScheduleFailed -> emitFailure(
-        command,
-        CoreCommandAuthority.CODE_SCHEDULE_FAILED,
-        "Android core queued $commandKind but no drain was scheduled (${result.message}); $commandKind was not executed"
-      )
+      is UbmGattCentralBridge.PostResult.ScheduleFailed -> {
+        if (commandKind == "connect") {
+          // The line is queued and the synchronous drain above may already
+          // have produced the exact connect admission. Let the caller consume
+          // that receipt; never discard a real core lease merely because the
+          // asynchronous worker could not be scheduled.
+          coreAdmissionSeqByOp[operationKey(command)] = seqBefore
+          return CoreAdmission(shadow, seqBefore, result.message)
+        }
+        emitFailure(
+          command,
+          CoreCommandAuthority.CODE_SCHEDULE_FAILED,
+          "Android core queued $commandKind but no drain was scheduled (${result.message}); $commandKind was not executed"
+        )
+      }
       is UbmGattCentralBridge.PostResult.Shutdown -> emitFailure(
         command,
         CoreCommandAuthority.CODE_UNAVAILABLE,
@@ -257,21 +280,148 @@ constructor(
     return null
   }
 
-  private fun coreLeaseFor(deviceId: String): String = "android-link-${deviceId.uppercase()}"
+  /** Posts a cleanup transition and attests its same-tick core verdict. */
+  private fun attestCoreTransition(
+    shadow: UbmGattCoreBinding,
+    kind: String,
+    post: (UbmGattCoreBinding) -> UbmGattCentralBridge.PostResult?,
+    events: Set<String>
+  ): String? {
+    val seqBefore = coreVerdictSeq.get()
+    val result = try {
+      post(shadow)
+    } catch (error: Throwable) {
+      return "Android core failed to enqueue $kind (${error.message ?: error.javaClass.simpleName})"
+    }
+    if (result !is UbmGattCentralBridge.PostResult.Queued) {
+      return "Android core did not queue $kind (${result ?: "shadow withdrawn"})"
+    }
+    shadow.bridge.drainNow()
+    coreRejectionSince(seqBefore, events)?.let { rejection ->
+      return coreRejectionMessage(kind, rejection)
+    }
+    return null
+  }
+
+  private fun scopedReleaseFailure(
+    shadow: UbmGattCoreBinding?,
+    peerId: String,
+    generation: String
+  ): OwnedRadioTeardownFailure? {
+    if (shadow == null || shadow.openFailure != null || !shadow.isOpen) {
+      return OwnedRadioTeardownFailure(
+        "coreLinkReleased",
+        IllegalStateException("Android core shadow unavailable while releasing $peerId")
+      )
+    }
+    val failure = attestCoreTransition(
+      shadow,
+      "linkReleased",
+      { it.postLinkReleased(peerId, generation) },
+      setOf("link.released", "link.released.scoped")
+    )
+    return failure?.let { OwnedRadioTeardownFailure("coreLinkReleased", IllegalStateException(it)) }
+  }
+
+  private fun completeReservationCleanup(
+    reservation: DispatchReservation,
+    peerId: String,
+    radioFailure: OwnedRadioTeardownFailure?,
+    shadow: UbmGattCoreBinding?,
+    callbackClaim: AtomicBoolean,
+    releaseCore: Boolean = true,
+    physicalCleanupCompleted: Boolean? = null
+  ) {
+    if (!callbackClaim.compareAndSet(false, true)) return
+    if (physicalCleanupCompleted != null) {
+      synchronized(ownershipGuard) { reservation.physicalCleanupComplete = physicalCleanupCompleted }
+    }
+    val failure = radioFailure ?: if (releaseCore) {
+      scopedReleaseFailure(shadow, peerId, reservation.generation)
+    } else {
+      null
+    }
+    val waiters = synchronized(ownershipGuard) {
+      if (failure == null) {
+        reservation.phase = DispatchPhase.Returned
+        dispatchReservations.remove(peerId.uppercase(), reservation)
+        returnedReservations.remove(operationKey(reservation.command), reservation)
+      } else {
+        reservation.phase = DispatchPhase.Cleaning
+        reservation.cleanupStarted = false
+      }
+      reservation.disconnectWaiters.toList().also { reservation.disconnectWaiters.clear() }
+    }
+    waiters.forEach { waiter ->
+      try {
+        waiter(failure)
+      } catch (error: Throwable) {
+        UnifiedBleProtocolJsiBinding.emitDiagnostic(
+          nativeHandle,
+          "disconnectWaiterFailed",
+          error.message ?: error.javaClass.simpleName
+        )
+      }
+    }
+    failure?.let { radio.reportCleanupFailure(it) }
+  }
+
+  private fun coreLeaseFor(deviceId: String, operation: String): String =
+    "android-link-${deviceId.uppercase()}-$operation"
   private val pendingCommands = ConcurrentHashMap<String, ProtocolWireRecord>()
   /**
    * A connect command and the radio attempt token it handed to `radio.connect`. The token is what
    * ties a GATT observation to this command: a prior generation's loss for the same peer carries a
    * different (or no) token and can never settle this command.
    */
-  private class PendingProtocolConnect(val command: ProtocolWireRecord, val attempt: GattConnectAttempt)
+  private class PendingProtocolConnect(
+    val command: ProtocolWireRecord,
+    val attempt: GattConnectAttempt,
+    var lease: String = "",
+    var generation: String = ""
+  )
 
   private val pendingConnects = ConcurrentHashMap<String, PendingProtocolConnect>()
+  private val ownershipGuard = Any()
+  private enum class DispatchPhase { Reserved, Dispatching, Returned, Withdrawn, Cleaning }
+  private data class DispatchReservation(
+    val command: ProtocolWireRecord,
+    val attempt: GattConnectAttempt,
+    var lease: String = "",
+    var generation: String = "",
+    var phase: DispatchPhase = DispatchPhase.Reserved,
+    var nativeReturned: Boolean = false,
+    var nativeStarted: Boolean = false,
+    var physicalCleanupComplete: Boolean = false,
+    var cleanupStarted: Boolean = false,
+    val disconnectWaiters: MutableList<(OwnedRadioTeardownFailure?) -> Unit> = mutableListOf()
+  )
+  private val dispatchReservations = ConcurrentHashMap<String, DispatchReservation>()
+  private val returnedReservations = ConcurrentHashMap<String, DispatchReservation>()
+  private val compensatedConnects = ConcurrentHashMap.newKeySet<String>()
 
   private fun removePendingConnect(deviceKey: String, command: ProtocolWireRecord) {
-    pendingConnects[deviceKey]?.takeIf { it.command === command }?.let { pendingConnects.remove(deviceKey, it) }
+    synchronized(ownershipGuard) {
+      pendingConnects[deviceKey]?.takeIf { it.command === command }?.let { pendingConnects.remove(deviceKey, it) }
+    }
   }
-  private val establishedConnections = ConcurrentHashMap<String, ProtocolWireRecord>()
+  private data class EstablishedProtocolConnection(
+    val connection: ProtocolWireRecord,
+    val attempt: GattConnectAttempt,
+    val lease: String,
+    val generation: String
+  )
+
+  private sealed interface ConnectionOutcome {
+    data class Pending(val pending: PendingProtocolConnect) : ConnectionOutcome
+    data class Established(
+      val connection: EstablishedProtocolConnection,
+      val replacement: ProtocolWireRecord?
+    ) : ConnectionOutcome
+    object Unknown : ConnectionOutcome
+  }
+
+  private val establishedConnections = ConcurrentHashMap<String, EstablishedProtocolConnection>()
   private val activeDatabases = ConcurrentHashMap<String, ProtocolWireRecord>()
   private val activeSubscriptions = ConcurrentHashMap<String, SubscriptionRoute>()
   private val pendingSubscriptions = ConcurrentHashMap<String, SubscriptionRoute>()
@@ -311,69 +461,96 @@ constructor(
     }
     radio.registerBondStateReceiver()
     radio.registerAdapterStateReceiver()
-    radio.onConnectionOutcome = { deviceId, connected, status, attempt ->
+    radio.onConnectionOutcome = outcome@{ deviceId, connected, status, attempt ->
       val deviceKey = deviceId.uppercase()
-      // Only the GATT this command's own radio.connect opened can settle it. An observation of a
-      // prior generation (its teardown, a forced close, a late callback) for the same peer is
-      // still an observation, handled below, but it is not this connect's outcome.
-      val pending = pendingConnects[deviceKey]
-      val command = pending
-        ?.takeIf { attempt != null && it.attempt === attempt && pendingConnects.remove(deviceKey, it) }
-        ?.command
-      val replacement = if (command == null) pending?.command else null
-      if (command != null) {
-        // The admission record is still present: no terminal has been emitted
-        // for this connect yet (emitters remove it). A missing record means a
-        // pre-authority path, which cannot happen post-cutover; fall back to
-        // reporting the radio outcome.
+      val resolution = synchronized(ownershipGuard) {
+        val pending = pendingConnects[deviceKey]
+        val ownedPending = pending?.takeIf { attempt != null && it.attempt === attempt }
+        if (ownedPending != null) {
+          pendingConnects.remove(deviceKey, ownedPending)
+          returnedReservations.remove(operationKey(ownedPending.command))
+          if (connected && status == 0 && ownedPending.generation.isNotEmpty()) {
+            establishedConnections[deviceKey] = EstablishedProtocolConnection(
+              ownedPending.command.requiredRecord(10),
+              ownedPending.attempt,
+              ownedPending.lease,
+              ownedPending.generation
+            )
+          }
+          ConnectionOutcome.Pending(ownedPending)
+        } else if (!connected) {
+          val established = establishedConnections[deviceKey]
+            ?.takeIf { attempt != null && it.attempt === attempt }
+          if (established != null) {
+            establishedConnections.remove(deviceKey, established)
+            ConnectionOutcome.Established(established, pending?.command)
+          } else {
+            ConnectionOutcome.Unknown
+          }
+        } else {
+          ConnectionOutcome.Unknown
+        }
+      }
+      if (resolution === ConnectionOutcome.Unknown) {
+        UnifiedBleProtocolJsiBinding.emitDiagnostic(nativeHandle, "unknownConnectionOutcome", deviceId)
+        return@outcome
+      }
+      if (resolution is ConnectionOutcome.Pending) {
+        val ownedPending = resolution.pending
+        val command = ownedPending.command
         val admittedSeq = try {
           coreAdmissionSeqByOp[operationKey(command)]
         } catch (_: IllegalArgumentException) {
           null
         }
         if (connected && status == 0) {
-          establishedConnections[deviceKey] = command.requiredRecord(10)
-          coreShadow?.postLinkEstablished(deviceId)
-          // Authority re-check: refuse radio success when the core rejected
-          // this connect (admission lines or the link report above). The
-          // pending-bind in onCoreRejection may already have claimed the
-          // terminal; the guard below makes the survivors deterministic.
-          val rejection = admittedSeq?.let { seq ->
-            coreRejectionSince(seq, CoreCommandAuthority.coreEventsFor("connect"))
-          }
-          if (rejection != null) {
-            emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage("connect", rejection))
+          if (ownedPending.generation.isEmpty()) {
+            UnifiedBleProtocolJsiBinding.emitDiagnostic(nativeHandle, "connectAdmissionMissing", deviceId)
+            emitFailure(command, CoreCommandAuthority.CODE_REJECTED, "Android core admission generation was unavailable")
           } else {
-            emitSuccess(command, "connected")
+            coreShadow?.postLinkEstablished(deviceId, ownedPending.generation)
+            val rejection = admittedSeq?.let { seq ->
+              coreRejectionSince(seq, CoreCommandAuthority.coreEventsFor("connect"))
+            }
+            if (rejection != null) {
+              synchronized(ownershipGuard) {
+                establishedConnections[deviceKey]?.takeIf { it.attempt === ownedPending.attempt }?.let {
+                  establishedConnections.remove(deviceKey, it)
+                }
+              }
+              coreShadow?.postLinkReleased(deviceId, ownedPending.generation)
+              emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage("connect", rejection))
+            } else {
+              emitSuccess(command, "connected")
+            }
           }
         } else {
-          // No link ever existed for the core either: leave the admitted
-          // core connect op to its own deadline rather than overstating a
-          // peer loss for a peer that may still be advertising.
           emitFailure(command, "connectionFailed", "Android GATT connection failed with status $status")
         }
+        return@outcome
       }
-      if (replacement != null && connected) {
-        UnifiedBleProtocolJsiBinding.emitDiagnostic(
-          nativeHandle,
-          "staleConnectionOutcome",
-          "Android GATT connected for a superseded connect while a replacement connect is pending for $deviceId"
-        )
-      }
-      if (!connected) {
-        val established = establishedConnections.remove(deviceKey)
-        activeDatabases.remove(deviceKey)
-        // The replacement connect is not on the link that was lost: it stays pending.
-        failPendingCommandsForDevice(deviceKey, "Android GATT link was lost", except = replacement)
-        if (established != null) {
-          clearSubscriptionRoutesForDevice(deviceId)
-          coreShadow?.postLinkReleased(deviceId)
-          emitConnectionLost(established, status)
-        } else if (command == null && replacement == null) {
-          // With a replacement pending the core peer record belongs to its admitted connect: a
-          // peer-loss for the prior link would retire that connect (Connecting -> Lost).
-          coreShadow?.postPeerLoss(deviceId)
+      if (resolution is ConnectionOutcome.Established) {
+        val established = resolution.connection
+        val affected = synchronized(ownershipGuard) {
+          activeDatabases[deviceKey]?.takeIf { database ->
+            databaseConnectionMatches(database, established.connection)
+          }?.let { database -> activeDatabases.remove(deviceKey, database) }
+          val commands = pendingCommands.values.filter { command ->
+            command !== resolution.replacement &&
+              command.requiredString(3) != "disconnect" &&
+              connectionIdentityMatches(command, established.connection)
+          }
+          pendingSubscriptions.entries.removeIf { entry ->
+            connectionIdentityMatchesRecords(entry.value.connection, established.connection)
+          }
+          activeSubscriptions.entries.removeIf { entry ->
+            connectionIdentityMatchesRecords(entry.value.connection, established.connection)
+          }
+          commands
         }
+        affected.forEach { command -> emitFailure(command, "connectionLost", "Android GATT link was lost") }
+        coreShadow?.postLinkReleased(deviceId, established.generation)
+        emitConnectionLost(established.connection, status)
       }
     }
     radio.onScanFailed = { errorCode ->
@@ -448,12 +625,15 @@ constructor(
         "Android Bluetooth became unavailable while the connection was pending"
       )
     }
-    pendingConnects.entries.toList().forEach { entry ->
-      if (pendingConnects.remove(entry.key, entry.value)) {
-        emitFailure(entry.value.command, failure.code, failure.message)
-      }
+    val pending = synchronized(ownershipGuard) {
+      pendingConnects.entries.toList().also { entries -> entries.forEach { entry -> pendingConnects.remove(entry.key, entry.value) } }
     }
-    establishedConnections.clear()
+    pending.forEach { entry -> emitFailure(entry.value.command, failure.code, failure.message) }
+    synchronized(ownershipGuard) {
+      establishedConnections.clear()
+      dispatchReservations.clear()
+      returnedReservations.clear()
+    }
     activeDatabases.clear()
     pendingSubscriptions.clear()
     activeSubscriptions.clear()
@@ -560,8 +740,12 @@ constructor(
       pendingCommands.values.toList().forEach { pending ->
         emitFailure(pending, "attachmentClosed", "Android protocol attachment was closed")
       }
-      pendingConnects.clear()
-      establishedConnections.clear()
+      synchronized(ownershipGuard) {
+        pendingConnects.clear()
+        establishedConnections.clear()
+        dispatchReservations.clear()
+        returnedReservations.clear()
+      }
       activeDatabases.clear()
       pendingSubscriptions.clear()
       activeSubscriptions.clear()
@@ -657,59 +841,293 @@ constructor(
     val connection = command.requiredRecord(10)
     val peerId = connection.requiredString(2)
     val attempt = GattConnectAttempt()
-    val prior = pendingConnects.putIfAbsent(peerId.uppercase(), PendingProtocolConnect(command, attempt))
-    require(prior == null) { "A protocol connect is already pending for this peer" }
-    val lease = coreLeaseFor(peerId)
+    val prior = synchronized(ownershipGuard) {
+      val key = peerId.uppercase()
+      val existing = dispatchReservations[key]
+      if (existing != null) existing.command else {
+        dispatchReservations[key] = DispatchReservation(command, attempt)
+        pendingConnects[key] = PendingProtocolConnect(command, attempt)
+        null
+      }
+    }
+    require(prior == null) { "A protocol connect is already reserved for this peer" }
+    val lease = coreLeaseFor(peerId, operationKey(command))
     var admittedShadow: UbmGattCoreBinding? = null
+    var admittedGeneration = ""
     try {
       // Authority: admit the core connect BEFORE touching the radio.
       val admission = admitCoreCommand(command, "connect") { shadow ->
         shadow.postConnect(peerId, lease)
       } ?: run {
-        removePendingConnect(peerId.uppercase(), command)
+        synchronized(ownershipGuard) {
+          removePendingConnect(peerId.uppercase(), command)
+          dispatchReservations[peerId.uppercase()]?.takeIf { it.command === command }?.let {
+            dispatchReservations.remove(peerId.uppercase(), it)
+          }
+        }
         return
       }
       admittedShadow = admission.shadow
+      val connectAdmission = when (val result = admission.shadow.takeConnectAdmission(peerId, lease)) {
+        is com.sfourdrinier.unifiedblemanager.radio.ConnectAdmissionResult.Admitted -> result.admission.also {
+          admittedGeneration = it.generation
+        }
+        is com.sfourdrinier.unifiedblemanager.radio.ConnectAdmissionResult.Rejected -> {
+          synchronized(ownershipGuard) {
+            removePendingConnect(peerId.uppercase(), command)
+            dispatchReservations[peerId.uppercase()]?.takeIf { it.command === command }?.let {
+              dispatchReservations.remove(peerId.uppercase(), it)
+            }
+          }
+          emitFailure(command, CoreCommandAuthority.CODE_REJECTED, "Android core rejected connect $peerId (${result.detail})")
+          return
+        }
+        com.sfourdrinier.unifiedblemanager.radio.ConnectAdmissionResult.Missing -> {
+          synchronized(ownershipGuard) {
+            removePendingConnect(peerId.uppercase(), command)
+            dispatchReservations[peerId.uppercase()]?.takeIf { it.command === command }?.let {
+              dispatchReservations.remove(peerId.uppercase(), it)
+            }
+          }
+          emitFailure(command, CoreCommandAuthority.CODE_REJECTED, "Android core did not admit connect $peerId")
+          return
+        }
+      }
+      if (admission.schedulerFailure != null) {
+        val reservation = synchronized(ownershipGuard) {
+          dispatchReservations[peerId.uppercase()]?.takeIf { it.command === command }?.also {
+            it.lease = lease
+            it.generation = connectAdmission.generation
+            it.phase = DispatchPhase.Cleaning
+            it.cleanupStarted = true
+          }
+        }
+        val compensationFailure = compensateConnect(
+          admission.shadow,
+          peerId,
+          lease,
+          connectAdmission.generation
+        )
+        reservation?.let {
+          completeReservationCleanup(
+            it,
+            peerId,
+            compensationFailure,
+            admission.shadow,
+            AtomicBoolean(false),
+            releaseCore = false
+          )
+        }
+        emitFailure(
+          command,
+          CoreCommandAuthority.CODE_SCHEDULE_FAILED,
+          "Android core queued connect but scheduling failed (${admission.schedulerFailure}); native radio was not started"
+        )
+        return
+      }
+      var compensateConnectAfterAdmission = false
+      synchronized(ownershipGuard) {
+        val admittedPending = pendingConnects[peerId.uppercase()]
+        val reservation = dispatchReservations[peerId.uppercase()]
+        val cancelledBeforeAdmission = admittedPending == null && reservation?.command === command &&
+          reservation.phase == DispatchPhase.Cleaning && reservation.lease.isEmpty()
+        if (cancelledBeforeAdmission) {
+          reservation.lease = lease
+          reservation.generation = connectAdmission.generation
+          compensateConnectAfterAdmission = true
+        } else if (admittedPending == null || admittedPending.command !== command || reservation == null ||
+          reservation.command !== command || reservation.phase == DispatchPhase.Withdrawn
+        ) {
+          admittedPending?.takeIf { it.command === command }?.let { pendingConnects.remove(peerId.uppercase(), it) }
+          reservation?.takeIf { it.command === command }?.let { dispatchReservations.remove(peerId.uppercase(), it) }
+          // A re-entrant cancellation may already have completed the exact
+          // core compensation while this admission callback was unwinding.
+          // Only compensate an operation that is still pending here.
+          compensateConnectAfterAdmission = pendingCommands[operationKey(command)] === command &&
+            !compensatedConnects.remove(operationKey(command))
+        } else {
+          admittedPending.lease = lease
+          admittedPending.generation = connectAdmission.generation
+          reservation.lease = lease
+          reservation.generation = connectAdmission.generation
+        }
+      }
+      if (compensateConnectAfterAdmission) {
+        val reservation = synchronized(ownershipGuard) {
+          dispatchReservations[peerId.uppercase()]?.takeIf { it.command === command }
+        }
+        val failure = compensateConnect(admission.shadow, peerId, lease, connectAdmission.generation)
+        if (reservation != null) {
+          completeReservationCleanup(
+            reservation,
+            peerId,
+            failure,
+            admission.shadow,
+            AtomicBoolean(false),
+            releaseCore = false
+          )
+        }
+        return
+      }
       val autoConnect = when (connectionIntent(command.requiredString(20))) {
         ConnectionIntents.DIRECT -> false
         ConnectionIntents.WHEN_AVAILABLE -> true
       }
-      radio.connect(peerId, autoConnect, 0, attempt)
+      val withdrawn = synchronized(ownershipGuard) {
+        val reservation = dispatchReservations[peerId.uppercase()]
+        if (reservation == null || reservation.phase == DispatchPhase.Withdrawn) true
+        else {
+          reservation.phase = DispatchPhase.Dispatching
+          reservation.nativeStarted = true
+          false
+        }
+      }
+      if (withdrawn) return
+      val dispatchReservation = synchronized(ownershipGuard) {
+        dispatchReservations[peerId.uppercase()]?.takeIf { it.command === command }
+      }
+      require(dispatchReservation != null) { "Android connect dispatch reservation disappeared" }
+      try {
+        radio.connect(peerId, autoConnect, 0, attempt)
+      } finally {
+        val cleanupReservation = synchronized(ownershipGuard) {
+          if (dispatchReservations[peerId.uppercase()] === dispatchReservation) {
+            dispatchReservation.nativeReturned = true
+            val shouldCleanup = !dispatchReservation.cleanupStarted &&
+              (dispatchReservation.phase == DispatchPhase.Withdrawn ||
+                dispatchReservation.phase == DispatchPhase.Cleaning)
+            dispatchReservation.phase = if (shouldCleanup) DispatchPhase.Cleaning else DispatchPhase.Returned
+            if (shouldCleanup) dispatchReservation.cleanupStarted = true
+            if (!shouldCleanup) {
+              dispatchReservations.remove(peerId.uppercase(), dispatchReservation)
+              if (pendingConnects[peerId.uppercase()]?.command === command) {
+                returnedReservations[operationKey(command)] = dispatchReservation
+              }
+            }
+            if (shouldCleanup) dispatchReservation else null
+          } else null
+        }
+        if (cleanupReservation != null) {
+          val cleanupDelivered = AtomicBoolean(false)
+          fun completeCleanup(failure: OwnedRadioTeardownFailure?) {
+            completeReservationCleanup(
+              cleanupReservation,
+              peerId,
+              failure,
+              coreShadow,
+              cleanupDelivered,
+              physicalCleanupCompleted = failure == null
+            )
+          }
+          val immediateFailure = radio.disconnect(peerId, ::completeCleanup)
+          immediateFailure?.let { completeCleanup(it) }
+        }
+      }
     } catch (error: Exception) {
       // Core-first compensation: the admitted core connect has no radio peer,
       // so release it rather than orphaning the core op. Best effort — the
       // rethrown radio error stays the loud terminal.
-      val compensation = try {
-        (admittedShadow ?: coreShadow)?.postDisconnect(peerId, lease)
-      } catch (_: Throwable) {
-        null
+      val shadow = admittedShadow ?: coreShadow
+      val reservation = synchronized(ownershipGuard) {
+        (dispatchReservations[peerId.uppercase()]
+          ?: returnedReservations[operationKey(command)])?.takeIf { it.command === command }?.also {
+          returnedReservations.remove(operationKey(command), it)
+          dispatchReservations[peerId.uppercase()] = it
+          it.lease = lease
+          it.generation = admittedGeneration
+          it.phase = DispatchPhase.Cleaning
+          it.cleanupStarted = true
+        }
       }
-      if (compensation !is UbmGattCentralBridge.PostResult.Queued) {
-        UnifiedBleProtocolJsiBinding.emitDiagnostic(
-          nativeHandle,
-          "coreCompensationFailed",
-          "Android core connect compensation failed after radio refusal for $peerId"
+      val compensationFailure = if (shadow != null && admittedGeneration.isNotEmpty()) {
+        compensateConnect(shadow, peerId, lease, admittedGeneration)
+      } else if (admittedGeneration.isEmpty()) {
+        null
+      } else {
+        OwnedRadioTeardownFailure(
+          "coreCompensation",
+          IllegalStateException("Android core shadow unavailable after radio refusal for $peerId")
         )
+      }
+      if (reservation != null) {
+        completeReservationCleanup(
+          reservation,
+          peerId,
+          compensationFailure,
+          shadow,
+          AtomicBoolean(false),
+          releaseCore = false
+        )
+      } else if (compensationFailure != null) {
+        radio.reportCleanupFailure(compensationFailure)
       }
       removePendingConnect(peerId.uppercase(), command)
       throw error
     }
   }
 
+  private fun compensateConnect(
+    shadow: UbmGattCoreBinding,
+    peerId: String,
+    lease: String,
+    generation: String
+  ): OwnedRadioTeardownFailure? {
+    val disconnectFailure = attestCoreTransition(
+      shadow,
+      "disconnect compensation",
+      { it.postDisconnect(peerId, lease) },
+      setOf("disconnect", "connection.stale")
+    )
+    if (disconnectFailure != null) {
+      return OwnedRadioTeardownFailure("coreCompensation", IllegalStateException(disconnectFailure))
+    }
+    return if (generation.isEmpty()) null else scopedReleaseFailure(shadow, peerId, generation)
+  }
+
   private fun disconnect(command: ProtocolWireRecord) {
-    val peerId = command.requiredRecord(10).requiredString(2)
+    val requestedConnection = command.requiredRecord(10)
+    val peerId = requestedConnection.requiredString(2)
+    var withdrawnCommand: ProtocolWireRecord? = null
+    val ownership = synchronized(ownershipGuard) {
+      val peerKey = peerId.uppercase()
+      val pending = pendingConnects[peerKey]
+      val returned = pending?.let { returnedReservations[operationKey(it.command)] }
+      val reservation = (dispatchReservations[peerKey] ?: returned)?.takeIf { reservation ->
+        reservationConnectionMatches(reservation, requestedConnection)
+      }
+      val established = establishedConnections[peerId.uppercase()]?.takeIf {
+        connectionIdentityMatchesRecords(it.connection, requestedConnection)
+      }
+      if (reservation != null && pending?.command === reservation.command) {
+        reservation.phase = DispatchPhase.Withdrawn
+        if (returned === reservation) {
+          returnedReservations.remove(operationKey(reservation.command), reservation)
+          dispatchReservations[peerKey] = reservation
+        }
+        withdrawnCommand = pending.command
+        pendingConnects.remove(peerKey, pending)
+      }
+      established?.let { it.lease }
+        ?: reservation?.lease
+    }
+    withdrawnCommand?.let { emitCancelled(it) }
+    val lease = ownership ?: run {
+      emitFailure(command, CoreCommandAuthority.CODE_REJECTED, "Android disconnect has no owned connection lease for $peerId")
+      return
+    }
     // Authority: admit the core disconnect BEFORE touching the radio.
     val admission = admitCoreCommand(command, "disconnect") { shadow ->
-      shadow.postDisconnect(peerId, coreLeaseFor(peerId))
+      shadow.postDisconnect(peerId, lease)
     } ?: return
     val events = CoreCommandAuthority.coreEventsFor("disconnect")
-    val failure = radio.disconnect(peerId) { cleanupFailure ->
+    val completion: (OwnedRadioTeardownFailure?) -> Unit = { cleanupFailure ->
       if (cleanupFailure == null) {
-        coreRejectionSince(admission.seqBefore, events)?.let { rejection ->
+        val rejection = coreRejectionSince(admission.seqBefore, events)
+        if (rejection != null) {
           emitFailure(command, CoreCommandAuthority.CODE_REJECTED, coreRejectionMessage("disconnect", rejection))
-          return@disconnect
+        } else {
+          emitSuccess(command, "accepted")
         }
-        emitSuccess(command, "accepted")
       } else {
         emitFailure(
           command,
@@ -718,6 +1136,70 @@ constructor(
         )
       }
     }
+    var startDeferredCleanup = false
+    var retryCoreOnly = false
+    var retryCompensation = false
+    val deferred = synchronized(ownershipGuard) {
+      dispatchReservations[peerId.uppercase()]?.takeIf {
+        (it.phase == DispatchPhase.Withdrawn || it.phase == DispatchPhase.Cleaning) &&
+          !it.cleanupStarted && it.lease == lease
+      }?.also {
+        it.disconnectWaiters += completion
+        if (it.phase == DispatchPhase.Withdrawn && it.nativeReturned) {
+          it.phase = DispatchPhase.Cleaning
+          it.cleanupStarted = true
+          startDeferredCleanup = true
+        } else if (it.phase == DispatchPhase.Cleaning) {
+          it.cleanupStarted = true
+          retryCompensation = !it.nativeStarted
+          retryCoreOnly = it.nativeStarted && it.physicalCleanupComplete
+          startDeferredCleanup = !retryCompensation && !retryCoreOnly
+        }
+      }
+    }
+    if (deferred != null) {
+      if (retryCompensation) {
+        val failure = coreShadow?.let { compensateConnect(it, peerId, deferred.lease, deferred.generation) }
+          ?: OwnedRadioTeardownFailure("coreCompensation", IllegalStateException("Android core shadow unavailable while retrying $peerId"))
+        completeReservationCleanup(deferred, peerId, failure, coreShadow, AtomicBoolean(false), releaseCore = false)
+      } else if (retryCoreOnly) {
+        val failure = scopedReleaseFailure(coreShadow, peerId, deferred.generation)
+        completeReservationCleanup(
+          deferred,
+          peerId,
+          failure,
+          coreShadow,
+          AtomicBoolean(false),
+          releaseCore = false,
+          physicalCleanupCompleted = true
+        )
+      } else if (startDeferredCleanup) {
+        val cleanupDelivered = AtomicBoolean(false)
+        synchronized(ownershipGuard) { deferred.cleanupStarted = true }
+        val cleanupFailure = radio.disconnect(peerId) { failure ->
+          completeReservationCleanup(
+            deferred,
+            peerId,
+            failure,
+            coreShadow,
+            cleanupDelivered,
+            physicalCleanupCompleted = failure == null
+          )
+        }
+        cleanupFailure?.let { failure ->
+          completeReservationCleanup(
+            deferred,
+            peerId,
+            failure,
+            coreShadow,
+            cleanupDelivered,
+            physicalCleanupCompleted = false
+          )
+        }
+      }
+      return
+    }
+    val failure = radio.disconnect(peerId, completion)
     if (failure != null) return
   }
 
@@ -1008,9 +1490,12 @@ constructor(
       return
     }
     val endpoint = characteristicEndpoint(command.requiredRecord(4))
+    val connection = connectionRecordForCommand(command)
+      ?: throw IllegalArgumentException("Android subscription is missing its connection path")
     val route = SubscriptionRoute(
       subscriptionId,
       endpoint,
+      connection,
       command.optionalString(21)
     )
     if (enable) {
@@ -1078,8 +1563,11 @@ constructor(
     pendingBeforeDestroy.forEach { pending ->
       emitFailure(pending, "destroyed", "Android radio was destroyed before the operation completed")
     }
-    pendingConnects.clear()
-    establishedConnections.clear()
+    synchronized(ownershipGuard) {
+      pendingConnects.clear()
+      establishedConnections.clear()
+      dispatchReservations.clear()
+    }
     activeDatabases.clear()
     pendingSubscriptions.clear()
     activeSubscriptions.clear()
@@ -1098,6 +1586,32 @@ constructor(
     val operationKey = operationKey(command)
     val radioOperationId = radioOperationIds[operationKey]
     try {
+      var cleanupNow = false
+      var reservedCompensation = false
+      val withdrawnConnect = if (commandKind == "connect") {
+        val deviceId = command.requiredRecord(10).requiredString(2)
+        synchronized(ownershipGuard) {
+          val reservation = (dispatchReservations[deviceId.uppercase()] ?: returnedReservations[operationKey(command)])
+            ?.takeIf { it.command === command }
+          reservation?.let {
+            val wasReserved = reservation.phase == DispatchPhase.Reserved
+            cleanupNow = reservation.phase == DispatchPhase.Returned
+            reservedCompensation = wasReserved
+            reservation.phase = if (cleanupNow || wasReserved) DispatchPhase.Cleaning else DispatchPhase.Withdrawn
+            if (cleanupNow) reservation.cleanupStarted = true
+            if (cleanupNow) {
+              returnedReservations.remove(operationKey(command), it)
+              dispatchReservations[deviceId.uppercase()] = it
+            }
+          }
+          pendingConnects[deviceId.uppercase()]
+            ?.takeIf { it.command === command }
+            ?.also { pendingConnects.remove(deviceId.uppercase(), it) }
+          reservation
+        }
+      } else {
+        null
+      }
       if (commandKind == "scanStart") {
         val cleanupFailure = radio.stopScan()
         if (cleanupFailure != null) {
@@ -1120,8 +1634,57 @@ constructor(
       }
       if (commandKind == "connect") {
         val deviceId = command.requiredRecord(10).requiredString(2)
-        removePendingConnect(deviceId.uppercase(), command)
-        radio.disconnect(deviceId)?.let { failure -> radio.reportCleanupFailure(failure) }
+        if (withdrawnConnect != null && withdrawnConnect.lease.isNotEmpty() && !reservedCompensation) {
+          val shadow = coreShadow
+          if (shadow != null) {
+            attestCoreTransition(
+              shadow,
+              "disconnect cancellation",
+              { it.postDisconnect(deviceId, withdrawnConnect.lease) },
+              setOf("disconnect", "connection.stale")
+            )
+          }
+        }
+        if (reservedCompensation && withdrawnConnect != null && withdrawnConnect.lease.isNotEmpty()) {
+          compensatedConnects.add(operationKey(command))
+          val failure = coreShadow?.let {
+            compensateConnect(it, deviceId, withdrawnConnect.lease, withdrawnConnect.generation)
+          } ?: OwnedRadioTeardownFailure(
+            "coreCompensation",
+            IllegalStateException("Android core shadow unavailable while cancelling $deviceId")
+          )
+          completeReservationCleanup(
+            withdrawnConnect,
+            deviceId,
+            failure,
+            coreShadow,
+            AtomicBoolean(false),
+            releaseCore = false
+          )
+        }
+        if (cleanupNow) {
+          val cleanupDelivered = AtomicBoolean(false)
+          val cleanupFailure = radio.disconnect(deviceId) { failure ->
+            completeReservationCleanup(
+              withdrawnConnect!!,
+              deviceId,
+              failure,
+              coreShadow,
+              cleanupDelivered,
+              physicalCleanupCompleted = failure == null
+            )
+          }
+          cleanupFailure?.let { failure ->
+            completeReservationCleanup(
+              withdrawnConnect!!,
+              deviceId,
+              failure,
+              coreShadow,
+              cleanupDelivered,
+              physicalCleanupCompleted = false
+            )
+          }
+        }
       }
       if (commandKind == "scanStop") {
         radio.stopScan()?.let { failure ->
@@ -1552,6 +2115,53 @@ constructor(
     }
   }
 
+  private fun connectionRecordForCommand(command: ProtocolWireRecord): ProtocolWireRecord? = try {
+    when (command.requiredString(3)) {
+      "connect", "disconnect", "discover", "readRssi", "requestMtu", "readMtu", "requestPriority" ->
+        command.requiredRecord(10)
+      "read", "write", "subscribe", "unsubscribe" ->
+        command.requiredRecord(4).requiredRecord(1).requiredRecord(1).requiredRecord(1)
+      "readDescriptor", "writeDescriptor" ->
+        command.requiredRecord(5).requiredRecord(1).requiredRecord(1).requiredRecord(1).requiredRecord(1)
+      else -> null
+    }
+  } catch (_: IllegalArgumentException) {
+    null
+  }
+
+  private fun connectionIdentityMatchesRecords(
+    candidate: ProtocolWireRecord,
+    connection: ProtocolWireRecord
+  ): Boolean = try {
+    (2..5).all { field -> candidate.requiredString(field) == connection.requiredString(field) }
+  } catch (_: IllegalArgumentException) {
+    false
+  }
+
+  private fun reservationConnectionMatches(
+    reservation: DispatchReservation,
+    requestedConnection: ProtocolWireRecord
+  ): Boolean = try {
+    val commandConnection = connectionRecordForCommand(reservation.command) ?: return false
+    commandConnection.requiredString(2) == requestedConnection.requiredString(2) &&
+      commandConnection.requiredString(3) == requestedConnection.requiredString(3) &&
+      reservation.lease == requestedConnection.requiredString(4) &&
+      reservation.generation == requestedConnection.requiredString(5)
+  } catch (_: IllegalArgumentException) {
+    false
+  }
+
+  private fun connectionIdentityMatches(command: ProtocolWireRecord, connection: ProtocolWireRecord): Boolean =
+    connectionRecordForCommand(command)?.let { candidate ->
+      connectionIdentityMatchesRecords(candidate, connection)
+    } == true
+
+  private fun databaseConnectionMatches(database: ProtocolWireRecord, connection: ProtocolWireRecord): Boolean = try {
+    connectionIdentityMatchesRecords(database.requiredRecord(1), connection)
+  } catch (_: IllegalArgumentException) {
+    false
+  }
+
   private fun failPendingCommandsForDevice(
     deviceId: String,
     message: String,
@@ -1601,6 +2211,7 @@ constructor(
   private data class SubscriptionRoute(
     val subscriptionId: String,
     val endpoint: CharacteristicEndpoint,
+    val connection: ProtocolWireRecord,
     val mode: String?
   ) {
     fun matches(

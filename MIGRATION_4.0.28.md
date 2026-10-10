@@ -6,12 +6,12 @@ your lockfile. Published release history and immutable source identities are
 recorded in [`RELEASE.md`](RELEASE.md); source preparation is not publication.
 
 ```sh
-pnpm add unified-ble-manager@5.0.2
+pnpm add unified-ble-manager@5.0.3
 ```
 
 Pin the exact release and rebuild native projects. Never mix a 4.0.28 binary
-with 5.x JavaScript. After the unpublished 5.0.2 candidate is published, unpinned
-installs select npm `latest` (5.0.2).
+with 5.x JavaScript. After the unpublished 5.0.3 candidate is published, unpinned
+installs select npm `latest` (5.0.3).
 Package SemVer does not promote backend hardware-evidence labels.
 
 ## Mobile construction, permissions and restoration

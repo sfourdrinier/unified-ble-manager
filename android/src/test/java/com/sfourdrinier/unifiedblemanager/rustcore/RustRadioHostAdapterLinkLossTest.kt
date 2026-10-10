@@ -3,8 +3,11 @@
 package com.sfourdrinier.unifiedblemanager.rustcore
 
 import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattService
+import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
@@ -12,6 +15,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.mock
+import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.eq
 import java.util.UUID
 
 /**
@@ -24,6 +29,8 @@ import java.util.UUID
 class RustRadioHostAdapterLinkLossTest {
   private val core = FakeCore()
   private val context = mock(Context::class.java)
+  private val manager = mock(BluetoothManager::class.java)
+  private val bluetoothAdapter = mock(BluetoothAdapter::class.java)
   private val device = mock(android.bluetooth.BluetoothDevice::class.java)
   private val gatt = mock(BluetoothGatt::class.java)
   private val service = mock(BluetoothGattService::class.java)
@@ -47,6 +54,10 @@ class RustRadioHostAdapterLinkLossTest {
   ) { }
 
   init {
+    doReturn(manager).`when`(context).getSystemService(Context.BLUETOOTH_SERVICE)
+    doReturn(bluetoothAdapter).`when`(manager).adapter
+    doReturn(BluetoothAdapter.STATE_ON).`when`(bluetoothAdapter).state
+    doReturn(device).`when`(bluetoothAdapter).getRemoteDevice(DEVICE_ID)
     doReturn(DEVICE_ID).`when`(device).address
     doReturn(device).`when`(gatt).device
     doReturn(SERVICE_UUID).`when`(service).uuid
@@ -55,9 +66,12 @@ class RustRadioHostAdapterLinkLossTest {
     doReturn(0x02).`when`(characteristic).getProperties()
     doReturn(service).`when`(characteristic).service
     doReturn(true).`when`(gatt).readCharacteristic(characteristic)
-    radio.attachConnectedGatt(DEVICE_ID, gatt, listOf(service))
+    doReturn(listOf(service)).`when`(gatt).services
+    doReturn(gatt).`when`(device).connectGatt(eq(context), eq(false), any(), eq(BluetoothDevice.TRANSPORT_LE))
     adapter.statusCounts()
+    adapter.connect(1, DEVICE_ID, false, emptyArray(), "test-generation")
     radio.nativeGattCallback().onConnectionStateChange(gatt, BluetoothGatt.GATT_SUCCESS, BluetoothProfile.STATE_CONNECTED)
+    radio.nativeGattCallback().onServicesDiscovered(gatt, BluetoothGatt.GATT_SUCCESS)
   }
 
   private fun readInFlight(requestId: Long) {
