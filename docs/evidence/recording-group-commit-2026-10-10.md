@@ -56,3 +56,41 @@ Canonical dependency artifact generation updates only the lockfile hash in SBOM
 and license inventory. The initial Linux package run reported four stale-artifact
 failures before that refresh; those failures remain recorded. Fresh final-candidate
 package, hosted and Windows gates are still required before publication.
+
+## Final integration qualification
+
+Commit `252beda60a75e58999fe816b8e55b232912e11a0` passed the complete Linux
+preflight: package 621s, Tauri plugin 33s, Android classic RN and Expo CNG 383s;
+total 1044s. Its hosted CI run `38067283721` completed successfully, including
+Windows Rust workspace tests, the Node matrix and packed Node/Bun acceptance
+on Linux, Mac and Windows. The existing path-filtered Apple compile job was
+skipped; it is not a pass. The combined native-source Android and Apple rebuild
+receipts above remain separately identified.
+
+The final independent review found stale current-version consumer instructions.
+Those now identify 5.0.2, with manifest-derived regression guards; historical
+receipts are preserved. Generated HTML was refreshed canonically. The first
+full rerun exposed an obsolete Node-guide test still requiring 5.0.0. Its
+assertion now uses the owning package version. The corrected complete package
+suite passed 439 suites and 5750 tests; lint/typecheck and dependency artifact
+checks passed. A new candidate still requires fresh hosted checks before tagging.
+
+The known-simulator ACC qualification helper now scopes discovery to the exact
+simulator name and HR service with balanced delivery, matching application
+discovery policy. Its selector, configuration, positive-frame, loss, timeout,
+independent-stop and cleanup checks are unchanged. The regression failed before
+the correction and passed afterwards. Independent follow-up review reported
+zero High/Medium findings.
+
+On an Apple Silicon Mac, the public helper completed all 12 ACC configurations,
+interleaved ECG/ACC and both independent stop orders over actual CoreBluetooth
+against the simulated peripheral. A separate direct N-API session observed
+positive HR/RR, PMD settings, battery/manufacturer reads and released disconnect
+and close receipts. The running simulator binary SHA-256 was
+`2054bb9387dccb531c70e9eaa46d3950c13ece8acda05b6187e3e6defd1e9a05`.
+Initial unfiltered discovery timeouts and a concurrent-central HR timeout are
+retained separately; an existing Fire TV central reconnected during this work.
+Simulator notification counters cannot attribute delivery to a central. These
+are simulated-peripheral radio receipts, not physical Polar equivalence,
+authenticated app journeys, phone background/restoration evidence, or grounds
+to promote a backend support label. Physical phones remain pending.

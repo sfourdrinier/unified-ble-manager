@@ -261,9 +261,17 @@ durability. Package SemVer does not promote any backend to a support label.
 Adapter-reset causality is also preserved during pending desktop release.
 
 Required remaining release steps are: refresh the applicable gates from the
-exact source commit, confirm the sealed tarball SHA512 and packed-consumer
-contract, complete the authorized final physical receipt if requested, then
-use the normal tag-driven trusted publisher under release-owner authorization.
+exact source commit, confirm the packed-consumer contract and both digests for
+the same sealed tarball, complete the authorized final physical receipt if
+requested, then use the normal tag-driven trusted publisher under release-owner
+authorization. Retain the publisher workflow's SHA-256 digest and calculate
+the requested independent SHA-512 receipt from that exact file, for example:
+
+```sh
+sha256sum .release-package/canonical.tgz
+sha512sum .release-package/canonical.tgz
+```
+
 No npm publication, tag, push, or registry claim is made by this checklist.
 
 ## Published 5.0.1
@@ -1184,7 +1192,7 @@ Then verify:
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
   `unified-ble-manager@5.0.2` explicitly and import the documented host
-  entrypoints. A separate bare install must select npm `latest` (`5.0.0` after
+  entrypoints. A separate bare install must select npm `latest` (`5.0.2` after
   stable publication). For RC verification, pin the actual numbered candidate
   instead and verify `next` separately. This
   catches a packaging gap the repository's

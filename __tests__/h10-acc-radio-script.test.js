@@ -1,4 +1,6 @@
+// __tests__/h10-acc-radio-script.test.js
 const pmd = require('../examples-shared/driver/polar-pmd')
+const { normalizeScanQuery, observationMatchesScanQuery } = require('../lib/commonjs/public/scan-query')
 const { main } = require('../scripts/native-protocol/test-h10-acc-radio')
 const realTimeout = setTimeout
 const realImmediate = setImmediate
@@ -233,6 +235,28 @@ function harness({
     }
   }
 }
+
+test('ACC probe scopes public discovery before bounded delivery and selection', async () => {
+  const run = harness()
+  await main(run.options)
+  const findOptions = run.manager.find.mock.calls[0][0]
+  expect(findOptions.delivery).toBe('balanced')
+  expect(findOptions.query).toEqual({
+    anyOf: [{ services: { any: ['0000180d-0000-1000-8000-00805f9b34fb'] }, names: { exact: ['SIM Polar H10 0001'] } }]
+  })
+  const query = normalizeScanQuery(findOptions.query)
+  const matching = {
+    localName: 'SIM Polar H10 0001',
+    rssi: -40,
+    connectable: true,
+    serviceUuids: ['0000180d-0000-1000-8000-00805f9b34fb'],
+    manufacturerData: [],
+    serviceData: []
+  }
+  const unrelated = { ...matching, serviceUuids: [] }
+  expect(observationMatchesScanQuery(query, matching)).toBe(true)
+  expect(observationMatchesScanQuery(query, unrelated)).toBe(false)
+})
 
 test('settings retire their data consumer before a delayed old-generation frame arrives', async () => {
   const run = harness({ delayedOldFrame: true })
