@@ -2,6 +2,13 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## Unreleased
+
+- Share one Android disconnect owner and immutable safety deadline per GATT
+  generation. Concurrent callers all receive the terminal close result once,
+  including adapter loss, native disconnect exceptions and teardown races.
+  Retain failed physical closes for retry and fence old deadlines from new links.
+
 ## [5.0.1] - 2026-10-08
 
 - Fix Expo Android readiness to use live native location-services and legacy

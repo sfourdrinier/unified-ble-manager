@@ -1,3 +1,5 @@
+<!-- docs/TV.md -->
+
 # TV hosts
 
 Status: Current 5.x consumer guidance. See
@@ -21,6 +23,16 @@ The reference app and shared test driver live in
 [`example-expo`](../example-expo/README.md#apple-tv-tvos). TV staging copies the
 same sources and uses a measured, focusable list viewport. It does not fork the
 BLE driver, inject a mock radio, or alter the phone projects.
+
+### Android disconnect ownership
+
+In the current unreleased Android implementation, disconnect requests for the
+same concrete GATT generation share one native disconnect and one safety
+deadline. A later request joins that deadline instead of extending it. Native
+disconnection, adapter loss or forced close settles all joined callers once;
+an old deadline cannot close a replacement link. A failed physical close stays
+owned for retry, and prevents reconnect until cleanup succeeds. This is shared
+phone/TV radio behavior, not a TV-specific reconnect policy.
 
 ## Exact packed Apple TV consumer
 

@@ -1491,7 +1491,6 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     assertTrue(transition.contains("pendingReconnect.clear()"))
     assertTrue(transition.contains("failPendingForDevice(key, \"adapter unavailable\")"))
     assertTrue(transition.contains("completeGattTeardown(key, gatt)"))
-    assertTrue(transition.contains("pendingDisconnectCallbacks.remove(key)?.invoke(teardownFailure)"))
     assertFalse(transition.contains("scheduleSafeClose"))
     assertFalse(transition.contains("dispatchConnectionState"))
   }
@@ -1523,7 +1522,7 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
 
     val retainedIndex = disconnect.indexOf("pendingGattTeardowns[key]")
     val unavailableIndex = disconnect.indexOf("requiresImmediateGattTeardownOnAdapterState(adapter?.state)")
-    val safetyCloseIndex = disconnect.indexOf("scheduleSafeClose(key, g)")
+    val safetyCloseIndex = disconnect.indexOf("joinGattDisconnect(key, g, generation")
     assertTrue(retainedIndex >= 0)
     assertTrue(unavailableIndex > retainedIndex)
     assertTrue(safetyCloseIndex > unavailableIndex)
