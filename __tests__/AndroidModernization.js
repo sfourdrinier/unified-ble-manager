@@ -86,6 +86,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
   test('ships only the current protocol source graph and no legacy Android bridge', () => {
     expect(sourceFilesBelow(androidJavaRoot)).toEqual(
       [
+        'AndroidBundleMetadata.java',
         'BlePlxForegroundService.java',
         'BlePlxPackage.java',
         'background/AndroidConnectedDeviceForegroundServiceDriver.java',
