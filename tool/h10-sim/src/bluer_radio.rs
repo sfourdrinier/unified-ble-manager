@@ -80,6 +80,18 @@ enum NotificationWriter {
     Indication(Arc<IndicationEndpoint>),
 }
 
+/// Safe value bound for a Fun indication session. Bluer exposes no negotiated
+/// MTU on `CharacteristicNotifier`; ATT's minimum MTU of 23 therefore yields
+/// this protocol floor after the three-byte notification/indication overhead.
+const FUN_INDICATION_PAYLOAD_CAPACITY: usize = 20;
+
+fn notification_writer_payload_capacity(writer: Option<&NotificationWriter>) -> Option<usize> {
+    writer.map(|writer| match writer {
+        NotificationWriter::Io(writer) => writer.mtu(),
+        NotificationWriter::Indication(_) => FUN_INDICATION_PAYLOAD_CAPACITY,
+    })
+}
+
 const INDICATION_ID_START: u64 = 1 << 63;
 
 struct IndicationIdAllocator {
@@ -576,17 +588,12 @@ impl PeripheralRadio for BluerRadio {
             .writers
             .lock()
             .map_err(|error| RadioError(format!("notification capacity writer lock: {error}")))?;
-        // bluer already applies its payload safety adjustment; do not subtract
-        // the ATT header a second time.
-        Ok(writers
-            .get(&characteristic)
-            .and_then(|writer| match writer.as_ref() {
-                NotificationWriter::Io(writer) => Some(writer.mtu()),
-                // bluer's Fun API intentionally does not expose an acquired MTU.
-                // The simulator only asks this for PMD data, which is notify-only;
-                // never invent a capacity for an indication session.
-                NotificationWriter::Indication(_) => None,
-            }))
+        // IO writer.mtu() already includes bluer's payload safety adjustment;
+        // do not subtract the ATT header a second time. Fun indications have
+        // no MTU metadata, so use the protocol-safe minimum bound.
+        Ok(notification_writer_payload_capacity(
+            writers.get(&characteristic).map(Arc::as_ref),
+        ))
     }
 
     async fn open(events: mpsc::Sender<RadioEvent>) -> Result<Self, RadioError> {
@@ -2716,6 +2723,18 @@ mod tests {
             })
             .count();
         assert_eq!(indication_sessions, 1);
+    }
+
+    #[test]
+    fn fun_indication_has_protocol_floor_and_no_writer_has_no_capacity() {
+        assert_eq!(notification_writer_payload_capacity(None), None);
+        let (tx, _rx) = mpsc::channel(1);
+        let endpoint = Arc::new(IndicationEndpoint::new(tx));
+        let writer = NotificationWriter::Indication(endpoint);
+        assert_eq!(
+            notification_writer_payload_capacity(Some(&writer)),
+            Some(20)
+        );
     }
 
     #[test]
