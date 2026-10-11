@@ -307,8 +307,10 @@ query failures are explicit `radio-error` events, and absent subscribers send
 nothing. Changing capacity does not reset acquisition, waveform indices,
 last-sample timestamps or the delivery sequence.
 
-PMD control-point indications use the current writer's notification-value
-capacity as well. The simulator fragments a logical response by repeating its
+PMD control-point indications use a safe notification-value capacity bound as
+well. IO-backed notify streams use bluer's adjusted writer capacity; the Fun
+indication session exposes no negotiated MTU, so it uses the ATT minimum safe
+20-byte value bound. The simulator fragments a logical response by repeating its
 five-byte PMD envelope and setting `more` on every fragment except the last;
 the ACC settings response is therefore delivered as multiple indications when
 the common 20-byte value capacity cannot carry all 27 bytes. Streaming actions

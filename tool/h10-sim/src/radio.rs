@@ -565,8 +565,11 @@ pub trait PeripheralRadio: Send {
     async fn start_advertising(&mut self, name: &str, uuids: &[Uuid]) -> Result<(), RadioError>;
     async fn stop_advertising(&mut self) -> Result<(), RadioError>;
     async fn add_service(&mut self, service: &ServiceSpec) -> Result<(), RadioError>;
-    /// Minimum actual notification-value capacity of current subscribers.
+    /// Safe notification-value capacity bound for the current subscription.
     /// `None` means no subscriber; unknown characteristics/query failures error.
+    /// Some transports can report their adjusted writer capacity while Fun
+    /// indication sessions use the ATT minimum safe bound when no MTU metadata
+    /// is exposed by the native session API.
     async fn notification_payload_capacity(
         &self,
         characteristic: Uuid,
