@@ -1595,11 +1595,37 @@ async fn write_request(
             // START/STOP response.
             let measured_ms = timing.sample_pmd_response_ms();
             let injected_ms = sim.response_delay_ms;
+            let capacity = match radio.notification_payload_capacity(control_point).await {
+                Ok(Some(capacity)) => capacity,
+                Ok(None) => 0,
+                Err(error) => {
+                    log.log(
+                        "radio-error",
+                        json!({"op": "pmd-indicate", "error": error.to_string()}),
+                    );
+                    return false;
+                }
+            };
+            let fragments = match sim::fragment_pmd_response(&response, capacity) {
+                Ok(fragments) => fragments,
+                Err(error) => {
+                    log.log("radio-error", json!({"op": "pmd-indicate", "error": error}));
+                    return false;
+                }
+            };
             if measured_ms.is_some() || injected_ms > 0 || !sim.pending_indications.is_empty() {
+                if !sim.can_admit_pmd_fragments(fragments.fragments.len()) {
+                    log.log(
+                        "pmd-indicate-rejected",
+                        json!({"reason": "pending-fragment-capacity", "fragments": fragments.fragments.len()}),
+                    );
+                    return false;
+                }
                 let total_ms = measured_ms.unwrap_or(0.0) + injected_ms as f64;
                 sim.pending_indications.push(sim::PendingIndication {
                     due: Instant::now() + Duration::from_secs_f64(total_ms / 1000.0),
                     response,
+                    reserved_fragments: fragments.fragments.len(),
                     action: outcome.action,
                 });
                 log.log(
@@ -1608,40 +1634,19 @@ async fn write_request(
                 );
                 return true;
             }
-            // Inline: a lost indication surfaces here instead of timing out
-            // the central 5 s later.
-            match radio.notify(control_point, response.clone()).await {
-                Ok(SendOutcome::OsAccepted) => {
-                    sim.last_pmd_response = Some(response.clone());
-                    commit_pmd_action(sim, log, outcome.action);
-                    true
-                }
-                Ok(SendOutcome::Queued { id }) => {
-                    sim.queue_pmd_response(id, outcome.action, response);
-                    true
-                }
-                Ok(SendOutcome::NotSubscribed) => {
-                    log.log(
-                        "radio-error",
-                        json!({"op": "pmd-indicate", "error": "no live indication session"}),
-                    );
-                    false
-                }
-                Ok(SendOutcome::Failed(reason)) => {
-                    log.log(
-                        "radio-error",
-                        json!({"op": "pmd-indicate", "error": reason}),
-                    );
-                    false
-                }
-                Err(error) => {
-                    log.log(
-                        "radio-error",
-                        json!({"op": "pmd-indicate", "error": error.to_string()}),
-                    );
-                    false
-                }
-            }
+            send_pmd_fragments(
+                radio,
+                sim,
+                log,
+                PmdFragmentDelivery {
+                    control_point,
+                    fragments: fragments.fragments,
+                    action: outcome.action,
+                    response,
+                    deferred: false,
+                },
+            )
+            .await
         }
         None => {
             log.log(
@@ -1651,6 +1656,57 @@ async fn write_request(
             false
         }
     }
+}
+
+async fn send_pmd_fragments(
+    radio: &mut impl PeripheralRadio,
+    sim: &mut SimState,
+    log: &mut EventLog,
+    delivery: PmdFragmentDelivery,
+) -> bool {
+    if !sim.can_admit_pmd_fragments(delivery.fragments.len()) {
+        log.log(
+            "pmd-indicate-rejected",
+            json!({"reason": "pending-fragment-capacity", "fragments": delivery.fragments.len()}),
+        );
+        return false;
+    }
+    let mut queued = Vec::new();
+    let mut failed = false;
+    for fragment in delivery.fragments {
+        let outcome = radio.notify(delivery.control_point, fragment).await;
+        match &outcome {
+            Ok(SendOutcome::Queued { id }) => queued.push(*id),
+            Ok(SendOutcome::NotSubscribed) | Ok(SendOutcome::Failed(_)) | Err(_) => failed = true,
+            Ok(SendOutcome::OsAccepted) => {}
+        }
+        report_stream_notify(
+            log,
+            "pmd-indicate",
+            outcome,
+            json!({"deferred": delivery.deferred}),
+        );
+        if failed {
+            break;
+        }
+    }
+    if queued.is_empty() {
+        if !failed {
+            sim.last_pmd_response = Some(delivery.response);
+            commit_pmd_action(sim, log, delivery.action);
+        }
+    } else {
+        sim.queue_pmd_response_group(queued, delivery.action, delivery.response, failed);
+    }
+    !failed
+}
+
+struct PmdFragmentDelivery {
+    control_point: Uuid,
+    fragments: Vec<Vec<u8>>,
+    action: sim::PmdAction,
+    response: Vec<u8>,
+    deferred: bool,
 }
 
 async fn handle_psftp_write(
@@ -1744,26 +1800,37 @@ async fn drain_indications(
     while let Some(indication) = sim.take_due_indication(now) {
         let control_point =
             Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
-        let outcome = radio
-            .notify(control_point, indication.response.clone())
-            .await;
-        match &outcome {
-            Ok(SendOutcome::OsAccepted) => {
-                sim.last_pmd_response = Some(indication.response);
-                commit_pmd_action(sim, log, indication.action);
-            }
-            Ok(SendOutcome::Queued { id }) => {
-                sim.queue_pmd_response(*id, indication.action, indication.response);
-            }
-            Ok(SendOutcome::NotSubscribed) => {
+        let capacity = match radio.notification_payload_capacity(control_point).await {
+            Ok(Some(capacity)) => capacity,
+            Ok(None) => 0,
+            Err(error) => {
                 log.log(
-                    "pmd-indicate-dropped",
-                    json!({"reason": "central left before the deferred indication went out; action not committed"}),
+                    "radio-error",
+                    json!({"op": "pmd-indicate", "error": error.to_string()}),
                 );
+                continue;
             }
-            _ => {}
-        }
-        report_stream_notify(log, "pmd-indicate", outcome, json!({"deferred": true}));
+        };
+        let fragments = match sim::fragment_pmd_response(&indication.response, capacity) {
+            Ok(fragments) => fragments,
+            Err(error) => {
+                log.log("radio-error", json!({"op": "pmd-indicate", "error": error}));
+                continue;
+            }
+        };
+        let _ = send_pmd_fragments(
+            radio,
+            sim,
+            log,
+            PmdFragmentDelivery {
+                control_point,
+                fragments: fragments.fragments,
+                action: indication.action,
+                response: indication.response,
+                deferred: true,
+            },
+        )
+        .await;
     }
 }
 
@@ -2201,11 +2268,26 @@ async fn stale_callback(
     };
     let control_point =
         Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
-    let outcome = radio.notify(control_point, response.clone()).await;
-    let accepted = matches!(
-        &outcome,
-        Ok(SendOutcome::OsAccepted) | Ok(SendOutcome::Queued { .. })
-    );
+    let capacity = radio
+        .notification_payload_capacity(control_point)
+        .await
+        .map_err(|error| format!("stale-callback capacity query failed: {error}"))?
+        .ok_or_else(|| "stale-callback refused: PMD control point is not subscribed".to_string())?;
+    let fragments = sim::fragment_pmd_response(&response, capacity)
+        .map_err(|error| format!("stale-callback refused: {error}"))?;
+    let accepted = send_pmd_fragments(
+        radio,
+        sim,
+        log,
+        PmdFragmentDelivery {
+            control_point,
+            fragments: fragments.fragments,
+            action: sim::PmdAction::None,
+            response: response.clone(),
+            deferred: false,
+        },
+    )
+    .await;
     sim.record_fault(
         "stale-callback",
         json!({"bytes": response.len(), "accepted": accepted}),
@@ -2213,12 +2295,6 @@ async fn stale_callback(
     log.log(
         "stale-callback",
         json!({"bytes": response.len(), "accepted": accepted}),
-    );
-    report_stream_notify(
-        log,
-        "stale-callback-notify",
-        outcome,
-        json!({"bytes": response.len()}),
     );
     Ok(ControlReply::ok_note(format!(
         "replayed the last PMD response ({} bytes) out of sequence; delivery {}",
@@ -2230,6 +2306,7 @@ async fn stale_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
 
     #[test]
     fn psftp_request_and_response_use_feee_char51_wire_route() {
@@ -2363,6 +2440,305 @@ mod tests {
         ) -> Result<SendOutcome, radio::RadioError> {
             self.frames.push(bytes);
             self.outcome.clone()
+        }
+    }
+
+    struct FragmentRadio {
+        capacity: Option<usize>,
+        outcomes: VecDeque<SendOutcome>,
+        frames: Vec<Vec<u8>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PeripheralRadio for FragmentRadio {
+        async fn open(_: mpsc::Sender<RadioEvent>) -> Result<Self, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_powered(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_advertising(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn start_advertising(
+            &mut self,
+            _: &str,
+            _: &[Uuid],
+        ) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn stop_advertising(&mut self) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn add_service(&mut self, _: &radio::ServiceSpec) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn notification_payload_capacity(
+            &self,
+            _: Uuid,
+        ) -> Result<Option<usize>, radio::RadioError> {
+            Ok(self.capacity)
+        }
+        async fn notify(
+            &mut self,
+            _: Uuid,
+            bytes: Vec<u8>,
+        ) -> Result<SendOutcome, radio::RadioError> {
+            self.frames.push(bytes);
+            Ok(self.outcomes.pop_front().unwrap_or(SendOutcome::OsAccepted))
+        }
+    }
+
+    fn acc_settings_response() -> Vec<u8> {
+        let mut response = vec![0xf0, 0x01, gatt_spec::PMD_MEASUREMENT_ACC, 0, 0];
+        response.extend(std::iter::repeat_n(0x42, 22));
+        response
+    }
+
+    fn fragment_delivery(response: Vec<u8>, action: PmdAction) -> PmdFragmentDelivery {
+        let fragments = sim::fragment_pmd_response(&response, 20).unwrap();
+        PmdFragmentDelivery {
+            control_point: Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap(),
+            fragments: fragments.fragments,
+            action,
+            response,
+            deferred: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn pmd_fragment_delivery_commits_only_after_all_boundaries_succeed() {
+        let mut log = EventLog::new();
+        let response = acc_settings_response();
+
+        let mut sim = SimState::new(SimConfig::default());
+        let mut inline = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::from([SendOutcome::OsAccepted, SendOutcome::OsAccepted]),
+            frames: Vec::new(),
+        };
+        assert!(
+            send_pmd_fragments(
+                &mut inline,
+                &mut sim,
+                &mut log,
+                fragment_delivery(response.clone(), PmdAction::StartEcg),
+            )
+            .await
+        );
+        assert_eq!(inline.frames.len(), 2);
+        assert!(sim.ecg_streaming);
+        assert!(inline.frames.iter().all(|frame| frame.len() <= 20));
+
+        sim.reset_pmd_session();
+        sim.pending_indications.push(sim::PendingIndication {
+            due: Instant::now() - Duration::from_millis(1),
+            response: response.clone(),
+            reserved_fragments: 1,
+            action: PmdAction::StartEcg,
+        });
+        let mut deferred = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::from([SendOutcome::OsAccepted, SendOutcome::OsAccepted]),
+            frames: Vec::new(),
+        };
+        drain_indications(&mut deferred, &mut sim, &mut log).await;
+        assert_eq!(deferred.frames.len(), 2);
+        assert!(sim.ecg_streaming);
+
+        sim.reset_pmd_session();
+        let mut failed = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::from([
+                SendOutcome::OsAccepted,
+                SendOutcome::Failed("late indication failure".into()),
+            ]),
+            frames: Vec::new(),
+        };
+        assert!(
+            !send_pmd_fragments(
+                &mut failed,
+                &mut sim,
+                &mut log,
+                fragment_delivery(response.clone(), PmdAction::StartEcg),
+            )
+            .await
+        );
+        assert!(!sim.ecg_streaming);
+        assert!(sim.can_admit_pmd_command());
+
+        sim.reset_pmd_session();
+        let mut queued_failed = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::from([
+                SendOutcome::Queued { id: 8 },
+                SendOutcome::Failed("late queued indication failure".into()),
+            ]),
+            frames: Vec::new(),
+        };
+        assert!(
+            !send_pmd_fragments(
+                &mut queued_failed,
+                &mut sim,
+                &mut log,
+                fragment_delivery(response.clone(), PmdAction::StartEcg),
+            )
+            .await
+        );
+        assert_eq!(sim.settle_pmd_action(8, true), None);
+        assert!(!sim.ecg_streaming);
+
+        sim.reset_pmd_session();
+        let mut queued = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::from([SendOutcome::Queued { id: 7 }, SendOutcome::OsAccepted]),
+            frames: Vec::new(),
+        };
+        assert!(
+            send_pmd_fragments(
+                &mut queued,
+                &mut sim,
+                &mut log,
+                fragment_delivery(response.clone(), PmdAction::StartEcg),
+            )
+            .await
+        );
+        assert!(!sim.ecg_streaming);
+        let settled = sim.settle_pmd_action(7, true);
+        assert_eq!(settled, Some(PmdAction::StartEcg));
+        commit_pmd_action(&mut sim, &mut log, settled.unwrap());
+        assert!(sim.ecg_streaming);
+    }
+
+    #[tokio::test]
+    async fn pmd_fragment_admission_does_not_partially_fill_a_full_queue() {
+        let mut sim = SimState::new(SimConfig::default());
+        sim.queue_pmd_response_group(
+            (0..(radio::SEND_QUEUE_CAPACITY as u64 - 1)).collect(),
+            PmdAction::None,
+            vec![0xf0],
+            false,
+        );
+        let mut radio = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::from([SendOutcome::Queued { id: 64 }]),
+            frames: Vec::new(),
+        };
+        let mut log = EventLog::new();
+        assert!(
+            !send_pmd_fragments(
+                &mut radio,
+                &mut sim,
+                &mut log,
+                fragment_delivery(acc_settings_response(), PmdAction::None),
+            )
+            .await
+        );
+        assert!(radio.frames.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deferred_pmd_admission_reserves_the_whole_logical_response() {
+        let cp = Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap();
+        let mut sim = SimState::new(SimConfig::default());
+        sim.response_delay_ms = 1;
+        sim.queue_pmd_response_group(
+            (0..(radio::SEND_QUEUE_CAPACITY as u64 - 1)).collect(),
+            PmdAction::None,
+            vec![0xf0],
+            false,
+        );
+        let mut timing = timing::TimingRuntime::new(timing::TimingProfile::default_unconfirmed(0));
+        let mut radio = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::new(),
+            frames: Vec::new(),
+        };
+        let mut log = EventLog::new();
+        assert!(
+            !write_request(
+                &mut radio,
+                &mut sim,
+                &mut timing,
+                &mut log,
+                "pmd",
+                &cp,
+                &[
+                    gatt_spec::PMD_OP_GET_SETTINGS,
+                    gatt_spec::PMD_MEASUREMENT_ACC
+                ],
+            )
+            .await
+        );
+        assert!(sim.pending_indications.is_empty());
+        assert!(radio.frames.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deferred_pmd_rechecks_live_capacity_and_fails_explicitly() {
+        let cp = Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap();
+        let mut sim = SimState::new(SimConfig::default());
+        sim.response_delay_ms = 1;
+        let mut timing = timing::TimingRuntime::new(timing::TimingProfile::default_unconfirmed(0));
+        let mut radio = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::new(),
+            frames: Vec::new(),
+        };
+        let mut log = EventLog::new();
+        assert!(
+            write_request(
+                &mut radio,
+                &mut sim,
+                &mut timing,
+                &mut log,
+                "pmd",
+                &cp,
+                &[
+                    gatt_spec::PMD_OP_GET_SETTINGS,
+                    gatt_spec::PMD_MEASUREMENT_ACC
+                ],
+            )
+            .await
+        );
+        assert_eq!(sim.pending_indications.len(), 1);
+        sim.pending_indications[0].due = Instant::now() - Duration::from_millis(1);
+        radio.capacity = Some(5);
+        drain_indications(&mut radio, &mut sim, &mut log).await;
+        assert!(radio.frames.is_empty());
+        assert!(sim.pending_indications.is_empty());
+        assert!(sim.acc_settings.is_none());
+    }
+
+    #[tokio::test]
+    async fn pmd_boundary_rejects_unsubscribed_and_too_small_capacity() {
+        let mut timing = timing::TimingRuntime::new(timing::TimingProfile::default_unconfirmed(0));
+        let cp = Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap();
+        let mut log = EventLog::new();
+        for capacity in [None, Some(5)] {
+            let mut radio = FragmentRadio {
+                capacity,
+                outcomes: VecDeque::new(),
+                frames: Vec::new(),
+            };
+            let mut sim = SimState::new(SimConfig::default());
+            assert!(
+                !write_request(
+                    &mut radio,
+                    &mut sim,
+                    &mut timing,
+                    &mut log,
+                    "pmd",
+                    &cp,
+                    &[
+                        gatt_spec::PMD_OP_GET_SETTINGS,
+                        gatt_spec::PMD_MEASUREMENT_ACC
+                    ],
+                )
+                .await
+            );
+            assert!(radio.frames.is_empty());
+            assert!(sim.acc_settings.is_none());
         }
     }
 
@@ -2974,6 +3350,7 @@ mod tests {
             sim.pending_indications.push(sim::PendingIndication {
                 due: Instant::now(),
                 response: vec![1, 2],
+                reserved_fragments: 1,
                 action: sim::PmdAction::StartEcg,
             });
             let before = format!("{:?}", sim);
@@ -3021,6 +3398,7 @@ mod tests {
             sim.pending_indications.push(sim::PendingIndication {
                 due: Instant::now(),
                 response: vec![1],
+                reserved_fragments: 1,
                 action: sim::PmdAction::StartEcg,
             });
             let mut radio = ProfileRadio {

@@ -307,6 +307,16 @@ query failures are explicit `radio-error` events, and absent subscribers send
 nothing. Changing capacity does not reset acquisition, waveform indices,
 last-sample timestamps or the delivery sequence.
 
+PMD control-point indications use the current writer's notification-value
+capacity as well. The simulator fragments a logical response by repeating its
+five-byte PMD envelope and setting `more` on every fragment except the last;
+the ACC settings response is therefore delivered as multiple indications when
+the common 20-byte value capacity cannot carry all 27 bytes. Streaming actions
+commit only after every fragment is accepted or settled. A capacity of five
+bytes or less is rejected explicitly because it cannot carry the envelope.
+This models transport delivery and is not a claim about any particular H10
+firmware's fragmentation behavior.
+
 The configured dispatch cadence is unchanged, and a late host loop never invents
 elapsed samples. Each opportunity has a bounded sample budget equivalent to
 32 configured frames, expressed as enough smaller packets to preserve that

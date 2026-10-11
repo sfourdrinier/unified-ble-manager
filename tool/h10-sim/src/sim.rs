@@ -297,8 +297,61 @@ pub struct PmdWriteOutcome {
 pub struct PendingIndication {
     pub due: Instant,
     pub response: Vec<u8>,
+    /// Number of PMD fragments reserved against the bounded send pump.
+    pub reserved_fragments: usize,
     /// Streaming action committed when the indication actually goes out.
     pub action: PmdAction,
+}
+
+/// A logical PMD response split into ATT-sized indications. `response` is
+/// retained as the complete wire response for stale-callback replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PmdResponseFragments {
+    pub fragments: Vec<Vec<u8>>,
+    pub response: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingPmdAction {
+    ids: Vec<u64>,
+    action: PmdAction,
+    response: Vec<u8>,
+    failed: bool,
+}
+
+pub fn fragment_pmd_response(
+    response: &[u8],
+    capacity: usize,
+) -> Result<PmdResponseFragments, String> {
+    if capacity <= 5 {
+        return Err(format!(
+            "PMD indication capacity {capacity} cannot carry its 5-byte envelope"
+        ));
+    }
+    if response.len() < 5 {
+        return Err("PMD response is shorter than its 5-byte envelope".to_owned());
+    }
+    let parameter_capacity = capacity - 5;
+    let header = &response[..5];
+    let parameters = &response[5..];
+    let mut fragments = Vec::new();
+    if parameters.is_empty() {
+        fragments.push(response.to_vec());
+    } else {
+        for (index, chunk) in parameters.chunks(parameter_capacity).enumerate() {
+            let mut fragment = Vec::with_capacity(5 + chunk.len());
+            fragment.extend_from_slice(&header[..4]);
+            fragment.push(u8::from(
+                (index + 1) * parameter_capacity < parameters.len(),
+            ));
+            fragment.extend_from_slice(chunk);
+            fragments.push(fragment);
+        }
+    }
+    Ok(PmdResponseFragments {
+        fragments,
+        response: response.to_vec(),
+    })
 }
 
 /// Mutable simulator state: config plus faults.
@@ -336,7 +389,7 @@ pub struct SimState {
     pub pending_indications: Vec<PendingIndication>,
     /// Transport-queued responses whose OS acceptance is still unresolved.
     /// IDs are process-monotonic and never reused by the transport.
-    pending_pmd_actions: Vec<(u64, PmdAction, Vec<u8>)>,
+    pending_pmd_actions: Vec<PendingPmdAction>,
     /// Run posture (`--mode`; profiles cannot change it).
     pub run_mode: RunMode,
     /// Timing seed for this run (`--timing-seed`; same seed replays a run).
@@ -719,13 +772,32 @@ impl SimState {
         })
     }
 
-    /// Bound delayed responses and queued streaming actions together. The
-    /// transport separately bounds queued responses that have no state action.
+    /// Bound PMD bookkeeping reservations for delayed responses and queued
+    /// fragment settlements. Other radio traffic can still consume the
+    /// transport queue; actual notification failures remain authoritative.
     pub fn can_admit_pmd_command(&self) -> bool {
-        self.pending_indications
-            .len()
-            .saturating_add(self.pending_pmd_actions.len())
-            < crate::radio::SEND_QUEUE_CAPACITY
+        self.can_admit_pmd_fragments(1)
+    }
+
+    /// Reserve enough bounded send-pump slots for every fragment before any
+    /// fragment is handed to the radio. This prevents a large response from
+    /// partially entering the queue before admission fails.
+    pub fn can_admit_pmd_fragments(&self, fragments: usize) -> bool {
+        let reserved = self
+            .pending_indications
+            .iter()
+            .fold(0usize, |total, pending| {
+                total.saturating_add(pending.reserved_fragments)
+            })
+            .saturating_add(
+                self.pending_pmd_actions
+                    .iter()
+                    .fold(0usize, |total, pending| {
+                        total.saturating_add(pending.ids.len())
+                    }),
+            )
+            .saturating_add(fragments);
+        reserved <= crate::radio::SEND_QUEUE_CAPACITY
     }
 
     /// Handles a PMD control-point write, returning the indicate payload.
@@ -794,7 +866,7 @@ impl SimState {
         let pending_actions = self
             .pending_pmd_actions
             .iter()
-            .map(|(_, action, _)| *action)
+            .flat_map(|pending| pending.ids.iter().map(move |_| pending.action))
             .chain(
                 self.pending_indications
                     .iter()
@@ -900,8 +972,31 @@ impl SimState {
     }
 
     /// Keep response bytes and action owned by their exact transport admission.
+    #[cfg(test)]
     pub fn queue_pmd_response(&mut self, id: u64, action: PmdAction, response: Vec<u8>) {
-        self.pending_pmd_actions.push((id, action, response));
+        self.pending_pmd_actions.push(PendingPmdAction {
+            ids: vec![id],
+            action,
+            response,
+            failed: false,
+        });
+    }
+
+    pub fn queue_pmd_response_group(
+        &mut self,
+        ids: Vec<u64>,
+        action: PmdAction,
+        response: Vec<u8>,
+        failed: bool,
+    ) {
+        if !ids.is_empty() {
+            self.pending_pmd_actions.push(PendingPmdAction {
+                ids,
+                action,
+                response,
+                failed,
+            });
+        }
     }
 
     /// Return an exactly matched accepted action for the caller to commit/log.
@@ -910,12 +1005,24 @@ impl SimState {
         let index = self
             .pending_pmd_actions
             .iter()
-            .position(|(pending, _, _)| *pending == id)?;
-        let (_, action, response) = self.pending_pmd_actions.remove(index);
-        if accepted && !response.is_empty() {
-            self.last_pmd_response = Some(response);
+            .position(|pending| pending.ids.contains(&id))?;
+        if !accepted {
+            self.pending_pmd_actions.remove(index);
+            return None;
         }
-        accepted.then_some(action)
+        let pending = &mut self.pending_pmd_actions[index];
+        pending.ids.retain(|pending_id| *pending_id != id);
+        if !pending.ids.is_empty() {
+            return None;
+        }
+        let pending = self.pending_pmd_actions.remove(index);
+        if pending.failed {
+            return None;
+        }
+        if !pending.response.is_empty() {
+            self.last_pmd_response = Some(pending.response);
+        }
+        Some(pending.action)
     }
 
     /// A later response cannot overtake an earlier delayed START/STOP.
@@ -982,6 +1089,49 @@ fn validate_start_settings(tlv: &[u8]) -> Result<(), u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fragments_acc_settings_at_mtu_twenty_and_preserves_logical_response() {
+        let mut response = vec![0xf0, 0x01, 0x02, 0x00, 0x00];
+        response.extend(crate::acc::settings_payload());
+        let split = fragment_pmd_response(&response, 20).expect("ATT-20 response fragments");
+        assert_eq!(split.response, response);
+        assert_eq!(
+            split.fragments.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![20, 12]
+        );
+        assert_eq!(split.fragments[0][..4], response[..4]);
+        assert_eq!(split.fragments[1][..4], response[..4]);
+        assert_eq!(split.fragments[0][4], 1);
+        assert_eq!(split.fragments[1][4], 0);
+        let mut parameters = split.fragments[0][5..].to_vec();
+        parameters.extend_from_slice(&split.fragments[1][5..]);
+        assert_eq!(parameters, response[5..]);
+    }
+
+    #[test]
+    fn refuses_capacity_that_cannot_carry_the_pmd_envelope() {
+        let response = vec![0xf0, 1, 2, 0, 0, 1];
+        assert!(fragment_pmd_response(&response, 5).is_err());
+    }
+
+    #[test]
+    fn failed_fragment_group_never_commits_or_leaks_after_queued_settlements() {
+        let mut sim = state();
+        sim.queue_pmd_response_group(
+            vec![10, 11],
+            PmdAction::StartAcc(crate::acc::Settings {
+                sample_rate_hz: 50,
+                range_g: 2,
+            }),
+            vec![0xf0],
+            true,
+        );
+        assert_eq!(sim.settle_pmd_action(10, true), None);
+        assert_eq!(sim.settle_pmd_action(11, true), None);
+        assert_eq!(sim.last_pmd_response, None);
+        assert_eq!(sim.settle_pmd_action(10, true), None);
+    }
 
     fn state() -> SimState {
         SimState::new(SimConfig::default())
@@ -1637,6 +1787,7 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due,
             response: start.indicate.unwrap(),
+            reserved_fragments: 1,
             action: start.action,
         });
         let duplicate = sim.handle_pmd_write(&acc_start(200, 8));
@@ -1656,6 +1807,7 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due,
             response: ecg_start.indicate.unwrap(),
+            reserved_fragments: 1,
             action: ecg_start.action,
         });
         assert_eq!(
@@ -1669,6 +1821,7 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due,
             response: stop.indicate.unwrap(),
+            reserved_fragments: 1,
             action: stop.action,
         });
         assert_eq!(
@@ -1692,6 +1845,7 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due: Instant::now(),
             response: acc.indicate.unwrap(),
+            reserved_fragments: 1,
             action: acc.action,
         });
         sim.last_pmd_response = Some(vec![0xf0, 2, 2, 0, 0]);
@@ -1719,6 +1873,7 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due: Instant::now(),
             response: vec![0xf0, 3, 0, 0, 0],
+            reserved_fragments: 1,
             action: PmdAction::StopEcg,
         });
         sim.queue_pmd_response(42, PmdAction::StopAcc, vec![0xF0]);
@@ -1758,12 +1913,14 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due: later,
             response: start.indicate.unwrap(),
+            reserved_fragments: 1,
             action: start.action,
         });
         let stop = sim.handle_pmd_write(&[3, 2]);
         sim.pending_indications.push(PendingIndication {
             due: now,
             response: stop.indicate.unwrap(),
+            reserved_fragments: 1,
             action: stop.action,
         });
         assert!(
@@ -1827,6 +1984,7 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due: Instant::now(),
             response: stop.indicate.unwrap(),
+            reserved_fragments: 1,
             action: stop.action,
         });
         assert_ne!(
@@ -1983,6 +2141,7 @@ mod tests {
                 sim.pending_indications.push(PendingIndication {
                     due: Instant::now() + std::time::Duration::from_secs(60),
                     response: vec![0xf0, 1, 2, 0],
+                    reserved_fragments: 1,
                     action: PmdAction::None,
                 });
             }
@@ -2012,6 +2171,18 @@ mod tests {
             sim.reset_pmd_session();
             assert!(sim.can_admit_pmd_command());
         }
+    }
+
+    #[test]
+    fn pending_pmd_capacity_counts_each_fragment_id_in_a_group() {
+        let mut sim = state();
+        sim.queue_pmd_response_group(
+            (0..crate::radio::SEND_QUEUE_CAPACITY as u64).collect(),
+            PmdAction::StartEcg,
+            vec![0xf0],
+            false,
+        );
+        assert!(!sim.can_admit_pmd_command());
     }
 
     #[test]
