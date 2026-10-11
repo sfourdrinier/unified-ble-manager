@@ -48,6 +48,8 @@ pub struct HeartRateProfile {
     pub contact_supported: bool,
     pub contact_detected: bool,
     pub rr_jitter_ms: f64,
+    #[serde(default)]
+    pub scenario: crate::heartbeat::Scenario,
     pub bpm_curve: Vec<BpmStep>,
     /// Recorded HR replay (`{"file": path}`); defaults to synthetic.
     #[serde(default)]
@@ -121,6 +123,23 @@ impl SimConfig {
     /// profile fully determines the simulated device. Bad hex is an Err —
     /// never a silent empty payload.
     pub fn from_profile(profile: &DeviceProfile) -> Result<Self, String> {
+        if profile.heart_rate.bpm == 0
+            || !profile.heart_rate.rr_jitter_ms.is_finite()
+            || profile.heart_rate.rr_jitter_ms < 0.0
+            || profile.heart_rate.bpm_curve.len() > crate::heartbeat::MAX_CURVE_STEPS
+            || profile
+                .heart_rate
+                .bpm_curve
+                .iter()
+                .any(|step| !step.at_s.is_finite() || step.at_s < 0.0 || step.bpm == 0)
+        {
+            return Err("heartbeat requires positive BPM, finite nonnegative jitter/times and at most 128 curve steps".into());
+        }
+        if profile.heart_rate.scenario != crate::heartbeat::Scenario::Steady
+            && !profile.heart_rate.bpm_curve.is_empty()
+        {
+            return Err("choose a heartbeat scenario or bpm_curve, not both".into());
+        }
         crate::advertisement::validate_simulator_name(&profile.advertising.name)?;
         let info = &profile.device_information;
         let mfr_payload = decode_hex(&profile.advertising.manufacturer_payload_hex)?;
@@ -140,6 +159,7 @@ impl SimConfig {
             contact_detected: profile.heart_rate.contact_detected,
             drain_per_min: profile.battery.drain_per_min,
             rr_jitter_ms: profile.heart_rate.rr_jitter_ms,
+            scenario: profile.heart_rate.scenario,
             mfr_company: profile.advertising.manufacturer_company,
             mfr_payload,
             pair_policy: profile.pmd.pair_policy,
@@ -164,6 +184,57 @@ impl SimConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synchronized_scenario_profiles_validate_and_use_both_synthetic_sources() {
+        for (text, scenario) in [
+            (
+                include_str!("../profiles/synthetic-steady.json"),
+                crate::heartbeat::Scenario::Steady,
+            ),
+            (
+                include_str!("../profiles/synthetic-breathing.json"),
+                crate::heartbeat::Scenario::Breathing,
+            ),
+            (
+                include_str!("../profiles/synthetic-exercise-recovery.json"),
+                crate::heartbeat::Scenario::ExerciseRecovery,
+            ),
+            (
+                include_str!("../profiles/synthetic-abrupt.json"),
+                crate::heartbeat::Scenario::Abrupt,
+            ),
+        ] {
+            let profile = parse_profile(text, "scenario").unwrap();
+            let config = SimConfig::from_profile(&profile).unwrap();
+            assert_eq!(config.scenario, scenario);
+            assert_eq!(config.ecg_source, EcgSource::Synthetic);
+            assert_eq!(config.hr_source, HrSource::Synthetic);
+        }
+    }
+
+    #[test]
+    fn heartbeat_configuration_rejects_unbounded_and_invalid_curves() {
+        let mut profile =
+            parse_profile(include_str!("../profiles/stock-h10.json"), "stock").unwrap();
+        profile.heart_rate.bpm = 0;
+        assert!(SimConfig::from_profile(&profile).is_err());
+        profile.heart_rate.bpm = 72;
+        for jitter in [f64::NAN, f64::INFINITY, -1.0] {
+            profile.heart_rate.rr_jitter_ms = jitter;
+            assert!(SimConfig::from_profile(&profile).is_err());
+        }
+        profile.heart_rate.rr_jitter_ms = 0.0;
+        profile.heart_rate.bpm_curve = vec![BpmStep { at_s: 0.0, bpm: 72 }; 129];
+        assert!(SimConfig::from_profile(&profile).is_err());
+        for at_s in [f64::NAN, f64::INFINITY, -1.0] {
+            profile.heart_rate.bpm_curve = vec![BpmStep { at_s, bpm: 72 }];
+            assert!(SimConfig::from_profile(&profile).is_err());
+        }
+        profile.heart_rate.bpm_curve = vec![BpmStep { at_s: 1.0, bpm: 72 }];
+        profile.heart_rate.scenario = crate::heartbeat::Scenario::Breathing;
+        assert!(SimConfig::from_profile(&profile).is_err());
+    }
 
     #[test]
     fn default_and_bundled_profiles_start_with_sim() {

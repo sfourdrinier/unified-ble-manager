@@ -204,6 +204,7 @@ pub struct SimConfig {
     pub drain_per_min: f64,
     /// RR-interval jitter in milliseconds (deterministic sine, Task 6).
     pub rr_jitter_ms: f64,
+    pub scenario: crate::heartbeat::Scenario,
     /// Manufacturer data company id for the advertisement.
     pub mfr_company: u16,
     /// Manufacturer data payload bytes for the advertisement.
@@ -253,6 +254,7 @@ impl Default for SimConfig {
             contact_detected: false,
             drain_per_min: 0.0,
             rr_jitter_ms: 0.0,
+            scenario: crate::heartbeat::Scenario::Steady,
             mfr_company: gatt_spec::POLAR_COMPANY_ID,
             mfr_payload: Vec::new(),
             pair_policy: PairPolicy::JustWorks,
@@ -307,6 +309,8 @@ pub struct SimState {
     pub silent: bool,
     /// Whether the ECG stream is currently running.
     pub ecg_streaming: bool,
+    pub ecg_delivery_paused: bool,
+    pub acc_delivery_paused: bool,
     /// Selected ACC mode; absent until its successful START indication.
     pub acc_settings: Option<crate::acc::Settings>,
     /// Sensor scheduler origin, committed with ACC settings, never at write time.
@@ -317,7 +321,9 @@ pub struct SimState {
     /// Running ECG sample index (130 Hz clock).
     pub ecg_sample_index: u64,
     /// Running heart-rate beat index (drives the deterministic RR jitter).
-    pub hr_beat_index: u64,
+    pub heartbeat: crate::heartbeat::Timeline,
+    pub hr_acquired_cursor: u64,
+    pub hr_last_bpm: Option<u8>,
     /// Recorded HR packets (None = synthetic beat).
     pub hr_replay: Option<HrReplay>,
     /// Next recorded HR packet to serve.
@@ -330,7 +336,7 @@ pub struct SimState {
     pub pending_indications: Vec<PendingIndication>,
     /// Transport-queued responses whose OS acceptance is still unresolved.
     /// IDs are process-monotonic and never reused by the transport.
-    pending_pmd_actions: Vec<(u64, PmdAction)>,
+    pending_pmd_actions: Vec<(u64, PmdAction, Vec<u8>)>,
     /// Run posture (`--mode`; profiles cannot change it).
     pub run_mode: RunMode,
     /// Timing seed for this run (`--timing-seed`; same seed replays a run).
@@ -431,16 +437,21 @@ pub fn should_deliver(seq: u64, keep_every: u64) -> bool {
 
 impl SimState {
     pub fn new(config: SimConfig) -> Self {
+        let heartbeat = crate::heartbeat::Timeline::new(&config);
         Self {
+            heartbeat,
+            hr_acquired_cursor: 0,
+            hr_last_bpm: None,
             config,
             silent: false,
             ecg_streaming: false,
+            ecg_delivery_paused: false,
+            acc_delivery_paused: false,
             acc_settings: None,
             acc_started_at: None,
             ecg_started_at: None,
             reject_next_status: None,
             ecg_sample_index: 0,
-            hr_beat_index: 0,
             hr_replay: None,
             hr_replay_index: 0,
             battery_carry: 0.0,
@@ -527,22 +538,12 @@ impl SimState {
             "profile": self.config.profile_path.clone().unwrap_or_else(|| "<builtin stock-h10>".to_string()),
             "name": self.config.name,
             "startedAt": self.run_started_at,
+            "heartbeat": {"scenario": format!("{:?}", self.config.scenario), "hrSource": format!("{:?}", self.config.hr_source), "ecgSource": format!("{:?}", self.config.ecg_source), "synchronizedSynthetic": self.hr_replay.is_none() && self.ecg_replay.is_none(), "recordingRelationship": if self.hr_replay.is_some() || self.ecg_replay.is_some() { "independent; not retimed" } else { "shared acquisition timeline" }},
             "hrRecovery": self.hr_recovery.snapshot(),
             "faults": self.faults.iter().map(|entry| {
                 serde_json::json!({"ts": entry.ts, "fault": entry.fault, "detail": entry.detail})
             }).collect::<Vec<_>>(),
         })
-    }
-
-    /// RR interval for one beat: the base `60/bpm` plus the configured
-    /// jitter as a deterministic sine of the beat index (period 10 beats).
-    /// Pure and allocation-free, so tests pin exact bytes without a radio.
-    pub fn rr_interval_s(bpm: u8, jitter_ms: f64, beat: u64) -> f64 {
-        let base = if bpm == 0 { 0.0 } else { 60.0 / f64::from(bpm) };
-        if jitter_ms <= 0.0 || base <= 0.0 {
-            return base;
-        }
-        base + (jitter_ms / 1000.0) * (2.0 * std::f64::consts::PI * beat as f64 / 10.0).sin()
     }
 
     /// BPM selected by the scripted curve at `elapsed_s` (last step at or
@@ -559,32 +560,28 @@ impl SimState {
         bpm
     }
 
-    /// Current Heart Rate Measurement payload. A loaded HR replay serves the
-    /// recorded packets verbatim, cycling forever; otherwise one RR interval
-    /// is synthesized from the bpm. Like the strap, contact bits are absent
-    /// (`0x10`) unless the profile declares contact supported. Advances the
-    /// beat and replay indexes, so each call is the next beat.
-    pub fn hr_payload(&mut self) -> Vec<u8> {
+    /// Synthetic packets consume acquisition-time beats; recorded packets remain verbatim.
+    pub fn hr_payload_at(&mut self, elapsed: f64) -> (Vec<u8>, u64) {
         if let Some(replay) = &self.hr_replay {
-            if !replay.packets.is_empty() {
-                let at = (self.hr_replay_index as usize) % replay.packets.len();
-                self.hr_replay_index = self.hr_replay_index.saturating_add(1);
-                self.hr_beat_index = self.hr_beat_index.saturating_add(1);
-                return replay.packets[at].clone();
-            }
+            let at = self.hr_replay_index % replay.packets.len() as u64;
+            self.hr_replay_index = self.hr_replay_index.saturating_add(1);
+            return (replay.packets[at as usize].clone(), 0);
         }
-        let beat = self.hr_beat_index;
-        self.hr_beat_index = beat.saturating_add(1);
-        let rr_s = Self::rr_interval_s(self.config.bpm, self.config.rr_jitter_ms, beat);
-        if self.config.contact_supported {
-            gatt_spec::encode_hr_measurement_with_contact(
-                self.config.bpm,
-                &[rr_s],
-                self.config.contact_detected,
-            )
+        self.heartbeat.sync(&self.config, elapsed);
+        let (rr, dropped) = self
+            .heartbeat
+            .intervals(elapsed, &mut self.hr_acquired_cursor);
+        let bpm = rr.last().map_or(
+            self.hr_last_bpm.unwrap_or_else(|| self.curve_bpm(elapsed)),
+            |r| (60.0 / r).round().clamp(1.0, 255.0) as u8,
+        );
+        self.hr_last_bpm = Some(bpm);
+        let payload = if self.config.contact_supported {
+            gatt_spec::encode_hr_measurement_with_contact(bpm, &rr, self.config.contact_detected)
         } else {
-            gatt_spec::encode_hr_measurement_no_contact(self.config.bpm, &[rr_s])
-        }
+            gatt_spec::encode_hr_measurement_no_contact(bpm, &rr)
+        };
+        (payload, dropped)
     }
 
     /// Bytes returned by a PMD control-point read: the feature set.
@@ -780,7 +777,7 @@ impl SimState {
         let pending_actions = self
             .pending_pmd_actions
             .iter()
-            .map(|(_, action)| *action)
+            .map(|(_, action, _)| *action)
             .chain(
                 self.pending_indications
                     .iter()
@@ -848,18 +845,22 @@ impl SimState {
     pub fn apply_pmd_action(&mut self, action: PmdAction) {
         match action {
             PmdAction::StartEcg => {
+                self.ecg_delivery_paused = false;
                 self.ecg_streaming = true;
                 self.ecg_started_at = Some(Instant::now());
             }
             PmdAction::StopEcg => {
+                self.ecg_delivery_paused = false;
                 self.ecg_streaming = false;
                 self.ecg_started_at = None;
             }
             PmdAction::StartAcc(settings) => {
+                self.acc_delivery_paused = false;
                 self.acc_settings = Some(settings);
                 self.acc_started_at = Some(Instant::now());
             }
             PmdAction::StopAcc => {
+                self.acc_delivery_paused = false;
                 self.acc_settings = None;
                 self.acc_started_at = None;
             }
@@ -870,6 +871,8 @@ impl SimState {
     /// End the scoped PMD session without leaking old actions into a new one.
     /// Run-wide configuration, injected faults and evidence counters survive.
     pub fn reset_pmd_session(&mut self) {
+        self.ecg_delivery_paused = false;
+        self.acc_delivery_paused = false;
         self.ecg_streaming = false;
         self.ecg_started_at = None;
         self.acc_settings = None;
@@ -879,11 +882,9 @@ impl SimState {
         self.last_pmd_response = None;
     }
 
-    /// Remember transport admission without claiming OS acceptance.
-    pub fn queue_pmd_action(&mut self, id: u64, action: PmdAction) {
-        if action != PmdAction::None {
-            self.pending_pmd_actions.push((id, action));
-        }
+    /// Keep response bytes and action owned by their exact transport admission.
+    pub fn queue_pmd_response(&mut self, id: u64, action: PmdAction, response: Vec<u8>) {
+        self.pending_pmd_actions.push((id, action, response));
     }
 
     /// Return an exactly matched accepted action for the caller to commit/log.
@@ -892,8 +893,11 @@ impl SimState {
         let index = self
             .pending_pmd_actions
             .iter()
-            .position(|(pending, _)| *pending == id)?;
-        let (_, action) = self.pending_pmd_actions.remove(index);
+            .position(|(pending, _, _)| *pending == id)?;
+        let (_, action, response) = self.pending_pmd_actions.remove(index);
+        if accepted && !response.is_empty() {
+            self.last_pmd_response = Some(response);
+        }
         accepted.then_some(action)
     }
 
@@ -929,35 +933,26 @@ fn validate_start_settings(tlv: &[u8]) -> Result<(), u8> {
             let base = offset + 2 + index * 2;
             Some(u16::from_le_bytes([*tlv.get(base)?, *tlv.get(base + 1)?]))
         };
-        match setting {
-            0x00 => {
-                for index in 0..usize::from(count) {
-                    let Some(rate) = value_at(index) else {
-                        return Err(gatt_spec::PMD_STATUS_INVALID_LENGTH);
-                    };
-                    if rate != gatt_spec::H10_ECG_SAMPLE_RATE_HZ {
-                        return Err(gatt_spec::PMD_STATUS_INVALID_SAMPLE_RATE);
-                    }
+        if setting == 0 {
+            for index in 0..usize::from(count) {
+                let Some(rate) = value_at(index) else {
+                    return Err(gatt_spec::PMD_STATUS_INVALID_LENGTH);
+                };
+                if rate != gatt_spec::H10_ECG_SAMPLE_RATE_HZ {
+                    return Err(gatt_spec::PMD_STATUS_INVALID_SAMPLE_RATE);
                 }
-                offset += 2 + usize::from(count) * 2;
             }
-            0x01 => {
-                for index in 0..usize::from(count) {
-                    let Some(resolution) = value_at(index) else {
-                        return Err(gatt_spec::PMD_STATUS_INVALID_LENGTH);
-                    };
-                    if resolution != gatt_spec::H10_ECG_RESOLUTION_BITS {
-                        return Err(gatt_spec::PMD_STATUS_INVALID_RESOLUTION);
-                    }
+            offset += 2 + usize::from(count) * 2;
+        } else {
+            for index in 0..usize::from(count) {
+                let Some(resolution) = value_at(index) else {
+                    return Err(gatt_spec::PMD_STATUS_INVALID_LENGTH);
+                };
+                if resolution != gatt_spec::H10_ECG_RESOLUTION_BITS {
+                    return Err(gatt_spec::PMD_STATUS_INVALID_RESOLUTION);
                 }
-                offset += 2 + usize::from(count) * 2;
             }
-            _ => {
-                // Other setting kinds are length-prefixed but opaque here: skip
-                // only what the count byte promises for known 2-byte fields is
-                // unsafe, so an unknown setting ends validation as malformed.
-                return Err(gatt_spec::PMD_STATUS_INVALID_LENGTH);
-            }
+            offset += 2 + usize::from(count) * 2;
         }
     }
     if selected.into_iter().all(|present| present) {
@@ -973,6 +968,47 @@ mod tests {
 
     fn state() -> SimState {
         SimState::new(SimConfig::default())
+    }
+
+    #[test]
+    fn queued_response_is_replayable_only_after_exact_acceptance() {
+        let mut sim = state();
+        sim.queue_pmd_response(1, PmdAction::None, vec![1, 2]);
+        assert_eq!(sim.last_pmd_response, None);
+        assert_eq!(sim.settle_pmd_action(99, true), None);
+        sim.settle_pmd_action(1, false);
+        assert_eq!(sim.last_pmd_response, None);
+        sim.queue_pmd_response(2, PmdAction::None, vec![3, 4]);
+        assert_eq!(sim.settle_pmd_action(2, true), Some(PmdAction::None));
+        assert_eq!(sim.last_pmd_response, Some(vec![3, 4]));
+        sim.queue_pmd_response(3, PmdAction::StartEcg, vec![5, 6]);
+        sim.settle_pmd_action(3, false);
+        assert_eq!(sim.last_pmd_response, Some(vec![3, 4]));
+        sim.queue_pmd_response(4, PmdAction::StartEcg, vec![7, 8]);
+        sim.reset_pmd_session();
+        assert_eq!(sim.settle_pmd_action(4, true), None);
+        assert_eq!(sim.last_pmd_response, None);
+    }
+
+    #[test]
+    fn synthetic_hr_rr_packets_fit_minimum_att_and_follow_acquisition() {
+        let mut sim = state();
+        assert_eq!(sim.hr_payload_at(0.5).0, vec![0, 72]);
+        let (packet, dropped) = sim.hr_payload_at(100.0);
+        assert_eq!(dropped, 112);
+        assert_eq!(packet.len(), 18);
+        assert_eq!(packet[0], 0x10);
+        assert_eq!(packet[1], 72);
+        assert!(packet[2..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .all(|rr| u16::from_le_bytes([rr[0], rr[1]]) == 853));
+        assert_eq!(sim.hr_payload_at(100.0).0, vec![0, 72]);
+        let phase = sim.heartbeat.phase(100.0).unwrap();
+        sim.reset_pmd_session();
+        assert_eq!(sim.heartbeat.phase(100.0), Some(phase));
+        assert_eq!(sim.hr_payload_at(101.0).1, 0);
     }
 
     #[test]
@@ -1160,9 +1196,11 @@ mod tests {
 
     #[test]
     fn hr_payload_carries_configured_bpm() {
-        let mut sim = state();
-        sim.config.bpm = 96;
-        let payload = sim.hr_payload();
+        let mut sim = SimState::new(SimConfig {
+            bpm: 96,
+            ..SimConfig::default()
+        });
+        let payload = sim.hr_payload_at(1.0).0;
         assert_eq!(payload[1], 96);
         assert_eq!(
             payload[0] & gatt_spec::HR_FLAG_RR_PRESENT,
@@ -1184,24 +1222,18 @@ mod tests {
     }
 
     #[test]
-    fn rr_jitter_varies_intervals_deterministically() {
-        let with_jitter = |beat: u64| SimState::rr_interval_s(60, 50.0, beat);
-        assert_eq!(with_jitter(0), with_jitter(10), "sine period is 10 beats");
-        assert_ne!(with_jitter(0), with_jitter(3), "adjacent beats differ");
-        assert_eq!(
-            SimState::rr_interval_s(60, 0.0, 0),
-            1.0,
-            "no jitter: exact base interval"
-        );
-        let mut a = state();
-        a.config.bpm = 60;
-        a.config.rr_jitter_ms = 50.0;
-        let first = a.hr_payload();
-        let mut b = state();
-        b.config.bpm = 60;
-        b.config.rr_jitter_ms = 50.0;
-        assert_eq!(first, b.hr_payload(), "same beat index, same bytes");
-        assert_ne!(first, a.hr_payload(), "next beat differs under jitter");
+    fn rr_jitter_varies_intervals_deterministically_on_the_shared_timeline() {
+        let config = SimConfig {
+            bpm: 60,
+            rr_jitter_ms: 50.0,
+            ..SimConfig::default()
+        };
+        let mut a = SimState::new(config.clone());
+        let mut b = SimState::new(config);
+        let first = a.hr_payload_at(1.0).0;
+        assert_eq!(first, b.hr_payload_at(1.0).0);
+        assert_eq!(a.hr_payload_at(2.0).0, b.hr_payload_at(2.0).0);
+        assert_ne!(first, a.hr_payload_at(3.0).0);
     }
 
     #[test]
@@ -1227,7 +1259,7 @@ mod tests {
         // All 120 raw HR packets start with 0x10 (contact not supported).
         let mut sim = state();
         assert!(!sim.config.contact_supported);
-        let payload = sim.hr_payload();
+        let payload = sim.hr_payload_at(1.0).0;
         assert_eq!(payload[0], 0x10);
         assert_eq!(payload[1], 72);
     }
@@ -1237,13 +1269,13 @@ mod tests {
         let mut sim = state();
         sim.config.contact_supported = true;
         sim.config.contact_detected = true;
-        assert_eq!(sim.hr_payload()[0] & 0x06, 0x06);
+        assert_eq!(sim.hr_payload_at(1.0).0[0] & 0x06, 0x06);
         sim.config.contact_detected = false;
-        assert_eq!(sim.hr_payload()[0] & 0x06, 0x04);
+        assert_eq!(sim.hr_payload_at(1.0).0[0] & 0x06, 0x04);
         sim.config.contact_supported = false;
         sim.config.contact_detected = true;
         assert_eq!(
-            sim.hr_payload()[0] & 0x06,
+            sim.hr_payload_at(1.0).0[0] & 0x06,
             0x00,
             "unsupported contact reports no contact bits even when detected"
         );
@@ -1255,10 +1287,10 @@ mod tests {
         sim.hr_replay = Some(HrReplay {
             packets: vec![vec![0x10, 88, 0xBD, 0x02], vec![0x10, 87, 0xDD, 0x02]],
         });
-        assert_eq!(sim.hr_payload(), vec![0x10, 88, 0xBD, 0x02]);
-        assert_eq!(sim.hr_payload(), vec![0x10, 87, 0xDD, 0x02]);
+        assert_eq!(sim.hr_payload_at(1.0).0, vec![0x10, 88, 0xBD, 0x02]);
+        assert_eq!(sim.hr_payload_at(1.0).0, vec![0x10, 87, 0xDD, 0x02]);
         assert_eq!(
-            sim.hr_payload(),
+            sim.hr_payload_at(1.0).0,
             vec![0x10, 88, 0xBD, 0x02],
             "replay cycles forever"
         );
@@ -1621,7 +1653,7 @@ mod tests {
             response: vec![0xf0, 3, 0, 0, 0],
             action: PmdAction::StopEcg,
         });
-        sim.queue_pmd_action(42, PmdAction::StopAcc);
+        sim.queue_pmd_response(42, PmdAction::StopAcc, vec![0xF0]);
         sim.last_pmd_response = Some(vec![0xf0, 2, 0, 0, 0]);
 
         sim.observe_subscription(gatt_spec::pmd::CONTROL_POINT, false);
@@ -1639,7 +1671,7 @@ mod tests {
     fn canceled_pending_start_cannot_activate_after_control_point_unsubscribe() {
         let mut sim = state();
         let start = sim.handle_pmd_write(&acc_start(25, 2));
-        sim.queue_pmd_action(7, start.action);
+        sim.queue_pmd_response(7, start.action, vec![0xF0]);
 
         sim.observe_subscription(gatt_spec::pmd::CONTROL_POINT, false);
 
@@ -1690,7 +1722,7 @@ mod tests {
     fn queued_transport_is_not_start_acceptance_and_failed_settlement_does_not_start() {
         let mut sim = state();
         let start = sim.handle_pmd_write(&acc_start(25, 2));
-        sim.queue_pmd_action(10, start.action);
+        sim.queue_pmd_response(10, start.action, vec![0xF0]);
         assert!(sim.acc_settings.is_none());
         assert!(sim.acc_started_at.is_none());
         assert_eq!(
@@ -1701,7 +1733,7 @@ mod tests {
         assert!(sim.acc_settings.is_none());
         let retry = sim.handle_pmd_write(&acc_start(50, 4));
         assert_ne!(retry.action, PmdAction::None);
-        sim.queue_pmd_action(11, retry.action);
+        sim.queue_pmd_response(11, retry.action, vec![0xF0]);
         let accepted = sim.settle_pmd_action(11, true).unwrap();
         assert_eq!(accepted, retry.action);
         assert!(
@@ -1721,7 +1753,7 @@ mod tests {
     fn inflight_actions_precede_deferred_admission_and_reset_ignores_old_completions() {
         let mut sim = state();
         let start = sim.handle_pmd_write(&acc_start(25, 2));
-        sim.queue_pmd_action(20, start.action);
+        sim.queue_pmd_response(20, start.action, vec![0xF0]);
         let stop = sim.handle_pmd_write(&[3, 2]);
         assert_eq!(stop.action, PmdAction::StopAcc);
         sim.pending_indications.push(PendingIndication {
@@ -1743,7 +1775,7 @@ mod tests {
         assert!(sim.pending_indications.is_empty());
         assert!(sim.acc_settings.is_none());
         let current = sim.handle_pmd_write(&acc_start(200, 8));
-        sim.queue_pmd_action(21, current.action);
+        sim.queue_pmd_response(21, current.action, vec![0xF0]);
         assert_eq!(sim.settle_pmd_action(20, false), None);
         assert_eq!(sim.settle_pmd_action(21, true), Some(current.action));
     }
@@ -1877,7 +1909,7 @@ mod tests {
         for inflight in [0, 64, crate::radio::SEND_QUEUE_CAPACITY] {
             let mut sim = state();
             for id in 0..inflight {
-                sim.queue_pmd_action(id as u64, PmdAction::StartEcg);
+                sim.queue_pmd_response(id as u64, PmdAction::StartEcg, vec![0xF0]);
             }
             for _ in inflight..crate::radio::SEND_QUEUE_CAPACITY {
                 sim.pending_indications.push(PendingIndication {

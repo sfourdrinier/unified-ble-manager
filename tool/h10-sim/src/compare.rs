@@ -87,6 +87,23 @@ const VALUE_EQUALITY_EXCLUSIONS: &[&str] = &["serialNumber", "batteryLevelPercen
 /// one side is a failed check, never an assumption.
 pub fn compare_fingerprints(real: &Value, sim: &Value, tolerances: Tolerances) -> ComparisonReport {
     let mut fields: Vec<FieldResult> = Vec::new();
+    if !tolerances.min_abs_ms.is_finite()
+        || tolerances.min_abs_ms < 0.0
+        || !tolerances.p50_relative.is_finite()
+        || tolerances.p50_relative < 0.0
+    {
+        return ComparisonReport {
+            passed: false,
+            complete: false,
+            tolerances: Tolerances::default(),
+            fields: vec![FieldResult {
+                field: "tolerances".into(),
+                status: CheckStatus::Fail,
+                detail: "timing tolerances must be finite and nonnegative".into(),
+            }],
+        };
+    }
+
     check_version(real, sim, &mut fields);
     compare_advertisement(real, sim, &mut fields);
     compare_gatt(real, sim, &mut fields);
@@ -799,6 +816,33 @@ mod tests {
                 "batteryNotify": {"ok": true, "effectiveDelivery": "notification"}
             }
         })
+    }
+
+    #[test]
+    fn nonfinite_or_negative_tolerances_fail_closed() {
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            for tolerances in [
+                Tolerances {
+                    p50_relative: invalid,
+                    ..Tolerances::default()
+                },
+                Tolerances {
+                    min_abs_ms: invalid,
+                    ..Tolerances::default()
+                },
+            ] {
+                let report = compare_fingerprints(
+                    &serde_json::json!({}),
+                    &serde_json::json!({}),
+                    tolerances,
+                );
+                assert!(!report.passed);
+                assert!(!report.complete);
+                assert_eq!(report.fields[0].field, "tolerances");
+                assert_eq!(report.fields[0].status, CheckStatus::Fail);
+                assert!(serde_json::to_string(&report).is_ok());
+            }
+        }
     }
 
     #[test]

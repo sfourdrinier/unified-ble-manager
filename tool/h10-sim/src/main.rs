@@ -10,6 +10,7 @@ mod ecg;
 mod events;
 mod fidelity;
 mod gatt_spec;
+mod heartbeat;
 mod linux_advertising;
 mod mgmt;
 mod profile;
@@ -51,6 +52,7 @@ fn usage() -> String {
          \x20 --control-token <tok>  Control port token (or H10SIM_TOKEN / --control-token-file)\n\
          \x20 --control-token-file <path>  Read the control token from a file\n\
          \x20 --pair-policy <policy> Pairing policy: just-works (default) or disabled\n\
+         \x20 --scenario <name>      Synchronized synthetic steady, breathing, exercise-recovery, abrupt\n\
          \x20 --bpm <bpm>            Heart rate in bpm (overrides the profile)\n\
          \x20 --battery <percent>    Battery level percent (overrides the profile)\n\
          \x20 --clock <mode>         ECG timestamp clock: polar-epoch (default, like the strap)\n\
@@ -302,10 +304,19 @@ fn main() -> ExitCode {
                     config.pair_policy =
                         sim::PairPolicy::parse(&value(&mut args, "--pair-policy")?)?;
                 }
+                "--scenario" => {
+                    config.scenario = heartbeat::Scenario::parse(&value(&mut args, "--scenario")?)?;
+                    config.ecg_source = sim::EcgSource::Synthetic;
+                    config.hr_source = sim::HrSource::Synthetic;
+                    config.bpm_curve.clear();
+                }
                 "--bpm" => {
                     config.bpm = value(&mut args, "--bpm")?
                         .parse::<u8>()
                         .map_err(|_| "--bpm must be 0-255".to_string())?;
+                    if config.bpm == 0 {
+                        return Err("--bpm must be 1-255".into());
+                    }
                 }
                 "--battery" => {
                     config.battery_percent = value(&mut args, "--battery")?
@@ -373,7 +384,7 @@ fn main() -> ExitCode {
                     tolerance_p50 = value(&mut args, "--tolerance-p50")?
                         .parse::<f64>()
                         .map_err(|_| "--tolerance-p50 must be a number >= 0".to_string())?;
-                    if tolerance_p50.is_sign_negative() {
+                    if !tolerance_p50.is_finite() || tolerance_p50.is_sign_negative() {
                         return Err("--tolerance-p50 must be a number >= 0".to_string());
                     }
                 }
@@ -381,7 +392,7 @@ fn main() -> ExitCode {
                     tolerance_ms = value(&mut args, "--tolerance-ms")?
                         .parse::<f64>()
                         .map_err(|_| "--tolerance-ms must be a number >= 0".to_string())?;
-                    if tolerance_ms.is_sign_negative() {
+                    if !tolerance_ms.is_finite() || tolerance_ms.is_sign_negative() {
                         return Err("--tolerance-ms must be a number >= 0".to_string());
                     }
                 }
@@ -795,7 +806,6 @@ async fn serve(
     let mut psftp_session = psftp::Session::new();
     let mut next_battery = Instant::now() + Duration::from_secs(60);
     let mut last_tick = Instant::now();
-    let boot = Instant::now();
     // The minimum ATT capacity fits one ACC sample; 200 Hz then needs a
     // five-millisecond opportunity, while actual batching follows capacity.
     let tick = tokio::time::interval(Duration::from_millis(5));
@@ -836,12 +846,10 @@ async fn serve(
                 if sim.tick_battery(elapsed_s) {
                     send_battery(&mut radio, &sim, &mut log).await;
                 }
-                if !sim.config.bpm_curve.is_empty() {
-                    sim.config.bpm = sim.curve_bpm(boot.elapsed().as_secs_f64());
-                }
+                sim.heartbeat.sync(&sim.config, sample_clock_boot.elapsed().as_secs_f64());
                 if now >= next_hr {
                     next_hr = now + Duration::from_secs_f64(timing.hr_interval_s(sim.config.hr_hz));
-                    send_hr(&mut radio, &mut sim, &mut log).await;
+                    send_hr(&mut radio, &mut sim, &mut log, sample_clock_boot.elapsed().as_secs_f64()).await;
                 }
                 if now >= next_ecg {
                     let interval = Duration::from_secs_f64(timing.ecg_interval_s(sim.config.ecg_frames_per_sec));
@@ -964,20 +972,33 @@ async fn start_advertising(
     };
     log.log(
         "advertising-started",
-        json!({"name": fitted, "services": ["180D", "FEEE"], "advLen": sizes.adv_len, "scanRspLen": sizes.scan_rsp_len, "polarCompanyId": gatt_spec::POLAR_COMPANY_ID, "manufacturerData": manufacturer_data, "advertising": radio.advertising_detail()}),
+        json!({"name": fitted, "services": ["180D", "FEEE"], "advLen": if manufacturer_data == "emitted" { advertisement::adv_len_with_mfr(sim.config.mfr_payload.len()) } else { sizes.adv_len }, "scanRspLen": sizes.scan_rsp_len, "polarCompanyId": gatt_spec::POLAR_COMPANY_ID, "manufacturerData": manufacturer_data, "advertising": radio.advertising_detail()}),
     );
     Ok(())
 }
 
-async fn send_hr(radio: &mut PlatformRadio, sim: &mut SimState, log: &mut EventLog) {
+async fn send_hr(
+    radio: &mut impl PeripheralRadio,
+    sim: &mut SimState,
+    log: &mut EventLog,
+    elapsed: f64,
+) {
     if sim.silent {
         return;
     }
-    let payload = sim.hr_payload();
+    let (payload, dropped) = sim.hr_payload_at(elapsed);
+    if dropped > 0 {
+        log.log("hr-beats-shed", json!({"beats": dropped}));
+    }
     let uuid = advertisement::short_uuid(gatt_spec::uuid16::HEART_RATE_MEASUREMENT);
     let outcome = radio.notify(uuid, payload.clone()).await;
     sim.observe_hr_notify(&outcome);
-    report_stream_notify(log, "hr-notify", outcome, json!({"bpm": sim.config.bpm}));
+    report_stream_notify(
+        log,
+        "hr-notify",
+        outcome,
+        json!({"bpm": if payload[0] & 1 == 0 { u16::from(payload[1]) } else { u16::from_le_bytes([payload[1], payload[2]]) }}),
+    );
 }
 
 /// Reports one inline notify outcome for a stream tick. `OsAccepted` and
@@ -1089,6 +1110,17 @@ async fn send_ecg_at(
             return;
         }
     };
+    if capacity < 13 {
+        if !sim.ecg_delivery_paused {
+            log.log("ecg-delivery-paused", json!({"capacity": capacity}));
+        }
+        sim.ecg_delivery_paused = true;
+        return;
+    }
+    if sim.ecg_delivery_paused {
+        log.log_simple("ecg-delivery-resumed");
+    }
+    sim.ecg_delivery_paused = false;
     let count =
         match gatt_spec::ecg_frame_samples_for_capacity(sim.config.ecg_frame_samples, capacity) {
             Ok(count) => count,
@@ -1155,7 +1187,24 @@ async fn send_ecg_at(
         let mut samples = Vec::with_capacity(count);
         match &sim.ecg_replay {
             Some(recorded) => ecg::replay_samples(recorded, index, count, &mut samples),
-            None => ecg::ecg_frame_samples(index, count, f64::from(sim.config.bpm), &mut samples),
+            None => {
+                for offset in 0..count {
+                    let t = origin.as_secs_f64() + (batch.first + offset as u64) as f64 / 130.0;
+                    match sim.heartbeat.ecg_sample(t) {
+                        Some(sample) => samples.push(sample),
+                        None => {
+                            log.log(
+                                "ecg-samples-shed",
+                                json!({"reason": "heartbeat-history-expired", "samples": count}),
+                            );
+                            break;
+                        }
+                    }
+                }
+                if samples.len() != count {
+                    continue;
+                }
+            }
         }
         // Device time, not Unix time: the strap stamps Polar-epoch nanoseconds
         // (or boot-relative time in explicitly unsynchronised mode) of the
@@ -1185,7 +1234,7 @@ async fn send_ecg_at(
 /// ACC generation is reset only by a new successful START, not by timer jitter
 /// or notification capacity changes. Its clock remains tied to acquisition.
 async fn send_acc(
-    radio: &mut PlatformRadio,
+    radio: &mut impl PeripheralRadio,
     sim: &mut SimState,
     log: &mut EventLog,
     runtime: &mut Option<(Instant, acc_stream::Stream)>,
@@ -1214,6 +1263,17 @@ async fn send_acc(
             return;
         }
     };
+    if capacity < acc::HEADER_BYTES + acc::SAMPLE_BYTES {
+        if !sim.acc_delivery_paused {
+            log.log("acc-delivery-paused", json!({"capacity": capacity}));
+        }
+        sim.acc_delivery_paused = true;
+        return;
+    }
+    if sim.acc_delivery_paused {
+        log.log_simple("acc-delivery-resumed");
+    }
+    sim.acc_delivery_paused = false;
     let Some((_, stream)) = runtime.as_mut() else {
         return;
     };
@@ -1484,7 +1544,7 @@ fn read_answer(sim: &SimState, uuid: &Uuid, offset: u64) -> radio::RadioReadAnsw
 }
 
 async fn write_request(
-    radio: &mut PlatformRadio,
+    radio: &mut impl PeripheralRadio,
     sim: &mut SimState,
     timing: &mut timing::TimingRuntime,
     log: &mut EventLog,
@@ -1523,9 +1583,8 @@ async fn write_request(
                 "pmd-command",
                 json!({"op": value.first().copied().unwrap_or(0xFF), "status": status, "action": format!("{:?}", outcome.action)}),
             );
-            // Remember the response bytes: adversarial `stale-callback`
-            // replays them out of sequence.
-            sim.last_pmd_response = Some(response.clone());
+            // Only OS-accepted responses may be replayed by stale-callback.
+
             // A measured response latency defers the indication to the tick
             // loop; the ATT write is answered now, so the loop never sleeps.
             // Immediate by default, so behaviour is unchanged. The
@@ -1553,11 +1612,12 @@ async fn write_request(
             // the central 5 s later.
             match radio.notify(control_point, response.clone()).await {
                 Ok(SendOutcome::OsAccepted) => {
+                    sim.last_pmd_response = Some(response.clone());
                     commit_pmd_action(sim, log, outcome.action);
                     true
                 }
                 Ok(SendOutcome::Queued { id }) => {
-                    sim.queue_pmd_action(id, outcome.action);
+                    sim.queue_pmd_response(id, outcome.action, response);
                     true
                 }
                 Ok(SendOutcome::NotSubscribed) => {
@@ -1673,20 +1733,27 @@ fn commit_pmd_action(sim: &mut SimState, log: &mut EventLog, action: PmdAction) 
 /// Sends PMD indications whose latency expired. The streaming action commits
 /// only when the indication actually goes out; a central that vanished
 /// mid-latency drops the indication loudly and leaves no stuck stream.
-async fn drain_indications(radio: &mut PlatformRadio, sim: &mut SimState, log: &mut EventLog) {
+async fn drain_indications(
+    radio: &mut impl PeripheralRadio,
+    sim: &mut SimState,
+    log: &mut EventLog,
+) {
     let now = Instant::now();
     // Responses and their state changes stay in command order even when
     // injected/measured latencies differ between consecutive commands.
     while let Some(indication) = sim.take_due_indication(now) {
         let control_point =
             Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
-        let outcome = radio.notify(control_point, indication.response).await;
+        let outcome = radio
+            .notify(control_point, indication.response.clone())
+            .await;
         match &outcome {
             Ok(SendOutcome::OsAccepted) => {
+                sim.last_pmd_response = Some(indication.response);
                 commit_pmd_action(sim, log, indication.action);
             }
             Ok(SendOutcome::Queued { id }) => {
-                sim.queue_pmd_action(*id, indication.action);
+                sim.queue_pmd_response(*id, indication.action, indication.response);
             }
             Ok(SendOutcome::NotSubscribed) => {
                 log.log(
@@ -1724,10 +1791,15 @@ async fn handle_control(
     }
     let answer = match command {
         ControlCommand::SetBpm { bpm } => {
-            sim.config.bpm = bpm;
-            // An explicit bpm wins over the scripted curve.
-            sim.config.bpm_curve.clear();
-            ControlReply::ok()
+            if bpm == 0 {
+                ControlReply::failed("bpm must be 1-255")
+            } else {
+                sim.config.bpm = bpm;
+                // An explicit fixed bpm wins over both scripted and scenario rates.
+                sim.config.bpm_curve.clear();
+                sim.config.scenario = heartbeat::Scenario::Steady;
+                ControlReply::ok()
+            }
         }
         ControlCommand::SetAdvertising { on } => match set_advertising(radio, sim, log, on).await {
             Ok(reply) => reply,
@@ -2250,6 +2322,171 @@ mod tests {
         }
     }
 
+    struct NotifyRadio {
+        outcome: Result<SendOutcome, radio::RadioError>,
+        frames: Vec<Vec<u8>>,
+    }
+    #[async_trait::async_trait]
+    impl PeripheralRadio for NotifyRadio {
+        async fn open(_: mpsc::Sender<RadioEvent>) -> Result<Self, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_powered(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_advertising(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn start_advertising(
+            &mut self,
+            _: &str,
+            _: &[Uuid],
+        ) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn stop_advertising(&mut self) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn add_service(&mut self, _: &radio::ServiceSpec) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn notification_payload_capacity(
+            &self,
+            _: Uuid,
+        ) -> Result<Option<usize>, radio::RadioError> {
+            Ok(Some(512))
+        }
+        async fn notify(
+            &mut self,
+            _: Uuid,
+            bytes: Vec<u8>,
+        ) -> Result<SendOutcome, radio::RadioError> {
+            self.frames.push(bytes);
+            self.outcome.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn hr_replay_telemetry_decodes_actual_u8_and_u16_packets() {
+        let mut sim = SimState::new(SimConfig::default());
+        sim.hr_replay = Some(sim::HrReplay {
+            packets: vec![vec![0x10, 88, 0xBD, 0x02], vec![1, 44, 1]],
+        });
+        let mut radio = NotifyRadio {
+            outcome: Ok(SendOutcome::OsAccepted),
+            frames: Vec::new(),
+        };
+        let mut log = EventLog::new();
+        let (sender, mut events) = mpsc::channel(4);
+        log.add_listener(sender);
+        for expected in [88, 300] {
+            send_hr(&mut radio, &mut sim, &mut log, 1.0).await;
+            let event = events.try_recv().unwrap();
+            assert_eq!(event["bpm"], expected);
+            assert_eq!(event["kind"], "hr-notify");
+        }
+        assert_eq!(radio.frames, sim.hr_replay.as_ref().unwrap().packets);
+        assert_eq!(
+            sim.run_record()["heartbeat"]["recordingRelationship"],
+            "independent; not retimed"
+        );
+    }
+
+    #[tokio::test]
+    async fn pmd_immediate_and_deferred_replay_require_os_acceptance() {
+        let cp = Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap();
+        for deferred in [false, true] {
+            for outcome in [
+                Ok(SendOutcome::OsAccepted),
+                Ok(SendOutcome::Queued { id: 7 }),
+                Ok(SendOutcome::NotSubscribed),
+                Ok(SendOutcome::Failed("injected".into())),
+                Err(radio::RadioError("injected".into())),
+            ] {
+                let mut radio = NotifyRadio {
+                    outcome: outcome.clone(),
+                    frames: Vec::new(),
+                };
+                let mut sim = SimState::new(SimConfig::default());
+                if deferred {
+                    sim.response_delay_ms = 1;
+                }
+                let mut timing =
+                    timing::TimingRuntime::new(timing::TimingProfile::default_unconfirmed(1));
+                let mut log = EventLog::new();
+                let accepted = write_request(
+                    &mut radio,
+                    &mut sim,
+                    &mut timing,
+                    &mut log,
+                    gatt_spec::pmd::SERVICE,
+                    &cp,
+                    &[gatt_spec::PMD_OP_GET_SETTINGS, 0x00],
+                )
+                .await;
+                if deferred {
+                    assert!(accepted);
+                    assert_eq!(sim.last_pmd_response, None);
+                    sim.pending_indications[0].due = Instant::now();
+                    drain_indications(&mut radio, &mut sim, &mut log).await;
+                }
+                let response = radio.frames[0].clone();
+                match outcome {
+                    Ok(SendOutcome::OsAccepted) => {
+                        assert_eq!(sim.last_pmd_response, Some(response))
+                    }
+                    Ok(SendOutcome::Queued { id }) => {
+                        assert_eq!(sim.last_pmd_response, None);
+                        assert_eq!(sim.settle_pmd_action(id, true), Some(PmdAction::None));
+                        assert_eq!(sim.last_pmd_response, Some(response));
+                    }
+                    _ => assert_eq!(sim.last_pmd_response, None),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn temporary_acc_capacity_preserves_stream_and_resumes() {
+        let mut sim = SimState::new(SimConfig::default());
+        let settings = acc::Settings {
+            sample_rate_hz: 200,
+            range_g: 8,
+        };
+        sim.acc_settings = Some(settings);
+        let started = Instant::now() - Duration::from_secs(1);
+        sim.acc_started_at = Some(started);
+        let mut radio = EcgRadio {
+            capacity: Ok(Some(15)),
+            frames: Vec::new(),
+        };
+        let mut runtime = None;
+        let mut log = EventLog::new();
+        send_acc(
+            &mut radio,
+            &mut sim,
+            &mut log,
+            &mut runtime,
+            started,
+            sim::POLAR_EPOCH_OFFSET_NS,
+        )
+        .await;
+        assert_eq!(sim.acc_settings, Some(settings));
+        assert!(radio.frames.is_empty());
+        radio.capacity = Ok(Some(20));
+        send_acc(
+            &mut radio,
+            &mut sim,
+            &mut log,
+            &mut runtime,
+            started,
+            sim::POLAR_EPOCH_OFFSET_NS,
+        )
+        .await;
+        assert!(!radio.frames.is_empty());
+        assert!(radio.frames.iter().all(|f| f.len() <= 20));
+    }
+
     #[tokio::test]
     async fn ecg_notifications_fit_writer_capacity() {
         let mut sim = SimState::new(SimConfig::default());
@@ -2325,12 +2562,11 @@ mod tests {
                     if let Some(samples) = &sim.ecg_replay {
                         ecg::replay_samples(samples, index, count, &mut expected_samples);
                     } else {
-                        ecg::ecg_frame_samples(
-                            index,
-                            count,
-                            f64::from(sim.config.bpm),
-                            &mut expected_samples,
-                        );
+                        for offset in 0..count {
+                            let phase = (index + offset as u64) as f64 / 130.0 * 72.0 / 60.0;
+                            expected_samples
+                                .push(ecg::ecg_sample_uv((phase + 0.22).rem_euclid(1.0), 60.0));
+                        }
                     }
                     delivered += count as u64;
                     let timestamp = 15_000_000_000 + (delivered - 1) * 1_000_000_000 / 130;
@@ -2486,8 +2722,8 @@ mod tests {
                     assert!(events.try_recv().is_err());
                 }
                 Ok(Some(_)) => {
-                    assert!(!sim.ecg_streaming);
-                    assert_eq!(events.try_recv().unwrap()["kind"], "ecg-stream-failed");
+                    assert!(sim.ecg_streaming);
+                    assert_eq!(events.try_recv().unwrap()["kind"], "ecg-delivery-paused");
                 }
                 Err(_) => {
                     assert!(sim.ecg_streaming);
@@ -2521,6 +2757,95 @@ mod tests {
             assert!(gatt_spec::ecg_frame_samples_for_capacity(73, capacity).is_err());
         }
         assert!(gatt_spec::ecg_frame_samples_for_capacity(0, 512).is_err());
+    }
+
+    #[tokio::test]
+    async fn fractional_start_and_reconnect_ecg_samples_match_packet_timestamps() {
+        let mut sim = SimState::new(SimConfig {
+            scenario: heartbeat::Scenario::Breathing,
+            ..SimConfig::default()
+        });
+        let clock_boot = Instant::now();
+        let mut runtime = None;
+        for origin in [Duration::from_micros(7600), Duration::from_micros(1234567)] {
+            sim.reset_pmd_session();
+            sim.ecg_streaming = true;
+            sim.ecg_started_at = Some(clock_boot + origin);
+            let mut radio = EcgRadio {
+                capacity: Ok(Some(16)),
+                frames: Vec::new(),
+            };
+            send_ecg_at(
+                &mut radio,
+                &mut sim,
+                &mut EventLog::new(),
+                &mut runtime,
+                clock_boot,
+                sim::POLAR_EPOCH_OFFSET_NS,
+                Duration::from_millis(100),
+            )
+            .await;
+            assert!(!radio.frames.is_empty());
+            for frame in &radio.frames {
+                let last_ns = u64::from_le_bytes(frame[1..9].try_into().unwrap());
+                let count = (frame.len() - 10) / 3;
+                for (offset, bytes) in frame[10..].as_chunks::<3>().0.iter().enumerate() {
+                    let sample = (i32::from(bytes[0])
+                        | (i32::from(bytes[1]) << 8)
+                        | (i32::from(bytes[2]) << 16))
+                        << 8
+                        >> 8;
+                    let at = last_ns as f64 / 1e9 - (count - 1 - offset) as f64 / 130.0;
+                    let expected = sim.heartbeat.ecg_sample(at).unwrap();
+                    assert!(
+                        (sample - expected).abs() <= 1,
+                        "sample {sample} != {expected} at timestamp {at}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn temporary_ecg_capacity_does_not_stop_acknowledged_stream() {
+        let mut sim = SimState::new(SimConfig::default());
+        let started = Instant::now();
+        sim.ecg_streaming = true;
+        sim.ecg_started_at = Some(started);
+        let mut radio = EcgRadio {
+            capacity: Ok(Some(12)),
+            frames: Vec::new(),
+        };
+        let mut runtime = None;
+        let mut log = EventLog::new();
+        send_ecg_at(
+            &mut radio,
+            &mut sim,
+            &mut log,
+            &mut runtime,
+            started,
+            sim::POLAR_EPOCH_OFFSET_NS,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(
+            sim.ecg_streaming,
+            "capacity shortage must preserve acknowledged START"
+        );
+        assert!(radio.frames.is_empty());
+        radio.capacity = Ok(Some(20));
+        send_ecg_at(
+            &mut radio,
+            &mut sim,
+            &mut log,
+            &mut runtime,
+            started,
+            sim::POLAR_EPOCH_OFFSET_NS,
+            Duration::from_secs(2),
+        )
+        .await;
+        assert!(!radio.frames.is_empty());
+        assert!(radio.frames.iter().all(|frame| frame.len() <= 20));
     }
 
     #[tokio::test]
