@@ -2,6 +2,13 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## Unreleased
+
+- Resolve Android origin references for previously discovered, unbonded devices
+  through the OS device handle after an app restart. Preserve connected and
+  bonded inventory precedence, permission failures, and unknown reachability;
+  resolution does not scan, connect, or create a bond.
+
 ## [5.0.3] - 2026-10-10
 
 - Preserve connection-generation ownership across Apple, Android, desktop, and

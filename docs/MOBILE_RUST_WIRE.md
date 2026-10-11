@@ -1009,8 +1009,10 @@ the original deadline, and session disposal fence publication of late results.
 
 `peers.resolve` now carries `{reference, operationId, budgetMs?}`. An app-held
 identifier absent from the owner cache is resolved through the native identifier
-lookup: Apple `retrievePeripherals(withIdentifiers:)`, Android current system
-GATT/bond inventory. A native miss returns null. This route adds no owner peer,
+lookup: Apple `retrievePeripherals(withIdentifiers:)`, Android validates the
+canonical device address and obtains an OS device handle, using current system
+GATT/bond inventory first for its cached name. A native miss returns null. This
+route adds no owner peer,
 connection lease or advertisement evidence; a native identifier match reports
 unknown connection/reachability unless another independently retained observation
 establishes those facts. System-connected mobile results use origin references
