@@ -688,7 +688,8 @@ impl SimState {
     pub fn snapshot(&self) -> serde_json::Value {
         serde_json::json!({
             "name": self.config.name,
-            "bpm": self.config.bpm,
+            "bpm": if self.hr_replay.is_none() { self.hr_last_bpm.unwrap_or(self.config.bpm) } else { self.config.bpm },
+            "baselineBpm": self.config.bpm,
             "batteryPercent": self.config.battery_percent,
             "contactDetected": self.config.contact_detected,
             "pairPolicy": self.config.pair_policy.as_str(),
@@ -1115,6 +1116,31 @@ mod tests {
         assert_eq!(telemetry["notificationAttempts"], u64::MAX);
         assert_eq!(telemetry["notificationsNotSubscribed"], 1);
         assert_eq!(telemetry["countersSaturated"], true);
+    }
+
+    #[test]
+    fn state_snapshot_reports_generated_bpm_without_changing_baseline() {
+        let mut sim = SimState::new(SimConfig {
+            bpm: 68,
+            bpm_curve: vec![BpmStep {
+                at_s: 60.0,
+                bpm: 96,
+            }],
+            ..SimConfig::default()
+        });
+        let (packet, _) = sim.hr_payload_at(70.0);
+        assert_eq!(packet[1], 96);
+        assert_eq!(sim.snapshot()["bpm"], 96);
+        assert_eq!(sim.snapshot()["baselineBpm"], 68);
+        assert_eq!(sim.config.bpm, 68);
+
+        // Recorded profiles retain their existing configured-BPM state semantics.
+        sim.config.bpm = 72;
+        sim.hr_replay = Some(HrReplay {
+            packets: vec![vec![0x10, 72, 0x55, 0x03]],
+        });
+        assert_eq!(sim.snapshot()["bpm"], 72);
+        assert_eq!(sim.snapshot()["baselineBpm"], 72);
     }
 
     #[test]
