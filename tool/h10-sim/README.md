@@ -110,8 +110,9 @@ must select either a variable scenario or a custom curve.
 
 The analytic timeline does not queue waveform history or integrate one beat
 at a time after a pause. It retains at most 32 configuration epochs. ECG
-backlog is bounded to one second; expired physiology history is explicitly
-reported as `ecg-samples-shed`. HR packets carry at most eight newly acquired
+backlog is bounded to the greater of one second or two effective packet batches
+(334 samples, about 2.57 seconds, when 167-sample packets fit); expired
+physiology history is explicitly reported as `ecg-samples-shed`. HR packets carry at most eight newly acquired
 RR intervals (18 bytes at most); older beats are reported as `hr-beats-shed`.
 Temporary ECG/ACC value-capacity shortages preserve the acknowledged START
 and log pause/resume transitions once, then resume with bounded catch-up.
@@ -300,7 +301,8 @@ plus the 10-byte PMD header into the current writer's notification-value capacit
 That capacity already excludes transport overhead; it is not reduced again.
 The usual 73-sample / 229-byte packet remains unchanged when it fits. An
 18-byte writer carries two samples per packet; the minimum 13-byte capacity
-carries one. Smaller capacities stop only ECG with `ecg-stream-failed`; capacity
+carries one. Smaller capacities pause ECG delivery while preserving the
+acknowledged stream, logging `ecg-delivery-paused`/`ecg-delivery-resumed`; capacity
 query failures are explicit `radio-error` events, and absent subscribers send
 nothing. Changing capacity does not reset acquisition, waveform indices,
 last-sample timestamps or the delivery sequence.
