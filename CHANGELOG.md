@@ -18,6 +18,13 @@ All notable changes to `unified-ble-manager` are documented here.
   bounded history with simulator regressions. These tooling changes do not bump
   the UBM package version or establish physical H10 fidelity.
 
+## [5.0.4] - 2026-10-11
+
+- Resolve saved Android origin references through the OS device handle after
+  app restart, including previously discovered unbonded devices. Preserve
+  connected and bonded inventory precedence, permission failures, and unknown
+  reachability; resolution does not scan, connect, or create a bond.
+
 ## [5.0.3] - 2026-10-10
 
 - Preserve connection-generation ownership across Apple, Android, desktop, and
@@ -33,7 +40,7 @@ All notable changes to `unified-ble-manager` are documented here.
   while preserving bonds, and distinguish stopped or sealed queue cutoffs from
   actual overflow and storage-loss observations.
 - Keep package identity, native metadata, generated documentation, and release
-  artifacts aligned for this unpublished patch candidate. Backend support labels
+  artifacts aligned for the patch release. Backend support labels
   and physical-radio qualification remain evidence-derived and unchanged.
 
 ## [5.0.2] - 2026-10-10

@@ -837,7 +837,9 @@ class OwnedAndroidGattRadio private constructor(
     val address = peerId.uppercase(java.util.Locale.ROOT)
     require(Regex("^[0-9A-F]{2}(:[0-9A-F]{2}){5}$").matches(address)) { "Invalid directory peer address" }
     connectedPeerSnapshots().firstOrNull { it.nativePeerId == address }?.let { return it }
-    return bondedPeerSnapshots().firstOrNull { it.nativePeerId == address }?.let { ConnectedPeerSnapshot(it.nativePeerId, it.displayName) }
+    bondedPeerSnapshots().firstOrNull { it.nativePeerId == address }?.let { return ConnectedPeerSnapshot(it.nativePeerId, it.displayName) }
+    val remoteDevice = adapter?.getRemoteDevice(address) ?: return null
+    return ConnectedPeerSnapshot(address, remoteDevice.name?.takeIf { it.isNotEmpty() })
   }
 
   /** Current system GATT connections, including other applications' links. */
