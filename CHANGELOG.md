@@ -2,7 +2,21 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## Unreleased
+## Unreleased — H10 simulator tooling
+
+- Add `--scenario` and reproducible steady, breathing, exercise/recovery and
+  abrupt-rate profiles. Synthetic HR, RR intervals and ECG R-peaks share one
+  bounded heartbeat timeline that preserves phase across rate changes.
+- Expose heartbeat scenario, signal sources and recording relationship in
+  `get-state` and run records. State `bpm` reports the latest generated synthetic
+  HR measurement; `baselineBpm` retains the configured baseline. Recorded replay
+  remains unchanged, with independent HR/ECG recordings labeled explicitly.
+- Retain only accepted PMD responses for replay, preserve acknowledged streams
+  through temporary notification-capacity shortages, reject non-finite comparison
+  tolerances, correct HR/advertisement telemetry and remove unreachable validation.
+- Qualify synchronization, packet boundaries, delayed delivery, reconnects and
+  bounded history with simulator regressions. These tooling changes do not bump
+  the UBM package version or establish physical H10 fidelity.
 
 ## [5.0.4] - 2026-10-11
 
