@@ -1351,10 +1351,10 @@ await manager.background.updateNotification({
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              This source targets the unpublished <code>5.0.4</code> candidate. Main executes the shared Rust core
-              (<code>DesktopCentral</code>) through one N-API addon. Tagged releases ship it prebuilt for macOS Apple
-              Silicon (<code>arm64</code>) and Windows/Linux <code>arm64</code>/<code>x64</code>. The addon is Node-API,
-              so one binary serves Node and modern Electron alike.
+              This source targets <code>5.0.4</code>. It is an unpublished patch candidate. Main executes the shared
+              Rust core (<code>DesktopCentral</code>) through one N-API addon. Tagged releases ship it prebuilt for
+              macOS Apple Silicon (<code>arm64</code>) and Windows/Linux <code>arm64</code>/<code>x64</code>. The addon
+              is Node-API, so one binary serves Node and modern Electron alike.
             </p>
             <p>
               macOS desktop support is Apple Silicon (<code>arm64</code>) only. Windows and Linux desktop support
