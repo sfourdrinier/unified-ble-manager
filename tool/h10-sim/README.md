@@ -21,35 +21,42 @@ proof it is currently on air: an existing connection can suspend transmission.
 
 ### Linux indication backend safety
 
-The Linux backend keeps high-rate notify-only characteristics on bluer's
-low-overhead `CharacteristicNotifyMethod::Io` path. The PMD control point is
-indication-only and uses the supported `CharacteristicNotifyMethod::Fun` path.
-Each indication session owns one bounded capacity-one lane and waits for the
-notifier's actual ATT confirmation without sharing the notify pump. Queue
-admission is reported separately from confirmation; `indication-confirmed` is
-emitted only after bluer confirms the value and includes the indication receipt
-and generation when the Fun lane can provide them. Unsubscribe, a stopped
-notifier, and a late old generation close the lane; admitted values that never
-reach confirmation emit the typed `indication-unconfirmed` terminal event with
-the receipt, generation, and reason. They cannot retire a replacement
-subscription.
+The Linux backend uses bluer's `CharacteristicNotifyMethod::Io` path for
+notify-only characteristics and the indication-only PMD control point. Each
+central owns a writer keyed by peer and subscription generation. DATA fanout
+has a bounded deadline per writer, so one stalled central does not block the
+others. PMD responses retain the requesting central and generation through
+immediate, delayed and stale-response paths; a missing owner is refused before
+mutating acquisition state.
 
-Indication admission is persistent-close guarded: once a lane closes, a later
-or racing enqueue is rejected. Receipt IDs are allocated once for the entire
-Linux radio lifetime from a checked high range; the normal notify queue uses
-only low IDs and both allocators fail closed on exhaustion. Fatal retirement
-also snapshots queued, in-flight, and accepted-awaiting-confirmation
-indication receipts. Because the existing retirement trait is synchronous, its
-evidence explicitly records that owned task cancellation could not be awaited;
-it never reports that cleanup as complete.
+Each control-point writer owns one bounded capacity-one lane. Queue admission,
+OS acceptance and actual ATT confirmation are separate outcomes. The pump
+waits up to five seconds for BlueZ's `0x01` confirmation on the acquired socket;
+only that observation emits `indication-confirmed`. Closure, write failure or
+confirmation timeout emits the appropriate failed/unconfirmed outcome and
+retires only that generation. Idle closure wakes the pump, and queued receipts
+are drained with one terminal settlement each. Receipt IDs are allocated once
+for the Linux radio lifetime from a checked high range; the normal notify queue
+uses only low IDs, and both allocators fail closed on exhaustion.
 
-This is required for BlueZ 5.85. The old IO path retained a raw notify callback
-user-data pointer to an acquired socket after CCC unsubscribe: `gatt-database.c`
-could free the IO object while the late ATT confirmation watcher still referred
-to it, producing the observed `g_io_create_watch -> watch_new` negative
-refcount crash (`/tmp/ubm501-bluez-ddeb-backtrace.log`). The simulator therefore
-does not use IO for indication-only sessions and does not claim confirmation
-when only queue admission or OS acceptance is known.
+Aggregate subscription transitions carry monotonic revisions allocated under
+the subscription ledger lock. The simulator rejects stale transitions before
+resetting PMD/PSFTP state or applying subscription faults. One central's loss
+therefore cannot apply a delayed reset after a replacement subscribes. Physical
+PMD acquisition remains shared: a STOP command stops the strap's stream for all
+clients, and drop-link/silence faults also affect shared simulator state.
+
+The IO indication path requires a BlueZ daemon with the retained acquired-socket
+lifetime correction. The old BlueZ 5.85 path could free its IO object while a
+late ATT confirmation watcher still referenced it, producing the observed
+`g_io_create_watch -> watch_new` negative-refcount crash. The test harness and
+patch under `bluez/` retain the corresponding lifetime/ATT regression evidence.
+The current Linux fixture uses the corrected daemon; this is not a claim that
+stock older daemons are safe. Deterministic socket tests establish ownership,
+cleanup and confirmation handling, but do not establish simultaneous physical
+clients or whole-device fidelity. Fatal synchronous retirement still reports
+that owned task cancellation could not be awaited; it does not call cleanup
+complete.
 
 A test tool (not part of the published package) that impersonates a Polar H10
 strap so the shared driver scenarios (`examples-shared/driver/scenarios`:

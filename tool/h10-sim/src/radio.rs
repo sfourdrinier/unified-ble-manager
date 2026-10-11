@@ -103,6 +103,8 @@ pub enum RadioEvent {
         service: String,
         characteristic: String,
         subscribed: bool,
+        /// Linux transition ordering; non-Linux backends leave this absent.
+        revision: Option<u64>,
     },
     /// A central confirmed an indication: the session stays up (BlueZ
     /// reports confirmations on the notify fd; they are telemetry, not an
@@ -178,8 +180,11 @@ pub struct QueuedSend {
     pub id: u64,
     pub service: String,
     pub characteristic: Uuid,
-    pub generation: u64,
-    pub target: OwnedNotifyTarget,
+    /// Peer sessions selected when this logical send entered the queue. An
+    /// empty list is used only by the separate shared indication lane.
+    pub targets: Vec<OwnedNotifyTarget>,
+    /// Generation for the shared indication lane, which has no peer address.
+    pub indication_generation: Option<u64>,
     pub value: Vec<u8>,
 }
 
@@ -249,8 +254,9 @@ impl SendQueue {
 #[derive(Debug, Default)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct SubscriptionLedger {
-    generations: std::collections::HashMap<Uuid, u64>,
-    live: std::collections::HashMap<Uuid, u64>,
+    generations: std::collections::HashMap<(Uuid, Option<String>), u64>,
+    live: std::collections::HashMap<(Uuid, Option<String>), u64>,
+    transition_revision: u64,
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -261,39 +267,113 @@ impl SubscriptionLedger {
 
     /// Records a new subscription session, returning its generation. The
     /// writer must be installed before readiness is announced.
-    pub fn subscribe(&mut self, characteristic: Uuid) -> u64 {
-        let generation = self.generations.get(&characteristic).copied().unwrap_or(0);
+    pub fn subscribe(&mut self, characteristic: Uuid, peer_address: Option<&str>) -> u64 {
+        let key = subscription_key(characteristic, peer_address);
+        let generation = self.generations.get(&key).copied().unwrap_or(0);
         self.generations
-            .insert(characteristic, generation.wrapping_add(1));
-        self.live.insert(characteristic, generation);
+            .insert(key.clone(), generation.wrapping_add(1));
+        self.live.insert(key, generation);
         generation
     }
 
     /// Whether the characteristic is currently subscribed.
     pub fn is_subscribed(&self, characteristic: Uuid) -> bool {
-        self.live.contains_key(&characteristic)
+        self.live.keys().any(|(uuid, _)| *uuid == characteristic)
+    }
+
+    /// Allocates a monotonic revision for a visible aggregate transition.
+    /// Allocation is performed while the ledger lock is held by callers.
+    pub fn allocate_transition_revision(&mut self) -> Result<u64, String> {
+        let revision = self
+            .transition_revision
+            .checked_add(1)
+            .ok_or_else(|| "subscription transition revision exhausted".to_string())?;
+        self.transition_revision = revision;
+        Ok(revision)
     }
 
     /// The live generation, if subscribed.
-    pub fn current(&self, characteristic: Uuid) -> Option<u64> {
-        self.live.get(&characteristic).copied()
+    pub fn current(&self, characteristic: Uuid, peer_address: Option<&str>) -> Option<u64> {
+        self.live
+            .get(&subscription_key(characteristic, peer_address))
+            .copied()
     }
 
     /// Whether `generation` is still the live session.
-    pub fn is_current(&self, characteristic: Uuid, generation: u64) -> bool {
-        self.live.get(&characteristic).copied() == Some(generation)
+    pub fn is_current(
+        &self,
+        characteristic: Uuid,
+        peer_address: Option<&str>,
+        generation: u64,
+    ) -> bool {
+        self.current(characteristic, peer_address) == Some(generation)
     }
 
     /// Ends the session only when `generation` is still live: returns whether
     /// anything was removed, so a stale cleanup removes nothing.
-    pub fn unsubscribe(&mut self, characteristic: Uuid, generation: u64) -> bool {
-        if self.is_current(characteristic, generation) {
-            self.live.remove(&characteristic);
+    pub fn unsubscribe(
+        &mut self,
+        characteristic: Uuid,
+        peer_address: Option<&str>,
+        generation: u64,
+    ) -> bool {
+        let key = subscription_key(characteristic, peer_address);
+        if self.live.get(&key).copied() == Some(generation) {
+            self.live.remove(&key);
             true
         } else {
             false
         }
     }
+
+    /// Active addressed notification sessions in stable peer-address order.
+    pub fn targets(&self, characteristic: Uuid) -> Vec<OwnedNotifyTarget> {
+        let mut targets = self
+            .live
+            .iter()
+            .filter(|((uuid, _), _)| *uuid == characteristic)
+            .filter_map(|((_, peer), generation)| {
+                peer.as_ref().map(|peer_address| OwnedNotifyTarget {
+                    peer_address: peer_address.clone(),
+                    generation: *generation,
+                })
+            })
+            .collect::<Vec<_>>();
+        targets.sort_by(|left, right| left.peer_address.cmp(&right.peer_address));
+        targets
+    }
+
+    /// Selects either every current addressed peer or the exact owner named by
+    /// a targeted send. Stale ownership fails closed.
+    pub fn select_targets(
+        &self,
+        characteristic: Uuid,
+        owned_target: Option<&OwnedNotifyTarget>,
+    ) -> Result<Vec<OwnedNotifyTarget>, String> {
+        match owned_target {
+            Some(target)
+                if self.is_current(
+                    characteristic,
+                    Some(&target.peer_address),
+                    target.generation,
+                ) =>
+            {
+                Ok(vec![OwnedNotifyTarget {
+                    peer_address: target.peer_address.to_ascii_uppercase(),
+                    generation: target.generation,
+                }])
+            }
+            Some(_) => Err("owned notification target is stale or mismatched".to_string()),
+            None => Ok(self.targets(characteristic)),
+        }
+    }
+}
+
+fn subscription_key(characteristic: Uuid, peer_address: Option<&str>) -> (Uuid, Option<String>) {
+    (
+        characteristic,
+        peer_address.map(|peer| peer.to_ascii_uppercase()),
+    )
 }
 
 /// Parses a Bluetooth address (`AA:BB:CC:DD:EE:FF`, case-insensitive) into
@@ -1006,6 +1086,7 @@ async fn translate(
                     service: request.service.to_string(),
                     characteristic: request.characteristic.to_string(),
                     subscribed,
+                    revision: None,
                 })
                 .await
                 .map_err(|_| ())?;
@@ -1089,11 +1170,11 @@ mod tests {
     fn subscription_replacement_retires_old_generation_for_queue_fencing() {
         let characteristic = Uuid::nil();
         let mut ledger = SubscriptionLedger::new();
-        let old = ledger.subscribe(characteristic);
-        let current = ledger.subscribe(characteristic);
+        let old = ledger.subscribe(characteristic, None);
+        let current = ledger.subscribe(characteristic, None);
         assert_ne!(old, current);
-        assert!(!ledger.is_current(characteristic, old));
-        assert!(ledger.is_current(characteristic, current));
+        assert!(!ledger.is_current(characteristic, None, old));
+        assert!(ledger.is_current(characteristic, None, current));
     }
 
     #[test]
@@ -1126,8 +1207,8 @@ mod tests {
             id: 0,
             service: "test".into(),
             characteristic: Uuid::nil(),
-            generation: 1,
-            target: OwnedNotifyTarget::new("AA:AA:AA:AA:AA:AA", 1),
+            targets: vec![OwnedNotifyTarget::new("AA:AA:AA:AA:AA:AA", 1)],
+            indication_generation: None,
             value: vec![1],
         };
         assert_eq!(queue.push(send()).unwrap(), 1);
@@ -1393,33 +1474,63 @@ mod tests {
     }
 
     #[test]
-    fn ledger_replaces_stale_generations() {
+    fn peer_ledger_keeps_overlapping_sessions_and_retires_only_the_owner() {
         use super::SubscriptionLedger;
         let uuid = Uuid::nil();
+        let peer_a = "AA:AA:AA:AA:AA:AA";
+        let peer_b = "BB:BB:BB:BB:BB:BB";
         let mut ledger = SubscriptionLedger::new();
         assert!(!ledger.is_subscribed(uuid));
-        let first = ledger.subscribe(uuid);
+        let first = ledger.subscribe(uuid, Some(peer_a));
         assert!(ledger.is_subscribed(uuid));
-        assert_eq!(ledger.current(uuid), Some(first));
-        // A resubscribe supersedes the old session: the old generation is
-        // stale, and its late cleanup must remove nothing.
-        let second = ledger.subscribe(uuid);
-        assert_ne!(first, second, "generations never repeat");
-        assert!(!ledger.is_current(uuid, first));
-        assert!(ledger.is_current(uuid, second));
+        assert_eq!(
+            ledger.current(uuid, Some(peer_a.to_ascii_lowercase().as_str())),
+            Some(first)
+        );
+        let second = ledger.subscribe(uuid, Some(peer_b));
+        assert!(ledger.is_current(uuid, Some(peer_a), first));
+        assert!(ledger.is_current(uuid, Some(peer_b), second));
+        assert_eq!(
+            ledger
+                .select_targets(uuid, Some(&OwnedNotifyTarget::new(peer_b, second)))
+                .unwrap(),
+            vec![OwnedNotifyTarget::new(peer_b, second)],
+            "targeted sends select only their owner"
+        );
+        assert_eq!(ledger.select_targets(uuid, None).unwrap().len(), 2);
+        assert_eq!(ledger.targets(uuid).len(), 2);
+
+        // A late cleanup from an obsolete session for A must not remove A's
+        // replacement or B's independent session.
+        let replacement = ledger.subscribe(uuid, Some(peer_a));
+        assert_ne!(first, replacement, "generations never repeat per peer");
+        assert!(ledger
+            .select_targets(uuid, Some(&OwnedNotifyTarget::new(peer_a, first)))
+            .is_err());
         assert!(
-            !ledger.unsubscribe(uuid, first),
+            !ledger.unsubscribe(uuid, Some(peer_a), first),
             "stale cleanup removes nothing"
         );
-        assert!(
-            ledger.is_subscribed(uuid),
-            "live session survives stale cleanup"
-        );
-        assert!(ledger.unsubscribe(uuid, second));
+        assert!(ledger.is_current(uuid, Some(peer_a), replacement));
+        assert!(ledger.is_current(uuid, Some(peer_b), second));
+
+        assert!(ledger.unsubscribe(uuid, Some(peer_b), second));
+        assert!(ledger.is_subscribed(uuid), "A remains after B leaves");
+        assert_eq!(ledger.targets(uuid).len(), 1);
+        assert!(ledger.unsubscribe(uuid, Some(peer_a), replacement));
         assert!(!ledger.is_subscribed(uuid));
-        // Generations keep increasing even across unsubscribe gaps.
-        let third = ledger.subscribe(uuid);
-        assert_ne!(second, third);
+        // Generations keep increasing across leave and rejoin.
+        let third = ledger.subscribe(uuid, Some(peer_a));
+        assert_ne!(replacement, third);
+    }
+
+    #[test]
+    fn subscription_transition_revisions_are_checked_and_monotonic() {
+        let mut ledger = SubscriptionLedger::new();
+        assert_eq!(ledger.allocate_transition_revision(), Ok(1));
+        assert_eq!(ledger.allocate_transition_revision(), Ok(2));
+        ledger.transition_revision = u64::MAX;
+        assert!(ledger.allocate_transition_revision().is_err());
     }
 
     #[test]
@@ -1429,8 +1540,8 @@ mod tests {
             id: 0,
             service: "svc".to_string(),
             characteristic: Uuid::nil(),
-            generation: u64::from(n),
-            target: OwnedNotifyTarget::new("AA:AA:AA:AA:AA:AA", u64::from(n)),
+            targets: vec![OwnedNotifyTarget::new("AA:AA:AA:AA:AA:AA", u64::from(n))],
+            indication_generation: None,
             value: vec![n],
         };
         let mut queue = SendQueue::new(2);
@@ -1441,9 +1552,12 @@ mod tests {
         let dropped = queue
             .push(send(3))
             .expect_err("full queue hands the send back");
-        assert_eq!(dropped.generation, 3, "nothing is silently dropped");
-        assert_eq!(queue.pop().expect("fifo").generation, 1);
-        assert_eq!(queue.pop().expect("fifo").generation, 2);
+        assert_eq!(
+            dropped.targets[0].generation, 3,
+            "nothing is silently dropped"
+        );
+        assert_eq!(queue.pop().expect("fifo").targets[0].generation, 1);
+        assert_eq!(queue.pop().expect("fifo").targets[0].generation, 2);
         assert!(queue.pop().is_none());
     }
 
@@ -1456,8 +1570,8 @@ mod tests {
                 id: 0,
                 service: "svc".to_string(),
                 characteristic: Uuid::nil(),
-                generation: 1,
-                target: OwnedNotifyTarget::new("AA:AA:AA:AA:AA:AA", 1),
+                targets: vec![OwnedNotifyTarget::new("AA:AA:AA:AA:AA:AA", 1)],
+                indication_generation: None,
                 value: vec![1],
             })
             .is_err());

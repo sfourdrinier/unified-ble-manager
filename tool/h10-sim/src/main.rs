@@ -1333,11 +1333,14 @@ async fn handle_radio(
             service,
             characteristic,
             subscribed,
+            revision,
         } => {
+            if !sim.observe_subscription_versioned(&characteristic, subscribed, revision) {
+                return;
+            }
             if characteristic.eq_ignore_ascii_case(gatt_spec::feee::CHAR_51) {
                 psftp_session.reset();
             }
-            sim.observe_subscription(&characteristic, subscribed);
             if !subscribed && characteristic.eq_ignore_ascii_case(gatt_spec::pmd::DATA) {
                 log.log("pmd-session-ended", json!({"reason": "final-pmd-subscription-ended", "characteristic": characteristic}));
             }
@@ -1451,7 +1454,19 @@ async fn handle_radio(
                 )
                 .await
             } else {
-                write_request(radio, sim, timing, log, &service, &uuid, &value).await
+                write_request(
+                    radio,
+                    sim,
+                    timing,
+                    log,
+                    PmdWriteRequest {
+                        service: &service,
+                        uuid: &uuid,
+                        value: &value,
+                        target: owned_target.as_ref(),
+                    },
+                )
+                .await
             };
             log.log(
                 "write",
@@ -1483,15 +1498,52 @@ fn read_answer(sim: &SimState, uuid: &Uuid, offset: u64) -> radio::RadioReadAnsw
     }
 }
 
-async fn write_request(
-    radio: &mut PlatformRadio,
+/// PMD responses are requester-owned on Linux. The crate-radio backend has a
+/// genuine single-client boundary and therefore retains its historical global
+/// send when no native owner identity exists there.
+async fn notify_pmd_response<R: PeripheralRadio>(
+    radio: &mut R,
+    characteristic: Uuid,
+    response: Vec<u8>,
+    target: Option<&radio::OwnedNotifyTarget>,
+) -> Result<SendOutcome, radio::RadioError> {
+    if let Some(target) = target {
+        return radio
+            .notify_to(characteristic, response, target.clone())
+            .await;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Err(radio::RadioError(
+            "exact PMD requester identity is unavailable".to_string(),
+        ))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        radio.notify(characteristic, response).await
+    }
+}
+
+struct PmdWriteRequest<'a> {
+    service: &'a str,
+    uuid: &'a Uuid,
+    value: &'a [u8],
+    target: Option<&'a radio::OwnedNotifyTarget>,
+}
+
+async fn write_request<R: PeripheralRadio>(
+    radio: &mut R,
     sim: &mut SimState,
     timing: &mut timing::TimingRuntime,
     log: &mut EventLog,
-    service: &str,
-    uuid: &Uuid,
-    value: &[u8],
+    request: PmdWriteRequest<'_>,
 ) -> bool {
+    let PmdWriteRequest {
+        service,
+        uuid,
+        value,
+        target,
+    } = request;
     let control_point =
         Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
     if *uuid != control_point {
@@ -1515,6 +1567,14 @@ async fn write_request(
         );
         return false;
     }
+    #[cfg(target_os = "linux")]
+    if target.is_none() {
+        log.log(
+            "pmd-command-rejected",
+            json!({"reason": "exact PMD requester identity is unavailable"}),
+        );
+        return false;
+    }
     let outcome = sim.handle_pmd_write(value);
     match outcome.indicate {
         Some(response) => {
@@ -1525,7 +1585,7 @@ async fn write_request(
             );
             // Remember the response bytes: adversarial `stale-callback`
             // replays them out of sequence.
-            sim.last_pmd_response = Some(response.clone());
+            sim.remember_pmd_response(response.clone(), target.cloned());
             // A measured response latency defers the indication to the tick
             // loop; the ATT write is answered now, so the loop never sleeps.
             // Immediate by default, so behaviour is unchanged. The
@@ -1541,6 +1601,7 @@ async fn write_request(
                 sim.pending_indications.push(sim::PendingIndication {
                     due: Instant::now() + Duration::from_secs_f64(total_ms / 1000.0),
                     response,
+                    target: target.cloned(),
                     action: outcome.action,
                 });
                 log.log(
@@ -1551,7 +1612,7 @@ async fn write_request(
             }
             // Inline: a lost indication surfaces here instead of timing out
             // the central 5 s later.
-            match radio.notify(control_point, response.clone()).await {
+            match notify_pmd_response(radio, control_point, response.clone(), target).await {
                 Ok(SendOutcome::OsAccepted) => {
                     commit_pmd_action(sim, log, outcome.action);
                     true
@@ -1673,14 +1734,24 @@ fn commit_pmd_action(sim: &mut SimState, log: &mut EventLog, action: PmdAction) 
 /// Sends PMD indications whose latency expired. The streaming action commits
 /// only when the indication actually goes out; a central that vanished
 /// mid-latency drops the indication loudly and leaves no stuck stream.
-async fn drain_indications(radio: &mut PlatformRadio, sim: &mut SimState, log: &mut EventLog) {
+async fn drain_indications<R: PeripheralRadio>(
+    radio: &mut R,
+    sim: &mut SimState,
+    log: &mut EventLog,
+) {
     let now = Instant::now();
     // Responses and their state changes stay in command order even when
     // injected/measured latencies differ between consecutive commands.
     while let Some(indication) = sim.take_due_indication(now) {
         let control_point =
             Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
-        let outcome = radio.notify(control_point, indication.response).await;
+        let outcome = notify_pmd_response(
+            radio,
+            control_point,
+            indication.response,
+            indication.target.as_ref(),
+        )
+        .await;
         match &outcome {
             Ok(SendOutcome::OsAccepted) => {
                 commit_pmd_action(sim, log, indication.action);
@@ -2119,17 +2190,24 @@ async fn flap_link(
 /// Adversarial stale callback: re-notifies the last PMD response out of
 /// sequence. Refuses loudly when no PMD response has gone out yet — there
 /// is nothing stale to replay, and silence would lie about it.
-async fn stale_callback(
-    radio: &mut PlatformRadio,
+async fn stale_callback<R: PeripheralRadio>(
+    radio: &mut R,
     sim: &mut SimState,
     log: &mut EventLog,
 ) -> Result<ControlReply, String> {
-    let Some(response) = sim.last_pmd_response.clone() else {
+    let Some(remembered) = sim.last_pmd_response.clone() else {
         return Err("stale-callback refused: no PMD response has gone out yet".to_string());
     };
+    let response = remembered.response;
     let control_point =
         Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
-    let outcome = radio.notify(control_point, response.clone()).await;
+    let outcome = notify_pmd_response(
+        radio,
+        control_point,
+        response.clone(),
+        remembered.target.as_ref(),
+    )
+    .await;
     let accepted = matches!(
         &outcome,
         Ok(SendOutcome::OsAccepted) | Ok(SendOutcome::Queued { .. })
@@ -2158,6 +2236,147 @@ async fn stale_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct PmdOwnershipRadio {
+        owned: Vec<radio::OwnedNotifyTarget>,
+        global_sends: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl PeripheralRadio for PmdOwnershipRadio {
+        async fn open(_: mpsc::Sender<RadioEvent>) -> Result<Self, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_powered(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_advertising(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn start_advertising(
+            &mut self,
+            _: &str,
+            _: &[Uuid],
+        ) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn stop_advertising(&mut self) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn add_service(&mut self, _: &radio::ServiceSpec) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn notification_payload_capacity(
+            &self,
+            _: Uuid,
+        ) -> Result<Option<usize>, radio::RadioError> {
+            Ok(Some(512))
+        }
+        async fn notify(&mut self, _: Uuid, _: Vec<u8>) -> Result<SendOutcome, radio::RadioError> {
+            self.global_sends += 1;
+            Ok(SendOutcome::OsAccepted)
+        }
+        async fn notify_to(
+            &mut self,
+            _: Uuid,
+            _: Vec<u8>,
+            target: radio::OwnedNotifyTarget,
+        ) -> Result<SendOutcome, radio::RadioError> {
+            self.owned.push(target);
+            Ok(SendOutcome::OsAccepted)
+        }
+    }
+
+    #[tokio::test]
+    async fn pmd_responses_keep_write_owner_across_immediate_delayed_and_stale_paths() {
+        let mut radio = PmdOwnershipRadio {
+            owned: Vec::new(),
+            global_sends: 0,
+        };
+        let mut sim = SimState::new(SimConfig::default());
+        let target_a = radio::OwnedNotifyTarget::new("AA:AA:AA:AA:AA:AA", 11);
+        let target_b = radio::OwnedNotifyTarget::new("BB:BB:BB:BB:BB:BB", 22);
+        let mut timing = timing::TimingRuntime::new(timing::TimingProfile::default_unconfirmed(0));
+        let mut log = EventLog::new();
+        let start = [2, 0, 0, 1, 130, 0, 1, 1, 14, 0];
+
+        assert!(
+            write_request(
+                &mut radio,
+                &mut sim,
+                &mut timing,
+                &mut log,
+                PmdWriteRequest {
+                    service: "pmd",
+                    uuid: &Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap(),
+                    value: &start,
+                    target: Some(&target_a),
+                },
+            )
+            .await
+        );
+        assert_eq!(radio.owned, vec![target_a.clone()]);
+
+        sim.reset_pmd_session();
+        sim.response_delay_ms = 1;
+        assert!(
+            write_request(
+                &mut radio,
+                &mut sim,
+                &mut timing,
+                &mut log,
+                PmdWriteRequest {
+                    service: "pmd",
+                    uuid: &Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap(),
+                    value: &start,
+                    target: Some(&target_b),
+                },
+            )
+            .await
+        );
+        let pending = sim.pending_indications.first().expect("delayed response");
+        assert_eq!(pending.target.as_ref(), Some(&target_b));
+        sim.pending_indications[0].due = Instant::now();
+        drain_indications(&mut radio, &mut sim, &mut log).await;
+        assert_eq!(radio.owned, vec![target_a.clone(), target_b.clone()]);
+
+        stale_callback(&mut radio, &mut sim, &mut log)
+            .await
+            .expect("stale replay");
+        assert_eq!(radio.owned, vec![target_a, target_b.clone(), target_b]);
+        assert_eq!(radio.global_sends, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_pmd_write_without_owner_refuses_before_state_mutation() {
+        let mut radio = PmdOwnershipRadio {
+            owned: Vec::new(),
+            global_sends: 0,
+        };
+        let mut sim = SimState::new(SimConfig::default());
+        sim.reject_next_status = Some(0x42);
+        let before = format!("{:?}", sim);
+        let mut timing = timing::TimingRuntime::new(timing::TimingProfile::default_unconfirmed(0));
+        let mut log = EventLog::new();
+        let accepted = write_request(
+            &mut radio,
+            &mut sim,
+            &mut timing,
+            &mut log,
+            PmdWriteRequest {
+                service: "pmd",
+                uuid: &Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap(),
+                value: &[2, 0, 0, 1, 130, 0, 1, 1, 14, 0],
+                target: None,
+            },
+        )
+        .await;
+        assert!(!accepted);
+        assert_eq!(format!("{:?}", sim), before);
+        assert!(radio.owned.is_empty());
+        assert_eq!(radio.global_sends, 0);
+    }
 
     #[test]
     fn psftp_request_and_response_use_feee_char51_wire_route() {
@@ -2649,6 +2868,7 @@ mod tests {
             sim.pending_indications.push(sim::PendingIndication {
                 due: Instant::now(),
                 response: vec![1, 2],
+                target: None,
                 action: sim::PmdAction::StartEcg,
             });
             let before = format!("{:?}", sim);
@@ -2696,6 +2916,7 @@ mod tests {
             sim.pending_indications.push(sim::PendingIndication {
                 due: Instant::now(),
                 response: vec![1],
+                target: None,
                 action: sim::PmdAction::StartEcg,
             });
             let mut radio = ProfileRadio {

@@ -4,6 +4,7 @@
 //! transports bytes. That keeps every behaviour below unit-testable without
 //! Bluetooth hardware.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use chrono::{SecondsFormat, Utc};
@@ -11,6 +12,7 @@ use serde::Deserialize;
 
 use crate::control::RunMode;
 use crate::gatt_spec;
+use crate::radio::OwnedNotifyTarget;
 
 /// Pairing/bonding policy of the simulated strap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -295,8 +297,18 @@ pub struct PmdWriteOutcome {
 pub struct PendingIndication {
     pub due: Instant,
     pub response: Vec<u8>,
+    /// Exact requester target captured at the ATT write boundary. `None` is
+    /// retained only for the non-Linux single-client backend.
+    pub target: Option<OwnedNotifyTarget>,
     /// Streaming action committed when the indication actually goes out.
     pub action: PmdAction,
+}
+
+/// PMD response bytes paired with the requester that must receive them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RememberedPmdResponse {
+    pub response: Vec<u8>,
+    pub target: Option<OwnedNotifyTarget>,
 }
 
 /// Mutable simulator state: config plus faults.
@@ -352,7 +364,10 @@ pub struct SimState {
     pub delivery_seq: u64,
     /// Last PMD response bytes sent (adversarial `stale-callback` replays
     /// them out of sequence).
-    pub last_pmd_response: Option<Vec<u8>>,
+    pub last_pmd_response: Option<RememberedPmdResponse>,
+    /// Highest subscription transition revision observed per characteristic.
+    /// This watermark survives PMD session resets so late old events remain stale.
+    subscription_revisions: HashMap<String, u64>,
     /// Run-wide observed HR activity. Never inferred from a link-drop request.
     hr_recovery: HrRecovery,
 }
@@ -456,6 +471,7 @@ impl SimState {
             delivery_keep_every: 1,
             delivery_seq: 0,
             last_pmd_response: None,
+            subscription_revisions: HashMap::new(),
             hr_recovery: HrRecovery::default(),
         }
     }
@@ -489,6 +505,29 @@ impl SimState {
             &mut self.hr_recovery.subscription_disable_events
         };
         HrRecovery::increment(counter, &mut self.hr_recovery.counters_saturated);
+    }
+
+    /// Applies a subscription event only when its optional transition revision
+    /// is newer than the last accepted event for that characteristic.
+    pub fn observe_subscription_versioned(
+        &mut self,
+        characteristic: &str,
+        enabled: bool,
+        revision: Option<u64>,
+    ) -> bool {
+        if let Some(revision) = revision {
+            let key = canonical_characteristic_key(characteristic);
+            if self
+                .subscription_revisions
+                .get(&key)
+                .is_some_and(|last| revision <= *last)
+            {
+                return false;
+            }
+            self.subscription_revisions.insert(key, revision);
+        }
+        self.observe_subscription(characteristic, enabled);
+        true
     }
 
     pub fn observe_hr_notify(
@@ -714,6 +753,10 @@ impl SimState {
             < crate::radio::SEND_QUEUE_CAPACITY
     }
 
+    pub fn remember_pmd_response(&mut self, response: Vec<u8>, target: Option<OwnedNotifyTarget>) {
+        self.last_pmd_response = Some(RememberedPmdResponse { response, target });
+    }
+
     /// Handles a PMD control-point write, returning the indicate payload.
     /// Decides a PMD control-point write: response bytes plus the streaming
     /// action. Decide-only for streaming state — the action commits via
@@ -908,6 +951,12 @@ impl SimState {
     }
 }
 
+fn canonical_characteristic_key(characteristic: &str) -> String {
+    uuid::Uuid::parse_str(characteristic)
+        .map(|uuid| uuid.hyphenated().to_string())
+        .unwrap_or_else(|_| characteristic.to_ascii_lowercase())
+}
+
 /// Validates the settings TLV of a PMD start command against the H10's fixed
 /// ECG configuration (130 Hz / 14 bit). Returns the status code to report.
 fn validate_start_settings(tlv: &[u8]) -> Result<(), u8> {
@@ -1063,6 +1112,50 @@ mod tests {
         assert_eq!(telemetry["notificationAttempts"], u64::MAX);
         assert_eq!(telemetry["notificationsNotSubscribed"], 1);
         assert_eq!(telemetry["countersSaturated"], true);
+    }
+
+    #[test]
+    fn subscription_revision_rejects_late_data_loss_and_preserves_new_session_work() {
+        let mut sim = state();
+        let data = gatt_spec::pmd::DATA;
+        let cp = gatt_spec::pmd::CONTROL_POINT;
+        assert!(sim.observe_subscription_versioned(data, true, Some(10)));
+        sim.pending_indications.push(PendingIndication {
+            due: Instant::now(),
+            response: vec![0xf0, 2, 0, 0],
+            target: None,
+            action: PmdAction::StartEcg,
+        });
+        assert!(sim.observe_subscription_versioned(data, false, Some(12)));
+        assert!(sim.pending_indications.is_empty());
+        assert!(sim.observe_subscription_versioned(data, true, Some(13)));
+        sim.pending_indications.push(PendingIndication {
+            due: Instant::now(),
+            response: vec![0xf0, 2, 0, 0],
+            target: None,
+            action: PmdAction::StartEcg,
+        });
+        assert!(!sim.observe_subscription_versioned(
+            data.to_ascii_uppercase().as_str(),
+            false,
+            Some(12)
+        ));
+        assert_eq!(sim.pending_indications.len(), 1);
+        assert!(sim.observe_subscription_versioned(data, false, Some(14)));
+        assert!(sim.pending_indications.is_empty());
+        assert!(sim.observe_subscription_versioned(cp, true, Some(1)));
+        sim.pending_indications.push(PendingIndication {
+            due: Instant::now(),
+            response: vec![0xf0, 2, 0, 0],
+            target: None,
+            action: PmdAction::None,
+        });
+        assert!(!sim.observe_subscription_versioned(
+            cp.to_ascii_uppercase().as_str(),
+            false,
+            Some(1)
+        ));
+        assert_eq!(sim.pending_indications.len(), 1);
     }
 
     #[test]
@@ -1287,6 +1380,15 @@ mod tests {
     #[test]
     fn pmd_read_reports_features() {
         assert_eq!(state().pmd_features(), gatt_spec::encode_pmd_features());
+    }
+
+    #[test]
+    fn remembered_pmd_response_keeps_exact_requester_target() {
+        let mut sim = state();
+        let target = crate::radio::OwnedNotifyTarget::new("AA:BB:CC:DD:EE:FF", 7);
+        sim.remember_pmd_response(vec![0xF0, 2, 0, 0], Some(target.clone()));
+        let remembered = sim.last_pmd_response.as_ref().expect("response remembered");
+        assert_eq!(remembered.target.as_ref(), Some(&target));
     }
 
     #[test]
@@ -1537,6 +1639,7 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due,
             response: start.indicate.unwrap(),
+            target: None,
             action: start.action,
         });
         let duplicate = sim.handle_pmd_write(&acc_start(200, 8));
@@ -1556,6 +1659,7 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due,
             response: ecg_start.indicate.unwrap(),
+            target: None,
             action: ecg_start.action,
         });
         assert_eq!(
@@ -1569,6 +1673,7 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due,
             response: stop.indicate.unwrap(),
+            target: None,
             action: stop.action,
         });
         assert_eq!(
@@ -1592,9 +1697,10 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due: Instant::now(),
             response: acc.indicate.unwrap(),
+            target: None,
             action: acc.action,
         });
-        sim.last_pmd_response = Some(vec![0xf0, 2, 2, 0, 0]);
+        sim.remember_pmd_response(vec![0xf0, 2, 2, 0, 0], None);
         sim.reset_pmd_session();
         assert!(!sim.ecg_streaming);
         assert!(sim.acc_settings.is_none());
@@ -1619,10 +1725,11 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due: Instant::now(),
             response: vec![0xf0, 3, 0, 0, 0],
+            target: None,
             action: PmdAction::StopEcg,
         });
         sim.queue_pmd_action(42, PmdAction::StopAcc);
-        sim.last_pmd_response = Some(vec![0xf0, 2, 0, 0, 0]);
+        sim.remember_pmd_response(vec![0xf0, 2, 0, 0, 0], None);
 
         sim.observe_subscription(gatt_spec::pmd::CONTROL_POINT, false);
 
@@ -1658,12 +1765,14 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due: later,
             response: start.indicate.unwrap(),
+            target: None,
             action: start.action,
         });
         let stop = sim.handle_pmd_write(&[3, 2]);
         sim.pending_indications.push(PendingIndication {
             due: now,
             response: stop.indicate.unwrap(),
+            target: None,
             action: stop.action,
         });
         assert!(
@@ -1727,6 +1836,7 @@ mod tests {
         sim.pending_indications.push(PendingIndication {
             due: Instant::now(),
             response: stop.indicate.unwrap(),
+            target: None,
             action: stop.action,
         });
         assert_ne!(
@@ -1883,6 +1993,7 @@ mod tests {
                 sim.pending_indications.push(PendingIndication {
                     due: Instant::now() + std::time::Duration::from_secs(60),
                     response: vec![0xf0, 1, 2, 0],
+                    target: None,
                     action: PmdAction::None,
                 });
             }

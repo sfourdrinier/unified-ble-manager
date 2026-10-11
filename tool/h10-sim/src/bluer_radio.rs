@@ -1,3 +1,4 @@
+// tool/h10-sim/src/bluer_radio.rs
 //! Linux radio backend: `bluer` 0.17.4 directly behind [`PeripheralRadio`].
 //!
 //! Registers the advertisement shape [`crate::advertisement`] describes
@@ -21,8 +22,9 @@
 //!
 //! Read/write/notify plumbing mirrors the `ble-peripheral-rust` BlueZ
 //! backend against the same `bluer` version: callback funs bridge into the
-//! simulator loop over channels, notification sessions are tracked per
-//! characteristic UUID, and refusals answer `NotSupported` exactly as before.
+//! simulator loop over channels, addressed notification sessions are tracked
+//! per characteristic and peer, and refusals answer `NotSupported` exactly as
+//! before.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -38,10 +40,9 @@ use bluer::{
         local::{
             characteristic_control, service_control, Application, ApplicationHandle,
             Characteristic, CharacteristicControl, CharacteristicControlEvent,
-            CharacteristicControlHandle, CharacteristicNotifier, CharacteristicNotify,
-            CharacteristicNotifyMethod, CharacteristicRead, CharacteristicReadRequest,
-            CharacteristicWrite, CharacteristicWriteMethod, CharacteristicWriteRequest, ReqError,
-            Service,
+            CharacteristicControlHandle, CharacteristicNotify, CharacteristicNotifyMethod,
+            CharacteristicRead, CharacteristicReadRequest, CharacteristicWrite,
+            CharacteristicWriteMethod, CharacteristicWriteRequest, ReqError, Service,
         },
         CharacteristicWriter,
     },
@@ -72,12 +73,15 @@ struct CharNotifyHandler {
     control: CharacteristicControl,
 }
 
-/// The two supported notification transports.  IO remains the cheap path for
-/// notify-only streams; indication-only characteristics use Fun so BlueZ does
-/// not retain a raw callback pointer to an acquired fd after CCC unsubscribe.
+/// The notification transports. IO is used for notify-only streams and for the
+/// PMD control point, whose acquired socket carries the peer identity and the
+/// one-byte BlueZ indication confirmation back to the owner.
 enum NotificationWriter {
     Io(Arc<CharacteristicWriter>),
-    Indication(Arc<IndicationEndpoint>),
+    OwnedIndication {
+        writer: Arc<CharacteristicWriter>,
+        endpoint: Arc<IndicationEndpoint>,
+    },
 }
 
 const INDICATION_ID_START: u64 = 1 << 63;
@@ -137,6 +141,8 @@ struct IndicationEndpoint {
     receipts: IndicationReceipts,
     state: Mutex<bool>,
     closed: Notify,
+    confirmations: Mutex<u64>,
+    confirmation_ready: Notify,
 }
 
 impl IndicationEndpoint {
@@ -160,6 +166,8 @@ impl IndicationEndpoint {
             receipts,
             state: Mutex::new(false),
             closed: Notify::new(),
+            confirmations: Mutex::new(0),
+            confirmation_ready: Notify::new(),
         }
     }
 
@@ -171,6 +179,9 @@ impl IndicationEndpoint {
         if *closed {
             return Err(send);
         }
+        let Some(generation) = send.indication_generation else {
+            return Err(send);
+        };
         let Some(id) = self.ids.allocate() else {
             return Err(send);
         };
@@ -178,7 +189,7 @@ impl IndicationEndpoint {
         let receipt = IndicationReceipt {
             service: send.service.clone(),
             characteristic: send.characteristic.to_string(),
-            generation: send.generation,
+            generation,
             stage: "queued",
         };
         if let Ok(mut receipts) = self.receipts.lock() {
@@ -204,6 +215,10 @@ impl IndicationEndpoint {
         self.closed.notify_waiters();
     }
 
+    fn is_closed(&self) -> bool {
+        self.state.lock().map(|closed| *closed).unwrap_or(true)
+    }
+
     async fn closed(&self) {
         loop {
             if self.state.lock().map(|closed| *closed).unwrap_or(true) {
@@ -216,6 +231,40 @@ impl IndicationEndpoint {
             notified.await;
         }
     }
+
+    fn confirm(&self) {
+        if let Ok(mut confirmations) = self.confirmations.lock() {
+            *confirmations = confirmations.saturating_add(1);
+        }
+        self.confirmation_ready.notify_one();
+    }
+
+    async fn wait_confirmation(&self, timeout: std::time::Duration) -> Result<(), &'static str> {
+        let wait = async {
+            loop {
+                if self.state.lock().map(|closed| *closed).unwrap_or(true) {
+                    return Err("indication lane closed before confirmation");
+                }
+                if let Ok(mut confirmations) = self.confirmations.lock() {
+                    if *confirmations > 0 {
+                        *confirmations -= 1;
+                        return Ok(());
+                    }
+                } else {
+                    return Err("indication confirmation lock poisoned");
+                }
+                let notified = self.confirmation_ready.notified();
+                if self.state.lock().map(|closed| *closed).unwrap_or(true) {
+                    return Err("indication lane closed before confirmation");
+                }
+                notified.await;
+            }
+        };
+        match tokio::time::timeout(timeout, wait).await {
+            Ok(result) => result,
+            Err(_) => Err("indication confirmation timed out"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -226,16 +275,18 @@ struct IndicationReceipt {
     stage: &'static str,
 }
 
+type WriterKey = (Uuid, Option<String>);
+type WriterMap = Arc<Mutex<HashMap<WriterKey, RegisteredWriter>>>;
 type IndicationReceipts = Arc<Mutex<HashMap<u64, IndicationReceipt>>>;
 type SessionTasks = Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>;
-type IndicationSessions = Arc<Mutex<Vec<(Uuid, u64)>>>;
+/// Bound a blocked BlueZ peer so the ordered pump can advance to other peers.
+const PEER_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+const INDICATION_CONFIRMATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone)]
-struct IndicationState {
-    ids: Arc<IndicationIdAllocator>,
-    receipts: IndicationReceipts,
-    sessions: IndicationSessions,
-    tasks: SessionTasks,
+struct RegisteredWriter {
+    generation: u64,
+    writer: Arc<NotificationWriter>,
 }
 
 fn mark_indication_stage(receipts: &IndicationReceipts, id: u64, stage: &'static str) {
@@ -270,10 +321,10 @@ pub struct BluerRadio {
     adv_handle: Option<AdvertisementHandle>,
     app_handle: Option<ApplicationHandle>,
     events: mpsc::Sender<RadioEvent>,
-    writers: Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    writers: WriterMap,
     /// Generation-aware subscription registry: readiness is announced only
-    /// after the writer is installed, and a stale session ending late can
-    /// never remove a newer session's writer.
+    /// after each addressed writer is installed, and stale session cleanup can
+    /// never remove a newer peer session's writer.
     ledger: Arc<Mutex<SubscriptionLedger>>,
     /// Bounded ordered send pump: `notify` pushes here and reports
     /// `Queued`; the pump delivers FIFO and settles each send with a
@@ -284,7 +335,6 @@ pub struct BluerRadio {
     pump_wake: Arc<Notify>,
     indication_ids: Arc<IndicationIdAllocator>,
     indication_receipts: IndicationReceipts,
-    indication_sessions: IndicationSessions,
     session_tasks: SessionTasks,
     /// Staged manufacturer data (None = not configured or empty payload).
     mfr: Option<(u16, Vec<u8>)>,
@@ -407,29 +457,114 @@ fn note_client(clients: &Arc<Mutex<GattClientSet>>, address: bluer::Address) {
 
 fn writer_peer(writer: &NotificationWriter) -> Option<String> {
     match writer {
-        NotificationWriter::Io(writer) => Some(writer.device_address().to_string()),
-        NotificationWriter::Indication(_) => None,
+        NotificationWriter::Io(writer) => {
+            Some(writer.device_address().to_string().to_ascii_uppercase())
+        }
+        NotificationWriter::OwnedIndication { writer, .. } => {
+            Some(writer.device_address().to_string().to_ascii_uppercase())
+        }
     }
 }
 
 /// Captures the D2H writer owner at the native write callback boundary. The
 /// ledger→writers order is shared with subscription install/retirement.
 fn owned_target_for_write(
-    writers: &Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    writers: &WriterMap,
     ledger: &Arc<Mutex<SubscriptionLedger>>,
     characteristic: Uuid,
     peer_address: &str,
 ) -> Option<OwnedNotifyTarget> {
     let ledger = ledger.lock().ok()?;
-    let generation = ledger.current(characteristic)?;
+    let peer_address = peer_address.to_ascii_uppercase();
+    let generation = ledger.current(characteristic, Some(&peer_address))?;
     let writers = writers.lock().ok()?;
-    let writer = writers.get(&characteristic)?;
-    (writer_peer(writer.as_ref()).as_deref() == Some(peer_address))
-        .then(|| OwnedNotifyTarget::new(peer_address, generation))
+    let registration = writers.get(&(characteristic, Some(peer_address.clone())))?;
+    (registered_writer_matches_target(
+        &OwnedNotifyTarget::new(peer_address.clone(), generation),
+        registration.generation,
+        writer_peer(registration.writer.as_ref())
+            .as_deref()
+            .unwrap_or_default(),
+    ))
+    .then(|| OwnedNotifyTarget::new(peer_address, generation))
 }
 
 fn target_matches(target: &OwnedNotifyTarget, peer_address: &str, generation: u64) -> bool {
     target.peer_address == peer_address && target.generation == generation
+}
+
+fn registered_writer_matches_target(
+    target: &OwnedNotifyTarget,
+    writer_generation: u64,
+    writer_peer_address: &str,
+) -> bool {
+    target_matches(target, writer_peer_address, writer_generation)
+}
+
+fn redact_peer_addresses(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut redacted = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let address_end = index.saturating_add(17);
+        if address_end <= bytes.len()
+            && (0..17).all(|offset| {
+                if matches!(offset, 2 | 5 | 8 | 11 | 14) {
+                    bytes[index + offset] == b':'
+                } else {
+                    bytes[index + offset].is_ascii_hexdigit()
+                }
+            })
+            && crate::radio::parse_bt_address(&text[index..address_end]).is_ok()
+        {
+            redacted.push_str("peer");
+            index = address_end;
+            continue;
+        }
+        let character = text[index..]
+            .chars()
+            .next()
+            .expect("byte index must remain on a character boundary");
+        redacted.push(character);
+        index += character.len_utf8();
+    }
+    redacted
+}
+
+fn peer_send_outcome(failures: Vec<String>) -> SendOutcome {
+    if failures.is_empty() {
+        SendOutcome::OsAccepted
+    } else {
+        let failures = failures
+            .into_iter()
+            .map(|failure| redact_peer_addresses(&failure))
+            .collect::<Vec<_>>();
+        SendOutcome::Failed(format!(
+            "one or more peer sends failed: {}",
+            failures.join("; ")
+        ))
+    }
+}
+
+async fn attempt_peer_targets<T, F, Fut>(
+    targets: Vec<T>,
+    timeout: std::time::Duration,
+    mut attempt: F,
+) -> Vec<(T, Result<(), String>)>
+where
+    T: Clone,
+    F: FnMut(T) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let mut outcomes = Vec::with_capacity(targets.len());
+    for target in targets {
+        let outcome = match tokio::time::timeout(timeout, attempt(target.clone())).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(format!("peer send timed out after {timeout:?}")),
+        };
+        outcomes.push((target, outcome));
+    }
+    outcomes
 }
 
 /// Removes one canonical address from the client set. A dead lock is loud
@@ -446,7 +581,7 @@ fn prune_client(clients: &Arc<Mutex<GattClientSet>>, canonical: &str) {
 #[cfg(test)]
 fn retire_failed_sends(
     pump: &tokio::task::JoinHandle<()>,
-    writers: &Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    writers: &WriterMap,
     queue: &Arc<Mutex<SendQueue>>,
 ) -> serde_json::Value {
     retire_failed_sends_with_indications(
@@ -455,16 +590,14 @@ fn retire_failed_sends(
         queue,
         &Arc::new(Mutex::new(HashMap::new())),
         &Arc::new(Mutex::new(Vec::new())),
-        &Arc::new(Mutex::new(Vec::new())),
     )
 }
 
 fn retire_failed_sends_with_indications(
     pump: &tokio::task::JoinHandle<()>,
-    writers: &Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    writers: &WriterMap,
     queue: &Arc<Mutex<SendQueue>>,
     indication_receipts: &IndicationReceipts,
-    indication_sessions: &IndicationSessions,
     session_tasks: &SessionTasks,
 ) -> serde_json::Value {
     pump.abort();
@@ -500,18 +633,12 @@ fn retire_failed_sends_with_indications(
             0
         }
     };
-    let indication_sessions_snapshot = match indication_sessions.lock() {
-        Ok(mut sessions) => std::mem::take(&mut *sessions),
-        Err(_) => {
-            failures.push("indication session lock poisoned");
-            Vec::new()
-        }
-    };
     match writers.lock() {
         Ok(mut writers) => {
-            for writer in writers.values() {
-                if let NotificationWriter::Indication(endpoint) = writer.as_ref() {
-                    endpoint.close();
+            for registration in writers.values() {
+                match registration.writer.as_ref() {
+                    NotificationWriter::OwnedIndication { endpoint, .. } => endpoint.close(),
+                    NotificationWriter::Io(_) => {}
                 }
             }
             writers.clear();
@@ -531,10 +658,6 @@ fn retire_failed_sends_with_indications(
         "queuedSendsNotConfirmed": queued,
         "inFlightDelivery": "unknown-at-most-one",
         "indicationReceiptsNotConfirmed": indication_receipts_not_confirmed,
-        "indicationSessions": indication_sessions_snapshot
-            .iter()
-            .map(|(characteristic, generation)| serde_json::json!({"characteristic": characteristic.to_string(), "generation": generation}))
-            .collect::<Vec<_>>(),
         "sessionTasksAborted": session_task_count,
         "taskDrain": "not-awaitable-in-synchronous-retirement",
         "failures": failures
@@ -554,7 +677,6 @@ impl PeripheralRadio for BluerRadio {
             &self.writers,
             &self.pump_queue,
             &self.indication_receipts,
-            &self.indication_sessions,
             &self.session_tasks,
         )
     }
@@ -578,15 +700,15 @@ impl PeripheralRadio for BluerRadio {
             .map_err(|error| RadioError(format!("notification capacity writer lock: {error}")))?;
         // bluer already applies its payload safety adjustment; do not subtract
         // the ATT header a second time.
-        Ok(writers
-            .get(&characteristic)
-            .and_then(|writer| match writer.as_ref() {
+        let capacities = writers
+            .iter()
+            .filter(|((uuid, _), _)| *uuid == characteristic)
+            .map(|(_, registration)| match registration.writer.as_ref() {
                 NotificationWriter::Io(writer) => Some(writer.mtu()),
-                // bluer's Fun API intentionally does not expose an acquired MTU.
-                // The simulator only asks this for PMD data, which is notify-only;
-                // never invent a capacity for an indication session.
-                NotificationWriter::Indication(_) => None,
-            }))
+                NotificationWriter::OwnedIndication { writer, .. } => Some(writer.mtu()),
+            })
+            .collect::<Option<Vec<_>>>();
+        Ok(capacities.and_then(|capacities| capacities.into_iter().min()))
     }
 
     async fn open(events: mpsc::Sender<RadioEvent>) -> Result<Self, RadioError> {
@@ -661,7 +783,6 @@ impl PeripheralRadio for BluerRadio {
         let pump_wake = Arc::new(Notify::new());
         let indication_ids = Arc::new(IndicationIdAllocator::new());
         let indication_receipts = Arc::new(Mutex::new(HashMap::new()));
-        let indication_sessions = Arc::new(Mutex::new(Vec::new()));
         let session_tasks = Arc::new(Mutex::new(Vec::new()));
         daemon.verify().await?;
         let pump_task = tokio::spawn(send_pump(
@@ -686,7 +807,6 @@ impl PeripheralRadio for BluerRadio {
             pump_wake,
             indication_ids,
             indication_receipts,
-            indication_sessions,
             session_tasks,
             mfr: None,
             mgmt: None,
@@ -729,19 +849,12 @@ impl PeripheralRadio for BluerRadio {
         if !had_app {
             // The name already fits the scan-response budget — the caller
             // enforces it via `crate::advertisement::fit_name`.
-            let indication_state = IndicationState {
-                ids: self.indication_ids.clone(),
-                receipts: self.indication_receipts.clone(),
-                sessions: self.indication_sessions.clone(),
-                tasks: self.session_tasks.clone(),
-            };
             let (handlers, services) = build_services_with_state(
                 self.services.clone(),
                 self.events.clone(),
                 self.gatt_clients.clone(),
                 self.writers.clone(),
                 self.ledger.clone(),
-                indication_state,
             )?;
             let app_handle = self
                 .adapter
@@ -1023,11 +1136,10 @@ impl PeripheralRadio for BluerRadio {
     }
 
     async fn drop_subscription(&mut self, characteristic: Uuid) -> Result<bool, RadioError> {
-        // Tear down the live session (adversarial interrupted-setup): the
-        // generation is retired and the writer removed, so the next send on
-        // it fails loudly instead of going out. The session task still ends
-        // normally when the central unsubscribes.
-        drop_current_subscription(
+        // Tear down every live session for this characteristic (adversarial
+        // interrupted-setup). Each peer generation is retired independently,
+        // so a late callback cannot remove a later subscription.
+        drop_current_subscriptions(
             &self.events,
             &self.ledger,
             &self.writers,
@@ -1088,72 +1200,121 @@ impl BluerRadio {
             if !ledger.is_subscribed(characteristic) {
                 return Ok(SendOutcome::NotSubscribed);
             }
-            let generation = match ledger.current(characteristic) {
-                Some(generation) => generation,
-                None => return Ok(SendOutcome::NotSubscribed),
-            };
             let writers = self
                 .writers
                 .lock()
                 .map_err(|error| RadioError(format!("bluer writer lock: {error}")))?;
-            let writer = match writers.get(&characteristic).cloned() {
-                Some(writer) => writer,
-                None => return Ok(SendOutcome::Failed("writer unavailable".to_string())),
-            };
-            let actual_target = writer_peer(writer.as_ref());
-            if let Some(target) = target.as_ref() {
-                if generation != target.generation
-                    || actual_target.as_deref() != Some(target.peer_address.as_str())
+            if let Some(target) = target {
+                let selected = match ledger.select_targets(characteristic, Some(&target)) {
+                    Ok(selected) => selected,
+                    Err(reason) => return Ok(SendOutcome::Failed(reason)),
+                };
+                let target = selected
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| RadioError("targeted notify selected no peer".to_string()))?;
+                let writer = match writers
+                    .get(&(characteristic, Some(target.peer_address.clone())))
+                    .cloned()
                 {
+                    Some(registration) if registration.generation == target.generation => {
+                        registration.writer
+                    }
+                    Some(_) => {
+                        return Ok(SendOutcome::Failed(
+                            "owned notification writer generation is stale".to_string(),
+                        ))
+                    }
+                    None => {
+                        return Ok(SendOutcome::Failed(
+                            "owned notification writer unavailable".to_string(),
+                        ))
+                    }
+                };
+                match writer.as_ref() {
+                    NotificationWriter::OwnedIndication { endpoint, .. } => {
+                        let generation = target.generation;
+                        let send = QueuedSend {
+                            id: 0,
+                            service: self.service_of(characteristic),
+                            characteristic,
+                            targets: vec![target],
+                            indication_generation: Some(generation),
+                            value,
+                        };
+                        (
+                            match endpoint.enqueue(send) {
+                                Ok(id) => SendOutcome::Queued { id },
+                                Err(_) => SendOutcome::Failed(format!(
+                                    "bluer indication {characteristic}: bounded lane full or closed; the value was not admitted"
+                                )),
+                            },
+                            false,
+                        )
+                    }
+                    NotificationWriter::Io(_) => {
+                        let send = QueuedSend {
+                            id: 0,
+                            service: self.service_of(characteristic),
+                            characteristic,
+                            targets: vec![target],
+                            indication_generation: None,
+                            value,
+                        };
+                        let queued = self
+                            .pump_queue
+                            .lock()
+                            .map_err(|error| RadioError(format!("bluer pump lock: {error}")))?
+                            .push(send);
+                        let admitted = queued.is_ok();
+                        (
+                            match queued {
+                                Ok(id) => SendOutcome::Queued { id },
+                                Err(_) => SendOutcome::Failed(format!(
+                                    "bluer notify {characteristic}: send queue full ({SEND_QUEUE_CAPACITY}) or correlation IDs exhausted; the value was not admitted"
+                                )),
+                            },
+                            admitted,
+                        )
+                    }
+                }
+            } else {
+                let targets = ledger
+                    .select_targets(characteristic, None)
+                    .map_err(RadioError)?;
+                if targets.is_empty() {
+                    return Ok(SendOutcome::NotSubscribed);
+                }
+                if targets.iter().any(|target| {
+                    !writers.contains_key(&(characteristic, Some(target.peer_address.clone())))
+                }) {
                     return Ok(SendOutcome::Failed(
-                        "owned notification target is stale or mismatched".to_string(),
+                        "one or more subscribed notification writers are unavailable".to_string(),
                     ));
                 }
-            }
-            let target = match target {
-                Some(target) => target,
-                None => OwnedNotifyTarget::new(actual_target.unwrap_or_default(), generation),
-            };
-            let send = QueuedSend {
-                id: 0,
-                service: self.service_of(characteristic),
-                characteristic,
-                generation,
-                target,
-                value,
-            };
-            match writer.as_ref() {
-                // Indications have their own capacity-one lane. A blocked ATT
-                // confirmation cannot stall the high-rate IO pump.
-                NotificationWriter::Indication(endpoint) => (
-                    match endpoint.enqueue(send) {
+                let send = QueuedSend {
+                    id: 0,
+                    service: self.service_of(characteristic),
+                    characteristic,
+                    targets,
+                    indication_generation: None,
+                    value,
+                };
+                let queued = self
+                    .pump_queue
+                    .lock()
+                    .map_err(|error| RadioError(format!("bluer pump lock: {error}")))?
+                    .push(send);
+                let admitted = queued.is_ok();
+                (
+                    match queued {
                         Ok(id) => SendOutcome::Queued { id },
                         Err(_) => SendOutcome::Failed(format!(
-                            "bluer indication {characteristic}: bounded lane full or closed; the value was not admitted"
+                            "bluer notify {characteristic}: send queue full ({SEND_QUEUE_CAPACITY}) or correlation IDs exhausted; the value was not admitted"
                         )),
                     },
-                    false,
-                ),
-                // Bounded and ordered: validation and queue admission stay in
-                // this ledger→writers critical section. A replacement cannot
-                // make an admitted owned send point at the successor writer.
-                NotificationWriter::Io(_) => {
-                    let queued = self
-                        .pump_queue
-                        .lock()
-                        .map_err(|error| RadioError(format!("bluer pump lock: {error}")))?
-                        .push(send);
-                    let admitted = queued.is_ok();
-                    (
-                        match queued {
-                            Ok(id) => SendOutcome::Queued { id },
-                            Err(_) => SendOutcome::Failed(format!(
-                                "bluer notify {characteristic}: send queue full ({SEND_QUEUE_CAPACITY}) or correlation IDs exhausted; the value was not admitted"
-                            )),
-                        },
-                        admitted,
-                    )
-                }
+                    admitted,
+                )
             }
         };
         if wake_pump {
@@ -1417,14 +1578,39 @@ impl BluerRadio {
             let ledger = self.ledger.clone();
             let clients = self.gatt_clients.clone();
             let session_tasks = self.session_tasks.clone();
+            let handler_session_tasks = session_tasks.clone();
+            let indication_ids = self.indication_ids.clone();
+            let indication_receipts = self.indication_receipts.clone();
             let task = tokio::spawn(async move {
                 while let Some(CharacteristicControlEvent::Notify(writer)) =
                     handler.control.next().await
                 {
-                    let writer = Arc::new(NotificationWriter::Io(Arc::new(writer)));
-                    let raw_writer = match writer.as_ref() {
-                        NotificationWriter::Io(writer) => writer.clone(),
-                        NotificationWriter::Indication(_) => unreachable!("IO handler writer"),
+                    let raw_writer = Arc::new(writer);
+                    let control_point = crate::gatt_spec::pmd::CONTROL_POINT
+                        .parse::<Uuid>()
+                        .unwrap_or_else(|_| Uuid::nil());
+                    let is_control_point = handler.characteristic_uuid == control_point;
+                    let (writer, owned_endpoint, owned_receiver) = if is_control_point {
+                        let (tx, receiver) = mpsc::channel(1);
+                        let endpoint = Arc::new(IndicationEndpoint::with_allocator(
+                            tx,
+                            indication_ids.clone(),
+                            indication_receipts.clone(),
+                        ));
+                        (
+                            Arc::new(NotificationWriter::OwnedIndication {
+                                writer: raw_writer.clone(),
+                                endpoint: endpoint.clone(),
+                            }),
+                            Some(endpoint),
+                            Some(receiver),
+                        )
+                    } else {
+                        (
+                            Arc::new(NotificationWriter::Io(raw_writer.clone())),
+                            None,
+                            None,
+                        )
                     };
                     let readiness = match session_readiness(raw_writer.as_ref()) {
                         Ok(readiness) => readiness,
@@ -1446,29 +1632,106 @@ impl BluerRadio {
                     // reads and writes, so subscribers are recorded as
                     // clients even when they never read or wrote.
                     note_client(&clients, raw_writer.device_address());
-                    let generation = match ledger.lock() {
+                    let peer_address = raw_writer.device_address().to_string().to_ascii_uppercase();
+                    let (generation, first_subscriber, transition_revision) = match ledger.lock() {
                         Ok(mut ledger) => {
-                            let generation = ledger.subscribe(handler.characteristic_uuid);
-                            if let Ok(mut writers) = writers.lock() {
-                                writers.insert(handler.characteristic_uuid, writer.clone());
+                            let first_subscriber =
+                                !ledger.is_subscribed(handler.characteristic_uuid);
+                            let transition_revision = if first_subscriber {
+                                match ledger.allocate_transition_revision() {
+                                    Ok(revision) => Some(revision),
+                                    Err(error) => {
+                                        eprintln!("h10-sim: subscription revision allocation failed: {error}");
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+                            let generation =
+                                ledger.subscribe(handler.characteristic_uuid, Some(&peer_address));
+                            match writers.lock() {
+                                Ok(mut writers) => {
+                                    let previous = writers.insert(
+                                        (handler.characteristic_uuid, Some(peer_address.clone())),
+                                        RegisteredWriter {
+                                            generation,
+                                            writer: writer.clone(),
+                                        },
+                                    );
+                                    if let Some(previous) = previous {
+                                        match previous.writer.as_ref() {
+                                            NotificationWriter::OwnedIndication {
+                                                endpoint,
+                                                ..
+                                            } => endpoint.close(),
+                                            NotificationWriter::Io(_) => {}
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    ledger.unsubscribe(
+                                        handler.characteristic_uuid,
+                                        Some(&peer_address),
+                                        generation,
+                                    );
+                                    eprintln!(
+                                        "h10-sim: notification writer registry lock failed: {error}"
+                                    );
+                                    continue;
+                                }
                             }
-                            generation
+                            (generation, first_subscriber, transition_revision)
                         }
                         Err(_) => continue,
                     };
-                    if sender
-                        .send(RadioEvent::Subscription {
-                            service: service.clone(),
-                            characteristic: characteristic.clone(),
-                            subscribed: true,
-                        })
-                        .await
-                        .is_err()
+                    if let (Some(endpoint), Some(receiver)) =
+                        (owned_endpoint.clone(), owned_receiver)
+                    {
+                        let pump = tokio::spawn(owned_indication_pump(
+                            receiver,
+                            OwnedIndicationPumpContext {
+                                writer: raw_writer.clone(),
+                                endpoint,
+                                ledger: ledger.clone(),
+                                writers: writers.clone(),
+                                events: sender.clone(),
+                                service: service.clone(),
+                                characteristic: handler.characteristic_uuid,
+                                peer_address: peer_address.clone(),
+                                generation,
+                            },
+                        ));
+                        if let Ok(mut tasks) = handler_session_tasks.lock() {
+                            tasks.push(pump);
+                        } else {
+                            eprintln!(
+                                "h10-sim: indication task ownership failed: task lock poisoned"
+                            );
+                        }
+                    }
+                    if first_subscriber
+                        && sender
+                            .send(RadioEvent::Subscription {
+                                service: service.clone(),
+                                characteristic: characteristic.clone(),
+                                subscribed: true,
+                                revision: transition_revision,
+                            })
+                            .await
+                            .is_err()
                     {
                         if let Ok(mut ledger) = ledger.lock() {
-                            if ledger.unsubscribe(handler.characteristic_uuid, generation) {
+                            if ledger.unsubscribe(
+                                handler.characteristic_uuid,
+                                Some(&peer_address),
+                                generation,
+                            ) {
                                 if let Ok(mut writers) = writers.lock() {
-                                    writers.remove(&handler.characteristic_uuid);
+                                    writers.remove(&(
+                                        handler.characteristic_uuid,
+                                        Some(peer_address.clone()),
+                                    ));
                                 }
                             }
                         }
@@ -1486,11 +1749,17 @@ impl BluerRadio {
                                 if ledger
                                     .lock()
                                     .map(|ledger| {
-                                        ledger.is_current(handler.characteristic_uuid, generation)
+                                        ledger.is_current(
+                                            handler.characteristic_uuid,
+                                            Some(&peer_address),
+                                            generation,
+                                        )
                                     })
                                     .unwrap_or(false)
                                 {
-                                    if sender
+                                    if let Some(endpoint) = owned_endpoint.as_ref() {
+                                        endpoint.confirm();
+                                    } else if sender
                                         .send(RadioEvent::IndicationConfirmed {
                                             service: service.clone(),
                                             characteristic: characteristic.clone(),
@@ -1516,6 +1785,9 @@ impl BluerRadio {
                             }
                         }
                     }
+                    if let Some(endpoint) = owned_endpoint.as_ref() {
+                        endpoint.close();
+                    }
                     // Generation-aware cleanup: only the still-live session
                     // removes its writer, so a resubscribe that landed while
                     // this session drained keeps its writer.
@@ -1525,6 +1797,7 @@ impl BluerRadio {
                         &writers,
                         &service,
                         handler.characteristic_uuid,
+                        Some(&peer_address),
                         generation,
                     )
                     .await
@@ -1541,15 +1814,13 @@ impl BluerRadio {
     }
 }
 
-/// The bounded ordered send pump: delivers queued sends FIFO over the live
-/// session writer and settles each one with a `NotifySettled` event
-/// (`OsAccepted`, or `Failed` with the reason). A send whose generation is
-/// stale — superseded by a resubscribe, or unsubscribed while queued — fails
-/// loudly instead of going out on the wrong session.
+/// The bounded ordered send pump: delivers queued sends FIFO to the peer
+/// writers selected at admission and settles each logical send once. A stale
+/// peer generation fails loudly while remaining peers still receive the value.
 async fn send_pump(
     pump_queue: Arc<Mutex<SendQueue>>,
     pump_wake: Arc<Notify>,
-    writers: Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    writers: WriterMap,
     ledger: Arc<Mutex<SubscriptionLedger>>,
     events: mpsc::Sender<RadioEvent>,
 ) {
@@ -1562,134 +1833,382 @@ async fn send_pump(
             };
             let Some(send) = send else { break };
             let characteristic = send.characteristic.to_string();
-            let live = match ledger.lock() {
-                Ok(ledger) => ledger.is_current(send.characteristic, send.generation),
-                Err(_) => false,
-            };
-            if !live {
-                settle(
-                    &events,
-                    send.id,
-                    send.service,
-                    characteristic,
-                    SendOutcome::Failed(
-                        "superseded: the subscription ended before delivery".to_string(),
-                    ),
-                )
-                .await;
-                continue;
+            let mut failures = Vec::new();
+            let mut ready = Vec::with_capacity(send.targets.len());
+            if send.targets.is_empty() {
+                failures.push("no addressed notification peers were selected".to_string());
             }
-            let writer = match writers.lock() {
-                Ok(writers) => writers.get(&send.characteristic).cloned(),
-                Err(_) => None,
-            };
-            let Some(writer) = writer else {
-                settle(
-                    &events,
-                    send.id,
-                    send.service,
-                    characteristic,
-                    SendOutcome::Failed("writer gone before delivery".to_string()),
-                )
-                .await;
-                continue;
-            };
-            if !target_matches(
-                &send.target,
-                writer_peer(writer.as_ref()).as_deref().unwrap_or_default(),
-                send.generation,
-            ) {
-                settle(
-                    &events,
-                    send.id,
-                    send.service,
-                    characteristic,
-                    SendOutcome::Failed(
-                        "superseded: notification writer was replaced before delivery".to_string(),
-                    ),
-                )
-                .await;
-                continue;
-            }
-            // `send` only waits for socket buffer space, never for the ATT
-            // confirmation, so a dead session surfaces here instead of timing out
-            // the central. Indication sessions are owned by their Fun lane and
-            // never enter this pump.
-            let result = match writer.as_ref() {
-                NotificationWriter::Io(writer) => writer.send(&send.value).await,
-                NotificationWriter::Indication(_) => {
-                    settle(
-                        &events,
-                        send.id,
-                        send.service,
-                        characteristic,
-                        SendOutcome::Failed("indication writer entered notify pump".to_string()),
-                    )
-                    .await;
+            for (target_index, target) in send.targets.iter().enumerate() {
+                let peer = target.peer_address.as_str();
+                let target_label = target_index + 1;
+                let registration = match ledger.lock() {
+                    Ok(ledger) => {
+                        if !ledger.is_current(send.characteristic, Some(peer), target.generation) {
+                            failures.push(format!(
+                                "delivery target #{target_label}: subscription ended or was replaced before delivery"
+                            ));
+                            continue;
+                        }
+                        let key = (send.characteristic, Some(peer.to_string()));
+                        match writers.lock() {
+                            Ok(writers) => writers.get(&key).cloned(),
+                            Err(error) => {
+                                failures.push(format!(
+                                    "delivery target #{target_label}: writer lock failed: {error}"
+                                ));
+                                continue;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        failures.push(format!(
+                            "delivery target #{target_label}: subscription ledger lock failed: {error}"
+                        ));
+                        continue;
+                    }
+                };
+                let Some(registration) = registration else {
+                    failures.push(format!(
+                        "delivery target #{target_label}: writer unavailable before delivery"
+                    ));
+                    continue;
+                };
+                if !registered_writer_matches_target(
+                    target,
+                    registration.generation,
+                    writer_peer(registration.writer.as_ref())
+                        .as_deref()
+                        .unwrap_or_default(),
+                ) {
+                    failures.push(format!(
+                        "delivery target #{target_label}: writer changed before delivery"
+                    ));
                     continue;
                 }
-            };
-            match result {
-                Ok(()) => {
-                    settle(
-                        &events,
-                        send.id,
-                        send.service,
-                        characteristic,
-                        SendOutcome::OsAccepted,
-                    )
-                    .await;
+                if !matches!(registration.writer.as_ref(), NotificationWriter::Io(_)) {
+                    failures.push(format!(
+                        "delivery target #{target_label}: indication writer entered notify pump"
+                    ));
+                    continue;
                 }
-                Err(error) => {
-                    // The session died under us: drop the writer only if this
-                    // generation is still live, so a newer session keeps its own.
+                ready.push((target.clone(), registration));
+            }
+
+            let value = Arc::new(send.value);
+            let attempts = attempt_peer_targets(ready, PEER_SEND_TIMEOUT, |(_, registration)| {
+                let value = value.clone();
+                async move {
+                    match registration.writer.as_ref() {
+                        NotificationWriter::Io(writer) => writer
+                            .send(value.as_slice())
+                            .await
+                            .map_err(|error| error.to_string()),
+                        NotificationWriter::OwnedIndication { .. } => {
+                            Err("indication writer entered notify pump".to_string())
+                        }
+                    }
+                }
+            })
+            .await;
+            for (target_index, ((target, _registration), result)) in
+                attempts.into_iter().enumerate()
+            {
+                let peer = target.peer_address.as_str();
+                if let Err(error) = result {
                     let retirement = retire_failed_subscription(
                         &events,
                         &ledger,
                         &writers,
                         &send.service,
                         send.characteristic,
-                        send.generation,
+                        Some(peer),
+                        target.generation,
                     )
                     .await;
-                    let failure = match retirement {
-                        Ok(_) => format!("bluer notify: {error}"),
-                        Err(retirement) => {
-                            format!("bluer notify: {error}; subscription retirement: {retirement}")
-                        }
-                    };
-                    settle(
-                        &events,
-                        send.id,
-                        send.service,
-                        characteristic,
-                        SendOutcome::Failed(failure),
-                    )
-                    .await;
+                    failures.push(match retirement {
+                        Ok(_) => format!(
+                            "delivery target #{}: bluer notify failed: {error}",
+                            target_index + 1
+                        ),
+                        Err(retirement) => format!(
+                            "delivery target #{}: bluer notify failed: {error}; subscription retirement: {retirement}",
+                            target_index + 1
+                        ),
+                    });
                 }
+            }
+            let outcome = peer_send_outcome(failures);
+            settle(&events, send.id, send.service, characteristic, outcome).await;
+        }
+    }
+}
+
+/// Delivers one peer-owned PMD indication at a time. The acquired BlueZ
+/// socket accepts the value first; its confirmation byte is observed by the
+/// peer session reader and then matched to this lane's receipt.
+async fn publish_indication_unconfirmed(
+    events: &mpsc::Sender<RadioEvent>,
+    receipts: &IndicationReceipts,
+    id: u64,
+    service: String,
+    characteristic: String,
+    generation: u64,
+    reason: impl Into<String>,
+) {
+    let receipt = remove_indication_receipt(receipts, id);
+    let (service, characteristic, generation) = receipt
+        .map(|receipt| (receipt.service, receipt.characteristic, receipt.generation))
+        .unwrap_or((service, characteristic, generation));
+    let _ = events
+        .send(RadioEvent::IndicationUnconfirmed {
+            service,
+            characteristic,
+            receipt_id: id,
+            generation,
+            reason: reason.into(),
+        })
+        .await;
+}
+
+struct OwnedIndicationPumpContext {
+    writer: Arc<CharacteristicWriter>,
+    endpoint: Arc<IndicationEndpoint>,
+    ledger: Arc<Mutex<SubscriptionLedger>>,
+    writers: WriterMap,
+    events: mpsc::Sender<RadioEvent>,
+    service: String,
+    characteristic: Uuid,
+    peer_address: String,
+    generation: u64,
+}
+
+async fn owned_indication_pump(
+    mut receiver: mpsc::Receiver<QueuedSend>,
+    context: OwnedIndicationPumpContext,
+) {
+    let OwnedIndicationPumpContext {
+        writer,
+        endpoint,
+        ledger,
+        writers,
+        events,
+        service,
+        characteristic,
+        peer_address,
+        generation,
+    } = context;
+    loop {
+        let send = receive_owned_indication(&mut receiver, &endpoint).await;
+        if send.is_none() && endpoint.is_closed() {
+            receiver.close();
+            drain_owned_indication_queue(&mut receiver, &endpoint, &events, characteristic).await;
+            break;
+        }
+        let Some(send) = send else { break };
+        if endpoint.is_closed() {
+            receiver.close();
+            settle_owned_indication_failure(
+                &endpoint,
+                &events,
+                &send,
+                characteristic,
+                "owned indication subscription closed before delivery",
+            )
+            .await;
+            drain_owned_indication_queue(&mut receiver, &endpoint, &events, characteristic).await;
+            break;
+        }
+        if !ledger
+            .lock()
+            .map(|ledger| ledger.is_current(characteristic, Some(&peer_address), generation))
+            .unwrap_or(false)
+        {
+            remove_indication_receipt(&endpoint.receipts, send.id);
+            settle(
+                &events,
+                send.id,
+                send.service,
+                characteristic.to_string(),
+                SendOutcome::Failed("owned indication subscription is stale".to_string()),
+            )
+            .await;
+            continue;
+        }
+
+        mark_indication_stage(&endpoint.receipts, send.id, "inflight");
+        let write = tokio::time::timeout(PEER_SEND_TIMEOUT, writer.send(&send.value)).await;
+        let write = match write {
+            Ok(result) => result.map_err(|error| error.to_string()),
+            Err(_) => Err(format!("peer send timed out after {PEER_SEND_TIMEOUT:?}")),
+        };
+        if let Err(error) = write {
+            remove_indication_receipt(&endpoint.receipts, send.id);
+            settle(
+                &events,
+                send.id,
+                send.service,
+                characteristic.to_string(),
+                SendOutcome::Failed(format!("bluer indication write failed: {error}")),
+            )
+            .await;
+            let _ = retire_failed_subscription(
+                &events,
+                &ledger,
+                &writers,
+                &service,
+                characteristic,
+                Some(&peer_address),
+                generation,
+            )
+            .await;
+            receiver.close();
+            drain_owned_indication_queue(&mut receiver, &endpoint, &events, characteristic).await;
+            break;
+        }
+
+        mark_indication_stage(&endpoint.receipts, send.id, "accepted_waiting_confirm");
+        settle(
+            &events,
+            send.id,
+            send.service,
+            characteristic.to_string(),
+            SendOutcome::OsAccepted,
+        )
+        .await;
+        match endpoint
+            .wait_confirmation(INDICATION_CONFIRMATION_TIMEOUT)
+            .await
+        {
+            Ok(()) => {
+                remove_indication_receipt(&endpoint.receipts, send.id);
+                let _ = events
+                    .send(RadioEvent::IndicationConfirmed {
+                        service: service.clone(),
+                        characteristic: characteristic.to_string(),
+                        receipt_id: Some(send.id),
+                        generation: Some(generation),
+                    })
+                    .await;
+            }
+            Err(reason) => {
+                publish_indication_unconfirmed(
+                    &events,
+                    &endpoint.receipts,
+                    send.id,
+                    service.clone(),
+                    characteristic.to_string(),
+                    generation,
+                    reason,
+                )
+                .await;
+                endpoint.close();
+                let _ = retire_failed_subscription(
+                    &events,
+                    &ledger,
+                    &writers,
+                    &service,
+                    characteristic,
+                    Some(&peer_address),
+                    generation,
+                )
+                .await;
+                receiver.close();
+                drain_owned_indication_queue(&mut receiver, &endpoint, &events, characteristic)
+                    .await;
+                break;
             }
         }
     }
 }
 
-async fn drop_current_subscription(
+async fn receive_owned_indication(
+    receiver: &mut mpsc::Receiver<QueuedSend>,
+    endpoint: &IndicationEndpoint,
+) -> Option<QueuedSend> {
+    tokio::select! {
+        send = receiver.recv() => send,
+        _ = endpoint.closed() => None,
+    }
+}
+
+async fn settle_owned_indication_failure(
+    endpoint: &IndicationEndpoint,
+    events: &mpsc::Sender<RadioEvent>,
+    send: &QueuedSend,
+    characteristic: Uuid,
+    reason: &str,
+) {
+    remove_indication_receipt(&endpoint.receipts, send.id);
+    settle(
+        events,
+        send.id,
+        send.service.clone(),
+        characteristic.to_string(),
+        SendOutcome::Failed(reason.to_string()),
+    )
+    .await;
+}
+
+async fn drain_owned_indication_queue(
+    receiver: &mut mpsc::Receiver<QueuedSend>,
+    endpoint: &IndicationEndpoint,
+    events: &mpsc::Sender<RadioEvent>,
+    characteristic: Uuid,
+) {
+    while let Some(send) = receiver.recv().await {
+        settle_owned_indication_failure(
+            endpoint,
+            events,
+            &send,
+            characteristic,
+            "owned indication subscription closed before delivery",
+        )
+        .await;
+    }
+}
+
+async fn drop_current_subscriptions(
     events: &mpsc::Sender<RadioEvent>,
     ledger: &Arc<Mutex<SubscriptionLedger>>,
-    writers: &Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    writers: &WriterMap,
     service: &str,
     characteristic: Uuid,
 ) -> Result<bool, RadioError> {
-    let current = ledger
-        .lock()
-        .map_err(|error| RadioError(format!("subscription ledger lock: {error}")))?
-        .current(characteristic);
-    match current {
-        Some(generation) => {
-            retire_failed_subscription(events, ledger, writers, service, characteristic, generation)
-                .await
-        }
-        None => Ok(false),
+    let (targets, indication_generation) = {
+        let ledger = ledger
+            .lock()
+            .map_err(|error| RadioError(format!("subscription ledger lock: {error}")))?;
+        (
+            ledger.targets(characteristic),
+            ledger.current(characteristic, None),
+        )
+    };
+    let mut dropped = false;
+    for target in targets {
+        dropped |= retire_failed_subscription(
+            events,
+            ledger,
+            writers,
+            service,
+            characteristic,
+            Some(&target.peer_address),
+            target.generation,
+        )
+        .await?;
     }
+    if let Some(generation) = indication_generation {
+        dropped |= retire_failed_subscription(
+            events,
+            ledger,
+            writers,
+            service,
+            characteristic,
+            None,
+            generation,
+        )
+        .await?;
+    }
+    Ok(dropped)
 }
 
 /// Retire and publish only this generation's loss. The session observer may
@@ -1697,9 +2216,10 @@ async fn drop_current_subscription(
 async fn retire_failed_subscription(
     events: &mpsc::Sender<RadioEvent>,
     ledger: &Arc<Mutex<SubscriptionLedger>>,
-    writers: &Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    writers: &WriterMap,
     service: &str,
     characteristic: Uuid,
+    peer_address: Option<&str>,
     generation: u64,
 ) -> Result<bool, RadioError> {
     let retired = {
@@ -1709,28 +2229,44 @@ async fn retire_failed_subscription(
         let mut writers = writers
             .lock()
             .map_err(|error| RadioError(format!("subscription writer lock: {error}")))?;
-        if ledger.unsubscribe(characteristic, generation) {
-            if let Some(NotificationWriter::Indication(endpoint)) =
-                writers.remove(&characteristic).as_deref()
+        let key = (
+            characteristic,
+            peer_address.map(|peer| peer.to_ascii_uppercase()),
+        );
+        if ledger.unsubscribe(characteristic, peer_address, generation) {
+            if let Some(RegisteredWriter {
+                writer,
+                generation: _,
+            }) = writers.remove(&key)
             {
-                endpoint.close();
+                match writer.as_ref() {
+                    NotificationWriter::OwnedIndication { endpoint, .. } => endpoint.close(),
+                    NotificationWriter::Io(_) => {}
+                }
             }
-            true
+            let final_subscriber = !ledger.is_subscribed(characteristic);
+            let transition_revision = if final_subscriber {
+                Some(ledger.allocate_transition_revision().map_err(RadioError)?)
+            } else {
+                None
+            };
+            (true, final_subscriber, transition_revision)
         } else {
-            false
+            (false, false, None)
         }
     };
-    if retired {
+    if retired.0 && retired.1 {
         events
             .send(RadioEvent::Subscription {
                 service: service.into(),
                 characteristic: characteristic.to_string(),
                 subscribed: false,
+                revision: retired.2,
             })
             .await
             .map_err(|error| RadioError(format!("publish subscription loss: {error}")))?;
     }
-    Ok(retired)
+    Ok(retired.0)
 }
 
 /// Reports one settled send; a gone receiver means the loop is gone too, so
@@ -1875,238 +2411,6 @@ async fn answer_read(
     }
 }
 
-async fn drain_indication_queue(
-    receiver: &mut mpsc::Receiver<QueuedSend>,
-    events: &mpsc::Sender<RadioEvent>,
-    receipts: &IndicationReceipts,
-) {
-    while let Ok(send) = receiver.try_recv() {
-        remove_indication_receipt(receipts, send.id);
-        settle(
-            events,
-            send.id,
-            send.service,
-            send.characteristic.to_string(),
-            SendOutcome::Failed("indication session stopped before delivery".to_string()),
-        )
-        .await;
-    }
-}
-
-async fn publish_indication_unconfirmed(
-    events: &mpsc::Sender<RadioEvent>,
-    receipts: &IndicationReceipts,
-    id: u64,
-    service: String,
-    characteristic: String,
-    generation: u64,
-    reason: impl Into<String>,
-) {
-    let receipt = remove_indication_receipt(receipts, id);
-    let (service, characteristic, generation) = receipt
-        .map(|receipt| (receipt.service, receipt.characteristic, receipt.generation))
-        .unwrap_or((service, characteristic, generation));
-    let _ = events
-        .send(RadioEvent::IndicationUnconfirmed {
-            service,
-            characteristic,
-            receipt_id: id,
-            generation,
-            reason: reason.into(),
-        })
-        .await;
-}
-
-/// Owns one indication-only session. The lane has capacity one and is
-/// independent of the notify pump, so a central that withholds confirmation
-/// cannot stall ECG/ACC notifications. The Fun notifier is kept alive only in
-/// this session; no raw BlueZ notify fd or late IO callback survives CCC stop.
-async fn indication_session(
-    mut notifier: CharacteristicNotifier,
-    service_uuid: Uuid,
-    characteristic_uuid: Uuid,
-    writers: Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
-    ledger: Arc<Mutex<SubscriptionLedger>>,
-    events: mpsc::Sender<RadioEvent>,
-    indication_state: IndicationState,
-) {
-    if !notifier.confirming() {
-        eprintln!("h10-sim: indication session {characteristic_uuid} is not confirmation-capable");
-        return;
-    }
-    let (tx, mut receiver) = mpsc::channel(1);
-    let endpoint = Arc::new(IndicationEndpoint::with_allocator(
-        tx,
-        indication_state.ids.clone(),
-        indication_state.receipts.clone(),
-    ));
-    let service = service_uuid.to_string();
-    let characteristic = characteristic_uuid.to_string();
-    let generation = match ledger.lock() {
-        Ok(mut ledger) => {
-            let generation = ledger.subscribe(characteristic_uuid);
-            match writers.lock() {
-                Ok(mut writers) => {
-                    let previous = writers.insert(
-                        characteristic_uuid,
-                        Arc::new(NotificationWriter::Indication(endpoint.clone())),
-                    );
-                    if let Some(NotificationWriter::Indication(previous)) = previous.as_deref() {
-                        previous.close();
-                    }
-                    generation
-                }
-                Err(error) => {
-                    eprintln!("h10-sim: indication writer lock: {error}");
-                    return;
-                }
-            }
-        }
-        Err(error) => {
-            eprintln!("h10-sim: indication ledger lock: {error}");
-            return;
-        }
-    };
-    if let Ok(mut sessions) = indication_state.sessions.lock() {
-        sessions.push((characteristic_uuid, generation));
-    }
-
-    if events
-        .send(RadioEvent::Subscription {
-            service: service.clone(),
-            characteristic: characteristic.clone(),
-            subscribed: true,
-        })
-        .await
-        .is_err()
-    {
-        let _ = retire_failed_subscription(
-            &events,
-            &ledger,
-            &writers,
-            &service,
-            characteristic_uuid,
-            generation,
-        )
-        .await;
-        if let Ok(mut sessions) = indication_state.sessions.lock() {
-            sessions.retain(|session| *session != (characteristic_uuid, generation));
-        }
-        return;
-    }
-
-    loop {
-        tokio::select! {
-            _ = notifier.stopped() => {
-                drain_indication_queue(&mut receiver, &events, &indication_state.receipts).await;
-                break;
-            }
-            _ = endpoint.closed() => {
-                drain_indication_queue(&mut receiver, &events, &indication_state.receipts).await;
-                break;
-            }
-            maybe_send = receiver.recv() => {
-                let Some(send) = maybe_send else { break };
-                mark_indication_stage(&indication_state.receipts, send.id, "inflight");
-                if !ledger.lock().map(|ledger| ledger.is_current(characteristic_uuid, generation)).unwrap_or(false) {
-                    remove_indication_receipt(&indication_state.receipts, send.id);
-                    settle(
-                        &events,
-                        send.id,
-                        send.service,
-                        characteristic.clone(),
-                        SendOutcome::Failed("superseded: indication subscription ended before delivery".to_string()),
-                    ).await;
-                    continue;
-                }
-
-                // bluer's Fun API sends the D-Bus Value before its first
-                // Pending poll (which waits for ATT confirmation). Poll once
-                // to distinguish an immediate send failure from an accepted
-                // indication, then await confirmation without blocking notify.
-                let stopped = notifier.stopped();
-                let mut notify = Box::pin(notifier.notify(send.value));
-                let first = std::future::poll_fn(|cx| {
-                    match std::future::Future::poll(notify.as_mut(), cx) {
-                        std::task::Poll::Ready(result) => std::task::Poll::Ready(Some(result)),
-                        std::task::Poll::Pending => std::task::Poll::Ready(None),
-                    }
-                }).await;
-                match first {
-                    Some(Ok(())) => {
-                        mark_indication_stage(&indication_state.receipts, send.id, "confirmed");
-                        settle(&events, send.id, send.service, characteristic.clone(), SendOutcome::OsAccepted).await;
-                        if ledger.lock().map(|ledger| ledger.is_current(characteristic_uuid, generation)).unwrap_or(false) {
-                            remove_indication_receipt(&indication_state.receipts, send.id);
-                            let _ = events.send(RadioEvent::IndicationConfirmed {
-                                service: service.clone(),
-                                characteristic: characteristic.clone(),
-                                receipt_id: Some(send.id),
-                                generation: Some(generation),
-                            }).await;
-                        } else {
-                            publish_indication_unconfirmed(&events, &indication_state.receipts, send.id, service.clone(), characteristic.clone(), generation, "confirmation arrived after subscription replacement").await;
-                        }
-                    }
-                    Some(Err(error)) => {
-                        remove_indication_receipt(&indication_state.receipts, send.id);
-                        settle(&events, send.id, send.service, characteristic.clone(), SendOutcome::Failed(format!("bluer indication: {error}"))).await;
-                        break;
-                    }
-                    None => {
-                        mark_indication_stage(&indication_state.receipts, send.id, "accepted_waiting_confirm");
-                        settle(&events, send.id, send.service, characteristic.clone(), SendOutcome::OsAccepted).await;
-                        tokio::select! {
-                            result = &mut notify => {
-                                if let Err(error) = result {
-                                    publish_indication_unconfirmed(&events, &indication_state.receipts, send.id, service.clone(), characteristic.clone(), generation, format!("accepted but not confirmed: {error}")).await;
-                                } else {
-                                    if ledger.lock().map(|ledger| ledger.is_current(characteristic_uuid, generation)).unwrap_or(false) {
-                                        remove_indication_receipt(&indication_state.receipts, send.id);
-                                        let _ = events.send(RadioEvent::IndicationConfirmed {
-                                            service: service.clone(),
-                                            characteristic: characteristic.clone(),
-                                            receipt_id: Some(send.id),
-                                            generation: Some(generation),
-                                        }).await;
-                                    } else {
-                                        publish_indication_unconfirmed(&events, &indication_state.receipts, send.id, service.clone(), characteristic.clone(), generation, "confirmation arrived after subscription replacement").await;
-                                    }
-                                }
-                            }
-                            _ = endpoint.closed() => {
-                                publish_indication_unconfirmed(&events, &indication_state.receipts, send.id, service.clone(), characteristic.clone(), generation, "accepted but lane closed before confirmation").await;
-                                break;
-                            }
-                            _ = stopped => {
-                                publish_indication_unconfirmed(&events, &indication_state.receipts, send.id, service.clone(), characteristic.clone(), generation, "accepted but notifier stopped before confirmation").await;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    drain_indication_queue(&mut receiver, &events, &indication_state.receipts).await;
-    if let Err(error) = retire_failed_subscription(
-        &events,
-        &ledger,
-        &writers,
-        &service,
-        characteristic_uuid,
-        generation,
-    )
-    .await
-    {
-        eprintln!("h10-sim: indication session {characteristic} retirement failed: {error}");
-    }
-    if let Ok(mut sessions) = indication_state.sessions.lock() {
-        sessions.retain(|session| *session != (characteristic_uuid, generation));
-    }
-}
-
 /// Builds the `bluer` GATT application from the queued service declarations.
 /// Pure construction: no D-Bus traffic, so it is unit-testable without a radio.
 /// An inconsistent declaration (a permission without its property, an
@@ -2116,31 +2420,18 @@ fn build_services(
     specs: Vec<ServiceSpec>,
     sender: mpsc::Sender<RadioEvent>,
     clients: Arc<Mutex<GattClientSet>>,
-    writers: Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    writers: WriterMap,
     ledger: Arc<Mutex<SubscriptionLedger>>,
 ) -> Result<(Vec<CharNotifyHandler>, Vec<Service>), RadioError> {
-    build_services_with_state(
-        specs,
-        sender,
-        clients,
-        writers,
-        ledger,
-        IndicationState {
-            ids: Arc::new(IndicationIdAllocator::new()),
-            receipts: Arc::new(Mutex::new(HashMap::new())),
-            sessions: Arc::new(Mutex::new(Vec::new())),
-            tasks: Arc::new(Mutex::new(Vec::new())),
-        },
-    )
+    build_services_with_state(specs, sender, clients, writers, ledger)
 }
 
 fn build_services_with_state(
     specs: Vec<ServiceSpec>,
     sender: mpsc::Sender<RadioEvent>,
     clients: Arc<Mutex<GattClientSet>>,
-    writers: Arc<Mutex<HashMap<Uuid, Arc<NotificationWriter>>>>,
+    writers: WriterMap,
     ledger: Arc<Mutex<SubscriptionLedger>>,
-    indication_state: IndicationState,
 ) -> Result<(Vec<CharNotifyHandler>, Vec<Service>), RadioError> {
     let mut services = Vec::with_capacity(specs.len());
     let mut handlers = Vec::new();
@@ -2188,6 +2479,9 @@ fn build_services_with_state(
                 let writers = writers.clone();
                 let ledger = ledger.clone();
                 let psftp_wire = crate::psftp::wire_characteristic();
+                let control_point = crate::gatt_spec::pmd::CONTROL_POINT
+                    .parse::<Uuid>()
+                    .unwrap_or_else(|_| Uuid::nil());
                 CharacteristicWrite {
                     write: with_response,
                     write_without_response: without_response,
@@ -2220,12 +2514,13 @@ fn build_services_with_state(
                                     characteristic: char_uuid.to_string(),
                                     value,
                                     device_address: Some(device_address.clone()),
-                                    owned_target: (char_uuid == psftp_wire)
+                                    owned_target: (char_uuid == psftp_wire
+                                        || char_uuid == control_point)
                                         .then(|| {
                                             owned_target_for_write(
                                                 &writers,
                                                 &ledger,
-                                                psftp_wire,
+                                                char_uuid,
                                                 &device_address,
                                             )
                                         })
@@ -2250,62 +2545,21 @@ fn build_services_with_state(
             });
 
             let (notify, control_handle) = if has_notify || has_indicate {
-                if has_indicate && !has_notify {
-                    let writers = writers.clone();
-                    let ledger = ledger.clone();
-                    let sender = sender.clone();
-                    let indication_state = indication_state.clone();
-                    (
-                        Some(CharacteristicNotify {
-                            notify: false,
-                            indicate: true,
-                            method: CharacteristicNotifyMethod::Fun(Box::new(move |notifier| {
-                                // StartNotify must acknowledge immediately; awaiting the
-                                // entire session here would block the central's CCC write.
-                                let task = tokio::spawn(indication_session(
-                                    notifier,
-                                    service_uuid,
-                                    char_uuid,
-                                    writers.clone(),
-                                    ledger.clone(),
-                                    sender.clone(),
-                                    indication_state.clone(),
-                                ));
-                                match indication_state.tasks.lock() {
-                                    Ok(mut tasks) => {
-                                        tasks.retain(|task| !task.is_finished());
-                                        tasks.push(task);
-                                    }
-                                    Err(error) => {
-                                        task.abort();
-                                        eprintln!(
-                                            "h10-sim: indication task ownership failed: {error}"
-                                        );
-                                    }
-                                }
-                                async {}.boxed()
-                            })),
-                            ..Default::default()
-                        }),
-                        CharacteristicControlHandle::default(),
-                    )
-                } else {
-                    let (control, handle) = characteristic_control();
-                    handlers.push(CharNotifyHandler {
-                        service_uuid,
-                        characteristic_uuid: char_uuid,
-                        control,
-                    });
-                    (
-                        Some(CharacteristicNotify {
-                            notify: has_notify,
-                            indicate: has_indicate,
-                            method: CharacteristicNotifyMethod::Io,
-                            ..Default::default()
-                        }),
-                        handle,
-                    )
-                }
+                let (control, handle) = characteristic_control();
+                handlers.push(CharNotifyHandler {
+                    service_uuid,
+                    characteristic_uuid: char_uuid,
+                    control,
+                });
+                (
+                    Some(CharacteristicNotify {
+                        notify: has_notify,
+                        indicate: has_indicate,
+                        method: CharacteristicNotifyMethod::Io,
+                        ..Default::default()
+                    }),
+                    handle,
+                )
             } else {
                 (None, CharacteristicControlHandle::default())
             };
@@ -2352,8 +2606,8 @@ mod tests {
                 id: 0,
                 service: "test".into(),
                 characteristic,
-                generation: 1,
-                target: OwnedNotifyTarget::new("", 1),
+                targets: Vec::new(),
+                indication_generation: Some(1),
                 value: vec![1, 2, 3],
             })
             .unwrap();
@@ -2408,7 +2662,6 @@ mod tests {
             &writers,
             &queue,
             &receipts,
-            &Arc::new(Mutex::new(Vec::new())),
             &tasks,
         );
         let entries = receipt["indicationReceiptsNotConfirmed"]
@@ -2556,13 +2809,16 @@ mod tests {
         let writers = Arc::new(Mutex::new(HashMap::new()));
         let (events, mut receiver) = mpsc::channel(4);
         assert!(
-            !drop_current_subscription(&events, &ledger, &writers, "service", characteristic)
+            !drop_current_subscriptions(&events, &ledger, &writers, "service", characteristic)
                 .await
                 .unwrap()
         );
-        let generation = ledger.lock().unwrap().subscribe(characteristic);
+        let generation = ledger
+            .lock()
+            .unwrap()
+            .subscribe(characteristic, Some("AA:AA:AA:AA:AA:AA"));
         assert!(
-            drop_current_subscription(&events, &ledger, &writers, "service", characteristic)
+            drop_current_subscriptions(&events, &ledger, &writers, "service", characteristic)
                 .await
                 .unwrap()
         );
@@ -2574,7 +2830,7 @@ mod tests {
             })
         ));
         assert!(
-            !drop_current_subscription(&events, &ledger, &writers, "service", characteristic)
+            !drop_current_subscriptions(&events, &ledger, &writers, "service", characteristic)
                 .await
                 .unwrap()
         );
@@ -2584,6 +2840,7 @@ mod tests {
             &writers,
             "service",
             characteristic,
+            Some("AA:AA:AA:AA:AA:AA"),
             generation,
         )
         .await
@@ -2592,6 +2849,59 @@ mod tests {
             receiver.try_recv().is_err(),
             "late observer must not repeat forced loss"
         );
+    }
+
+    #[tokio::test]
+    async fn one_peer_leaving_does_not_publish_final_subscription_loss() {
+        let characteristic = Uuid::nil();
+        let ledger = Arc::new(Mutex::new(SubscriptionLedger::new()));
+        let writers = Arc::new(Mutex::new(HashMap::new()));
+        let (events, mut receiver) = mpsc::channel(4);
+        let peer_a = "AA:AA:AA:AA:AA:AA";
+        let peer_b = "BB:BB:BB:BB:BB:BB";
+        let generation_a = ledger
+            .lock()
+            .unwrap()
+            .subscribe(characteristic, Some(peer_a));
+        let generation_b = ledger
+            .lock()
+            .unwrap()
+            .subscribe(characteristic, Some(peer_b));
+
+        assert!(retire_failed_subscription(
+            &events,
+            &ledger,
+            &writers,
+            "service",
+            characteristic,
+            Some(peer_a),
+            generation_a,
+        )
+        .await
+        .unwrap());
+        assert!(ledger.lock().unwrap().is_subscribed(characteristic));
+        assert!(receiver.try_recv().is_err(), "A is not the final peer");
+
+        assert!(retire_failed_subscription(
+            &events,
+            &ledger,
+            &writers,
+            "service",
+            characteristic,
+            Some(peer_b),
+            generation_b,
+        )
+        .await
+        .unwrap());
+        assert!(!ledger.lock().unwrap().is_subscribed(characteristic));
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RadioEvent::Subscription {
+                subscribed: false,
+                ..
+            })
+        ));
+        assert!(receiver.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -2632,19 +2942,32 @@ mod tests {
         let ledger = Arc::new(Mutex::new(SubscriptionLedger::new()));
         let writers = Arc::new(Mutex::new(HashMap::new()));
         let (events, mut receiver) = mpsc::channel(4);
-        let old = ledger.lock().unwrap().subscribe(characteristic);
-        let current = ledger.lock().unwrap().subscribe(characteristic);
-        retire_failed_subscription(&events, &ledger, &writers, "service", characteristic, old)
-            .await
-            .unwrap();
-        assert!(receiver.try_recv().is_err());
-        assert!(ledger.lock().unwrap().is_current(characteristic, current));
+        let peer = "AA:AA:AA:AA:AA:AA";
+        let old = ledger.lock().unwrap().subscribe(characteristic, Some(peer));
+        let current = ledger.lock().unwrap().subscribe(characteristic, Some(peer));
         retire_failed_subscription(
             &events,
             &ledger,
             &writers,
             "service",
             characteristic,
+            Some(peer),
+            old,
+        )
+        .await
+        .unwrap();
+        assert!(receiver.try_recv().is_err());
+        assert!(ledger
+            .lock()
+            .unwrap()
+            .is_current(characteristic, Some(peer), current));
+        retire_failed_subscription(
+            &events,
+            &ledger,
+            &writers,
+            "service",
+            characteristic,
+            Some(peer),
             current,
         )
         .await
@@ -2662,6 +2985,7 @@ mod tests {
             &writers,
             "service",
             characteristic,
+            Some(peer),
             current,
         )
         .await
@@ -2701,21 +3025,21 @@ mod tests {
             .collect();
         assert_eq!(counts, vec![2, 7, 1, 2, 3]);
         assert!(services.iter().all(|service| service.primary));
-        // Five notify-only characteristics use IO handlers. The PMD indication
-        // characteristic owns a Fun session instead of acquired notification IO.
-        assert_eq!(handlers.len(), 5);
-        let indication_sessions = services
+        // All notify/indicate characteristics use acquired IO handlers so
+        // BlueZ can retain a per-peer endpoint and confirmation channel.
+        assert_eq!(handlers.len(), 6);
+        let indicating_io_characteristics = services
             .iter()
             .flat_map(|service| &service.characteristics)
             .filter(|characteristic| {
                 characteristic.notify.as_ref().is_some_and(|notify| {
                     notify.indicate
                         && !notify.notify
-                        && matches!(notify.method, CharacteristicNotifyMethod::Fun(_))
+                        && matches!(notify.method, CharacteristicNotifyMethod::Io)
                 })
             })
             .count();
-        assert_eq!(indication_sessions, 1);
+        assert_eq!(indicating_io_characteristics, 1);
     }
 
     #[test]
@@ -2748,7 +3072,7 @@ mod tests {
         let notify = control.notify.as_ref().expect("control point indicates");
         assert!(!notify.notify);
         assert!(notify.indicate);
-        assert!(matches!(notify.method, CharacteristicNotifyMethod::Fun(_)));
+        assert!(matches!(notify.method, CharacteristicNotifyMethod::Io));
         let data_uuid = gatt_spec::pmd::DATA.parse::<Uuid>().unwrap();
         let data = pmd
             .characteristics
@@ -2766,8 +3090,8 @@ mod tests {
             id: 0,
             service: "service".to_string(),
             characteristic: Uuid::nil(),
-            generation: 1,
-            target: OwnedNotifyTarget::new("", 1),
+            targets: Vec::new(),
+            indication_generation: Some(1),
             value: vec![value],
         }
     }
@@ -2778,6 +3102,97 @@ mod tests {
         assert!(target_matches(&old, "AA:AA:AA:AA:AA:AA", 7));
         assert!(!target_matches(&old, "AA:AA:AA:AA:AA:AA", 8));
         assert!(!target_matches(&old, "BB:BB:BB:BB:BB:BB", 7));
+    }
+
+    #[test]
+    fn queued_send_cannot_select_replacement_writer_for_same_peer() {
+        let old_send = OwnedNotifyTarget::new("AA:AA:AA:AA:AA:AA", 7);
+        assert!(registered_writer_matches_target(
+            &old_send,
+            7,
+            "AA:AA:AA:AA:AA:AA"
+        ));
+        assert!(!registered_writer_matches_target(
+            &old_send,
+            8,
+            "AA:AA:AA:AA:AA:AA"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_stalled_peer_does_not_block_other_peer_delivery_or_settlement() {
+        use crate::radio::OwnedNotifyTarget;
+
+        let peer_a = OwnedNotifyTarget::new("AA:AA:AA:AA:AA:AA", 1);
+        let peer_b = OwnedNotifyTarget::new("BB:BB:BB:BB:BB:BB", 1);
+        let (delivered_tx, mut delivered_rx) = mpsc::channel(1);
+        let (events, mut event_rx) = mpsc::channel(1);
+        let attempt_run = tokio::time::timeout(std::time::Duration::from_millis(100), async {
+            let outcomes = attempt_peer_targets(
+                vec![peer_a, peer_b],
+                std::time::Duration::from_millis(10),
+                |target| {
+                    let delivered_tx = delivered_tx.clone();
+                    async move {
+                        if target.peer_address == "AA:AA:AA:AA:AA:AA" {
+                            std::future::pending::<Result<(), String>>().await
+                        } else {
+                            delivered_tx
+                                .send(target.peer_address)
+                                .await
+                                .map_err(|error| error.to_string())
+                        }
+                    }
+                },
+            )
+            .await;
+            let failures = outcomes
+                .into_iter()
+                .filter_map(|(_, outcome)| outcome.err())
+                .collect();
+            settle(
+                &events,
+                42,
+                "service".to_string(),
+                Uuid::nil().to_string(),
+                peer_send_outcome(failures),
+            )
+            .await;
+        })
+        .await;
+
+        assert!(
+            attempt_run.is_ok(),
+            "peer fan-out and settlement are bounded"
+        );
+        assert_eq!(
+            delivered_rx.recv().await.as_deref(),
+            Some("BB:BB:BB:BB:BB:BB")
+        );
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(RadioEvent::NotifySettled {
+                id: 42,
+                outcome: SendOutcome::Failed(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn broadcast_settlement_fails_if_any_peer_send_fails() {
+        assert_eq!(peer_send_outcome(Vec::new()), SendOutcome::OsAccepted);
+        let outcome = peer_send_outcome(vec![
+            "(peer=AA:AA:AA:AA:AA:AA): socket closed".to_string(),
+            "[BB:BB:BB:BB:BB:BB] writer unavailable".to_string(),
+        ]);
+        let SendOutcome::Failed(reason) = outcome else {
+            panic!("one failing peer must fail the logical notification");
+        };
+        assert!(reason.contains("socket closed"));
+        assert!(reason.contains("writer unavailable"));
+        assert!(!reason.contains("AA:AA:AA:AA:AA:AA"));
+        assert!(!reason.contains("BB:BB:BB:BB:BB:BB"));
     }
 
     #[tokio::test]
@@ -2832,6 +3247,82 @@ mod tests {
             endpoint.enqueue(queued_send(1)).is_err(),
             "a close must atomically reject a racing admission"
         );
+    }
+
+    #[tokio::test]
+    async fn owned_indication_confirmation_is_consumed_once_and_timeout_is_truthful() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let endpoint = Arc::new(IndicationEndpoint::new(sender));
+        let first = endpoint.enqueue(queued_send(1)).unwrap();
+        assert_eq!(receiver.recv().await.expect("queued indication").id, first);
+        endpoint.confirm();
+        assert_eq!(
+            endpoint
+                .wait_confirmation(std::time::Duration::from_millis(20))
+                .await,
+            Ok(())
+        );
+        assert_eq!(
+            endpoint
+                .wait_confirmation(std::time::Duration::from_millis(5))
+                .await,
+            Err("indication confirmation timed out")
+        );
+    }
+
+    #[tokio::test]
+    async fn owned_indication_close_wakes_confirmation_wait_without_acknowledging() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let endpoint = Arc::new(IndicationEndpoint::new(sender));
+        endpoint.close();
+        assert_eq!(
+            endpoint
+                .wait_confirmation(std::time::Duration::from_millis(20))
+                .await,
+            Err("indication lane closed before confirmation")
+        );
+    }
+
+    #[tokio::test]
+    async fn owned_indication_idle_close_terminates_receive_wait() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let endpoint = IndicationEndpoint::new(sender);
+        endpoint.close();
+        let (_sender, mut receiver) = mpsc::channel(1);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            receive_owned_indication(&mut receiver, &endpoint),
+        )
+        .await
+        .expect("closed indication lane must wake an idle pump");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn owned_indication_close_drains_queued_receipts_once() {
+        let (sender, mut receiver) = mpsc::channel(4);
+        let receipts = Arc::new(Mutex::new(HashMap::new()));
+        let endpoint = IndicationEndpoint::with_allocator(
+            sender,
+            Arc::new(IndicationIdAllocator::new()),
+            receipts.clone(),
+        );
+        let first = endpoint.enqueue(queued_send(1)).expect("first admission");
+        let second = endpoint.enqueue(queued_send(2)).expect("second admission");
+        endpoint.close();
+        receiver.close();
+        let (events, mut event_rx) = mpsc::channel(4);
+        drain_owned_indication_queue(&mut receiver, &endpoint, &events, Uuid::nil()).await;
+        assert!(receipts.lock().expect("receipt lock").is_empty());
+        let mut ids = Vec::new();
+        while let Ok(Some(RadioEvent::NotifySettled { id, outcome, .. })) =
+            tokio::time::timeout(std::time::Duration::from_millis(20), event_rx.recv()).await
+        {
+            assert!(matches!(outcome, SendOutcome::Failed(_)));
+            ids.push(id);
+        }
+        ids.sort_unstable();
+        assert_eq!(ids, vec![first, second]);
     }
 
     #[test]
