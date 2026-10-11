@@ -67,6 +67,77 @@ Identity and state come from one JSON device profile
 `--profile` picks one, CLI flags override single fields, and the control
 port / driver commands change everything live. See Device profiles below.
 
+## Synchronized synthetic heartbeat scenarios
+
+Use `--scenario steady|breathing|exercise-recovery|abrupt` to select synthetic
+HR and ECG together, or load one of `profiles/synthetic-*.json`. The stock
+profile remains unchanged: its recorded ECG and synthetic HR are independent.
+`get-state` reports the sources, scenario, and `recordingRelationship` under
+`heartbeat`; independent recordings are served verbatim and **not retimed**.
+Synthetic signals are reproducible test inputs, not clinical validation or a
+claim that their morphology reproduces a real H10 recording.
+
+```sh
+cargo run --manifest-path tool/h10-sim/Cargo.toml -- --scenario breathing
+cargo run --manifest-path tool/h10-sim/Cargo.toml -- --profile tool/h10-sim/profiles/synthetic-exercise-recovery.json
+```
+
+All synthetic HR, RR intervals and ECG R-peaks share one acquisition-time
+heartbeat phase. ECG samples occur at 130 Hz; notification cadence controls
+only delivery. RR intervals describe completed beats, are encoded in SIG
+1/1024-second units, and determine the reported integer BPM. A notification
+with no newly completed beat omits the RR flag and retains the last BPM.
+ECG R-peaks occur at integer heartbeat phases, within the 130 Hz sampling
+resolution. Delivery stalls, packet splitting and reconnects do not restart
+physiology. `set-bpm` switches to steady HR while preserving phase.
+
+The supplied profiles start at 72 bpm:
+
+| Scenario | Acquisition-time rate |
+| --- | --- |
+| `steady` | Fixed configured BPM |
+| `breathing` | Configured BPM ±6, with a 10-second sine cycle |
+| `exercise-recovery` | Ramp from baseline to baseline +68 over 60 s, hold 30 s, recover over 120 s, then rest |
+| `abrupt` | Baseline for 30 s, baseline +68 for 30 s, baseline −12 for 30 s, then baseline |
+
+Rates remain between 1 and 255 bpm; variability is limited near those bounds.
+`rr_jitter_ms` becomes a deterministic 10-second rate modulation driving the
+same phase, rather than independent per-notification RR jitter. It approximates
+the requested RR amplitude; it is not a promise of an exact millisecond peak.
+Existing `bpm_curve` steps remain supported for steady mode, with phase
+continuity and at most 128 finite nonnegative-time, positive-BPM steps. Profiles
+must select either a variable scenario or a custom curve.
+
+The analytic timeline does not queue waveform history or integrate one beat
+at a time after a pause. It retains at most 32 configuration epochs. ECG
+backlog is bounded to the greater of one second or two effective packet batches
+(334 samples, about 2.57 seconds, when 167-sample packets fit); expired
+physiology history is explicitly reported as `ecg-samples-shed`. HR packets carry at most eight newly acquired
+RR intervals (18 bytes at most); older beats are reported as `hr-beats-shed`.
+Temporary ECG/ACC value-capacity shortages preserve the acknowledged START
+and log pause/resume transitions once, then resume with bounded catch-up.
+A stopped or unsubscribed session still follows the normal session lifecycle.
+
+PMD `stale-callback` uses only the last **OS-accepted** response, including an
+exactly matched successful queued completion. Admission to a queue, a failed
+notification, and a deferred response waiting for delivery never make new
+bytes replayable. OS acceptance is not proof that the central received bytes.
+Session reset/control-point unsubscribe clears replay state.
+
+Focused verification:
+
+```sh
+cargo test --manifest-path tool/h10-sim/Cargo.toml --locked
+cargo clippy --manifest-path tool/h10-sim/Cargo.toml --locked --all-targets -- -D warnings
+node --test tool/h10-sim/tests/synthetic-cli.test.cjs
+```
+
+These cover R-peak/RR synchronization, configuration phase continuity, packet
+boundaries, replay preservation, reconnect continuity, delayed delivery,
+bounded history, capacity recovery, queued response ownership, and finite
+comparison tolerances. Physical over-the-air waveform fidelity remains a
+separate qualification.
+
 ## Fidelity acceptance contract
 
 For implemented features, the target is the same observable protocol behavior
@@ -230,7 +301,8 @@ plus the 10-byte PMD header into the current writer's notification-value capacit
 That capacity already excludes transport overhead; it is not reduced again.
 The usual 73-sample / 229-byte packet remains unchanged when it fits. An
 18-byte writer carries two samples per packet; the minimum 13-byte capacity
-carries one. Smaller capacities stop only ECG with `ecg-stream-failed`; capacity
+carries one. Smaller capacities pause ECG delivery while preserving the
+acknowledged stream, logging `ecg-delivery-paused`/`ecg-delivery-resumed`; capacity
 query failures are explicit `radio-error` events, and absent subscribers send
 nothing. Changing capacity does not reset acquisition, waveform indices,
 last-sample timestamps or the delivery sequence.
@@ -626,7 +698,7 @@ printf '{"cmd":"get-state"}\n' | nc 127.0.0.1 17935
 | `{"cmd":"constrain-delivery","keepEvery":4}`                                 | [adversarial] Deliver every `keepEvery`-th ECG frame only (`1` disables)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `{"cmd":"set-rates","hrHz":2.0,"ecgFramesPerSec":1.78,"ecgFrameSamples":73}` | HR rate and ECG dispatch opportunities (`hrHz` 0.1–10, `ecgFramesPerSec` 0.5–10, configured samples 1–167, further limited by the acquired writer's capacity; defaults 1 Hz / 73 samples / 130/73 opportunities per second). ECG acquisition stays 130 Hz; each opportunity may emit zero/multiple frames, with bounded backlog and explicit shedding.                                                                                                                                                                                             |
 | `{"cmd":"run-record"}`                                                       | Report this run's seed/profile, `--mode` and injected fault sequence with timestamps (telemetry, available in every mode)                                                                                                                                                                                                                                                                                                                                                                                    |
-| `{"cmd":"get-state"}`                                                        | Current state snapshot, including the observed `advertising` registration (see [Advertising registration](#advertising-registration)) |
+| `{"cmd":"get-state"}`                                                        | Current state snapshot (`bpm` is the latest generated synthetic HR measurement, or the configured baseline before one is generated; `baselineBpm` retains the scenario/curve baseline), including the observed `advertising` registration (see [Advertising registration](#advertising-registration)) |
 | `{"cmd":"help"}`                                                             | Command list (generated from the same table the driver hello uses)                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 Unknown commands and out-of-range values get `{"ok":false,"error":"…"}`.
@@ -745,12 +817,12 @@ advertising-state/re-registration operation succeeds (or confirms advertising
 is off).
 
 Battery drain (`drain_per_min`) notifies `2A19` whenever the level changes
-(the 60 s heartbeat stays regardless). RR jitter is a deterministic sine of
-the beat index (period 10), so identical runs produce identical bytes. The
+(the 60 s heartbeat stays regardless). RR jitter uses a deterministic 10-second modulation of the shared synthetic
+heartbeat timeline, so identical acquisition times produce identical bytes. The
 BPM curve holds each step's bpm from its `at_s` on; an explicit `set-bpm`
 clears the curve. Contact simulation needs `"contact_supported": true` in
-the profile's `heart_rate` section — without it the flags stay at the
-strap's `0x10`, like the real H10 ignoring contact. `--ecg-file` (or
+the profile's `heart_rate` section — without it the contact bits remain clear
+(`0x10` when RR intervals are present, `0x00` when none were acquired), like the real H10 ignoring contact. `--ecg-file` (or
 `"ecg_source": {"file": …}`) replays a recorded trace: text, one integer µV
 per line at 130 Hz, cycling forever; a missing file or a bad line fails
 startup with its line number. The stock ECG source is `"recorded"`: the real
