@@ -529,6 +529,21 @@ impl SimState {
         }
     }
 
+    /// Common source/scenario labeling for live state and retained run records.
+    fn heartbeat_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "scenario": format!("{:?}", self.config.scenario),
+            "hrSource": format!("{:?}", self.config.hr_source),
+            "ecgSource": format!("{:?}", self.config.ecg_source),
+            "synchronizedSynthetic": self.hr_replay.is_none() && self.ecg_replay.is_none(),
+            "recordingRelationship": if self.hr_replay.is_some() || self.ecg_replay.is_some() {
+                "independent; not retimed"
+            } else {
+                "shared acquisition timeline"
+            },
+        })
+    }
+
     /// This run's seed/profile, mode and injected fault sequence with
     /// timestamps — the `run-record` answer.
     pub fn run_record(&self) -> serde_json::Value {
@@ -538,7 +553,7 @@ impl SimState {
             "profile": self.config.profile_path.clone().unwrap_or_else(|| "<builtin stock-h10>".to_string()),
             "name": self.config.name,
             "startedAt": self.run_started_at,
-            "heartbeat": {"scenario": format!("{:?}", self.config.scenario), "hrSource": format!("{:?}", self.config.hr_source), "ecgSource": format!("{:?}", self.config.ecg_source), "synchronizedSynthetic": self.hr_replay.is_none() && self.ecg_replay.is_none(), "recordingRelationship": if self.hr_replay.is_some() || self.ecg_replay.is_some() { "independent; not retimed" } else { "shared acquisition timeline" }},
+            "heartbeat": self.heartbeat_metadata(),
             "hrRecovery": self.hr_recovery.snapshot(),
             "faults": self.faults.iter().map(|entry| {
                 serde_json::json!({"ts": entry.ts, "fault": entry.fault, "detail": entry.detail})
@@ -697,6 +712,7 @@ impl SimState {
             "mode": self.run_mode.as_str(),
             "responseDelayMs": self.response_delay_ms,
             "deliveryKeepEvery": self.delivery_keep_every,
+            "heartbeat": self.heartbeat_metadata(),
             "faults": self.faults.len(),
             "hrRecovery": self.hr_recovery.snapshot(),
         })
@@ -1099,6 +1115,32 @@ mod tests {
         assert_eq!(telemetry["notificationAttempts"], u64::MAX);
         assert_eq!(telemetry["notificationsNotSubscribed"], 1);
         assert_eq!(telemetry["countersSaturated"], true);
+    }
+
+    #[test]
+    fn state_snapshot_reports_heartbeat_sources_and_recording_relationship() {
+        let mut sim = state();
+        sim.config.scenario = crate::heartbeat::Scenario::Breathing;
+        sim.config.ecg_source = EcgSource::Synthetic;
+        let heartbeat = sim.snapshot()["heartbeat"].clone();
+        assert_eq!(heartbeat["scenario"], "Breathing");
+        assert_eq!(heartbeat["hrSource"], "Synthetic");
+        assert_eq!(heartbeat["ecgSource"], "Synthetic");
+        assert_eq!(heartbeat["synchronizedSynthetic"], true);
+        assert_eq!(
+            heartbeat["recordingRelationship"],
+            "shared acquisition timeline"
+        );
+        assert_eq!(heartbeat, sim.run_record()["heartbeat"]);
+
+        sim.ecg_replay = Some(vec![1, 2, 3]);
+        let heartbeat = sim.snapshot()["heartbeat"].clone();
+        assert_eq!(heartbeat["synchronizedSynthetic"], false);
+        assert_eq!(
+            heartbeat["recordingRelationship"],
+            "independent; not retimed"
+        );
+        assert_eq!(heartbeat, sim.run_record()["heartbeat"]);
     }
 
     #[test]
