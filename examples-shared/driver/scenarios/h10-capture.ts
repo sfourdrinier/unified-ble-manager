@@ -50,8 +50,12 @@ import {
   parsePmdFeatures,
   parsePmdSettings
 } from '../polar-pmd.ts'
+// These are the Polar-assigned PFC UUIDs. This package is tested independently
+// of bun-mono, whose shared UUID module is a separate package boundary.
+const POLAR_PFC_SERVICE = '6217ff4b-fb31-1140-ad5a-a45545d7ecf3'
+const POLAR_PFC_FEATURE = '6217ff4c-c8ec-b1fb-1380-3ad986708e2d'
 
-/** Fingerprint schema version. Bump when a field is added, removed or renamed. */
+/** Fingerprint schema version. Optional additive value fields remain version 1. */
 export const FINGERPRINT_VERSION = 1
 
 export interface TimingDistribution {
@@ -231,6 +235,13 @@ export class H10CaptureScenario extends BleScenario<H10CaptureState> {
         return { ...parsePmdFeatures(bytes), raw: bytesToHex(bytes) }
       })
       values.pmdFeatures = pmdFeatures.ok ? { ok: true, ...pmdFeatures.value } : { ok: false, error: pmdFeatures.error }
+      const polarPfcFeatures = await outcomeOf(async () => {
+        const bytes = await gatt.characteristic(POLAR_PFC_SERVICE, POLAR_PFC_FEATURE).read({ signal, timeoutMs: OPERATION_TIMEOUT_MS })
+        return { raw: bytesToHex(bytes) }
+      })
+      values.polarPfcFeatures = polarPfcFeatures.ok
+        ? { ok: true, ...polarPfcFeatures.value }
+        : { ok: false, error: polarPfcFeatures.error }
 
       // 5. MTU negotiation result (the platform's own answer).
       this.patchBase({ phase: 'negotiating-mtu' })

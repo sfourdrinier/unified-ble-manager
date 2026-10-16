@@ -140,7 +140,7 @@ variance.
 |                           | `2A38` body sensor location: chest (`1`)                                                                                                                                                                                               | read                             |
 | Device Information `180A` | `2A29` manufacturer `Polar Electro Oy`, `2A24` model `H10`, `2A25` serial, `2A27` hardware, `2A26` firmware, `2A28` software, `2A23` system id (hardware before firmware, like the strap; every string NUL-terminated, like the strap) | read                             |
 | Battery `180F`            | `2A19` level (default 90%, the captured charge state)                                                                                                                                                                                  | read, notify (60 s)              |
-| Polar vendor `6217FF4B-…` | `6217FF4C-…` readable (value UNCONFIRMED, served empty)                                                                                                                                                                                | read                             |
+| Polar vendor `6217FF4B-…` | `6217FF4C-…` readable (value UNCONFIRMED; simulator reports the read as unavailable)                                                                                                                                                    | read                             |
 |                           | `6217FF4D-…`: write-command, indications (no behaviour model: writes are refused loudly, nothing is ever indicated)                                                                                                                    | write-without-response, indicate |
 | Polar PMD `FB005C80-…`    | `FB005C81` control point: read returns features (ECG + ACC, the strap's exact 17 bytes); write `0x01` get-settings / `0x02` start / `0x03` stop, each answered with an indicate `[0xF0, op, type, status, more, params…]`              | read, write, indicate            |
 |                           | `FB005C82` data: ECG frames, up to 73 samples by default at 130 Hz (capacity-limited packets, ~561.6 ms dispatch cadence, signed 24-bit LE µV, recorded strap data by default); independently started ACC frames (signed 16-bit XYZ milli-g) on the same characteristic | notify                           |
@@ -859,9 +859,11 @@ install` / `systemctl enable --now` commands and how to remove it.
 - No PPG/PPI or offline-recording streams. ACC has SDK-backed settings and
   encoding but synthetic data; its batching, timing, compression and precise
   malformed-command status precedence are not qualified against a real H10.
-  The vendor `6217ff4c` value
-  and the FEEE characteristics' payloads are likewise UNCONFIRMED (empty /
-  refused loudly, never guessed).
+  The vendor `6217ff4c` value and the FEEE characteristics' payloads are
+  likewise UNCONFIRMED (the simulator reports the PFC read as unavailable and
+  keeps PSFTP payloads unmodeled). The `h10-capture` scenario probes the PFC
+  feature read on real hardware and records exact bytes or a structured error
+  in optional `values.polarPfcFeatures`; it issues no writes or reset requests.
 - Recorded ECG and HR replay cycle one strap session (~25 s ECG, 120 HR
   packets); the synthetic serial stays (`SIM000001`), and 130 Hz is the only
   ECG rate (ACC has its own negotiated sample rate).

@@ -585,14 +585,15 @@ impl SimState {
     }
 
     /// Reads a 128-bit vendor characteristic by full UUID. Only the readable
-    /// `6217ff4c` answers; its value is UNCONFIRMED (no capture reads it), so
-    /// an explicit empty placeholder — never a guessed payload.
+    /// `6217ff4c` is structurally readable, but its value is UNCONFIRMED (no
+    /// capture has read it). Report it as unavailable rather than fabricating
+    /// a successful empty read.
     pub fn vendor_read(&self, uuid: &uuid::Uuid) -> Option<Vec<u8>> {
         if uuid
             .to_string()
             .eq_ignore_ascii_case(gatt_spec::vendor::READ)
         {
-            Some(Vec::new())
+            None
         } else {
             None
         }
@@ -1792,7 +1793,7 @@ mod tests {
         use std::str::FromStr;
         let sim = state();
         let read = uuid::Uuid::from_str(crate::gatt_spec::vendor::READ).expect("valid UUID");
-        assert_eq!(sim.vendor_read(&read), Some(Vec::new()));
+        assert_eq!(sim.vendor_read(&read), None);
         let indicate =
             uuid::Uuid::from_str(crate::gatt_spec::vendor::WRITE_INDICATE).expect("valid UUID");
         assert_eq!(sim.vendor_read(&indicate), None);

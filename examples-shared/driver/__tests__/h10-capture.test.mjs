@@ -7,6 +7,8 @@ import assert from 'node:assert/strict'
 import { createFakeRuntime } from './fake-runtime.mjs'
 import { H10CaptureScenario, FINGERPRINT_VERSION, summarizeDistribution } from '../scenarios/h10-capture.ts'
 import { PMD_CONTROL_POINT, PMD_DATA } from '../polar-pmd.ts'
+const POLAR_PFC_SERVICE = '6217ff4b-fb31-1140-ad5a-a45545d7ecf3'
+const POLAR_PFC_FEATURE = '6217ff4c-c8ec-b1fb-1380-3ad986708e2d'
 
 function hrBytes(bpm) {
   return new Uint8Array([0x16, bpm, 0x00, 0x04])
@@ -27,7 +29,8 @@ function makeHost(overrides = {}) {
     battery: '00002a19-0000-1000-8000-00805f9b34fb',
     bsl: '00002a38-0000-1000-8000-00805f9b34fb',
     cp: PMD_CONTROL_POINT,
-    data: PMD_DATA
+    data: PMD_DATA,
+    pfcFeature: POLAR_PFC_FEATURE
   }
   const reads = {
     '00002a19-0000-1000-8000-00805f9b34fb': new Uint8Array([85]),
@@ -40,6 +43,7 @@ function makeHost(overrides = {}) {
     '00002a23-0000-1000-8000-00805f9b34fb': new Uint8Array([1, 0, 0, 0, 0, 0x6b, 0, 0]),
     '00002a38-0000-1000-8000-00805f9b34fb': new Uint8Array([1]),
     [charUuids.cp]: new Uint8Array([0x00, 0x01, 0x00]),
+    [charUuids.pfcFeature]: new Uint8Array([0xa1, 0xb2, 0xc3]),
     ...overrides.reads
   }
   const characteristic = (service, uuid) => ({
@@ -50,7 +54,7 @@ function makeHost(overrides = {}) {
     descriptors: [],
     access: {},
     async read() {
-      calls.push(`read ${uuid}`)
+      calls.push(`read ${service} ${uuid}`)
       const bytes = reads[uuid]
       if (bytes === undefined) throw Object.assign(new Error(`no ${uuid}`), { code: 'gatt.attribute-not-found' })
       return bytes
@@ -279,6 +283,8 @@ test('h10-capture records a versioned fingerprint through public API only', asyn
   assert.equal(fingerprint.values.batteryLevelPercent.ok, true)
   assert.equal(fingerprint.values.bodySensorLocation.ok, true)
   assert.equal(fingerprint.values.pmdFeatures.ok, true)
+  assert.deepEqual(fingerprint.values.polarPfcFeatures, { ok: true, raw: 'a1b2c3' })
+  assert.ok(calls.includes(`read ${POLAR_PFC_SERVICE} ${POLAR_PFC_FEATURE}`), 'PFC feature probe selects the canonical service and characteristic')
   assert.ok(fingerprint.timings.hrNotificationIntervalMs.n >= 2, 'HR intervals measured')
   assert.equal(fingerprint.timings.pmdResponseMs.n, 3, 'get-settings repeated for a latency distribution')
   assert.ok(fingerprint.behaviour.invalidPmdCommand.errorCode !== undefined, 'invalid PMD command probed')
@@ -296,6 +302,14 @@ test('h10-capture refuses bad durations instead of silently capturing nothing', 
   const { host } = makeHost()
   const scenario = new H10CaptureScenario(host)
   await assert.rejects(scenario.dispatch('capture', { scanDurationMs: -1 }), /scanDurationMs/)
+})
+
+test('h10-capture preserves a PFC feature read failure and continues capture', async () => {
+  const fixture = makeHost({ reads: { [POLAR_PFC_FEATURE]: undefined } })
+  const { fingerprint } = await captureFixture(fixture)
+  assert.equal(fingerprint.values.polarPfcFeatures.ok, false)
+  assert.equal(fingerprint.values.polarPfcFeatures.error.code, 'gatt.attribute-not-found')
+  assert.equal(fingerprint.values.batteryLevelPercent.ok, true, 'capture continued after the PFC read failure')
 })
 
 async function captureFixture(fixture, scenario = new H10CaptureScenario(fixture.host)) {
