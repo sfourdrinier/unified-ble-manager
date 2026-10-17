@@ -757,6 +757,41 @@ describe('Electron IPC hardening', () => {
     })
   })
 
+  test('preserves native receipt clocks in renderer notification snapshots', async () => {
+    const lease = rendererLease('native-receipt-stream')
+    const stream = createControlledStream()
+    const resources = { scans: new Map(), subscriptions: new Map(), releasedHandles: new Set() }
+    const events = []
+    const registry = new ElectronRendererStreamRegistry({
+      maximumMessageBytes: 4096,
+      now: () => 99999,
+      publish: async (_lease, event) => {
+        events.push(event)
+        return 'delivered'
+      },
+      createEvent: (rendererLease, streamId, item) => ({ rendererLease, streamId, item, eventId: 'receipt-event' })
+    })
+    const receipt = {
+      receivedAtUtcMs: -0.5,
+      receivedAtMonotonicMs: 42.25,
+      clockId: 'native-clock-epoch',
+      origin: 'native'
+    }
+    const resource = registry.registerSubscription(resources, lease, 'receipt-stream', 'database', {
+      values: stream,
+      remove: async () => {
+        stream.close()
+        return released()
+      }
+    })
+    stream.push({ kind: 'value', value: { value: new Uint8Array([1]), delivery: 'notification', receipt } })
+    await flushAsyncWork()
+    expect(events[0].item.value.receipt).toEqual(receipt)
+    expect(events[0].item.value.receipt).not.toBe(receipt)
+    expect(Object.isFrozen(events[0].item.value.receipt)).toBe(true)
+    await registry.removeSubscription(resources, 'receipt-stream', resource, true)
+  })
+
   test('forwards complete advertisements with fractional monotonic timestamps and owned binary fields', async () => {
     const lease = rendererLease('advertisement-stream')
     const stream = createControlledStream()

@@ -1,3 +1,6 @@
+// src/ipc/manager.ts
+
+import { isNotificationReceipt } from '../backend-contract/gatt'
 import {
   assertConnectionParameterValues,
   isConnectionParameterValues
@@ -276,6 +279,7 @@ export interface IpcNotificationValue {
   readonly delivery: 'notification' | 'indication' | 'unknown'
   readonly observedAtMonotonicMs: number
   readonly sequence: number
+  readonly receipt?: import('../backend-contract/gatt').NotificationReceipt
 }
 
 export interface IpcWriteReceipt {
@@ -3812,6 +3816,7 @@ function isIpcNotificationValue(value: unknown): value is IpcNotificationValue {
   const delivery: unknown = Reflect.get(value, 'delivery')
   const observedAtMonotonicMs: unknown = Reflect.get(value, 'observedAtMonotonicMs')
   const sequence: unknown = Reflect.get(value, 'sequence')
+  const receipt: unknown = Reflect.get(value, 'receipt')
   return (
     rawValue instanceof Uint8Array &&
     (delivery === 'notification' || delivery === 'indication' || delivery === 'unknown') &&
@@ -3820,7 +3825,8 @@ function isIpcNotificationValue(value: unknown): value is IpcNotificationValue {
     observedAtMonotonicMs >= 0 &&
     typeof sequence === 'number' &&
     Number.isSafeInteger(sequence) &&
-    sequence > 0
+    sequence > 0 &&
+    (receipt === undefined || isNotificationReceipt(receipt))
   )
 }
 

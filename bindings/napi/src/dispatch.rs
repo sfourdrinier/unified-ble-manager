@@ -1993,9 +1993,21 @@ pub struct SubscriptionOptions {
 /// `terminal` (overflow, exactly once), `invalidated` (with `cause`
 /// `services-changed` / `link-ended`), or `closed`.
 #[napi(object)]
+pub struct NotificationReceiptInfo {
+    #[napi(js_name = "receivedAtUtcMs")]
+    pub received_at_utc_ms: f64,
+    #[napi(js_name = "receivedAtMonotonicMs")]
+    pub received_at_monotonic_ms: f64,
+    #[napi(js_name = "clockId")]
+    pub clock_id: String,
+    pub origin: String,
+}
+
+#[napi(object)]
 pub struct NotificationPollInfo {
     pub kind: String,
     pub value: Option<Buffer>,
+    pub receipt: Option<NotificationReceiptInfo>,
     pub cause: Option<String>,
     #[napi(js_name = "droppedItems")]
     pub dropped_items: Option<i64>,
@@ -5042,6 +5054,7 @@ impl UbmCentral {
         let empty = |kind: &str, cause: Option<&str>| NotificationPollInfo {
             kind: kind.to_owned(),
             value: None,
+            receipt: None,
             cause: cause.map(str::to_owned),
             dropped_items: None,
             dropped_bytes: None,
@@ -5052,6 +5065,19 @@ impl UbmCentral {
                 bump(&self.counters.notification_values);
                 NotificationPollInfo {
                     value: Some(Buffer::from(value)),
+                    ..empty("value", None)
+                }
+            }
+            NotificationPoll::ValueWithReceipt { value, receipt } => {
+                bump(&self.counters.notification_values);
+                NotificationPollInfo {
+                    value: Some(Buffer::from(value)),
+                    receipt: Some(NotificationReceiptInfo {
+                        received_at_utc_ms: receipt.received_at_utc_ms,
+                        received_at_monotonic_ms: receipt.received_at_monotonic_ms,
+                        clock_id: receipt.clock_id,
+                        origin: "native".to_owned(),
+                    }),
                     ..empty("value", None)
                 }
             }

@@ -2,7 +2,14 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## Unreleased — H10 simulator tooling
+## [5.1.0] - 2026-10-16
+
+- Preserve paired native UTC and monotonic ingress receipts through bounded
+  mobile queues, desktop routing, React Native wire parsing, public values, and
+  background continuation claims. The existing JavaScript monotonic receipt
+  remains separately scoped; native clock epochs are never compared to it.
+
+### H10 simulator tooling
 
 - Add `--scenario` and reproducible steady, breathing, exercise/recovery and
   abrupt-rate profiles. Synthetic HR, RR intervals and ECG R-peaks share one
@@ -15,8 +22,7 @@ All notable changes to `unified-ble-manager` are documented here.
   through temporary notification-capacity shortages, reject non-finite comparison
   tolerances, correct HR/advertisement telemetry and remove unreachable validation.
 - Qualify synchronization, packet boundaries, delayed delivery, reconnects and
-  bounded history with simulator regressions. These tooling changes do not bump
-  the UBM package version or establish physical H10 fidelity.
+  bounded history with simulator regressions. These tooling changes do not establish physical H10 fidelity.
 
 ## [5.0.4] - 2026-10-11
 

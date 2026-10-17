@@ -27,6 +27,19 @@
 //! emits no radio effect (OWN-02, stale-path vectors).
 
 use std::collections::{HashMap, VecDeque, hash_map::RandomState};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NotificationReceipt {
+    pub received_at_utc_ms: f64,
+    pub received_at_monotonic_ms: f64,
+    pub clock_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct BufferedNotification {
+    value: Vec<u8>,
+    receipt: Option<NotificationReceipt>,
+}
 use std::hash::{BuildHasher, Hasher};
 
 use crate::contracts::{
@@ -1631,7 +1644,7 @@ struct ConnectionRecord {
     live_paths: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct ConsumerRecord {
     lease: String,
     connection_lease: String,
@@ -1648,10 +1661,10 @@ struct ConsumerRecord {
     /// accounting mutate together on every decision, so takes always pair
     /// a value with its own ledger size; popping frees stream bytes so the
     /// bound recycles.
-    slots: VecDeque<Option<Vec<u8>>>,
+    slots: VecDeque<Option<BufferedNotification>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct SubscriptionHub {
     path_index: usize,
     physical: CccdPhysical,
@@ -1736,7 +1749,7 @@ pub const fn correction_for(vector_id: &str) -> Option<&'static CorrectionCandid
 /// One transition owner for central/GATT work: scoped identities, connection
 /// leases, occurrence paths, bounded subscriptions, capability truth, and
 /// retained cleanup, all scheduled through the single [`Kernel`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Central {
     config: CentralConfig,
     kernel: Kernel,
@@ -5230,7 +5243,7 @@ impl Central {
         path_index: usize,
         value_len: u64,
     ) -> Result<Vec<(String, DeliveryOutcome)>, CoreError> {
-        self.deliver_inner(path_index, value_len, None)
+        self.deliver_inner(path_index, value_len, None, None)
     }
 
     /// Deliver one native notification value to every consumer of a path:
@@ -5246,7 +5259,30 @@ impl Central {
         value: &[u8],
     ) -> Result<Vec<(String, DeliveryOutcome)>, CoreError> {
         let value_len = value.len() as u64;
-        self.deliver_inner(path_index, value_len, Some(value))
+        self.deliver_inner(path_index, value_len, Some(value), None)
+    }
+
+    /// Deliver a value while retaining its native ingress receipt with every
+    /// admitted consumer slot.
+    pub fn deliver_notification_value_with_receipt(
+        &mut self,
+        path_index: usize,
+        value: &[u8],
+        receipt: NotificationReceipt,
+    ) -> Result<Vec<(String, DeliveryOutcome)>, CoreError> {
+        if !receipt.received_at_utc_ms.is_finite()
+            || receipt.received_at_utc_ms.abs() > 9_007_199_254_740_991.0
+            || !receipt.received_at_monotonic_ms.is_finite()
+            || receipt.received_at_monotonic_ms < 0.0
+            || receipt.clock_id.trim().is_empty()
+        {
+            return Err(err(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "subscribe.receipt",
+            ));
+        }
+        self.deliver_inner(path_index, value.len() as u64, Some(value), Some(&receipt))
     }
 
     fn deliver_inner(
@@ -5254,6 +5290,7 @@ impl Central {
         path_index: usize,
         value_len: u64,
         value: Option<&[u8]>,
+        receipt: Option<&NotificationReceipt>,
     ) -> Result<Vec<(String, DeliveryOutcome)>, CoreError> {
         let hub_index = self.hub_position(path_index).ok_or_else(|| {
             err(
@@ -5280,7 +5317,12 @@ impl Central {
                             Ok(push) => match push.decision {
                                 crate::streams::AdmissionDecision::Admit => {
                                     consumer.delivered = consumer.delivered.saturating_add(1);
-                                    consumer.slots.push_back(value.map(<[u8]>::to_vec));
+                                    consumer.slots.push_back(value.map(|bytes| {
+                                        BufferedNotification {
+                                            value: bytes.to_vec(),
+                                            receipt: receipt.cloned(),
+                                        }
+                                    }));
                                     DeliveryOutcome::Delivered
                                 }
                                 crate::streams::AdmissionDecision::Replace
@@ -5293,7 +5335,12 @@ impl Central {
                                     let dropped =
                                         (push.evicted_items as usize).min(consumer.slots.len());
                                     consumer.slots.drain(0..dropped);
-                                    consumer.slots.push_back(value.map(<[u8]>::to_vec));
+                                    consumer.slots.push_back(value.map(|bytes| {
+                                        BufferedNotification {
+                                            value: bytes.to_vec(),
+                                            receipt: receipt.cloned(),
+                                        }
+                                    }));
                                     DeliveryOutcome::OverflowNoticed
                                 }
                                 crate::streams::AdmissionDecision::DropNewest => {
@@ -5415,6 +5462,15 @@ impl Central {
         path_index: usize,
         consumer: &str,
     ) -> Option<Vec<u8>> {
+        self.take_notification_value_with_receipt(path_index, consumer)
+            .map(|(value, _)| value)
+    }
+
+    pub fn take_notification_value_with_receipt(
+        &mut self,
+        path_index: usize,
+        consumer: &str,
+    ) -> Option<(Vec<u8>, Option<NotificationReceipt>)> {
         let hub_index = self.consumer_hub(path_index, consumer)?;
         let record = self.hubs[hub_index]
             .consumers
@@ -5438,7 +5494,7 @@ impl Central {
                 }
                 Some(Some(value)) => {
                     record.stream.release_oldest_data(1);
-                    return Some(value);
+                    return Some((value.value, value.receipt));
                 }
             }
         }
@@ -9212,6 +9268,63 @@ mod tests {
             central.operation_state(&again).is_some(),
             "admission still succeeds after success-release",
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_receipt_survives_identical_value_overflow_without_retiming() -> Result<(), CoreError>
+    {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        central.subscribe(path, "error", 1, 256, "app-a", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        let receipt = NotificationReceipt {
+            received_at_utc_ms: -1.25,
+            received_at_monotonic_ms: 10.5,
+            clock_id: "native-epoch-1".into(),
+        };
+        central.deliver_notification_value_with_receipt(path, &[1], receipt.clone())?;
+        central.deliver_notification_value_with_receipt(
+            path,
+            &[1],
+            NotificationReceipt {
+                received_at_utc_ms: 5000.25,
+                received_at_monotonic_ms: 100.5,
+                clock_id: "native-epoch-1".into(),
+            },
+        )?;
+        assert_eq!(
+            central.take_notification_value_with_receipt(path, "app-a"),
+            Some((vec![1], Some(receipt)))
+        );
+        assert!(
+            central
+                .take_notification_value_with_receipt(path, "app-a")
+                .is_none()
+        );
+        assert!(central.take_terminal(path, "app-a").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn native_receipt_invalid_input_does_not_admit_or_mutate_queue() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        central.subscribe(path, "error", 4, 256, "app-a", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        let invalid = NotificationReceipt {
+            received_at_utc_ms: f64::NAN,
+            received_at_monotonic_ms: 1.0,
+            clock_id: "epoch".into(),
+        };
+        assert!(
+            central
+                .deliver_notification_value_with_receipt(path, &[1], invalid)
+                .is_err()
+        );
+        assert_eq!(central.pending_value_count(path, "app-a"), Some(0));
         Ok(())
     }
 

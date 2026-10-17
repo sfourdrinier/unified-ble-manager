@@ -3737,7 +3737,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       })
       return
     }
-    const value: NotificationValue = Object.freeze({ value: ownedCopy(record.value), delivery: record.delivery })
+    const value: NotificationValue = Object.freeze({
+      value: ownedCopy(record.value),
+      delivery: record.delivery,
+      ...(record.receipt === undefined ? {} : { receipt: Object.freeze({ ...record.receipt }) })
+    })
     stored.stream.emit(value, record.value.byteLength)
   }
 

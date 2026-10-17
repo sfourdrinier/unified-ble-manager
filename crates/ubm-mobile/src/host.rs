@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use tokio::runtime::Handle;
@@ -671,6 +671,7 @@ pub(crate) struct HostInner {
     ingress_failure: Mutex<Option<Value>>,
     pump: Mutex<Option<tokio::task::JoinHandle<()>>>,
     clock: Instant,
+    clock_id: String,
     pub(crate) continuation: std::sync::OnceLock<ubm_desktop::continuation::NativeContinuation>,
     pub(crate) recording_registry: Arc<ubm_desktop::continuation_journal::JournalRegistry>,
     pub(crate) continuation_closed: AtomicBool,
@@ -1391,6 +1392,22 @@ impl HostInner {
                             ("consumer", Value::from(route.consumer.as_str())),
                             ("valueB64", Value::from(wire::encode_base64(&bytes))),
                             ("delivery", Value::from(route.delivery)),
+                        ]));
+                    }
+                    Ok(NotificationPoll::ValueWithReceipt {
+                        value: bytes,
+                        receipt,
+                    }) => {
+                        let Some(owner) = self.session(route.session_id) else {
+                            continue;
+                        };
+                        session = Some(owner);
+                        records.push(object(vec![
+                            ("t", Value::from("value")),
+                            ("consumer", Value::from(route.consumer.as_str())),
+                            ("valueB64", Value::from(wire::encode_base64(&bytes))),
+                            ("delivery", Value::from(route.delivery)),
+                            ("receipt", receipt_value(receipt)),
                         ]));
                     }
                     Ok(NotificationPoll::Empty) => {
@@ -2224,6 +2241,36 @@ fn sort_dedup(items: &mut Vec<String>) {
     items.dedup();
 }
 
+static NEXT_CLOCK_EPOCH: AtomicU64 = AtomicU64::new(1);
+
+fn utc_ms(time: SystemTime) -> f64 {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs_f64() * 1000.0,
+        Err(error) => -(error.duration().as_secs_f64() * 1000.0),
+    }
+}
+
+/// Capture at Rust host ingress, before queue admission, never at JavaScript drain.
+fn native_receipt(inner: &HostInner) -> ubm_core::central::NotificationReceipt {
+    ubm_core::central::NotificationReceipt {
+        received_at_utc_ms: utc_ms(SystemTime::now()),
+        received_at_monotonic_ms: inner.clock.elapsed().as_secs_f64() * 1000.0,
+        clock_id: inner.clock_id.clone(),
+    }
+}
+
+fn receipt_value(receipt: ubm_core::central::NotificationReceipt) -> Value {
+    object(vec![
+        ("receivedAtUtcMs", Value::from(receipt.received_at_utc_ms)),
+        (
+            "receivedAtMonotonicMs",
+            Value::from(receipt.received_at_monotonic_ms),
+        ),
+        ("clockId", Value::from(receipt.clock_id)),
+        ("origin", Value::from("native")),
+    ])
+}
+
 async fn pump(host: Weak<HostInner>, signals: Arc<Signals>) {
     loop {
         while let Some(signal) = signals.pop() {
@@ -2422,6 +2469,12 @@ impl MobileHost {
             ingress_failure: Mutex::new(None),
             pump: Mutex::new(None),
             clock: Instant::now(),
+            clock_id: format!(
+                "ubm-mobile-native-host-{}-{}-{}",
+                std::process::id(),
+                utc_ms(SystemTime::now()),
+                NEXT_CLOCK_EPOCH.fetch_add(1, Ordering::Relaxed)
+            ),
             continuation: std::sync::OnceLock::new(),
             recording_registry,
             continuation_closed: AtomicBool::new(false),
@@ -2556,7 +2609,8 @@ impl MobileHost {
                 canonical_uuid(&instance.characteristic_uuid),
             ) {
                 (Ok(service_uuid), Ok(characteristic_uuid)) => {
-                    inner.radio.push_event(RadioEvent::Notification {
+                    let receipt = native_receipt(inner);
+                    inner.radio.push_event(RadioEvent::NotificationWithReceipt {
                         peer_id: instance.peer_id,
                         service_uuid,
                         service_occurrence: instance.service_occurrence,
@@ -2564,6 +2618,7 @@ impl MobileHost {
                         characteristic_occurrence: instance.characteristic_occurrence,
                         epoch,
                         value,
+                        receipt,
                     })
                 }
                 _ => {
@@ -2957,6 +3012,18 @@ fn shutdown_failures(report: ubm_desktop::ShutdownReport) -> Vec<Value> {
 
 #[cfg(test)]
 mod signal_tests {
+    #[test]
+    fn native_receipt_utc_preserves_signed_fractional_milliseconds() {
+        assert_eq!(
+            super::utc_ms(std::time::UNIX_EPOCH + std::time::Duration::from_micros(1250)),
+            1.25
+        );
+        assert_eq!(
+            super::utc_ms(std::time::UNIX_EPOCH - std::time::Duration::from_micros(1250)),
+            -1.25
+        );
+    }
+
     #[test]
     fn scan_deadline_marker_is_reserved_and_coalesced_under_control_pressure() {
         let signals = super::Signals::default();

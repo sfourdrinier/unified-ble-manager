@@ -346,6 +346,32 @@ export interface MaximumWriteLengthObservation<Attachment extends string> {
  */
 export type NotificationDelivery = 'notification' | 'indication' | 'unknown'
 
+/** Paired native ingress clocks; this is never a device timestamp. */
+export interface NotificationReceipt {
+  readonly receivedAtUtcMs: number
+  readonly receivedAtMonotonicMs: number
+  readonly clockId: string
+  readonly origin: 'native'
+}
+
+export function isNotificationReceipt(value: unknown): value is NotificationReceipt {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const receivedAtUtcMs: unknown = Reflect.get(value, 'receivedAtUtcMs')
+  const receivedAtMonotonicMs: unknown = Reflect.get(value, 'receivedAtMonotonicMs')
+  const clockId: unknown = Reflect.get(value, 'clockId')
+  return (
+    typeof receivedAtUtcMs === 'number' &&
+    Number.isFinite(receivedAtUtcMs) &&
+    Math.abs(receivedAtUtcMs) <= Number.MAX_SAFE_INTEGER &&
+    typeof receivedAtMonotonicMs === 'number' &&
+    Number.isFinite(receivedAtMonotonicMs) &&
+    receivedAtMonotonicMs >= 0 &&
+    typeof clockId === 'string' &&
+    clockId.trim().length > 0 &&
+    Reflect.get(value, 'origin') === 'native'
+  )
+}
+
 export const NOTIFICATION_DELIVERIES: readonly NotificationDelivery[] = Object.freeze([
   'notification',
   'indication',
@@ -355,6 +381,7 @@ export const NOTIFICATION_DELIVERIES: readonly NotificationDelivery[] = Object.f
 export interface NotificationValue {
   readonly value: OwnedBytes
   readonly delivery: NotificationDelivery
+  readonly receipt?: NotificationReceipt
 }
 export interface Subscription<
   Attachment extends string = string,

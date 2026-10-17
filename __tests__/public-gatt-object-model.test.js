@@ -22,9 +22,13 @@ function compatibility() {
   }
 }
 
-async function createPublicFixture(observedDeliveryOverride, onNativeSubscribe) {
+async function createPublicFixture(observedDeliveryOverride, onNativeSubscribe, notificationReceiptOverride) {
   const fixture = createDeterministicTestBackend()
-  if (observedDeliveryOverride !== undefined || onNativeSubscribe !== undefined) {
+  if (
+    observedDeliveryOverride !== undefined ||
+    onNativeSubscribe !== undefined ||
+    notificationReceiptOverride !== undefined
+  ) {
     const nativeGatt = fixture.backend.gatt
     fixture.backend.gatt = {
       ...nativeGatt,
@@ -33,11 +37,27 @@ async function createPublicFixture(observedDeliveryOverride, onNativeSubscribe) 
         const dispatch = nativeGatt.subscribe(path, request)
         return {
           ...dispatch,
-          completion: dispatch.completion.then(subscription =>
-            observedDeliveryOverride === undefined
-              ? subscription
-              : { ...subscription, observedDelivery: observedDeliveryOverride }
-          )
+          completion: dispatch.completion.then(subscription => {
+            return {
+              ...(observedDeliveryOverride === undefined
+                ? subscription
+                : { ...subscription, observedDelivery: observedDeliveryOverride }),
+              ...(notificationReceiptOverride === undefined
+                ? {}
+                : {
+                    notifications: {
+                      ...subscription.notifications,
+                      async *[Symbol.asyncIterator]() {
+                        for await (const item of subscription.notifications) {
+                          if (item.kind === 'value') {
+                            yield { ...item, value: { ...item.value, receipt: notificationReceiptOverride } }
+                          } else yield item
+                        }
+                      }
+                    }
+                  })
+            }
+          })
         }
       }
     }
@@ -459,6 +479,35 @@ describe('stable public GATT object model (PR3 TDD)', () => {
     await expect(settle(fixture, connection.release())).resolves.toMatchObject({ state: 'released' })
     await expect(characteristic.readReceipt()).rejects.toMatchObject({ code: 'gatt.stale-handle' })
     await expect(settle(fixture, manager.destroy())).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('public notification values retain and freeze native receipt metadata', async () => {
+    const receipt = {
+      receivedAtUtcMs: -0.5,
+      receivedAtMonotonicMs: 42.25,
+      clockId: 'native-ingress-test',
+      origin: 'native'
+    }
+    const { fixture, manager } = await createPublicFixture(undefined, undefined, receipt)
+    const { connection, database } = await connectAndDiscover(fixture, manager)
+    const characteristic = database.service('180f', { occurrence: 0 }).characteristic('2a19')
+    const subscription = await settle(fixture, characteristic.subscribe())
+    const next = subscription.values[Symbol.asyncIterator]().next()
+    fixture.controller.emitNotification(
+      {
+        serviceUuid: '0000180f-0000-1000-8000-00805f9b34fb',
+        serviceOccurrence: 0,
+        characteristicUuid: '00002a19-0000-1000-8000-00805f9b34fb',
+        characteristicOccurrence: 0
+      },
+      new Uint8Array([0x2a])
+    )
+    const item = await next
+    expect(item.value.value.receipt).toEqual(receipt)
+    expect(Object.isFrozen(item.value.value.receipt)).toBe(true)
+    await settle(fixture, subscription.remove())
+    await settle(fixture, connection.release())
+    await settle(fixture, manager.destroy())
   })
 
   test('routes descriptor operations through the captured object path and invalidates the whole graph', async () => {

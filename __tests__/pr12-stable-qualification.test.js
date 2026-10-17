@@ -10,9 +10,9 @@ const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf
 const pkg = JSON.parse(read('package.json'))
 
 describe('PR12 package identity qualification', () => {
-  test('package identity is the stable 5.0.4 release', () => {
-    expect(pkg.version).toBe('5.0.4')
-    expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe('5.0.4')
+  test('package identity is the stable 5.1.0 release', () => {
+    expect(pkg.version).toBe('5.1.0')
+    expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe('5.1.0')
     expect(TAURI_PLUGIN_COMPATIBILITY.npmRange).toBe(`^${pkg.version}`)
     expect(TAURI_PLUGIN_COMPATIBILITY.crateRange).toBe(`^${pkg.version}`)
     expect(read('native/tauri/Cargo.toml').split('\n')).toContain(`version = "${pkg.version}"`)

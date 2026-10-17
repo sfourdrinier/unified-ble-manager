@@ -7,7 +7,8 @@ import { contractError } from '../backend-contract/errors'
 import type {
   GattAccessRequirements,
   GattCharacteristicPropertyAvailability,
-  GattDescriptorProperties
+  GattDescriptorProperties,
+  NotificationReceipt
 } from '../backend-contract/gatt'
 import type {
   DiscoveredGattDatabaseHandle,
@@ -22,7 +23,11 @@ import { collectCleanupPhases, rehydratePublicError, runWithCleanup } from './er
 import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream, type PublicStreamItem } from './streams'
 import { toPublicCleanupRecord, type CleanupRecord } from './cleanup'
 
-export type { GattAccessRequirements, GattCharacteristicPropertyAvailability } from '../backend-contract/gatt'
+export type {
+  GattAccessRequirements,
+  GattCharacteristicPropertyAvailability,
+  NotificationReceipt
+} from '../backend-contract/gatt'
 
 export type UuidInput = string | number
 
@@ -84,6 +89,8 @@ export interface GattValueEvent {
   readonly delivery: GattDelivery
   readonly observedAtMonotonicMs: number
   readonly sequence: number
+  /** Original paired native clocks, when supplied by the host. */
+  readonly receipt?: NotificationReceipt
 }
 
 export type GattValueStream = PublicBoundedAsyncStream<GattValueEvent>
@@ -1245,7 +1252,8 @@ function mapGattValueStream(
       value: new Uint8Array(value.value),
       delivery,
       observedAtMonotonicMs,
-      sequence: valueSequence
+      sequence: valueSequence,
+      ...(value.receipt === undefined ? {} : { receipt: Object.freeze({ ...value.receipt }) })
     })
   })
 }

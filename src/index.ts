@@ -54,6 +54,7 @@ export type {
   GattSubscription,
   GattDatabaseSnapshot,
   GattValueEvent,
+  NotificationReceipt,
   GattValueStream,
   GattDatabaseChangedEvent,
   GattWriteReceipt,

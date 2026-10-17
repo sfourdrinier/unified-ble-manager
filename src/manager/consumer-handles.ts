@@ -251,6 +251,7 @@ export interface PortableNotificationValue {
   readonly delivery: 'notification' | 'indication' | 'unknown'
   readonly observedAtMonotonicMs?: number
   readonly sequence?: number
+  readonly receipt?: import('../backend-contract/gatt').NotificationReceipt
 }
 
 export interface PortableStreamLimits {

@@ -395,6 +395,50 @@ async fn two_consumers_in_one_scope(
     enable_epoch(radio)
 }
 
+#[tokio::test]
+async fn native_receipt_is_captured_before_drain_and_shared_without_retiming() {
+    let mut previous_clock = None;
+    for platform in [MobilePlatform::Android, MobilePlatform::Apple] {
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, platform).await;
+        let first = host.open_session("receipt-first").unwrap();
+        let second = host.open_session("receipt-second").unwrap();
+        let epoch = two_consumers_in_one_scope(&radio, &first, &second).await;
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            * 1000.0;
+        host.ingest(hr_value(&[0x00, 0x55], epoch));
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            * 1000.0;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let a = drain_until(&first, |records| !of_type(records, "value").is_empty()).await;
+        let b = drain_until(&second, |records| !of_type(records, "value").is_empty()).await;
+        let receipt = &of_type(&a, "value")[0]["receipt"];
+        assert_eq!(receipt, &of_type(&b, "value")[0]["receipt"]);
+        assert_eq!(receipt["origin"], "native");
+        let utc = receipt["receivedAtUtcMs"].as_f64().unwrap();
+        assert!(
+            utc >= before && utc <= after,
+            "receipt must predate the delayed drain"
+        );
+        assert!(receipt["receivedAtMonotonicMs"].as_f64().unwrap() >= 0.0);
+        let clock = receipt["clockId"].as_str().unwrap().to_owned();
+        assert!(!clock.is_empty());
+        assert_ne!(
+            previous_clock.as_ref(),
+            Some(&clock),
+            "host epochs cannot share a reset monotonic identity"
+        );
+        previous_clock = Some(clock);
+        assert_eq!(parse(&host.shutdown().await)["state"], "released");
+    }
+}
+
 /// The value payloads of `records`, in order.
 fn value_payloads(records: &[Value]) -> Vec<String> {
     of_type(records, "value")

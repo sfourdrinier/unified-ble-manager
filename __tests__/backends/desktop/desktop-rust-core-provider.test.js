@@ -158,6 +158,48 @@ describe('profiles and the pre-load platform guard (PR210-02, PR210-29)', () => 
   })
 })
 
+describe('native notification receipt boundary', () => {
+  test.each([true, false])('preserves valid receipt metadata and rejects invalid metadata (valid=%s)', async valid => {
+    await withBackend('corebluetooth', async ({ backend, stage }) => {
+      const { lease, database, measurement } = await connectAndDiscover(backend, stage)
+      const nativePoll = stage.pollNotification.bind(stage)
+      const receipt = {
+        receivedAtUtcMs: -0.5,
+        receivedAtMonotonicMs: valid ? 42.25 : -1,
+        clockId: 'native-receipt-test',
+        origin: 'native'
+      }
+      // Inject only optional ingress evidence at the external binding boundary;
+      // connection, subscription, queueing and cleanup still use the real core.
+      const spy = jest.spyOn(stage, 'pollNotification').mockImplementation(async options => {
+        const result = await nativePoll(options)
+        return result.kind === 'value' ? { ...result, receipt } : result
+      })
+      try {
+        const subscription = await database.subscribe(measurement.path, subscribeOptions())
+        const values = subscription.values[Symbol.asyncIterator]()
+        await stage.stageNotification({
+          peerId: 'peer-1',
+          serviceUuid: HRM_SERVICE,
+          serviceOccurrence: 0,
+          characteristicUuid: HRM_MEASUREMENT,
+          characteristicOccurrence: 0,
+          value: Buffer.from([0x0f])
+        })
+        const item = await nextItem(values, 5000)
+        if (valid) {
+          expect(item).toMatchObject({ kind: 'value', value: { receipt } })
+          expect(Object.isFrozen(item.value.receipt)).toBe(true)
+        } else expect(item).toMatchObject({ kind: 'terminal', reason: 'source-failed' })
+        await subscription.remove()
+        await lease.release()
+      } finally {
+        spy.mockRestore()
+      }
+    })
+  })
+})
+
 describe('5.0 read while notifying over the real addon: the result reports what the radio said', () => {
   test.each(PLATFORMS)(
     '%s: a read on a subscribed characteristic runs, carries the radio provenance, and the subscriber still receives values',

@@ -1039,10 +1039,14 @@ pub enum InvalidationCause {
 /// when data capacity is exhausted. Values drain before the terminal; the
 /// terminal is observed once, then the stream reports closed, never
 /// live-empty again.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum NotificationPoll {
     /// One buffered value (FIFO arrival order).
     Value(Vec<u8>),
+    ValueWithReceipt {
+        value: Vec<u8>,
+        receipt: ubm_core::central::NotificationReceipt,
+    },
     /// No value waiting, stream still live.
     Empty,
     /// Overflow terminal with loss details (exactly once).
@@ -6568,8 +6572,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 }
             },
         };
-        if let Some(value) = core.take_notification_value(index, consumer) {
-            return Ok(NotificationPoll::Value(value));
+        if let Some((value, receipt)) = core.take_notification_value_with_receipt(index, consumer) {
+            return Ok(match receipt {
+                Some(receipt) => NotificationPoll::ValueWithReceipt { value, receipt },
+                None => NotificationPoll::Value(value),
+            });
         }
         if let Some(terminal) = core.take_terminal(index, consumer) {
             return Ok(NotificationPoll::Terminal(terminal));
@@ -7507,6 +7514,9 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                         )
                         .await;
                     }
+                    Some(RadioEvent::NotificationWithReceipt { peer_id, service_uuid, service_occurrence, characteristic_uuid, characteristic_occurrence, epoch, value, receipt }) => {
+                        deliver_with_receipt(&inner, (peer_id, service_uuid, service_occurrence, characteristic_uuid, characteristic_occurrence), epoch, value, Some(receipt)).await;
+                    }
                 }
             }
         }
@@ -8123,6 +8133,16 @@ async fn deliver<B: RadioBoundary>(
     epoch: u64,
     value: Vec<u8>,
 ) {
+    deliver_with_receipt(inner, scope, epoch, value, None).await;
+}
+
+async fn deliver_with_receipt<B: RadioBoundary>(
+    inner: &Arc<Inner<B>>,
+    scope: InstanceKey,
+    epoch: u64,
+    value: Vec<u8>,
+    receipt: Option<ubm_core::central::NotificationReceipt>,
+) {
     let routed = inner.subscriptions.lock().await.get(&scope).copied();
     let Some((path_index, routing_epoch)) = routed else {
         return;
@@ -8138,7 +8158,12 @@ async fn deliver<B: RadioBoundary>(
     }
     let delivered = {
         let mut core = inner.core.lock().await;
-        core.deliver_notification_value(path_index, &value).is_ok()
+        match receipt {
+            Some(receipt) => core
+                .deliver_notification_value_with_receipt(path_index, &value, receipt)
+                .is_ok(),
+            None => core.deliver_notification_value(path_index, &value).is_ok(),
+        }
     };
     if delivered {
         let _ = inner.native_wake.send(());

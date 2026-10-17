@@ -26,6 +26,7 @@ import {
   type WriteMode
 } from '../../backend-contract/operations'
 import type { StreamTerminalNotice } from '../../backend-contract/streams'
+import { isNotificationReceipt, type NotificationReceipt } from '../../backend-contract/gatt'
 import {
   MAX_RECORDING_PREPARE_TEXT_BYTES,
   type RecordingControlOperation
@@ -483,6 +484,12 @@ export interface WireAdvertisementRecord {
   readonly sourceTimestampMs: number | null
 }
 
+function notificationReceiptOrThrow(value: unknown, path: string): NotificationReceipt | undefined {
+  if (value === undefined) return undefined
+  if (!isNotificationReceipt(value)) throw malformed(path)
+  return Object.freeze({ ...value })
+}
+
 export type WireDrainRecord =
   | WireAdvertisementRecord
   | {
@@ -497,6 +504,7 @@ export type WireDrainRecord =
       readonly consumer: string
       readonly value: Uint8Array
       readonly delivery: WireDelivery
+      readonly receipt?: NotificationReceipt
     }
   | {
       readonly t: 'stream-end'
@@ -1839,13 +1847,28 @@ function drainRecordOrThrow(value: unknown, path: string): WireDrainRecord {
       })
     }
     case 'value': {
-      const { fields, ordinal } = read(['consumer', 'valueB64', 'delivery'])
+      const fields = exactObject(
+        value,
+        [
+          't',
+          'ordinal',
+          'consumer',
+          'valueB64',
+          'delivery',
+          ...(new Map<string, unknown>(Object.entries(value)).has('receipt') ? ['receipt'] : [])
+        ],
+        recordPath
+      )
+      const ordinal = integerOrThrow(fields.get('ordinal'), NON_NEGATIVE, `${recordPath}.ordinal`)
       return Object.freeze({
         t: type,
         ordinal,
         consumer: stringOrThrow(fields.get('consumer'), `${recordPath}.consumer`),
         value: decodeBase64OrThrow(fields.get('valueB64'), `${recordPath}.valueB64`),
-        delivery: enumOrThrow(fields.get('delivery'), DELIVERY_KINDS, `${recordPath}.delivery`)
+        delivery: enumOrThrow(fields.get('delivery'), DELIVERY_KINDS, `${recordPath}.delivery`),
+        ...(fields.get('receipt') === undefined
+          ? {}
+          : { receipt: notificationReceiptOrThrow(fields.get('receipt'), `${recordPath}.receipt`) })
       })
     }
     case 'stream-end': {

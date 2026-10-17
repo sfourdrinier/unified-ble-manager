@@ -5,7 +5,7 @@
 
 - `ADAPTER_INITIALIZATION_TIMEOUT_MS :: 10000`
 - `BLUEZ_BACKEND_ID :: "unified-ble:bluez-dbus"`
-- `BLUEZ_IMPLEMENTATION_VERSION :: "5.0.4"`
+- `BLUEZ_IMPLEMENTATION_VERSION :: "5.1.0"`
 - `BLUEZ_PLATFORM_ID :: "unified-ble:linux-bluez"`
 - `BluezBleManagerAppOptions :: { readonly connectionPolicy?: BluezConnectionPolicy | undefined; readonly busKind?: BluezBusKind | undefined; readonly pairingGeneration?: BluezPairingGenerationController | undefined; readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`
 - `BluezBusKind :: "system" | "session"`
@@ -13,11 +13,11 @@
 - `BluezPairingGeneration :: "required" | "legacy-only" | "enabled"`
 - `BluezPairingGenerationController :: { read(adapterId: string): Promise<BluezPairingGeneration>; set(adapterId: string, generation: BluezPairingGeneration): Promise<void> }`
 - `COREBLUETOOTH_BACKEND_ID :: "unified-ble:corebluetooth"`
-- `COREBLUETOOTH_IMPLEMENTATION_VERSION :: "5.0.4"`
+- `COREBLUETOOTH_IMPLEMENTATION_VERSION :: "5.1.0"`
 - `COREBLUETOOTH_PLATFORM_ID :: "unified-ble:macos-corebluetooth"`
 - `ContinuationBacklog :: { readonly recording?: { readonly id: string; } | undefined; readonly selectors: readonly BackgroundContinuationResubscribeSelector[]; readonly values: readonly ContinuationBacklogValue[]; readonly streamEnds: readonly ContinuationBacklogStreamEnd[]; readonly control: readonly WireDrainRecord[]; readonly controlLost: number; readonly afterCutoffLoss: { readonly items: number; readonly bytes: number; }; readonly disposed: boolean; readonly disposeFailure: string | null }`
 - `ContinuationBacklogStreamEnd :: { readonly consumer: string; readonly reason: "overflow" | "closed" | "invalidated"; readonly droppedItems: number; readonly droppedBytes: number }`
-- `ContinuationBacklogValue :: { readonly consumer: string; readonly value: Uint8Array<ArrayBufferLike>; readonly delivery: "unknown" | "notification" | "indication" }`
+- `ContinuationBacklogValue :: { readonly consumer: string; readonly value: Uint8Array<ArrayBufferLike>; readonly delivery: "unknown" | "notification" | "indication"; readonly receipt?: NotificationReceipt | undefined }`
 - `ContinuationRecordingBatch :: { readonly token: string | null; readonly records: readonly { readonly ordinal: number; readonly metadata: ContinuationRecordingMetadata; readonly record: WireDrainRecord | { readonly t: "consumer-registration"; readonly consumer: string; readonly ordinal: number; }; }[]; readonly bytes: number; readonly more: boolean }`
 - `ContinuationRecordingController :: { status(id: string): Promise<ContinuationRecordingStatus>; prepare(id: string, options: ContinuationRecordingPrepareOptions): Promise<ContinuationRecordingBatch>; acknowledge(id: string, token: string): Promise<{ readonly token: string; readonly acknowledged: true; readonly records: number; }>; stop(id: string): Promise<ContinuationRecordingStatus & { readonly radioRelease: "not-requested"; }>; clear(id: string): Promise<{ readonly cleared: true; readonly records: number; }> }`
 - `ContinuationRecordingFailure :: { readonly kind: string; readonly detail: string; readonly operation: string; readonly sqliteExtendedCode: number | null; readonly sqliteCode: string | null }`
@@ -25,7 +25,7 @@
 - `ContinuationRecordingPrepareOptions :: { readonly maxItems: number; readonly maxBytes: number }`
 - `ContinuationRecordingStatus :: { readonly recordingId: string; readonly phase: "stopped" | "recording" | "capacity-reached"; readonly accepting: boolean; readonly records: number; readonly bytes: number; readonly lostRecords: number; readonly maxBytes: number; readonly maxRecords: number; readonly encrypted: false; readonly runtimeFailure: (ContinuationRecordingFailure & { readonly persisted: false; }) | null; readonly collectionFailure: (ContinuationRecordingFailure & { readonly persisted: boolean; readonly persistenceFailure?: ContinuationRecordingFailure | undefined; }) | null }`
 - `CoreBluetoothBleManagerAppOptions :: { readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`
-- `DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION :: "5.0.4"`
+- `DESKTOP_RUST_CORE_IMPLEMENTATION_VERSION :: "5.1.0"`
 - `DESKTOP_RUST_CORE_PROFILES :: Readonly<Record<DesktopRustCorePlatform, DesktopRustCoreProfile>>`
 - `DbusNextBluezProviderOptions :: { readonly connectionPolicy?: BluezConnectionPolicy | undefined; readonly busKind: BluezBusKind; readonly now: () => number; readonly pairingGeneration?: BluezPairingGenerationController | undefined; readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined }`
 - `DesktopCoreHost :: { readonly platform: DesktopRustCorePlatform; readonly operationPrefix: string }`
@@ -52,7 +52,7 @@
 - `DesktopRustCoreControl :: { readonly timeoutMs?: number | undefined; readonly ticket?: string | undefined }`
 - `DesktopRustCoreDispatchCounters :: { }`
 - `DesktopRustCoreLifecycleEvent :: { readonly kind: "released" | "closed" | "services-changed" | "lagged" | "link-lost" | "adapter-lost"; readonly sequence?: number | null | undefined; readonly peerId?: string | null | undefined; readonly peerKey?: string | null | undefined; readonly connectionGeneration?: string | null | undefined; readonly requested?: boolean | null | undefined; readonly missed?: number | null | undefined; readonly platform?: string | null | undefined }`
-- `DesktopRustCoreNotificationPoll :: { readonly kind: "terminal" | "closed" | "value" | "invalidated" | "empty"; readonly value?: Uint8Array<ArrayBufferLike> | null | undefined; readonly cause?: string | null | undefined; readonly droppedItems?: number | null | undefined; readonly droppedBytes?: number | null | undefined; readonly replacedItems?: number | null | undefined }`
+- `DesktopRustCoreNotificationPoll :: { readonly kind: "terminal" | "closed" | "value" | "invalidated" | "empty"; readonly value?: Uint8Array<ArrayBufferLike> | null | undefined; readonly receipt?: NotificationReceipt | null | undefined; readonly cause?: string | null | undefined; readonly droppedItems?: number | null | undefined; readonly droppedBytes?: number | null | undefined; readonly replacedItems?: number | null | undefined }`
 - `DesktopRustCorePath :: { readonly servicePrimary?: boolean | null | undefined; readonly includedServices?: readonly { readonly uuid: string; readonly occurrence: number; }[] | null | undefined; readonly serviceUuid: string; readonly serviceOccurrence: number; readonly characteristicUuid?: string | null | undefined; readonly characteristicOccurrence?: number | null | undefined; readonly descriptorUuid?: string | null | undefined; readonly descriptorOccurrence?: number | null | undefined; readonly properties: number; readonly access?: DesktopRustCoreCharacteristicAccess | null | undefined; readonly serviceAccess?: "os-reserved" | "access-denied" | null | undefined }`
 - `DesktopRustCorePeerRecord :: { readonly peerId: string; readonly peerKey: string; readonly connectionState?: "connecting" | "connected" | "disconnecting" | "disconnected" | "lost" | "invalid" | null | undefined; readonly connectionGeneration?: string | null | undefined; readonly databaseGeneration?: string | null | undefined; readonly databaseState?: "current" | "invalid" | "undiscovered" | "discovering" | "changed" | null | undefined }`
 - `DesktopRustCorePlatform :: "winrt" | "corebluetooth" | "bluez"`
@@ -84,7 +84,7 @@
 - `NativeWinRtProviderOptions :: { readonly now: () => number; readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined }`
 - `NodeBleManagerAppOptions :: { readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`
 - `WINRT_BACKEND_ID :: "unified-ble:winrt"`
-- `WINRT_IMPLEMENTATION_VERSION :: "5.0.4"`
+- `WINRT_IMPLEMENTATION_VERSION :: "5.1.0"`
 - `WINRT_PLATFORM_ID :: "unified-ble:windows-winrt"`
 - `WinRtBleManagerAppOptions :: { readonly owner?: string | undefined; readonly binding?: DesktopRustCoreBinding | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined; readonly background?: { readonly continuation?: unknown; } | undefined }`
 - `assertDesktopRustCorePlatform :: (platform: DesktopRustCorePlatform, hostPlatform?: string) => void`

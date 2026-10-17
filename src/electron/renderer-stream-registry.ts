@@ -470,7 +470,8 @@ function snapshotStreamValue(value: unknown, now: () => number, nextSequence: ()
       value: ownBytes(value.value, byteLimit(value.value.byteLength)),
       delivery: value.delivery,
       observedAtMonotonicMs: now(),
-      sequence: nextSequence()
+      sequence: nextSequence(),
+      ...(value.receipt === undefined ? {} : { receipt: Object.freeze({ ...value.receipt }) })
     })
   }
   if (isAdvertisementValue(value)) {

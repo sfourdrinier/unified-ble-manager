@@ -76,6 +76,13 @@ Values are `Uint8Array`; notification events retain their delivery mode,
 monotonic observation time, and sequence number. Do not retain a GATT object
 after disconnect, service change, or rediscovery.
 
+When provided by the host, `event.value.receipt` preserves the original paired
+`receivedAtUtcMs` and `receivedAtMonotonicMs`, a host clock epoch `clockId`, and
+`origin: 'native'`. Rust mobile hosts capture this pair at ingress before queueing;
+buffered drains, fan-out, and continuation retain it unchanged. It is host ingress
+time, not device acquisition time. Other hosts may omit it; an application must
+identify any delivery-time fallback explicitly rather than inventing native evidence.
+
 ## Host boundaries
 
 Capabilities come from the instantiated backend. Web Bluetooth uses its

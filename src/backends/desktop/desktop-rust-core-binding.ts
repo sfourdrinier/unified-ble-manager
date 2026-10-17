@@ -232,6 +232,7 @@ export interface DesktopRustCoreConsumerCounters {
 export interface DesktopRustCoreNotificationPoll {
   readonly kind: 'value' | 'empty' | 'terminal' | 'invalidated' | 'closed'
   readonly value?: Uint8Array | null
+  readonly receipt?: import('../../backend-contract/gatt').NotificationReceipt | null
   readonly cause?: string | null
   readonly droppedItems?: number | null
   readonly droppedBytes?: number | null

@@ -1431,7 +1431,8 @@ function toPortableNotificationStream(
     value: new Uint8Array(value.value),
     delivery: value.delivery,
     observedAtMonotonicMs: value.observedAtMonotonicMs,
-    sequence: value.sequence
+    sequence: value.sequence,
+    ...(value.receipt === undefined ? {} : { receipt: Object.freeze({ ...value.receipt }) })
   }))
 }
 
