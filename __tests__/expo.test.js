@@ -60,7 +60,9 @@ function trustedNativeExpoRuntime(overrides = {}) {
     getRuntimeConfiguration: jest.fn().mockResolvedValue({
       platform: 'android',
       configurationDigest: 'native-digest',
-      legacyLocationPolicy: 'none'
+      legacyLocationPolicy: 'auto',
+      androidLocationServicesEnabled: true,
+      androidLocationPermissionGranted: true
     }),
     requestPermissions: jest.fn().mockResolvedValue({
       requested: ['bluetooth'],
@@ -230,7 +232,7 @@ describe('Expo factory', () => {
     })
     await expect(result.openSettings('bluetooth')).resolves.toBeUndefined()
     await expect(result.readiness()).resolves.toMatchObject({ state: 'ready' })
-    expect(nativeRuntime.getRuntimeConfiguration).toHaveBeenCalledTimes(1)
+    expect(nativeRuntime.getRuntimeConfiguration).toHaveBeenCalledTimes(2)
     expect(nativeRuntime.requestPermissions).toHaveBeenCalledWith({ purpose: 'scan-and-connect' })
     expect(nativeRuntime.openSettings).toHaveBeenCalledWith({ target: 'bluetooth' })
   })
@@ -540,5 +542,64 @@ describe('Expo factory', () => {
 
     expect(settingsBridge).toHaveBeenCalledWith('bluetooth')
     expect(permissionBridge).toHaveBeenCalledWith({ purpose: 'scan-and-connect' })
+  })
+
+  test('rejects malformed native measured location booleans at the Expo boundary', async () => {
+    getNativeUnifiedBleExpoRuntime.mockReturnValue(
+      trustedNativeExpoRuntime({
+        getRuntimeConfiguration: jest.fn().mockResolvedValue({
+          platform: 'android',
+          configurationDigest: 'native-digest',
+          androidLocationServicesEnabled: 'true'
+        })
+      })
+    )
+
+    await expect(createExpoBleManager()).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'protocol.malformed',
+      operation: 'expo.runtime.configuration.result'
+    })
+  })
+
+  test('does not fill absent native observations with caller claims', async () => {
+    getNativeUnifiedBleExpoRuntime.mockReturnValue(
+      trustedNativeExpoRuntime({
+        getRuntimeConfiguration: jest.fn().mockResolvedValue({
+          platform: 'android',
+          configurationDigest: 'native-digest',
+          legacyLocationPolicy: 'auto'
+        })
+      })
+    )
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeApplicationHost.mockResolvedValue(hostFor(manager))
+    const result = await createExpoBleManager(
+      {},
+      {
+        androidApiLevel: 30,
+        androidLocationServicesEnabled: true,
+        androidLocationPermissionGranted: true
+      }
+    )
+    await expect(result.readiness()).resolves.toMatchObject({ state: 'action-required' })
+  })
+
+  test('does not let caller measured values overwrite native measured values', async () => {
+    const manager = {
+      adapter: { state: jest.fn().mockResolvedValue(adapterState()) }
+    }
+    createReactNativeApplicationHost.mockResolvedValue(hostFor(manager))
+    const result = await createExpoBleManager(
+      {},
+      {
+        androidApiLevel: 30,
+        permissions: { android: { legacyLocation: 'auto' } },
+        androidLocationServicesEnabled: false,
+        androidLocationPermissionGranted: false
+      }
+    )
+
+    await expect(result.readiness()).resolves.toMatchObject({ state: 'ready', actions: [] })
   })
 })

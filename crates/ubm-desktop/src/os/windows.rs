@@ -98,6 +98,32 @@ fn winrt(operation: &str, error: windows::core::Error) -> DesktopError {
     )
 }
 
+/// `FromBluetoothAddressAsync` projects a null `BluetoothLEDevice` result as
+/// `Error::empty()` (HRESULT 0) when the address is not paired or cached
+/// (https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.frombluetoothaddressasync?view=winrt-26100).
+/// Only the awaited factory result has this meaning; synchronous factory
+/// failures and nonzero HRESULTs retain the generic WinRT mapping.
+fn winrt_device(operation: &str, error: windows::core::Error) -> DesktopError {
+    if error.code().0 == 0 {
+        return DesktopError::new(
+            BleErrorCode::PeerNotFound,
+            BleErrorDomain::Connection,
+            operation,
+        )
+        .with_detail("WinRT returned no BluetoothLEDevice for the requested address")
+        .with_platform(
+            crate::errors::PlatformDetail::new("winrt", "hresult")
+                .with_message("WinRT returned no BluetoothLEDevice for the requested address")
+                .with_metadata(
+                    "hresult",
+                    crate::errors::PlatformValue::Text(btleplug::ubm::hresult_code(error.code().0)),
+                )
+                .with_metadata("nullDevice", crate::errors::PlatformValue::Bool(true)),
+        );
+    }
+    winrt(operation, error)
+}
+
 fn security(operation: &str, detail: impl Into<String>) -> DesktopError {
     DesktopError::new(
         BleErrorCode::PlatformSecurity,
@@ -133,7 +159,7 @@ async fn device(
     }
     .map_err(|error| winrt(operation, error))?
     .await
-    .map_err(|error| winrt(operation, error))
+    .map_err(|error| winrt_device(operation, error))
 }
 
 fn native_address_type(kind: crate::boundary::AddressType) -> BluetoothAddressType {
@@ -1310,4 +1336,74 @@ fn rebind(adapter: &btleplug::platform::Adapter, id: &str) -> Result<(), String>
     adapter
         .rebind_radio(radio)
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{winrt, winrt_device};
+    use crate::errors::PlatformValue;
+    use ubm_core::contracts::{BleErrorCode, BleErrorDomain};
+
+    #[test]
+    fn awaited_null_device_is_peer_not_found_with_truthful_platform_fact() {
+        let error = winrt_device("peer-from-address", windows::core::Error::empty());
+
+        assert_eq!(error.code(), BleErrorCode::PeerNotFound);
+        assert_eq!(error.domain(), BleErrorDomain::Connection);
+        assert_eq!(error.operation(), "peer-from-address");
+        assert_eq!(
+            error.detail(),
+            Some("WinRT returned no BluetoothLEDevice for the requested address")
+        );
+        let platform = error.platform().expect("null-device platform fact");
+        assert_eq!(platform.domain, "winrt");
+        assert_eq!(platform.code, "hresult");
+        assert_eq!(
+            platform.message.as_deref(),
+            Some("WinRT returned no BluetoothLEDevice for the requested address")
+        );
+        assert_eq!(
+            platform.metadata.get("hresult"),
+            Some(&PlatformValue::Text("0x00000000".to_owned()))
+        );
+        assert_eq!(
+            platform.metadata.get("nullDevice"),
+            Some(&PlatformValue::Bool(true))
+        );
+    }
+
+    #[test]
+    fn nonzero_awaited_hresult_keeps_generic_winrt_mapping() {
+        let error = winrt_device(
+            "peer-from-address",
+            windows::core::Error::from_hresult(windows::core::HRESULT(0x80004005_u32 as i32)),
+        );
+
+        assert_eq!(error.code(), BleErrorCode::PlatformFailure);
+        assert_eq!(error.domain(), BleErrorDomain::Platform);
+        assert_eq!(error.operation(), "peer-from-address");
+        let platform = error.platform().expect("WinRT platform fact");
+        assert_eq!(platform.domain, "winrt");
+        assert_eq!(platform.code, "hresult");
+        assert_eq!(
+            platform.metadata.get("hresult"),
+            Some(&PlatformValue::Text("0x80004005".to_owned()))
+        );
+        assert!(!platform.metadata.contains_key("nullDevice"));
+    }
+
+    #[test]
+    fn synchronous_factory_hresult_zero_keeps_generic_winrt_mapping() {
+        let error = winrt("peer-from-address", windows::core::Error::empty());
+
+        assert_eq!(error.code(), BleErrorCode::PlatformFailure);
+        assert_eq!(error.domain(), BleErrorDomain::Platform);
+        assert_eq!(error.operation(), "peer-from-address");
+        let platform = error.platform().expect("WinRT platform fact");
+        assert_eq!(
+            platform.metadata.get("hresult"),
+            Some(&PlatformValue::Text("0x00000000".to_owned()))
+        );
+        assert!(!platform.metadata.contains_key("nullDevice"));
+    }
 }

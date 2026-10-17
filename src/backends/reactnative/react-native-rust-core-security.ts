@@ -23,6 +23,7 @@ import {
   type SecurityPairResult,
   type SecurityUnpairResult
 } from '../../backend-contract/security'
+import { awaitWithOperationAdmission } from '../../core/unified-ble-core-helpers'
 import { OwnedCoreBoundedStream } from '../../core/owned-bounded-stream'
 import type { WireSecurityState } from './rust-core-wire'
 
@@ -58,7 +59,7 @@ export interface RustCoreSecurityHost {
     operationId: string
     budgetMs?: number
   }): Promise<{ readonly outcome: 'paired' | 'already-paired' | 'rejected'; readonly state: WireSecurityState }>
-  cancelPairing(args: { peerId: string; operationId: string }): Promise<void>
+  cancelPairing(args: { peerId: string; operationId: string; budgetMs?: number }): Promise<void>
   /** Tracks `operationId` until the returned remover runs; cancels it when `signal` aborts. */
   watchAbort(signal: AbortSignal | null, operationId: string, operation: string): () => void
 }
@@ -73,6 +74,7 @@ export class RustCoreSecurityBackend implements SecurityBackend {
   >()
   private sourceRevision = 0
   private closed = false
+  private readonly shutdown = new AbortController()
 
   constructor(private readonly host: RustCoreSecurityHost) {}
 
@@ -178,12 +180,49 @@ export class RustCoreSecurityBackend implements SecurityBackend {
   async cancelPairing(peerId: string, options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
     const operation = 'react-native-rust-core.security.cancel-pairing'
     this.assertOpen(operation)
+    this.assertAdmission(options, operation)
+    if (options.deadline !== null && options.deadline <= this.host.now()) {
+      throw contractError('operation.timed-out', 'core', operation)
+    }
+    this.host.budget(options, operation)
     const result = this.activeResults.get(peerId)
     if (result === undefined) return { outcome: 'not-pairing' }
-    this.assertAdmission(options, operation)
     const nativePeerId = this.host.nativePeerId(peerId, operation)
-    await this.host.cancelPairing({ peerId: nativePeerId, operationId: this.host.mintOperationId('security-cancel') })
-    return cancelOutcomeForPairResult(await result)
+    const operationId = this.host.mintOperationId('security-cancel')
+    const waiting = new AbortController()
+    const abort = (): void => waiting.abort()
+    options.signal?.addEventListener('abort', abort, { once: true })
+    this.shutdown.signal.addEventListener('abort', abort, { once: true })
+    const removeAbort = this.host.watchAbort(waiting.signal, operationId, operation)
+    const admission = { ...options, signal: waiting.signal }
+    try {
+      const budget = this.host.budget(options, operation)
+      this.assertOpen(operation)
+      this.assertAdmission(admission, operation)
+      if (options.deadline !== null && options.deadline <= this.host.now()) {
+        throw contractError('operation.timed-out', 'core', operation)
+      }
+      // Observe the native receipt before a caller deadline/abort can reject
+      // its wait. The native acknowledgment still owns its late settlement.
+      const acknowledgment = this.host.cancelPairing({ peerId: nativePeerId, operationId, ...budget }).then(
+        () => null,
+        (error: unknown) => ({ error })
+      )
+      const answer = await awaitWithOperationAdmission(acknowledgment, admission, this.host.now, operation)
+      if (answer !== null) throw answer.error
+      // Stopping this caller's wait never drops the pairing's own result or
+      // cancels its operation identity. A later caller can observe that fact.
+      return cancelOutcomeForPairResult(await awaitWithOperationAdmission(result, admission, this.host.now, operation))
+    } catch (error) {
+      if (this.closed && error instanceof BackendContractError && error.normalized.code === 'operation.aborted') {
+        throw contractError('lifecycle.destroyed', 'core', operation)
+      }
+      throw error
+    } finally {
+      removeAbort()
+      options.signal?.removeEventListener('abort', abort)
+      this.shutdown.signal.removeEventListener('abort', abort)
+    }
   }
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {
@@ -210,6 +249,7 @@ export class RustCoreSecurityBackend implements SecurityBackend {
 
   close(): void {
     this.closed = true
+    this.shutdown.abort()
     for (const streams of [...this.streams.values()]) {
       for (const stream of [...streams]) stream.closeWithReason('owner-released')
     }

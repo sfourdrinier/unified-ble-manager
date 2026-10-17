@@ -1,3 +1,4 @@
+import { isConnectionParameterValues } from '../backend-contract/connection-parameter-validation'
 // src/tck/runner-public-scenarios.ts
 
 import type { BleCentralBackend } from '../backend-contract/backend'
@@ -1657,12 +1658,7 @@ async function observeParametersTruth<
   const measured =
     read.errorCode === null &&
     read.value !== null &&
-    Number.isFinite(read.value.intervalUs) &&
-    read.value.intervalUs > 0 &&
-    Number.isSafeInteger(read.value.latency) &&
-    read.value.latency >= 0 &&
-    Number.isFinite(read.value.supervisionTimeoutUs) &&
-    read.value.supervisionTimeoutUs > 0 &&
+    isConnectionParameterValues(read.value) &&
     Number.isFinite(read.value.observedAtMonotonicMs) &&
     read.value.observedAtMonotonicMs >= 0 &&
     read.value.terminal.outcome === 'succeeded'

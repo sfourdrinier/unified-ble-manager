@@ -972,6 +972,8 @@ pub enum RadioRequest {
         peer_id: String,
         auto_connect: bool,
         preferred_phy: Vec<Phy>,
+        /// Core's canonical connection generation admitted for this request.
+        expected_generation: String,
     },
     /// Release the link. → [`RadioCompletion::Unit`] once the OS confirms.
     Disconnect {
@@ -1422,6 +1424,13 @@ pub enum RadioIngress {
     /// Link change the OS reported (`status` = platform GATT status).
     Connection {
         peer_id: String,
+        connected: bool,
+        status: Option<i32>,
+    },
+    /// Link change scoped to the core generation that admitted it.
+    ConnectionScoped {
+        peer_id: String,
+        expected_generation: String,
         connected: bool,
         status: Option<i32>,
     },

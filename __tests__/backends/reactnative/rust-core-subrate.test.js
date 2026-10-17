@@ -70,3 +70,18 @@ test.each([
     await manager.destroy()
   }
 })
+
+test.each(['operation.aborted', 'operation.timed-out'])('public RN subrate preserves owner-reported %s uncertainty', async code => {
+  const { native, manager, connection } = await open('android', true)
+  try {
+    // A wire-owner answer, not an RF or Android-controller qualification.
+    native.failNext('connection.request-subrate', code, 'connection', 'connection.request-subrate', null, 'uncertain')
+    await expect(connection.controls.requestSubrate('low-power')).rejects.toMatchObject({
+      code, commit: 'uncertain', retryability: 'never'
+    })
+    expect(native.opsInvoked('connection.request-subrate')).toHaveLength(1)
+  } finally {
+    await connection.release()
+    await manager.destroy()
+  }
+})

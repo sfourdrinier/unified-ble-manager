@@ -103,9 +103,12 @@ fn expected_arity(kind: &str) -> Option<usize> {
         "peer.resolve" => 3,
         "connect" => 5,
         "link.established" => 2,
+        "link.established.scoped" => 3,
         "link.released" => 2,
+        "link.released.scoped" => 3,
         "disconnect" => 4,
         "peer.loss" => 3,
+        "peer.loss.scoped" => 4,
         "discovery.begin" => 2,
         "discovery.complete" => 2,
         "discovery.fail" => 2,
@@ -416,7 +419,24 @@ impl CoreSession {
                     .central_mut()
                     .connect(peer, lease, timeout_ms, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                Ok(format!(",\"op\":\"{id}\""))
+                let generation =
+                    self.central_mut()
+                        .connection_generation(peer)
+                        .ok_or_else(|| {
+                            drain_failed(
+                                "state.invalid",
+                                "connection",
+                                "connection-generation-missing",
+                            )
+                        })?;
+                let mut extra = format!(",\"op\":\"{id}\",\"peer\":\"");
+                json_escape_into(&mut extra, peer);
+                extra.push_str("\",\"lease\":\"");
+                json_escape_into(&mut extra, lease);
+                extra.push_str("\",\"generation\":\"");
+                json_escape_into(&mut extra, &generation);
+                extra.push('"');
+                Ok(extra)
             }
             "link.established" => {
                 let peer = arg(parts, 1, "peer-key")?;
@@ -425,10 +445,32 @@ impl CoreSession {
                     .map_err(|core| central_error(core, OP))?;
                 Ok(String::new())
             }
+            "link.established.scoped" => {
+                let peer = arg(parts, 1, "peer-key")?;
+                let generation = arg(parts, 2, "connection-generation")?;
+                if generation.is_empty() {
+                    return Err(missing("connection-generation"));
+                }
+                self.central_mut()
+                    .note_link_established_for_generation(peer, generation)
+                    .map_err(|core| central_error(core, OP))?;
+                Ok(String::new())
+            }
             "link.released" => {
                 let peer = arg(parts, 1, "peer-key")?;
                 self.central_mut()
                     .note_link_released(peer)
+                    .map_err(|core| central_error(core, OP))?;
+                Ok(String::new())
+            }
+            "link.released.scoped" => {
+                let peer = arg(parts, 1, "peer-key")?;
+                let generation = arg(parts, 2, "connection-generation")?;
+                if generation.is_empty() {
+                    return Err(missing("connection-generation"));
+                }
+                self.central_mut()
+                    .note_link_released_for_generation(peer, generation)
                     .map_err(|core| central_error(core, OP))?;
                 Ok(String::new())
             }
@@ -447,6 +489,19 @@ impl CoreSession {
                 let state = self
                     .central_mut()
                     .note_peer_loss(peer, now_ms, &mut *out)
+                    .map_err(|core| central_error(core, OP))?;
+                Ok(format!(",\"state\":\"{}\"", state.as_str()))
+            }
+            "peer.loss.scoped" => {
+                let peer = arg(parts, 1, "peer-key")?;
+                let generation = arg(parts, 2, "connection-generation")?;
+                if generation.is_empty() {
+                    return Err(missing("connection-generation"));
+                }
+                let now_ms = parse_u64(arg(parts, 3, "peer-loss-now")?, "peer-loss-now")?;
+                let state = self
+                    .central_mut()
+                    .note_peer_loss_for_generation(peer, generation, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
                 Ok(format!(",\"state\":\"{}\"", state.as_str()))
             }
@@ -811,7 +866,25 @@ mod tests {
         let peer = String::from(peer);
         let connect = drain_ok(&mut session, &format!("connect|{peer}|lease-a|5000|1000"));
         let connect_op = op_of(&connect);
-        drain_ok(&mut session, &format!("link.established|{peer}"));
+        assert!(
+            connect.contains(&format!("\"peer\":\"{peer}\"")),
+            "{connect}"
+        );
+        assert!(connect.contains("\"lease\":\"lease-a\""), "{connect}");
+        let generation = connect
+            .split("\"generation\":\"")
+            .nth(1)
+            .and_then(|tail| tail.split('\"').next())
+            .expect("connect admission generation");
+        drain_ok(
+            &mut session,
+            &format!("link.established.scoped|{peer}|{generation}"),
+        );
+        let stale = drain_one(
+            &mut session,
+            &format!("peer.loss.scoped|{peer}|stale-generation|1001"),
+        );
+        assert!(stale.contains("connection.stale"), "{stale}");
         drain_ok(&mut session, &format!("discovery.begin|{peer}"));
         drain_ok(&mut session, &format!("discovery.complete|{peer}"));
         let path_line = drain_ok(
@@ -835,6 +908,55 @@ mod tests {
         drain_ok(&mut session, &format!("link.released|{peer}"));
         let status = session.central_status("test").expect("status holds");
         assert!(status.contains("C-UBM.0.1.2-DRAFT"), "{status}");
+    }
+
+    #[test]
+    fn cancelled_connect_release_precedes_replacement_and_stale_cleanup_is_fenced() {
+        let mut session = open_session();
+        let peer = "public-address:11:22:33:44:55:66";
+        drain_ok(
+            &mut session,
+            "peer.resolve|public-address|11:22:33:44:55:66",
+        );
+        let first = drain_ok(&mut session, &format!("connect|{peer}|lease-a|5000|1000"));
+        let first_generation = first
+            .split("\"generation\":\"")
+            .nth(1)
+            .and_then(|tail| tail.split('"').next())
+            .expect("first admission generation");
+        drain_ok(&mut session, &format!("disconnect|{peer}|lease-a|1001"));
+        assert!(session.central_mut().holds_lease(peer, "lease-a"));
+        let premature = drain_one(&mut session, &format!("connect|{peer}|lease-b|5000|1002"));
+        assert!(premature.contains("\"ok\":false"), "{premature}");
+        assert!(!session.central_mut().holds_lease(peer, "lease-b"));
+        drain_ok(
+            &mut session,
+            &format!("link.released.scoped|{peer}|{first_generation}"),
+        );
+        let replacement = drain_ok(&mut session, &format!("connect|{peer}|lease-b|5000|1003"));
+        let replacement_generation = replacement
+            .split("\"generation\":\"")
+            .nth(1)
+            .and_then(|tail| tail.split('"').next())
+            .expect("replacement admission generation");
+        assert_ne!(first_generation, replacement_generation);
+        assert!(!session.central_mut().holds_lease(peer, "lease-a"));
+        let old_disconnect = drain_one(&mut session, &format!("disconnect|{peer}|lease-a|1004"));
+        assert!(old_disconnect.contains("\"ok\":false"), "{old_disconnect}");
+        let old_release = drain_one(
+            &mut session,
+            &format!("link.released.scoped|{peer}|{first_generation}"),
+        );
+        assert!(old_release.contains("connection.stale"), "{old_release}");
+        drain_ok(
+            &mut session,
+            &format!("link.established.scoped|{peer}|{replacement_generation}"),
+        );
+        assert!(session.central_mut().holds_lease(peer, "lease-b"));
+        assert_eq!(
+            session.central_mut().connection_state(peer),
+            Some(ubm_core::central::ConnectionState::Connected)
+        );
     }
 
     #[test]

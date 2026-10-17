@@ -208,7 +208,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("set-advertising", "start/stop advertising"),
     (
         "drop-link",
-        "halt ECG and disconnect simulator clients (plus --drop-link-allow extras); advertising and GATT stay up [adversarial]",
+        "halt ECG and disconnect simulator clients (plus --drop-link-allow extras); reports the observed advertising registration [adversarial]",
     ),
     (
         "set-silent",
@@ -247,7 +247,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "run-record",
         "report seed/profile, mode and injected fault sequence",
     ),
-    ("get-state", "report the current simulator state"),
+    ("get-state", "report the current simulator state, including the observed advertising registration"),
     ("help", "list the commands"),
 ];
 

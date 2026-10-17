@@ -1,3 +1,4 @@
+// scripts/native-protocol/test-h10-acc-radio.js
 'use strict'
 
 // Explicit physical-radio / simulated-peripheral qualification, never real-H10 proof.
@@ -127,6 +128,13 @@ async function run(options, pmd) {
     const peer = await manager.find({
       timeoutMs: 20000,
       signal: abort.signal,
+      query: {
+        anyOf: [{
+          services: { any: ['0000180d-0000-1000-8000-00805f9b34fb'] },
+          names: { exact: ['SIM Polar H10 0001'] }
+        }]
+      },
+      delivery: 'balanced',
       select: candidate => candidate.name === 'SIM Polar H10 0001'
     })
     assert.equal(peer.name, 'SIM Polar H10 0001', 'refusing unrelated sensor')

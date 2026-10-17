@@ -166,7 +166,7 @@ export async function requestCorePriority<Attachment extends string, Identity ex
     queueKey: String(connection.resource.connectionId),
     fairnessKey: 'control',
     options,
-    mayCommit: false,
+    mayCommit: true,
     dispatch: correlation => {
       connection.assertCurrent()
       const dispatch = requestPriority(connection.resource, {
@@ -195,7 +195,7 @@ export async function requestCoreSubrate<Attachment extends string, Identity ext
     queueKey: String(connection.resource.connectionId),
     fairnessKey: 'control',
     options,
-    mayCommit: false,
+    mayCommit: true,
     dispatch: correlation => {
       connection.assertCurrent()
       const dispatch = requestSubrate(connection.resource, {
@@ -256,7 +256,7 @@ export async function requestCorePhy<Attachment extends string, Identity extends
     queueKey: String(connection.resource.connectionId),
     fairnessKey: 'control',
     options,
-    mayCommit: false,
+    mayCommit: true,
     dispatch: correlation => {
       connection.assertCurrent()
       const dispatch = requestPhy(connection.resource, {

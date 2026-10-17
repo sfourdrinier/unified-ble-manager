@@ -22,6 +22,16 @@ function sourceExpectedIdentity() {
   return require('../../src/generated/native-build-identity').EXPECTED_NATIVE_BUILD_IDENTITY
 }
 
+const EFFECTFUL_OPS = new Set([
+  'gatt.write',
+  'gatt.write-when-ready',
+  'gatt.write-descriptor',
+  'connection.request-mtu',
+  'connection.request-priority',
+  'connection.request-subrate',
+  'connection.request-phy'
+])
+
 const WIRE_REVISION = 'ubm-mobile-wire/2'
 const SERVICE_UUID = '0000180d-0000-1000-8000-00805f9b34fb'
 const CHARACTERISTIC_UUID = '00002a37-0000-1000-8000-00805f9b34fb'
@@ -850,9 +860,8 @@ class DeterministicRustCoreNative {
   }
 
   failure(op, fault) {
-    const write = op === 'gatt.write' || op === 'gatt.write-when-ready' || op === 'gatt.write-descriptor'
-    const commit = write ? (fault.commit ?? 'not-dispatched') : null
-    // As the owner: its own retryability on every failure envelope; a write
+    const commit = EFFECTFUL_OPS.has(op) ? (fault.commit ?? 'not-dispatched') : null
+    // As the owner: its own retryability on every failure envelope; an effect
     // that may have committed is never retryable.
     const retryability =
       commit === 'uncertain'
@@ -865,7 +874,7 @@ class DeterministicRustCoreNative {
   }
 
   commitFor(op, dispatched) {
-    return op === 'gatt.write' || op === 'gatt.write-when-ready' || op === 'gatt.write-descriptor'
+    return EFFECTFUL_OPS.has(op)
       ? dispatched
         ? 'uncertain'
         : 'not-dispatched'

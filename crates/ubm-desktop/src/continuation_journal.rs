@@ -25,6 +25,10 @@ const OVERHEAD: u64 = 65536;
 const RESERVED_PAGES: u64 = 16;
 const APPLICATION_ID: i64 = 0x55424d4a;
 const SCHEMA_VERSION: i64 = 1;
+/// Most records one synced commit may carry. The pump never waits to fill a
+/// batch: it groups only values it already holds, so this bounds how long one
+/// commit can delay queued control work, not latency.
+pub const APPEND_BATCH_MAX: usize = 32;
 
 /// Trusted host controls share one blocking-pool boundary. Join failures expose
 /// only a stable runtime identity, never a panic's potentially sensitive payload.
@@ -474,6 +478,25 @@ fn sql_integer(value: u64) -> Result<i64> {
         .map_err(|_| error("argument.invalid", "journal integer exceeds SQLite range"))
 }
 
+/// Result of one committed [`ContinuationJournal::append_batch`] transaction.
+/// The `accepted` leading records hold consecutive ordinals starting at
+/// `first_ordinal`, the ordinal the batch's first record was offered at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppendBatch {
+    pub accepted: usize,
+    pub first_ordinal: i64,
+    pub rejected: Option<AppendRejection>,
+}
+
+/// Capacity was reached at the first record after the accepted prefix. That
+/// record carries the committed loss marker; `not_attempted` later records of
+/// the batch were never admitted and are the caller's to account for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppendRejection {
+    pub error: JournalError,
+    pub not_attempted: usize,
+}
+
 /// One handle to one durable recording and its single shared delivery cursor.
 /// Multiple authorized handles are serialized by SQLite IMMEDIATE transactions;
 /// they are not independent owners. The host authorizes access and retains the
@@ -780,11 +803,37 @@ impl ContinuationJournal {
 
     /// Persists context and value together before returning acceptance. Context
     /// must identify the process/session epoch, peer and generation-bound selector.
+    /// One record is the one-element case of [`Self::append_batch`], so single and
+    /// grouped admission cannot drift apart.
     pub fn append(&self, metadata: &Value, record: &Value) -> Result<Value> {
+        let batch = self.append_batch(&[(metadata, record)])?;
+        match batch.rejected {
+            Some(rejected) => Err(rejected.error),
+            None => Ok(json!({"accepted":true,"ordinal":batch.first_ordinal})),
+        }
+    }
+
+    /// Persists up to [`APPEND_BATCH_MAX`] already-held records in ONE immediate
+    /// transaction (one synced commit) with exactly the per-record admission
+    /// rules and consecutive ordinals of sequential [`Self::append`] calls.
+    ///
+    /// * `Err`: validation, storage, stop or commit failure. The transaction was
+    ///   rolled back, no record of this batch is retained and none was accepted.
+    /// * `Ok` with `rejected: None`: every record committed.
+    /// * `Ok` with `rejected: Some`: capacity was reached. The accepted prefix and
+    ///   the loss marker for the first rejected record committed atomically;
+    ///   `not_attempted` later records were neither retained nor marked lost
+    ///   here, exactly as sequential admission stops at its first refusal. The
+    ///   caller must account for them.
+    pub fn append_batch(&self, items: &[(&Value, &Value)]) -> Result<AppendBatch> {
         let outcome = self
-            .append_inner(metadata, record)
+            .append_batch_inner(items)
             .map_err(|failure| failure.at("append"));
-        if let Err(failure) = &outcome
+        let failure = match &outcome {
+            Err(failure) => Some(failure),
+            Ok(batch) => batch.rejected.as_ref().map(|rejected| &rejected.error),
+        };
+        if let Some(failure) = failure
             // A stopped journal normally refuses late producer ingress. This
             // admission result is returned, not uncommitted failure evidence;
             // neither pin a retired authority nor overwrite a real earlier fault.
@@ -795,15 +844,23 @@ impl ContinuationJournal {
         }
         outcome
     }
-    fn append_inner(&self, metadata: &Value, record: &Value) -> Result<Value> {
-        if !metadata.is_object() || !record.is_object() {
+    fn append_batch_inner(&self, items: &[(&Value, &Value)]) -> Result<AppendBatch> {
+        if items.is_empty() || items.len() > APPEND_BATCH_MAX {
             return Err(error(
                 "argument.invalid",
-                "record and context must be objects",
+                "journal batch must hold between one and its maximum of records",
             ));
         }
-        encoded(metadata, 16384)?;
-        encoded(record, 65536)?;
+        for (metadata, record) in items {
+            if !metadata.is_object() || !record.is_object() {
+                return Err(error(
+                    "argument.invalid",
+                    "record and context must be objects",
+                ));
+            }
+            encoded(metadata, 16384)?;
+            encoded(record, 65536)?;
+        }
         let mut connection = self.connection()?;
         if self
             .collection_failure
@@ -816,19 +873,30 @@ impl ContinuationJournal {
                 "collection terminated; retained records remain readable",
             ));
         }
+        // Dropping the transaction on any early return rolls the whole batch back.
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (phase, ordinal, count): (String, i64, u64) = tx.query_row(
+        let (phase, first, count): (String, i64, u64) = tx.query_row(
             "SELECT phase,next_ordinal,retained_records FROM journal WHERE id=1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, unsigned(row, 2)?)),
         )?;
+        let full = || {
+            error(
+                "storage.full",
+                "recording capacity reached; unacknowledged records retained",
+            )
+        };
         if phase == "capacity-reached" {
             tx.execute("UPDATE journal SET lost=CASE WHEN lost<9223372036854775807 THEN lost+1 ELSE lost END WHERE id=1",[])?;
             tx.commit()?;
-            return Err(error(
-                "storage.full",
-                "recording capacity reached; unacknowledged records retained",
-            ));
+            return Ok(AppendBatch {
+                accepted: 0,
+                first_ordinal: first,
+                rejected: Some(AppendRejection {
+                    error: full().at("append"),
+                    not_attempted: items.len() - 1,
+                }),
+            });
         }
         if phase != "recording" {
             let failed: bool = tx.query_row(
@@ -844,38 +912,55 @@ impl ContinuationJournal {
             }
             return Err(error("storage.stopped", "journal is not accepting records"));
         }
-        let body = encoded(
-            &json!({"ordinal":ordinal,"metadata":metadata,"record":record}),
-            82944,
-        )?;
-        let pages = tx.pragma_query_value(None, "page_count", |row| unsigned(row, 0))?;
-        let free = tx.pragma_query_value(None, "freelist_count", |row| unsigned(row, 0))?;
-        // Reserve schema/cursor/loss update space; conservatively cover a record's
-        // overflow pages and B-tree split path before admitting its transaction.
-        let needed = (body.len() as u64).div_ceil(PAGE) + 12;
-        if count >= self.quota.max_records
-            || pages.saturating_sub(free) + needed + RESERVED_PAGES > self.page_limit
-        {
+        let mut next = first;
+        let mut accepted = 0usize;
+        let mut added_bytes = 0u64;
+        let mut rejected = None;
+        for (index, (metadata, record)) in items.iter().enumerate() {
+            let body = encoded(
+                &json!({"ordinal":next,"metadata":metadata,"record":record}),
+                82944,
+            )?;
+            let pages = tx.pragma_query_value(None, "page_count", |row| unsigned(row, 0))?;
+            let free = tx.pragma_query_value(None, "freelist_count", |row| unsigned(row, 0))?;
+            // Reserve schema/cursor/loss update space; conservatively cover a record's
+            // overflow pages and B-tree split path before admitting its transaction.
+            let needed = (body.len() as u64).div_ceil(PAGE) + 12;
+            if count + index as u64 >= self.quota.max_records
+                || pages.saturating_sub(free) + needed + RESERVED_PAGES > self.page_limit
+            {
+                rejected = Some(AppendRejection {
+                    error: full().at("append"),
+                    not_attempted: items.len() - index - 1,
+                });
+                break;
+            }
+            let after = next
+                .checked_add(1)
+                .ok_or_else(|| error("storage.full", "journal ordinal exhausted"))?;
+            tx.execute(
+                "INSERT INTO records VALUES(?1,?2,?3)",
+                params![next, body, sql_integer(body.len() as u64)?],
+            )?;
+            next = after;
+            accepted = index + 1;
+            added_bytes += body.len() as u64;
+        }
+        if accepted > 0 {
+            tx.execute("UPDATE journal SET next_ordinal=?1,retained_records=retained_records+?2,retained_bytes=retained_bytes+?3 WHERE id=1", params![next,sql_integer(accepted as u64)?,sql_integer(added_bytes)?])?;
+        }
+        if rejected.is_some() {
             tx.execute(
                 "UPDATE journal SET phase='capacity-reached',lost=lost+1 WHERE id=1",
                 [],
             )?;
-            tx.commit()?;
-            return Err(error(
-                "storage.full",
-                "recording capacity reached; unacknowledged records retained",
-            ));
         }
-        let next = ordinal
-            .checked_add(1)
-            .ok_or_else(|| error("storage.full", "journal ordinal exhausted"))?;
-        tx.execute(
-            "INSERT INTO records VALUES(?1,?2,?3)",
-            params![ordinal, body, sql_integer(body.len() as u64)?],
-        )?;
-        tx.execute("UPDATE journal SET next_ordinal=?1,retained_records=retained_records+1,retained_bytes=retained_bytes+?2 WHERE id=1", params![next,sql_integer(body.len() as u64)?])?;
         tx.commit()?;
-        Ok(json!({"accepted":true,"ordinal":ordinal}))
+        Ok(AppendBatch {
+            accepted,
+            first_ordinal: first,
+            rejected,
+        })
     }
 
     /// A prepared prefix is stable until explicit acknowledgement, including

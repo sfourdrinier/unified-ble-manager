@@ -327,10 +327,22 @@ impl RadioBoundary for DispatchRadio {
             Self::Synthetic(radio) => radio.bonded_peers().await,
         }
     }
-    async fn connect_when_available(&self, peer_id: &str) -> std::result::Result<(), DesktopError> {
+    async fn connect_when_available(
+        &self,
+        peer_id: &str,
+        expected_generation: &str,
+    ) -> std::result::Result<(), DesktopError> {
         match self {
-            Self::Radio(radio) => radio.connect_when_available(peer_id).await,
-            Self::Synthetic(radio) => radio.connect_when_available(peer_id).await,
+            Self::Radio(radio) => {
+                radio
+                    .connect_when_available(peer_id, expected_generation)
+                    .await
+            }
+            Self::Synthetic(radio) => {
+                radio
+                    .connect_when_available(peer_id, expected_generation)
+                    .await
+            }
         }
     }
     async fn resolve_peer(
@@ -459,10 +471,14 @@ impl RadioBoundary for DispatchRadio {
         }
     }
 
-    async fn connect(&self, peer_id: &str) -> std::result::Result<(), DesktopError> {
+    async fn connect(
+        &self,
+        peer_id: &str,
+        expected_generation: &str,
+    ) -> std::result::Result<(), DesktopError> {
         match self {
-            Self::Radio(radio) => radio.connect(peer_id).await,
-            Self::Synthetic(radio) => radio.connect(peer_id).await,
+            Self::Radio(radio) => radio.connect(peer_id, expected_generation).await,
+            Self::Synthetic(radio) => radio.connect(peer_id, expected_generation).await,
         }
     }
 

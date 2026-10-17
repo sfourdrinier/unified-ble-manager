@@ -103,6 +103,7 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
     coordinatorOverride ?: coordinatorFor(applicationContext)
   }
 
+  @Deprecated("Use onDevicePresenceEvent(DevicePresenceEvent) on Android 36+.")
   override fun onDeviceAppeared(address: String) {
     if (presenceSdkInt() >= 36) return
     val ticket = coordinator.admissionTicket()
@@ -114,6 +115,7 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
     }
   }
 
+  @Deprecated("Use onDevicePresenceEvent(DevicePresenceEvent) on Android 36+.")
   override fun onDeviceAppeared(association: AssociationInfo) {
     if (presenceSdkInt() >= 36) return
     val address = association.deviceMacAddress?.toString()
@@ -130,6 +132,7 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
     }
   }
 
+  @Deprecated("Use onDevicePresenceEvent(DevicePresenceEvent) on Android 36+.")
   override fun onDeviceDisappeared(address: String) {
     if (presenceSdkInt() >= 36) return
     val ticket = coordinator.admissionTicket()
@@ -138,6 +141,7 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
     }
   }
 
+  @Deprecated("Use onDevicePresenceEvent(DevicePresenceEvent) on Android 36+.")
   override fun onDeviceDisappeared(association: AssociationInfo) {
     if (presenceSdkInt() >= 36) return
     val address = association.deviceMacAddress?.toString()
@@ -335,7 +339,12 @@ open class UbmCompanionPresenceService : CompanionDeviceService() {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         return manager.myAssociations.mapNotNull { it.deviceMacAddress?.toString()?.uppercase() }.toSet()
       }
-      return manager.associations.map { it.uppercase() }.toSet()
+      return legacyAssociationAddresses(manager)
     }
+
+    /** API 31–32 only: use the legacy address list before myAssociations exists. */
+    @Suppress("DEPRECATION")
+    private fun legacyAssociationAddresses(manager: CompanionDeviceManager): Set<String> =
+      manager.associations.map { it.uppercase() }.toSet()
   }
 }

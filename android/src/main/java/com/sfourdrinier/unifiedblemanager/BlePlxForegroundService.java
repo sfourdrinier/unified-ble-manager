@@ -1,3 +1,4 @@
+// android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java
 package com.sfourdrinier.unifiedblemanager;
 
 import android.app.Notification;
@@ -18,6 +19,8 @@ import android.content.pm.PackageManager;
 import android.os.Bundle;
 
 import androidx.annotation.Nullable;
+import androidx.core.content.IntentCompat;
+import androidx.core.app.NotificationCompat;
 
 import com.sfourdrinier.unifiedblemanager.background.ForegroundServiceNotificationConfiguration;
 
@@ -177,10 +180,8 @@ public final class BlePlxForegroundService extends Service {
 
   private Notification buildNotification(ForegroundServiceNotificationConfiguration configuration) {
     ensureChannel(configuration.getChannelId(), configuration.getChannelName());
-    final Notification.Builder builder =
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-            ? new Notification.Builder(this, configuration.getChannelId())
-            : new Notification.Builder(this);
+    final NotificationCompat.Builder builder =
+        new NotificationCompat.Builder(this, configuration.getChannelId());
     final Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
     if (launchIntent == null) {
       throw new com.sfourdrinier.unifiedblemanager.background.ForegroundServiceControlException(
@@ -231,8 +232,8 @@ public final class BlePlxForegroundService extends Service {
       final Map<String, String> metadata = new HashMap<>();
       if (bundle != null) {
         for (String key : bundle.keySet()) {
-          Object value = bundle.get(key);
-          if (value instanceof String) metadata.put(key, (String) value);
+          final String value = AndroidBundleMetadata.stringOrNull(bundle, key);
+          if (value != null) metadata.put(key, value);
         }
       }
       return ForegroundServiceNotificationConfiguration.fromMetadata(metadata);
@@ -244,11 +245,7 @@ public final class BlePlxForegroundService extends Service {
   private void acknowledge(Intent intent, int code, String message) {
     if (intent == null) return;
     final ResultReceiver receiver;
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      receiver = intent.getParcelableExtra(EXTRA_ACK, ResultReceiver.class);
-    } else {
-      receiver = intent.getParcelableExtra(EXTRA_ACK);
-    }
+    receiver = IntentCompat.getParcelableExtra(intent, EXTRA_ACK, ResultReceiver.class);
     if (receiver == null) return;
     final Bundle result = new Bundle();
     if (message != null) result.putString("message", message);

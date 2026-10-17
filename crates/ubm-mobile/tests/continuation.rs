@@ -660,6 +660,115 @@ async fn durable_mobile_collection_retains_context_and_survives_native_claim() {
     complete_fixture_process(&root);
 }
 
+/// Values the pump already holds share commits, but admission stays the
+/// sequential prefix: whatever the grouping, exactly the values before the
+/// capacity cut are retained in order, one loss marker is recorded, and the
+/// collection failure names the storage cause.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn durable_capacity_retains_the_sequential_prefix_under_group_commit() {
+    let Some(directory) = isolated_fixture_process(
+        "durable_capacity_retains_the_sequential_prefix_under_group_commit",
+    ) else {
+        return;
+    };
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let engine = host.continuation();
+    engine.configure_recording_directory(&directory).unwrap();
+    let mut order: serde_json::Value = serde_json::from_str(&declaration()).unwrap();
+    // One consumer registration plus three values fit.
+    order["recording"] = json!({"id":"capacity","maxBytes":1048576,"maxRecords":4});
+    engine.execute(POLAR, &order.to_string()).await.unwrap();
+    let epoch = setup_notification_epoch(&radio);
+    for sequence in 1u8..=12 {
+        host.ingest(RadioIngress::Notification {
+            instance: Instance {
+                peer_id: POLAR.into(),
+                service_uuid: HR_SERVICE.into(),
+                service_occurrence: 0,
+                characteristic_uuid: HR_MEASUREMENT.into(),
+                characteristic_occurrence: 0,
+            },
+            epoch,
+            value: vec![0, sequence],
+        });
+    }
+    let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let reader = engine.clone();
+            let status = observe_recording(move || reader.recording_status("capacity")).await;
+            if !status["collectionFailure"].is_null() {
+                break status;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("capacity must end the collection with a retained storage cause");
+    assert_eq!(status["collectionFailure"]["kind"], "storage.full");
+    assert_eq!(status["records"], 4);
+    assert_eq!(status["lostRecords"], 1);
+    let reader = engine.clone();
+    let prepared =
+        observe_recording(move || reader.recording_prepare("capacity", 100, 65536)).await;
+    let values: Vec<&serde_json::Value> = prepared["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["record"]["t"] == "value")
+        .map(|entry| &entry["record"]["valueB64"])
+        .collect();
+    let expected: Vec<serde_json::Value> = (1u8..=3)
+        .map(|sequence| json!(ubm_mobile::wire::encode_base64(&[0, sequence])))
+        .collect();
+    assert_eq!(values, expected.iter().collect::<Vec<_>>());
+    let record_bytes = prepared["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["record"]["t"] == "value")
+        .map(|entry| entry["record"].to_string().len() as u64)
+        .expect("a retained value fixes the record size");
+
+    // The values the journal could not hold are not in the durable status:
+    // the route's stream end is their one home. It is emitted after the
+    // refusal, once, and counts every value the pump had already polled from
+    // the refused group. The rest stay in the core queue of the ended route.
+    let claim = engine.prepare_claim(256, 65536).await.unwrap();
+    let mut rows = Vec::new();
+    for batch in claim["batches"].as_array().unwrap() {
+        let batch: serde_json::Value = serde_json::from_str(batch.as_str().unwrap()).unwrap();
+        rows.extend(batch["records"].as_array().unwrap().iter().cloned());
+    }
+    let ends: Vec<&serde_json::Value> =
+        rows.iter().filter(|row| row["t"] == "stream-end").collect();
+    assert_eq!(
+        ends.len(),
+        1,
+        "one terminal for the refused route: {rows:#?}"
+    );
+    assert_eq!(ends[0]["reason"], "closed");
+    let dropped = ends[0]["droppedItems"].as_u64().unwrap();
+    assert!(
+        (1..=9).contains(&dropped),
+        "the first refused value and the later ones already polled, never more than \
+         the nine past the cut: {dropped}"
+    );
+    assert_eq!(
+        ends[0]["droppedBytes"].as_u64().unwrap(),
+        dropped * record_bytes,
+        "bytes are counted once per refused polled value"
+    );
+    engine
+        .acknowledge_claim(claim["claimToken"].as_str().unwrap())
+        .await
+        .unwrap();
+    host.shutdown().await;
+    drop(engine);
+    drop(host);
+    complete_fixture_process(&directory);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn durable_refused_subscription_then_new_database_never_reuses_committed_identity() {
     let Some(directory) = isolated_fixture_process(
@@ -805,10 +914,15 @@ async fn pristine_apple_restored_native_setup_collects_before_att_completion_wit
     engine.seed_declaration(&order).unwrap();
     let executor = engine.clone();
     let execute = tokio::spawn(async move { executor.execute(PEER, &order).await });
-    let (stop_id, stop) = tokio::time::timeout(std::time::Duration::from_secs(3), received.recv())
+    // Journal creation and three durable consumer registrations precede the
+    // first setup write. Give this readiness phase the native connect/discover
+    // allowance (15s + 20s), rather than an unrelated 3s filesystem deadline.
+    // The declaration's 2s ATT/response deadlines and the intake check below
+    // remain unchanged: initialization is not setup acknowledgement latency.
+    let (stop_id, stop) = tokio::time::timeout(std::time::Duration::from_secs(35), received.recv())
         .await
-        .unwrap()
-        .unwrap();
+        .expect("native setup readiness: connect, discover, journal and consumer registration")
+        .expect("native setup write channel remains open");
     assert_eq!(stop, vec![3, 0]);
     let enabled: Vec<_> = radio
         .requests

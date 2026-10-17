@@ -5,6 +5,7 @@ package com.sfourdrinier.unifiedblemanager.rustcore
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
 import android.os.Build
+import com.sfourdrinier.unifiedblemanager.radio.GattConnectAttempt
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidSecurityState
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioAdapterProtocolState
@@ -17,7 +18,7 @@ import java.util.UUID
  * driver keeps GATT serialization, generation fencing, CCCD arbitration and
  * teardown ownership.
  */
-class OwnedRadioPort(
+internal class OwnedRadioPort(
   private val radio: OwnedAndroidGattRadio,
   private val log: (String) -> Unit
 ) : AndroidRadioPort {
@@ -43,7 +44,11 @@ class OwnedRadioPort(
         )
       )
     }
-    radio.onConnectionState = { deviceId, connected, status -> events.onConnection(deviceId, connected, status) }
+    // The token-carrying hook, not the 3-parameter one: the observation's connect attempt is what
+    // lets the host adapter tell a prior generation's loss from its pending connect's outcome.
+    radio.onConnectionOutcome = { deviceId, connected, status, attempt ->
+      events.onConnection(deviceId, connected, status, attempt)
+    }
     radio.onServicesChanged = { deviceId -> events.onServicesChanged(deviceId) }
     radio.onProtocolNotification = { deviceId, characteristic, value ->
       val instance = instanceOf(deviceId, characteristic)
@@ -117,9 +122,9 @@ class OwnedRadioPort(
   override fun requestSubrate(peerId: String, mode: String, onResult: (Result<Int>) -> Unit): Long =
     radio.requestSubrate(peerId, mode, onResult)
 
-  override fun connect(peerId: String, autoConnect: Boolean, phyMask: Int) {
+  override fun connect(peerId: String, autoConnect: Boolean, phyMask: Int, attempt: GattConnectAttempt) {
     requireRadioReady()
-    radio.connect(peerId, autoConnect, phyMask)
+    radio.connect(peerId, autoConnect, phyMask, attempt)
   }
 
   override fun disconnect(peerId: String, onComplete: (Throwable?) -> Unit) {

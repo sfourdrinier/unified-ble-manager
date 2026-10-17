@@ -45,7 +45,9 @@ function trustedNativeExpoRuntime() {
     getRuntimeConfiguration: jest.fn().mockResolvedValue({
       platform: 'android',
       configurationDigest: 'native-digest',
-      legacyLocationPolicy: 'none'
+      legacyLocationPolicy: 'none',
+      androidLocationServicesEnabled: true,
+      androidLocationPermissionGranted: true
     }),
     requestPermissions: jest.fn().mockResolvedValue({
       requested: ['bluetooth'],
@@ -80,12 +82,7 @@ describe('Expo readiness surface', () => {
   })
 
   test.each([
-    [
-      'not-determined permission',
-      adapterState({ authorization: 'not-determined' }),
-      'ready',
-      []
-    ],
+    ['not-determined permission', adapterState({ authorization: 'not-determined' }), 'ready', []],
     [
       'powered off adapter',
       adapterState({ power: 'off' }),
@@ -137,6 +134,61 @@ describe('Expo readiness surface', () => {
     })
   })
 
+  test.each([24, 30])('reports Android API %s ready when native location prerequisites are measured true', apiLevel => {
+    expect(
+      mapExpoReadiness(adapterState(), {
+        platform: 'android',
+        androidApiLevel: apiLevel,
+        androidLocationServicesEnabled: true,
+        androidLocationPermissionGranted: true,
+        permissions: { android: { legacyLocation: 'auto' } }
+      })
+    ).toMatchObject({ state: 'ready', actions: [] })
+  })
+
+  test('opens location settings when measured Android location services are disabled', () => {
+    expect(
+      mapExpoReadiness(adapterState(), {
+        platform: 'android',
+        androidApiLevel: 30,
+        androidLocationServicesEnabled: false,
+        androidLocationPermissionGranted: true,
+        permissions: { android: { legacyLocation: 'auto' } }
+      })
+    ).toMatchObject({
+      state: 'action-required',
+      actions: [{ kind: 'open-settings', target: 'location-services' }]
+    })
+  })
+
+  test('requests the normal Bluetooth permission bridge when measured Android location permission is missing', () => {
+    expect(
+      mapExpoReadiness(adapterState(), {
+        platform: 'android',
+        androidApiLevel: 30,
+        androidLocationServicesEnabled: true,
+        androidLocationPermissionGranted: false,
+        permissions: { android: { legacyLocation: 'auto' } }
+      })
+    ).toMatchObject({
+      state: 'action-required',
+      actions: [{ kind: 'request-permission', permission: 'bluetooth' }]
+    })
+  })
+
+  test('fails closed with an action when native Android location measurements are unknown', () => {
+    expect(
+      mapExpoReadiness(adapterState(), {
+        platform: 'android',
+        androidApiLevel: 30,
+        permissions: { android: { legacyLocation: 'auto' } }
+      })
+    ).toMatchObject({
+      state: 'action-required',
+      actions: [{ kind: 'request-permission', permission: 'bluetooth' }]
+    })
+  })
+
   test('direct Android factory does not report API 24-30 ready when runtime config omits legacy location policy', async () => {
     const manager = managerFor(adapterState())
     createReactNativeApplicationHost.mockResolvedValue({ manager: manager, services: {}, claimRestoration: jest.fn() })
@@ -163,7 +215,7 @@ describe('Expo readiness surface', () => {
       })
     ).toMatchObject({
       state: 'action-required',
-      actions: [{ kind: 'open-settings', target: 'location-services' }]
+      actions: [{ kind: 'request-permission', permission: 'bluetooth' }]
     })
   })
 
@@ -181,6 +233,98 @@ describe('Expo readiness surface', () => {
         permissions: { android: { legacyLocation: 'none' } }
       })
     ).toMatchObject({ state: 'ready', actions: [] })
+  })
+
+  test('keeps Android API 24-30 legacyLocation none as a rebuild requirement even with measured state', () => {
+    expect(
+      mapExpoReadiness(adapterState(), {
+        platform: 'android',
+        androidApiLevel: 30,
+        androidLocationServicesEnabled: true,
+        androidLocationPermissionGranted: true,
+        permissions: { android: { legacyLocation: 'none' } }
+      })
+    ).toMatchObject({ state: 'unavailable', actions: [{ kind: 'rebuild-native-app' }] })
+  })
+
+  test('does not require legacy location for Android API 31 auto or none policies', () => {
+    for (const legacyLocation of ['auto', 'none']) {
+      expect(
+        mapExpoReadiness(adapterState(), {
+          platform: 'android',
+          androidApiLevel: 31,
+          permissions: { android: { legacyLocation } }
+        })
+      ).toMatchObject({ state: 'ready', actions: [] })
+    }
+  })
+
+  test('uses measured location prerequisites for required policy on Android API 31', () => {
+    expect(
+      mapExpoReadiness(adapterState(), {
+        platform: 'android',
+        androidApiLevel: 31,
+        androidLocationServicesEnabled: true,
+        androidLocationPermissionGranted: false,
+        permissions: { android: { legacyLocation: 'required' } }
+      })
+    ).toMatchObject({
+      state: 'action-required',
+      actions: [{ kind: 'request-permission', permission: 'bluetooth' }]
+    })
+  })
+
+  test('does not infer a granted location permission from an enabled location service', () => {
+    expect(
+      mapExpoReadiness(adapterState(), {
+        platform: 'android',
+        androidApiLevel: 30,
+        permissions: { android: { legacyLocation: 'auto' } },
+        androidLocationServicesEnabled: true
+      })
+    ).toMatchObject({ state: 'action-required' })
+  })
+
+  test('refreshes native measured location values for every production readiness call', async () => {
+    const manager = managerFor(adapterState())
+    createReactNativeApplicationHost.mockResolvedValue({ manager, services: {}, claimRestoration: jest.fn() })
+    const runtime = trustedNativeExpoRuntime()
+    runtime.getRuntimeConfiguration
+      .mockResolvedValueOnce({
+        platform: 'android',
+        configurationDigest: 'native-digest',
+        legacyLocationPolicy: 'auto',
+        androidLocationServicesEnabled: true,
+        androidLocationPermissionGranted: true
+      })
+      .mockResolvedValueOnce({
+        platform: 'android',
+        configurationDigest: 'native-digest',
+        legacyLocationPolicy: 'auto',
+        androidLocationServicesEnabled: false,
+        androidLocationPermissionGranted: true
+      })
+      .mockResolvedValueOnce({
+        platform: 'android',
+        configurationDigest: 'native-digest',
+        legacyLocationPolicy: 'auto',
+        androidLocationServicesEnabled: false,
+        androidLocationPermissionGranted: true
+      })
+    getNativeUnifiedBleExpoRuntime.mockReturnValue(runtime)
+    const originalVersion = Platform.Version
+    Platform.Version = 30
+
+    try {
+      const result = await createExpoBleManager()
+      await expect(result.readiness()).resolves.toMatchObject({ state: 'action-required' })
+      await expect(result.readiness()).resolves.toMatchObject({
+        actions: [{ kind: 'open-settings', target: 'location-services' }]
+      })
+      expect(runtime.getRuntimeConfiguration).toHaveBeenCalledTimes(3)
+    } finally {
+      Platform.Version = originalVersion
+    }
   })
 
   test('openSettings uses the trusted native settings bridge explicitly', async () => {

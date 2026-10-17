@@ -12,36 +12,6 @@ fn directory_backend(os: ubm_desktop::DesktopOs) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod reference_tests {
-    use super::*;
-
-    #[test]
-    fn directory_reference_scope_matches_the_requested_native_route() {
-        for (backend, id) in [
-            (BACKEND, "00112233-4455-6677-8899-aabbccddeeff"),
-            ("unified-ble:winrt", "AA:BB:CC:DD:EE:FF"),
-            ("unified-ble:bluez-dbus", "hci0/dev_AA_BB_CC_DD_EE_FF"),
-        ] {
-            let value = object([
-                ("version", IpcValue::Number(1.into())),
-                ("backendId", string(backend)),
-                ("scope", string("application")),
-                ("opaqueId", string(id)),
-            ]);
-            assert_eq!(reference(&value, backend).unwrap(), id);
-            for foreign in [BACKEND, "unified-ble:winrt", "unified-ble:bluez-dbus"] {
-                if foreign != backend {
-                    assert_eq!(
-                        reference(&value, foreign).unwrap_err().code,
-                        BleErrorCode::PeerScopeMismatch
-                    );
-                }
-            }
-        }
-    }
-}
-
 fn native_identifier(value: &str, backend: &str, op: &str) -> Result<String, DispatchError> {
     match backend {
         "unified-ble:winrt" => {
@@ -434,9 +404,11 @@ impl BtleplugDispatcher {
                     let child = OpControl::new(ctl.budget, OpTicket::new());
                     let resolved = tokio::select! {
                         biased;
-                        _ = ctl.ticket.cancelled() => return Err(DispatchError::from_core(&ctl.ticket.interruption(command))),
-                        result = authority.resolve_peer(&id, child) => result.map_err(|error| DispatchError::from_core(&error))?,
+                        _ = ctl.ticket.cancelled() => Err(DispatchError::from_core(&ctl.ticket.interruption(command))),
+                        result = authority.resolve_peer(&id, child) => result.map_err(|error| DispatchError::from_core(&error)),
                     };
+                    self.refuse_stale_attachment(attachment, command).await?;
+                    let resolved = resolved?;
                     if let Some(peer) = resolved {
                         if peer.peer_id != id {
                             return Err(malformed("peers.resolve.identity"));
@@ -463,6 +435,36 @@ impl BtleplugDispatcher {
             )]))
         } else {
             Ok(object([("peers", IpcValue::Array(records))]))
+        }
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+
+    #[test]
+    fn directory_reference_scope_matches_the_requested_native_route() {
+        for (backend, id) in [
+            (BACKEND, "00112233-4455-6677-8899-aabbccddeeff"),
+            ("unified-ble:winrt", "AA:BB:CC:DD:EE:FF"),
+            ("unified-ble:bluez-dbus", "hci0/dev_AA_BB_CC_DD_EE_FF"),
+        ] {
+            let value = object([
+                ("version", IpcValue::Number(1.into())),
+                ("backendId", string(backend)),
+                ("scope", string("application")),
+                ("opaqueId", string(id)),
+            ]);
+            assert_eq!(reference(&value, backend).unwrap(), id);
+            for foreign in [BACKEND, "unified-ble:winrt", "unified-ble:bluez-dbus"] {
+                if foreign != backend {
+                    assert_eq!(
+                        reference(&value, foreign).unwrap_err().code,
+                        BleErrorCode::PeerScopeMismatch
+                    );
+                }
+            }
         }
     }
 }

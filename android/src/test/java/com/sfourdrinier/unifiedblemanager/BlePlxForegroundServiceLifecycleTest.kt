@@ -1,3 +1,4 @@
+// android/src/test/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundServiceLifecycleTest.kt
 package com.sfourdrinier.unifiedblemanager
 
 import org.junit.Assert.assertTrue
@@ -101,19 +102,15 @@ class BlePlxForegroundServiceLifecycleTest {
   }
 
   @Test
-  fun `ack receiver uses typed parcelable retrieval on API 33 and a guarded legacy path`() {
+  fun `ack receiver uses the AndroidX typed parcelable helper`() {
     val source = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java"
     )
     val acknowledgement = source.substring(source.indexOf("private void acknowledge"))
 
-    assertTrue(acknowledgement.contains("Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU"))
-    assertTrue(
-      acknowledgement.contains(
-        "intent.getParcelableExtra(EXTRA_ACK, ResultReceiver.class)"
-      )
-    )
-    assertTrue(acknowledgement.contains("intent.getParcelableExtra(EXTRA_ACK);"))
+    assertTrue(acknowledgement.contains("IntentCompat.getParcelableExtra("))
+    assertTrue(acknowledgement.contains("EXTRA_ACK, ResultReceiver.class"))
+    assertTrue(!acknowledgement.contains("intent.getParcelableExtra("))
   }
 
   @Test
@@ -160,6 +157,10 @@ class BlePlxForegroundServiceLifecycleTest {
     assertTrue(source.contains("service.buildNotification(service.activeConfiguration)"))
     assertTrue(source.contains(".setContentIntent(contentIntent)"))
     assertTrue(source.contains(".setOngoing(true)"))
+    assertTrue(source.contains("new NotificationCompat.Builder(this, configuration.getChannelId())"))
+    assertTrue(source.contains(".setCategory(Notification.CATEGORY_SERVICE)"))
+    assertTrue(!source.contains("Notification.Builder"))
+    assertTrue(!source.contains("getConstructor(Context.class)"))
     assertTrue(source.contains("FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE"))
   }
 

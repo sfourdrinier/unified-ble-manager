@@ -34,7 +34,9 @@ use ubm_desktop::{
 
 use crate::drain::Outbox;
 use crate::foreign::{ConnectStaging, DISPATCHED, OP_RADIO, OpRadio, lock};
-use crate::host::{BackgroundScope, HostInner, Route, ScanMember, adapter_value, security_value};
+use crate::host::{
+    BackgroundScope, HostInner, Route, ScanMember, SecurityEntry, adapter_value, security_value,
+};
 use crate::radio::BackgroundKind;
 use crate::radio::{
     AndroidScanOptions, BondState, ConnectionPriority, Instance, MobilePlatform, PairTransport,
@@ -98,10 +100,14 @@ pub const OPS: &[&str] = &[
     "session.dispose",
 ];
 
-const WRITE_OPS: &[&str] = &[
+const EFFECTFUL_OPS: &[&str] = &[
     "gatt.write",
     "gatt.write-when-ready",
     "gatt.write-descriptor",
+    "connection.request-mtu",
+    "connection.request-priority",
+    "connection.request-subrate",
+    "connection.request-phy",
 ];
 /// How far past the highest admitted operation a pre-admission cancel may
 /// name an admission (finding 109). A client assigns admissions in the order
@@ -285,7 +291,15 @@ pub(crate) fn cleanup_record(failures: Vec<Value>) -> Value {
 }
 
 fn error(code: BleErrorCode, domain: BleErrorDomain, operation: &str) -> DesktopError {
-    DesktopError::new(code, domain, operation)
+    let error = DesktopError::new(code, domain, operation);
+    if matches!(
+        code,
+        BleErrorCode::OperationAborted | BleErrorCode::OperationTimedOut
+    ) {
+        error.with_outcome(None, ubm_desktop::Retryability::CallerDecides)
+    } else {
+        error
+    }
 }
 
 fn unsupported(operation: &str, detail: &str) -> DesktopError {
@@ -668,11 +682,11 @@ impl MobileSession {
     pub fn invoke(&self, op: &str, args_json: &str, completion: Completion) {
         let received = Instant::now();
         let lifetime_received = tokio::time::Instant::now();
-        let is_write = WRITE_OPS.contains(&op);
+        let is_effectful = EFFECTFUL_OPS.contains(&op);
         let reject = |error: DesktopError, completion: Completion| {
             completion(wire::error_envelope(
                 &error,
-                is_write.then_some("not-dispatched"),
+                is_effectful.then_some("not-dispatched"),
             ));
         };
         let Some(op) = OPS.iter().copied().find(|known| *known == op) else {
@@ -826,9 +840,10 @@ impl MobileSession {
             }
             let text = match outcome {
                 Ok(value) => wire::ok_envelope(value),
-                Err(error) => {
-                    wire::error_envelope(&error, is_write.then(|| commit_of(&error, dispatched)))
-                }
+                Err(error) => wire::error_envelope(
+                    &error,
+                    is_effectful.then(|| commit_of(&error, dispatched)),
+                ),
             };
             if let Some(id) = operation_id {
                 lock(&session.state.ops).live.remove(&id);
@@ -1929,14 +1944,14 @@ impl MobileSession {
                         host.note_peer(&peer.peer_id, peer.name.clone(), "system-bonded");
                         lock(&host.security)
                             .entry(peer.peer_id.clone())
-                            .and_modify(|state| state.bond = BondState::Bonded)
-                            .or_insert(crate::radio::SecurityState {
+                            .and_modify(|entry| entry.state.bond = BondState::Bonded)
+                            .or_insert(SecurityEntry::new(crate::radio::SecurityState {
                                 bond: BondState::Bonded,
                                 encryption: crate::radio::EncryptionState::Unknown,
                                 authentication: crate::radio::AuthenticationState::Unknown,
                                 secure_connections: crate::radio::SecureConnectionsState::Unknown,
                                 pairing_possible: None,
-                            });
+                            }));
                         let record = records.iter().find(|r| r.peer_id == peer.peer_id);
                         host.peer_value(&peer.peer_id, record, Some("system-bonded"))
                     })
@@ -2042,6 +2057,7 @@ impl MobileSession {
                         ("state", security_value(&current)),
                     ]));
                 }
+                let expected_owner = host.security_owner(&peer_id);
                 let peer = peer_id.clone();
                 let state = match awaited(
                     &ctl,
@@ -2057,7 +2073,12 @@ impl MobileSession {
                     RadioCompletion::Security(state) => state,
                     _ => return Err(protocol("security.pair")),
                 };
-                lock(&host.security).insert(peer_id, state.clone());
+                host.set_security_state_if_owner(
+                    &peer_id,
+                    expected_owner.as_deref(),
+                    state.clone(),
+                    "security.pair",
+                )?;
                 Ok(object(vec![
                     (
                         "outcome",
@@ -2448,12 +2469,15 @@ impl MobileSession {
     ) -> Result<crate::radio::SecurityState, DesktopError> {
         let peer = peer_id.to_owned();
         let peer_key = Some(peer.clone());
-        let opening_failures = {
+        let expected_owner = self.host.security_owner(peer_id);
+        let opening_failures = if expected_owner.is_none() {
             let failures = lock(&self.host.security_failures);
             (
                 failures.get(&peer_key).map(|(revision, _)| *revision),
                 failures.get(&None).map(|(revision, _)| *revision),
             )
+        } else {
+            (None, None)
         };
         match bounded(
             ctl,
@@ -2465,19 +2489,44 @@ impl MobileSession {
         .await?
         {
             RadioCompletion::Security(state) => {
-                let mut failures = lock(&self.host.security_failures);
-                for (key, opening_revision) in
-                    [(&peer_key, opening_failures.0), (&None, opening_failures.1)]
-                {
-                    if let Some((revision, error)) = failures.get(key)
-                        && Some(*revision) != opening_revision
+                if expected_owner.is_none() && self.host.security_owner(peer_id).is_some() {
+                    return Err(DesktopError::new(
+                        BleErrorCode::ConnectionStale,
+                        BleErrorDomain::Connection,
+                        "security.state",
+                    ));
+                }
+                if expected_owner.is_none() {
+                    let failures = lock(&self.host.security_failures);
+                    for (key, opening_revision) in
+                        [(&peer_key, opening_failures.0), (&None, opening_failures.1)]
                     {
-                        return Err(error.clone());
+                        if let Some((revision, error)) = failures.get(key)
+                            && Some(*revision) != opening_revision
+                        {
+                            return Err(error.clone());
+                        }
                     }
                 }
-                failures.remove(&peer_key);
-                failures.remove(&None);
-                lock(&self.host.security).insert(peer_id.to_owned(), state.clone());
+                self.host.set_security_state_if_owner(
+                    peer_id,
+                    expected_owner.as_deref(),
+                    state.clone(),
+                    "security.state",
+                )?;
+                if expected_owner.is_none() {
+                    let mut failures = lock(&self.host.security_failures);
+                    for (key, opening_revision) in
+                        [(&peer_key, opening_failures.0), (&None, opening_failures.1)]
+                    {
+                        if failures
+                            .get(key)
+                            .is_some_and(|(revision, _)| Some(*revision) == opening_revision)
+                        {
+                            failures.remove(key);
+                        }
+                    }
+                }
                 Ok(state)
             }
             _ => Err(protocol("security.state")),
@@ -2986,7 +3035,7 @@ impl MobileSession {
                 .map(|peer_id| {
                     object(vec![
                         ("peerId", Value::from(peer_id.as_str())),
-                        ("state", security_value(&known[peer_id])),
+                        ("state", security_value(&known[peer_id].state)),
                     ])
                 })
                 .collect()

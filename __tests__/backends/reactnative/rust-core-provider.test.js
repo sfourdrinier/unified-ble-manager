@@ -677,6 +677,79 @@ describe('PR210-09 cleanup keeps its identity until the owner confirms release',
     await manager.destroy()
   })
 
+  test('rediscovery rejects while initial discovery is still admitted', async () => {
+    const { native, manager, backend } = await openManager()
+    const connection = await connectDefault(manager, backend)
+    native.hold('gatt.discover')
+    const initial = connection.discover(NO_OPTIONS)
+    await settle(60)
+    const rediscovery = connection.rediscoverGatt(NO_OPTIONS, 'manual-rediscovery').then(
+      value => ({ value }), error => ({ error })
+    )
+    await settle(60)
+    native.release('gatt.discover')
+    await initial
+    const result = await rediscovery
+    expect(result.error?.normalized.code).toBe('gatt.stale-handle')
+    expect(native.opsInvoked('gatt.discover')).toHaveLength(1)
+    expect((await manager.destroy()).state).toBe('released')
+  })
+
+  test('failed rediscovery cleanup blocks replacement discovery and retries the original child', async () => {
+    const { native, manager, backend } = await openManager()
+    const connection = await connectDefault(manager, backend)
+    const { database, path } = await discover(connection)
+    await database.subscribe(path, subscribeOptions())
+    const before = native.opsInvoked('gatt.discover').length
+    native.failNext('gatt.unsubscribe', 'platform.failure', 'gatt', 'ubm-mobile.gatt.unsubscribe')
+    const error = await failure(connection.rediscoverGatt(NO_OPTIONS, 'manual-rediscovery'))
+    expect(error).toBeInstanceOf(AggregateError)
+    expect(error.errors.map(item => item.normalized.code)).toEqual(['platform.failure'])
+    expect(native.opsInvoked('gatt.discover')).toHaveLength(before)
+    await connection.rediscoverGatt(NO_OPTIONS, 'manual-rediscovery')
+    expect(native.opsInvoked('gatt.unsubscribe')).toHaveLength(2)
+    expect(native.opsInvoked('gatt.discover')).toHaveLength(before + 1)
+    expect((await manager.destroy()).state).toBe('released')
+  })
+
+  test('disconnect retries failed child cleanup against the original consumer before releasing ownership', async () => {
+    const { native, manager, backend } = await openManager()
+    const connection = await connectDefault(manager, backend)
+    const { database, path } = await discover(connection)
+    await database.subscribe(path, subscribeOptions())
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      native.failNext('gatt.unsubscribe', 'platform.failure', 'gatt', 'ubm-mobile.gatt.unsubscribe')
+      native.failNext('connection.disconnect', 'operation.timed-out', 'core', 'ubm-mobile.connection.disconnect')
+      const record = await connection.disconnect()
+      expect(record.state).toBe('release-failed')
+      expect(record.failures.map(item => item.resourceKind)).toContain('subscription')
+      expect(connection.isReleased()).toBe(false)
+    }
+    expect((await connection.disconnect()).state).toBe('released')
+    const attempts = native.opsInvoked('gatt.unsubscribe')
+    expect(attempts).toHaveLength(3)
+    expect(new Set(attempts.map(item => item.consumer)).size).toBe(1)
+    expect(native.opsInvoked('connection.disconnect')).toHaveLength(3)
+    expect((await manager.destroy()).state).toBe('released')
+  })
+
+  test('a successful connection release cannot erase an unresolved child receipt', async () => {
+    const { native, manager, backend } = await openManager()
+    const connection = await connectDefault(manager, backend)
+    const { database, path } = await discover(connection)
+    const subscription = await database.subscribe(path, subscribeOptions())
+    // Isolate the child receipt boundary: native connection release remains real.
+    const remove = jest.spyOn(subscription, 'removeBackend')
+      .mockResolvedValueOnce({ state: 'release-failed', failures: [{ resourceKind: 'subscription', error: { code: 'platform.failure' } }] })
+      .mockResolvedValue({ state: 'released', failures: [] })
+    expect((await connection.disconnect()).state).toBe('release-failed')
+    expect(connection.isReleased()).toBe(false)
+    expect((await connection.disconnect()).state).toBe('released')
+    expect(remove).toHaveBeenCalledTimes(2)
+    expect(native.opsInvoked('connection.disconnect')).toHaveLength(1)
+    expect((await manager.destroy()).state).toBe('released')
+  })
+
   test('disconnect: a failed release keeps the lease; the retry releases the same lease', async () => {
     const { native, manager, backend } = await openManager()
     const connection = await connectDefault(manager, backend)

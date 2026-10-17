@@ -10,9 +10,11 @@ mod ecg;
 mod events;
 mod fidelity;
 mod gatt_spec;
+mod heartbeat;
 mod linux_advertising;
 mod mgmt;
 mod profile;
+mod psftp;
 mod radio;
 mod sample_clock;
 mod sim;
@@ -50,6 +52,7 @@ fn usage() -> String {
          \x20 --control-token <tok>  Control port token (or H10SIM_TOKEN / --control-token-file)\n\
          \x20 --control-token-file <path>  Read the control token from a file\n\
          \x20 --pair-policy <policy> Pairing policy: just-works (default) or disabled\n\
+         \x20 --scenario <name>      Synchronized synthetic steady, breathing, exercise-recovery, abrupt\n\
          \x20 --bpm <bpm>            Heart rate in bpm (overrides the profile)\n\
          \x20 --battery <percent>    Battery level percent (overrides the profile)\n\
          \x20 --clock <mode>         ECG timestamp clock: polar-epoch (default, like the strap)\n\
@@ -301,10 +304,19 @@ fn main() -> ExitCode {
                     config.pair_policy =
                         sim::PairPolicy::parse(&value(&mut args, "--pair-policy")?)?;
                 }
+                "--scenario" => {
+                    config.scenario = heartbeat::Scenario::parse(&value(&mut args, "--scenario")?)?;
+                    config.ecg_source = sim::EcgSource::Synthetic;
+                    config.hr_source = sim::HrSource::Synthetic;
+                    config.bpm_curve.clear();
+                }
                 "--bpm" => {
                     config.bpm = value(&mut args, "--bpm")?
                         .parse::<u8>()
                         .map_err(|_| "--bpm must be 0-255".to_string())?;
+                    if config.bpm == 0 {
+                        return Err("--bpm must be 1-255".into());
+                    }
                 }
                 "--battery" => {
                     config.battery_percent = value(&mut args, "--battery")?
@@ -372,7 +384,7 @@ fn main() -> ExitCode {
                     tolerance_p50 = value(&mut args, "--tolerance-p50")?
                         .parse::<f64>()
                         .map_err(|_| "--tolerance-p50 must be a number >= 0".to_string())?;
-                    if tolerance_p50.is_sign_negative() {
+                    if !tolerance_p50.is_finite() || tolerance_p50.is_sign_negative() {
                         return Err("--tolerance-p50 must be a number >= 0".to_string());
                     }
                 }
@@ -380,7 +392,7 @@ fn main() -> ExitCode {
                     tolerance_ms = value(&mut args, "--tolerance-ms")?
                         .parse::<f64>()
                         .map_err(|_| "--tolerance-ms must be a number >= 0".to_string())?;
-                    if tolerance_ms.is_sign_negative() {
+                    if !tolerance_ms.is_finite() || tolerance_ms.is_sign_negative() {
                         return Err("--tolerance-ms must be a number >= 0".to_string());
                     }
                 }
@@ -725,7 +737,12 @@ async fn serve(
     wait_powered(&mut radio, &mut log).await?;
     select_linux_advertising(&mut radio, linux_advertising, &mut log)?;
 
-    for service in h10_services(&sim.config).map_err(|error| error.to_string())? {
+    let services = h10_services(&sim.config).map_err(|error| error.to_string())?;
+    let registered_service_uuids: Vec<String> = services
+        .iter()
+        .map(|service| service.uuid.to_string())
+        .collect();
+    for service in services {
         radio
             .add_service(&service)
             .await
@@ -733,7 +750,7 @@ async fn serve(
     }
     log.log(
         "services-registered",
-        json!({"services": ["180D", "180A", "180F", "6217ff4b", "PMD", "FEEE"]}),
+        json!({"services": registered_service_uuids}),
     );
 
     if let Err(message) = start_advertising(&mut radio, &sim, &mut log).await {
@@ -786,9 +803,9 @@ async fn serve(
     let mut next_ecg = Instant::now();
     let mut ecg_runtime = None;
     let mut acc_runtime = None;
+    let mut psftp_session = psftp::Session::new();
     let mut next_battery = Instant::now() + Duration::from_secs(60);
     let mut last_tick = Instant::now();
-    let boot = Instant::now();
     // The minimum ATT capacity fits one ACC sample; 200 Hz then needs a
     // five-millisecond opportunity, while actual batching follows capacity.
     let tick = tokio::time::interval(Duration::from_millis(5));
@@ -829,12 +846,10 @@ async fn serve(
                 if sim.tick_battery(elapsed_s) {
                     send_battery(&mut radio, &sim, &mut log).await;
                 }
-                if !sim.config.bpm_curve.is_empty() {
-                    sim.config.bpm = sim.curve_bpm(boot.elapsed().as_secs_f64());
-                }
+                sim.heartbeat.sync(&sim.config, sample_clock_boot.elapsed().as_secs_f64());
                 if now >= next_hr {
                     next_hr = now + Duration::from_secs_f64(timing.hr_interval_s(sim.config.hr_hz));
-                    send_hr(&mut radio, &mut sim, &mut log).await;
+                    send_hr(&mut radio, &mut sim, &mut log, sample_clock_boot.elapsed().as_secs_f64()).await;
                 }
                 if now >= next_ecg {
                     let interval = Duration::from_secs_f64(timing.ecg_interval_s(sim.config.ecg_frames_per_sec));
@@ -851,7 +866,7 @@ async fn serve(
                 drain_indications(&mut radio, &mut sim, &mut log).await;
             }
             Some(event) = radio_rx.recv() => {
-                handle_radio(event, &mut radio, &mut sim, &mut timing, &mut log, boot_epoch_ns).await;
+                handle_radio(event, &mut radio, &mut sim, &mut timing, &mut log, &mut psftp_session, boot_epoch_ns).await;
             }
             Some(request) = control_rx.recv() => {
                 handle_control(request, &mut radio, &mut sim, &mut log).await;
@@ -957,20 +972,33 @@ async fn start_advertising(
     };
     log.log(
         "advertising-started",
-        json!({"name": fitted, "services": ["180D", "FEEE"], "advLen": sizes.adv_len, "scanRspLen": sizes.scan_rsp_len, "polarCompanyId": gatt_spec::POLAR_COMPANY_ID, "manufacturerData": manufacturer_data, "advertising": radio.advertising_detail()}),
+        json!({"name": fitted, "services": ["180D", "FEEE"], "advLen": if manufacturer_data == "emitted" { advertisement::adv_len_with_mfr(sim.config.mfr_payload.len()) } else { sizes.adv_len }, "scanRspLen": sizes.scan_rsp_len, "polarCompanyId": gatt_spec::POLAR_COMPANY_ID, "manufacturerData": manufacturer_data, "advertising": radio.advertising_detail()}),
     );
     Ok(())
 }
 
-async fn send_hr(radio: &mut PlatformRadio, sim: &mut SimState, log: &mut EventLog) {
+async fn send_hr(
+    radio: &mut impl PeripheralRadio,
+    sim: &mut SimState,
+    log: &mut EventLog,
+    elapsed: f64,
+) {
     if sim.silent {
         return;
     }
-    let payload = sim.hr_payload();
+    let (payload, dropped) = sim.hr_payload_at(elapsed);
+    if dropped > 0 {
+        log.log("hr-beats-shed", json!({"beats": dropped}));
+    }
     let uuid = advertisement::short_uuid(gatt_spec::uuid16::HEART_RATE_MEASUREMENT);
     let outcome = radio.notify(uuid, payload.clone()).await;
     sim.observe_hr_notify(&outcome);
-    report_stream_notify(log, "hr-notify", outcome, json!({"bpm": sim.config.bpm}));
+    report_stream_notify(
+        log,
+        "hr-notify",
+        outcome,
+        json!({"bpm": if payload[0] & 1 == 0 { u16::from(payload[1]) } else { u16::from_le_bytes([payload[1], payload[2]]) }}),
+    );
 }
 
 /// Reports one inline notify outcome for a stream tick. `OsAccepted` and
@@ -1082,6 +1110,17 @@ async fn send_ecg_at(
             return;
         }
     };
+    if capacity < 13 {
+        if !sim.ecg_delivery_paused {
+            log.log("ecg-delivery-paused", json!({"capacity": capacity}));
+        }
+        sim.ecg_delivery_paused = true;
+        return;
+    }
+    if sim.ecg_delivery_paused {
+        log.log_simple("ecg-delivery-resumed");
+    }
+    sim.ecg_delivery_paused = false;
     let count =
         match gatt_spec::ecg_frame_samples_for_capacity(sim.config.ecg_frame_samples, capacity) {
             Ok(count) => count,
@@ -1148,7 +1187,24 @@ async fn send_ecg_at(
         let mut samples = Vec::with_capacity(count);
         match &sim.ecg_replay {
             Some(recorded) => ecg::replay_samples(recorded, index, count, &mut samples),
-            None => ecg::ecg_frame_samples(index, count, f64::from(sim.config.bpm), &mut samples),
+            None => {
+                for offset in 0..count {
+                    let t = origin.as_secs_f64() + (batch.first + offset as u64) as f64 / 130.0;
+                    match sim.heartbeat.ecg_sample(t) {
+                        Some(sample) => samples.push(sample),
+                        None => {
+                            log.log(
+                                "ecg-samples-shed",
+                                json!({"reason": "heartbeat-history-expired", "samples": count}),
+                            );
+                            break;
+                        }
+                    }
+                }
+                if samples.len() != count {
+                    continue;
+                }
+            }
         }
         // Device time, not Unix time: the strap stamps Polar-epoch nanoseconds
         // (or boot-relative time in explicitly unsynchronised mode) of the
@@ -1178,7 +1234,7 @@ async fn send_ecg_at(
 /// ACC generation is reset only by a new successful START, not by timer jitter
 /// or notification capacity changes. Its clock remains tied to acquisition.
 async fn send_acc(
-    radio: &mut PlatformRadio,
+    radio: &mut impl PeripheralRadio,
     sim: &mut SimState,
     log: &mut EventLog,
     runtime: &mut Option<(Instant, acc_stream::Stream)>,
@@ -1207,6 +1263,17 @@ async fn send_acc(
             return;
         }
     };
+    if capacity < acc::HEADER_BYTES + acc::SAMPLE_BYTES {
+        if !sim.acc_delivery_paused {
+            log.log("acc-delivery-paused", json!({"capacity": capacity}));
+        }
+        sim.acc_delivery_paused = true;
+        return;
+    }
+    if sim.acc_delivery_paused {
+        log.log_simple("acc-delivery-resumed");
+    }
+    sim.acc_delivery_paused = false;
     let Some((_, stream)) = runtime.as_mut() else {
         return;
     };
@@ -1303,12 +1370,21 @@ async fn handle_radio(
     sim: &mut SimState,
     timing: &mut timing::TimingRuntime,
     log: &mut EventLog,
+    psftp_session: &mut psftp::Session,
     _boot_epoch_ns: u64,
 ) {
     match event {
         RadioEvent::Powered(powered) => {
             if !powered {
                 sim.reset_pmd_session();
+                psftp_session.reset();
+                let psftp = psftp::wire_characteristic();
+                if let Err(error) = radio.drop_subscription(psftp).await {
+                    log.log(
+                        "psftp-subscription-reset-failed",
+                        json!({"reason": error.to_string()}),
+                    );
+                }
                 log.log_simple("pmd-session-ended");
             }
             log.log("powered", json!({"on": powered}));
@@ -1318,12 +1394,11 @@ async fn handle_radio(
             characteristic,
             subscribed,
         } => {
+            if characteristic.eq_ignore_ascii_case(gatt_spec::feee::CHAR_51) {
+                psftp_session.reset();
+            }
             sim.observe_subscription(&characteristic, subscribed);
-            if !subscribed
-                && (characteristic.eq_ignore_ascii_case(gatt_spec::pmd::DATA)
-                    || characteristic.eq_ignore_ascii_case(gatt_spec::pmd::CONTROL_POINT))
-            {
-                sim.reset_pmd_session();
+            if !subscribed && characteristic.eq_ignore_ascii_case(gatt_spec::pmd::DATA) {
                 log.log("pmd-session-ended", json!({"reason": "final-pmd-subscription-ended", "characteristic": characteristic}));
             }
             log.log(
@@ -1364,10 +1439,24 @@ async fn handle_radio(
         RadioEvent::IndicationConfirmed {
             service,
             characteristic,
+            receipt_id,
+            generation,
         } => {
             log.log(
                 "indication-confirmed",
-                json!({"service": service, "characteristic": characteristic}),
+                json!({"service": service, "characteristic": characteristic, "receiptId": receipt_id, "generation": generation}),
+            );
+        }
+        RadioEvent::IndicationUnconfirmed {
+            service,
+            characteristic,
+            receipt_id,
+            generation,
+            reason,
+        } => {
+            log.log(
+                "indication-unconfirmed",
+                json!({"service": service, "characteristic": characteristic, "receiptId": receipt_id, "generation": generation, "reason": reason}),
             );
         }
         RadioEvent::Read {
@@ -1405,10 +1494,25 @@ async fn handle_radio(
             service,
             characteristic,
             value,
+            device_address,
+            owned_target,
             reply,
         } => {
             let uuid = Uuid::parse_str(&characteristic).unwrap_or_else(|_| Uuid::nil());
-            let accepted = write_request(radio, sim, timing, log, &service, &uuid, &value).await;
+            let accepted = if psftp::is_wire_request(uuid) {
+                handle_psftp_write(
+                    radio,
+                    log,
+                    psftp_session,
+                    &service,
+                    &value,
+                    device_address.as_deref(),
+                    owned_target.as_ref(),
+                )
+                .await
+            } else {
+                write_request(radio, sim, timing, log, &service, &uuid, &value).await
+            };
             log.log(
                 "write",
                 json!({"service": service, "characteristic": characteristic, "len": value.len(), "accepted": accepted}),
@@ -1440,7 +1544,7 @@ fn read_answer(sim: &SimState, uuid: &Uuid, offset: u64) -> radio::RadioReadAnsw
 }
 
 async fn write_request(
-    radio: &mut PlatformRadio,
+    radio: &mut impl PeripheralRadio,
     sim: &mut SimState,
     timing: &mut timing::TimingRuntime,
     log: &mut EventLog,
@@ -1451,7 +1555,7 @@ async fn write_request(
     let control_point =
         Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
     if *uuid != control_point {
-        // Writable vendor characteristics (6217ff4d, FEEE 0x51/0x53) have no
+        // Writable vendor characteristics (6217ff4d, FEEE 0x53) have no
         // behaviour model: the write is refused loudly, never absorbed.
         let reason = if sim.vendor_writable(uuid) {
             "unmodeled-vendor-write"
@@ -1479,9 +1583,8 @@ async fn write_request(
                 "pmd-command",
                 json!({"op": value.first().copied().unwrap_or(0xFF), "status": status, "action": format!("{:?}", outcome.action)}),
             );
-            // Remember the response bytes: adversarial `stale-callback`
-            // replays them out of sequence.
-            sim.last_pmd_response = Some(response.clone());
+            // Only OS-accepted responses may be replayed by stale-callback.
+
             // A measured response latency defers the indication to the tick
             // loop; the ATT write is answered now, so the loop never sleeps.
             // Immediate by default, so behaviour is unchanged. The
@@ -1492,11 +1595,37 @@ async fn write_request(
             // START/STOP response.
             let measured_ms = timing.sample_pmd_response_ms();
             let injected_ms = sim.response_delay_ms;
+            let capacity = match radio.notification_payload_capacity(control_point).await {
+                Ok(Some(capacity)) => capacity,
+                Ok(None) => 0,
+                Err(error) => {
+                    log.log(
+                        "radio-error",
+                        json!({"op": "pmd-indicate", "error": error.to_string()}),
+                    );
+                    return false;
+                }
+            };
+            let fragments = match sim::fragment_pmd_response(&response, capacity) {
+                Ok(fragments) => fragments,
+                Err(error) => {
+                    log.log("radio-error", json!({"op": "pmd-indicate", "error": error}));
+                    return false;
+                }
+            };
             if measured_ms.is_some() || injected_ms > 0 || !sim.pending_indications.is_empty() {
+                if !sim.can_admit_pmd_fragments(fragments.fragments.len()) {
+                    log.log(
+                        "pmd-indicate-rejected",
+                        json!({"reason": "pending-fragment-capacity", "fragments": fragments.fragments.len()}),
+                    );
+                    return false;
+                }
                 let total_ms = measured_ms.unwrap_or(0.0) + injected_ms as f64;
                 sim.pending_indications.push(sim::PendingIndication {
                     due: Instant::now() + Duration::from_secs_f64(total_ms / 1000.0),
                     response,
+                    reserved_fragments: fragments.fragments.len(),
                     action: outcome.action,
                 });
                 log.log(
@@ -1505,44 +1634,139 @@ async fn write_request(
                 );
                 return true;
             }
-            // Inline: a lost indication surfaces here instead of timing out
-            // the central 5 s later.
-            match radio.notify(control_point, response.clone()).await {
-                Ok(SendOutcome::OsAccepted) => {
-                    commit_pmd_action(sim, log, outcome.action);
-                    true
-                }
-                Ok(SendOutcome::Queued { id }) => {
-                    sim.queue_pmd_action(id, outcome.action);
-                    true
-                }
-                Ok(SendOutcome::NotSubscribed) => {
-                    log.log(
-                        "radio-error",
-                        json!({"op": "pmd-indicate", "error": "no live indication session"}),
-                    );
-                    false
-                }
-                Ok(SendOutcome::Failed(reason)) => {
-                    log.log(
-                        "radio-error",
-                        json!({"op": "pmd-indicate", "error": reason}),
-                    );
-                    false
-                }
-                Err(error) => {
-                    log.log(
-                        "radio-error",
-                        json!({"op": "pmd-indicate", "error": error.to_string()}),
-                    );
-                    false
-                }
-            }
+            send_pmd_fragments(
+                radio,
+                sim,
+                log,
+                PmdFragmentDelivery {
+                    control_point,
+                    fragments: fragments.fragments,
+                    action: outcome.action,
+                    response,
+                    deferred: false,
+                },
+            )
+            .await
         }
         None => {
             log.log(
                 "write-rejected",
                 json!({"service": service, "reason": "malformed-pmd-command"}),
+            );
+            false
+        }
+    }
+}
+
+async fn send_pmd_fragments(
+    radio: &mut impl PeripheralRadio,
+    sim: &mut SimState,
+    log: &mut EventLog,
+    delivery: PmdFragmentDelivery,
+) -> bool {
+    if !sim.can_admit_pmd_fragments(delivery.fragments.len()) {
+        log.log(
+            "pmd-indicate-rejected",
+            json!({"reason": "pending-fragment-capacity", "fragments": delivery.fragments.len()}),
+        );
+        return false;
+    }
+    let mut queued = Vec::new();
+    let mut failed = false;
+    for fragment in delivery.fragments {
+        let outcome = radio.notify(delivery.control_point, fragment).await;
+        match &outcome {
+            Ok(SendOutcome::Queued { id }) => queued.push(*id),
+            Ok(SendOutcome::NotSubscribed) | Ok(SendOutcome::Failed(_)) | Err(_) => failed = true,
+            Ok(SendOutcome::OsAccepted) => {}
+        }
+        report_stream_notify(
+            log,
+            "pmd-indicate",
+            outcome,
+            json!({"deferred": delivery.deferred}),
+        );
+        if failed {
+            break;
+        }
+    }
+    if queued.is_empty() {
+        if !failed {
+            sim.last_pmd_response = Some(delivery.response);
+            commit_pmd_action(sim, log, delivery.action);
+        }
+    } else {
+        sim.queue_pmd_response_group(queued, delivery.action, delivery.response, failed);
+    }
+    !failed
+}
+
+struct PmdFragmentDelivery {
+    control_point: Uuid,
+    fragments: Vec<Vec<u8>>,
+    action: sim::PmdAction,
+    response: Vec<u8>,
+    deferred: bool,
+}
+
+async fn handle_psftp_write(
+    radio: &mut PlatformRadio,
+    log: &mut EventLog,
+    session: &mut psftp::Session,
+    service: &str,
+    value: &[u8],
+    device_address: Option<&str>,
+    target: Option<&radio::OwnedNotifyTarget>,
+) -> bool {
+    let Some(target) = target else {
+        log.log(
+            "psftp-response-dropped",
+            json!({"reason": "exact D2H writer identity is unavailable", "deviceAddress": device_address}),
+        );
+        session.reset();
+        return false;
+    };
+    match session.ingest_for(target, value) {
+        Ok(None) => {
+            log.log(
+                "psftp-fragment",
+                json!({"service": service, "len": value.len()}),
+            );
+            true
+        }
+        Ok(Some(request)) => {
+            let d2h = psftp::wire_response_characteristic();
+            let response = psftp::not_implemented_response().to_vec();
+            log.log(
+                "psftp-request",
+                json!({"service": service, "requestBytes": request.len(), "status": 201, "responseBytes": response.len()}),
+            );
+            match radio.notify_to(d2h, response, target.clone()).await {
+                Ok(SendOutcome::OsAccepted) | Ok(SendOutcome::Queued { .. }) => true,
+                Ok(SendOutcome::NotSubscribed) => {
+                    log.log(
+                        "psftp-response-dropped",
+                        json!({"reason": "D2H characteristic is not subscribed"}),
+                    );
+                    false
+                }
+                Ok(SendOutcome::Failed(reason)) => {
+                    log.log("psftp-response-dropped", json!({"reason": reason}));
+                    false
+                }
+                Err(error) => {
+                    log.log(
+                        "psftp-response-dropped",
+                        json!({"reason": error.to_string()}),
+                    );
+                    false
+                }
+            }
+        }
+        Err(error) => {
+            log.log(
+                "psftp-frame-rejected",
+                json!({"error": format!("{error:?}")}),
             );
             false
         }
@@ -1565,30 +1789,48 @@ fn commit_pmd_action(sim: &mut SimState, log: &mut EventLog, action: PmdAction) 
 /// Sends PMD indications whose latency expired. The streaming action commits
 /// only when the indication actually goes out; a central that vanished
 /// mid-latency drops the indication loudly and leaves no stuck stream.
-async fn drain_indications(radio: &mut PlatformRadio, sim: &mut SimState, log: &mut EventLog) {
+async fn drain_indications(
+    radio: &mut impl PeripheralRadio,
+    sim: &mut SimState,
+    log: &mut EventLog,
+) {
     let now = Instant::now();
     // Responses and their state changes stay in command order even when
     // injected/measured latencies differ between consecutive commands.
     while let Some(indication) = sim.take_due_indication(now) {
         let control_point =
             Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
-        let outcome = radio.notify(control_point, indication.response).await;
-        match &outcome {
-            Ok(SendOutcome::OsAccepted) => {
-                commit_pmd_action(sim, log, indication.action);
-            }
-            Ok(SendOutcome::Queued { id }) => {
-                sim.queue_pmd_action(*id, indication.action);
-            }
-            Ok(SendOutcome::NotSubscribed) => {
+        let capacity = match radio.notification_payload_capacity(control_point).await {
+            Ok(Some(capacity)) => capacity,
+            Ok(None) => 0,
+            Err(error) => {
                 log.log(
-                    "pmd-indicate-dropped",
-                    json!({"reason": "central left before the deferred indication went out; action not committed"}),
+                    "radio-error",
+                    json!({"op": "pmd-indicate", "error": error.to_string()}),
                 );
+                continue;
             }
-            _ => {}
-        }
-        report_stream_notify(log, "pmd-indicate", outcome, json!({"deferred": true}));
+        };
+        let fragments = match sim::fragment_pmd_response(&indication.response, capacity) {
+            Ok(fragments) => fragments,
+            Err(error) => {
+                log.log("radio-error", json!({"op": "pmd-indicate", "error": error}));
+                continue;
+            }
+        };
+        let _ = send_pmd_fragments(
+            radio,
+            sim,
+            log,
+            PmdFragmentDelivery {
+                control_point,
+                fragments: fragments.fragments,
+                action: indication.action,
+                response: indication.response,
+                deferred: true,
+            },
+        )
+        .await;
     }
 }
 
@@ -1616,10 +1858,15 @@ async fn handle_control(
     }
     let answer = match command {
         ControlCommand::SetBpm { bpm } => {
-            sim.config.bpm = bpm;
-            // An explicit bpm wins over the scripted curve.
-            sim.config.bpm_curve.clear();
-            ControlReply::ok()
+            if bpm == 0 {
+                ControlReply::failed("bpm must be 1-255")
+            } else {
+                sim.config.bpm = bpm;
+                // An explicit fixed bpm wins over both scripted and scenario rates.
+                sim.config.bpm_curve.clear();
+                sim.config.scenario = heartbeat::Scenario::Steady;
+                ControlReply::ok()
+            }
         }
         ControlCommand::SetAdvertising { on } => match set_advertising(radio, sim, log, on).await {
             Ok(reply) => reply,
@@ -1730,12 +1977,7 @@ async fn handle_control(
             Ok(()) => ControlReply::ok(),
             Err(error) => ControlReply::failed(error),
         },
-        ControlCommand::GetState => ControlReply {
-            ok: true,
-            error: None,
-            note: None,
-            state: Some(sim.snapshot()),
-        },
+        ControlCommand::GetState => get_state(radio, sim, log).await,
         ControlCommand::Help => ControlReply {
             ok: true,
             error: None,
@@ -1799,6 +2041,42 @@ async fn load_profile_into(
     Ok(())
 }
 
+/// Reads the radio's advertisement registration for a report. Logs a failed
+/// read as `radio-error` (like every other `is-advertising` failure) and
+/// returns it as `Unknown` — the caller reports it, never defaults it.
+async fn observe_advertising(
+    radio: &mut impl PeripheralRadio,
+    log: &mut EventLog,
+) -> radio::AdvertisingObservation {
+    let observation = radio::AdvertisingObservation::from_query(radio.is_advertising().await);
+    if let radio::AdvertisingObservation::Unknown(error) = &observation {
+        log.log(
+            "radio-error",
+            json!({"op": "is-advertising", "error": error}),
+        );
+    }
+    observation
+}
+
+/// `get-state`: the simulator snapshot plus the observed advertisement
+/// registration. A failed read is reported inside `advertising` and does not
+/// fail the rest of the state.
+async fn get_state(
+    radio: &mut impl PeripheralRadio,
+    sim: &SimState,
+    log: &mut EventLog,
+) -> ControlReply {
+    let advertising = observe_advertising(radio, log).await;
+    let mut state = sim.snapshot();
+    state["advertising"] = advertising.to_json();
+    ControlReply {
+        ok: true,
+        error: None,
+        note: None,
+        state: Some(state),
+    }
+}
+
 async fn set_advertising(
     radio: &mut PlatformRadio,
     sim: &SimState,
@@ -1820,13 +2098,15 @@ async fn set_advertising(
 }
 
 /// Builds the drop-link note and state from the tracked clients, the
-/// allowlist, the disconnect report and the connected strangers. Pure so
-/// the report wording is pinned by tests without a radio.
+/// allowlist, the disconnect report, the connected strangers and the
+/// advertisement registration read after the disconnect. Pure so the report
+/// wording is pinned by tests without a radio.
 fn summarize_drop(
     clients: &[String],
     allowlist: &[String],
     report: &radio::DisconnectReport,
     connected: &[String],
+    advertising: &radio::AdvertisingObservation,
 ) -> (String, serde_json::Value) {
     let targets = radio::drop_targets(clients, allowlist);
     let mut skipped = report.skipped.clone();
@@ -1842,13 +2122,22 @@ fn summarize_drop(
         "targets": targets,
         "dropped": report.dropped,
         "skipped": skipped,
+        "advertising": advertising.to_json(),
     });
+    // Registration is what the radio reported after the disconnect; it is
+    // never presented as on-air state, which userspace cannot observe.
+    let observed = format!(
+        "advertising registration observed after disconnect: {} (on-air \
+         state is not observable from userspace)",
+        advertising.describe(),
+    );
     let note = if targets.is_empty() {
-        "ECG halted; no simulator clients observed and no drop-link allowlist \
-         is configured (--drop-link-allow), so no central was disconnected — \
-         streams stop but any peer stays connected. Advertising and the GATT \
-         database are unchanged"
-            .to_string()
+        format!(
+            "ECG halted; no simulator clients observed and no drop-link \
+             allowlist is configured (--drop-link-allow), so no central was \
+             disconnected — streams stop but any peer stays connected; \
+             {observed}"
+        )
     } else {
         let mut note = format!(
             "ECG halted, {} of {} target(s) disconnected",
@@ -1861,25 +2150,26 @@ fn summarize_drop(
         for skip in &skipped {
             note.push_str(&format!("; {} skipped: {}", skip.address, skip.reason));
         }
-        note.push_str(
-            "; advertising and the GATT database are unchanged (BlueZ \
-             disconnects via Device1.Disconnect; on CoreBluetooth an \
-             already-connected central stays connected until it disconnects)",
-        );
+        note.push_str(&format!(
+            "; {observed} (BlueZ disconnects via Device1.Disconnect; on \
+             CoreBluetooth an already-connected central stays connected until \
+             it disconnects)"
+        ));
         note
     };
     (note, state)
 }
 
 async fn drop_link(
-    radio: &mut PlatformRadio,
+    radio: &mut impl PeripheralRadio,
     sim: &mut SimState,
     log: &mut EventLog,
 ) -> Result<ControlReply, String> {
-    // A simulated link loss drops the link, not the peripheral: advertising
-    // and the GATT database stay exactly as they were, so centrals see a
-    // lifecycle loss (peer-link-loss) with no Service Changed, and can
-    // reconnect immediately — like walking back into range of a real H10.
+    // A simulated link loss drops the link, not the peripheral: nothing here
+    // stops, restarts or re-registers advertising or the GATT application, so
+    // centrals see a lifecycle loss (peer-link-loss) with no Service Changed.
+    // The advertisement registration is read back after the disconnect and
+    // reported as observed; it is never assumed.
     sim.reset_pmd_session();
     // Only the sim's own clients go: centrals whose addresses touched this
     // peripheral's GATT application, plus the explicit `--drop-link-allow`
@@ -1907,7 +2197,8 @@ async fn drop_link(
             Vec::new()
         }
     };
-    let (note, state) = summarize_drop(&clients, &allowlist, &report, &connected);
+    let advertising = observe_advertising(radio, log).await;
+    let (note, state) = summarize_drop(&clients, &allowlist, &report, &connected, &advertising);
     sim.record_fault(
         "drop-link",
         json!({"dropped": report.dropped, "targets": targets}),
@@ -1919,6 +2210,7 @@ async fn drop_link(
             "clients": clients,
             "allowlisted": allowlist.len(),
             "skipped": state["skipped"],
+            "advertising": state["advertising"],
         }),
     );
     Ok(ControlReply {
@@ -1933,7 +2225,7 @@ async fn drop_link(
 /// bounces advertising (stop + start) so centrals run a full
 /// disconnect/reconnect cycle instead of resuming on the live advertisement.
 async fn flap_link(
-    radio: &mut PlatformRadio,
+    radio: &mut impl PeripheralRadio,
     sim: &mut SimState,
     log: &mut EventLog,
 ) -> Result<ControlReply, String> {
@@ -1946,8 +2238,19 @@ async fn flap_link(
     start_advertising(radio, sim, log).await?;
     sim.record_fault("flap-link", json!({}));
     log.log("link-flapped", json!({}));
+    // The drop-time observation predates the bounce: the reply reports the
+    // registration read after the restart (the drop-time one stays in the
+    // `link-dropped` log).
+    let advertising = observe_advertising(radio, log).await;
+    if let Some(state) = reply.state.as_mut() {
+        state["advertising"] = advertising.to_json();
+    }
     if let Some(note) = reply.note.take() {
-        reply.note = Some(format!("{note}; advertising bounced for a rapid reconnect"));
+        reply.note = Some(format!(
+            "{note}; advertising bounced for a rapid reconnect, registration \
+             observed after the bounce: {}",
+            advertising.describe(),
+        ));
     }
     Ok(reply)
 }
@@ -1965,11 +2268,26 @@ async fn stale_callback(
     };
     let control_point =
         Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap_or_else(|_| Uuid::nil());
-    let outcome = radio.notify(control_point, response.clone()).await;
-    let accepted = matches!(
-        &outcome,
-        Ok(SendOutcome::OsAccepted) | Ok(SendOutcome::Queued { .. })
-    );
+    let capacity = radio
+        .notification_payload_capacity(control_point)
+        .await
+        .map_err(|error| format!("stale-callback capacity query failed: {error}"))?
+        .ok_or_else(|| "stale-callback refused: PMD control point is not subscribed".to_string())?;
+    let fragments = sim::fragment_pmd_response(&response, capacity)
+        .map_err(|error| format!("stale-callback refused: {error}"))?;
+    let accepted = send_pmd_fragments(
+        radio,
+        sim,
+        log,
+        PmdFragmentDelivery {
+            control_point,
+            fragments: fragments.fragments,
+            action: sim::PmdAction::None,
+            response: response.clone(),
+            deferred: false,
+        },
+    )
+    .await;
     sim.record_fault(
         "stale-callback",
         json!({"bytes": response.len(), "accepted": accepted}),
@@ -1977,12 +2295,6 @@ async fn stale_callback(
     log.log(
         "stale-callback",
         json!({"bytes": response.len(), "accepted": accepted}),
-    );
-    report_stream_notify(
-        log,
-        "stale-callback-notify",
-        outcome,
-        json!({"bytes": response.len()}),
     );
     Ok(ControlReply::ok_note(format!(
         "replayed the last PMD response ({} bytes) out of sequence; delivery {}",
@@ -1994,6 +2306,41 @@ async fn stale_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn psftp_request_and_response_use_feee_char51_wire_route() {
+        let services = h10_services(&SimConfig::default()).expect("H10 surface builds");
+        let feee = services
+            .iter()
+            .find(|service| {
+                service.uuid == advertisement::short_uuid(gatt_spec::uuid16::POLAR_ADV_SERVICE)
+            })
+            .expect("Polar FEEE service");
+        let char51 = feee
+            .characteristics
+            .iter()
+            .find(|characteristic| {
+                characteristic
+                    .uuid
+                    .to_string()
+                    .eq_ignore_ascii_case(gatt_spec::feee::CHAR_51)
+            })
+            .expect("FEEE CHAR_51");
+        assert!(char51.properties.contains(&radio::CharProperty::Write));
+        assert!(char51
+            .properties
+            .contains(&radio::CharProperty::WriteWithoutResponse));
+        assert!(char51.properties.contains(&radio::CharProperty::Notify));
+
+        let char52 = Uuid::parse_str(gatt_spec::feee::CHAR_52).expect("CHAR_52");
+        let char53 = Uuid::parse_str(gatt_spec::feee::CHAR_53).expect("CHAR_53");
+        assert_eq!(psftp::wire_characteristic(), char51.uuid);
+        assert!(psftp::is_wire_request(char51.uuid));
+        assert!(!psftp::is_wire_request(char52));
+        assert!(!psftp::is_wire_request(char53));
+        assert_eq!(psftp::wire_response_characteristic(), char51.uuid);
+    }
 
     struct EcgRadio {
         capacity: Result<Option<usize>, String>,
@@ -2050,6 +2397,470 @@ mod tests {
                 _ => Err(radio::RadioError("data length exceeds MTU".into())),
             }
         }
+    }
+
+    struct NotifyRadio {
+        outcome: Result<SendOutcome, radio::RadioError>,
+        frames: Vec<Vec<u8>>,
+    }
+    #[async_trait::async_trait]
+    impl PeripheralRadio for NotifyRadio {
+        async fn open(_: mpsc::Sender<RadioEvent>) -> Result<Self, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_powered(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_advertising(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn start_advertising(
+            &mut self,
+            _: &str,
+            _: &[Uuid],
+        ) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn stop_advertising(&mut self) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn add_service(&mut self, _: &radio::ServiceSpec) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn notification_payload_capacity(
+            &self,
+            _: Uuid,
+        ) -> Result<Option<usize>, radio::RadioError> {
+            Ok(Some(512))
+        }
+        async fn notify(
+            &mut self,
+            _: Uuid,
+            bytes: Vec<u8>,
+        ) -> Result<SendOutcome, radio::RadioError> {
+            self.frames.push(bytes);
+            self.outcome.clone()
+        }
+    }
+
+    struct FragmentRadio {
+        capacity: Option<usize>,
+        outcomes: VecDeque<SendOutcome>,
+        frames: Vec<Vec<u8>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PeripheralRadio for FragmentRadio {
+        async fn open(_: mpsc::Sender<RadioEvent>) -> Result<Self, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_powered(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_advertising(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn start_advertising(
+            &mut self,
+            _: &str,
+            _: &[Uuid],
+        ) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn stop_advertising(&mut self) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn add_service(&mut self, _: &radio::ServiceSpec) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn notification_payload_capacity(
+            &self,
+            _: Uuid,
+        ) -> Result<Option<usize>, radio::RadioError> {
+            Ok(self.capacity)
+        }
+        async fn notify(
+            &mut self,
+            _: Uuid,
+            bytes: Vec<u8>,
+        ) -> Result<SendOutcome, radio::RadioError> {
+            self.frames.push(bytes);
+            Ok(self.outcomes.pop_front().unwrap_or(SendOutcome::OsAccepted))
+        }
+    }
+
+    fn acc_settings_response() -> Vec<u8> {
+        let mut response = vec![0xf0, 0x01, gatt_spec::PMD_MEASUREMENT_ACC, 0, 0];
+        response.extend(std::iter::repeat_n(0x42, 22));
+        response
+    }
+
+    fn fragment_delivery(response: Vec<u8>, action: PmdAction) -> PmdFragmentDelivery {
+        let fragments = sim::fragment_pmd_response(&response, 20).unwrap();
+        PmdFragmentDelivery {
+            control_point: Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap(),
+            fragments: fragments.fragments,
+            action,
+            response,
+            deferred: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn pmd_fragment_delivery_commits_only_after_all_boundaries_succeed() {
+        let mut log = EventLog::new();
+        let response = acc_settings_response();
+
+        let mut sim = SimState::new(SimConfig::default());
+        let mut inline = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::from([SendOutcome::OsAccepted, SendOutcome::OsAccepted]),
+            frames: Vec::new(),
+        };
+        assert!(
+            send_pmd_fragments(
+                &mut inline,
+                &mut sim,
+                &mut log,
+                fragment_delivery(response.clone(), PmdAction::StartEcg),
+            )
+            .await
+        );
+        assert_eq!(inline.frames.len(), 2);
+        assert!(sim.ecg_streaming);
+        assert!(inline.frames.iter().all(|frame| frame.len() <= 20));
+
+        sim.reset_pmd_session();
+        sim.pending_indications.push(sim::PendingIndication {
+            due: Instant::now() - Duration::from_millis(1),
+            response: response.clone(),
+            reserved_fragments: 1,
+            action: PmdAction::StartEcg,
+        });
+        let mut deferred = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::from([SendOutcome::OsAccepted, SendOutcome::OsAccepted]),
+            frames: Vec::new(),
+        };
+        drain_indications(&mut deferred, &mut sim, &mut log).await;
+        assert_eq!(deferred.frames.len(), 2);
+        assert!(sim.ecg_streaming);
+
+        sim.reset_pmd_session();
+        let mut failed = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::from([
+                SendOutcome::OsAccepted,
+                SendOutcome::Failed("late indication failure".into()),
+            ]),
+            frames: Vec::new(),
+        };
+        assert!(
+            !send_pmd_fragments(
+                &mut failed,
+                &mut sim,
+                &mut log,
+                fragment_delivery(response.clone(), PmdAction::StartEcg),
+            )
+            .await
+        );
+        assert!(!sim.ecg_streaming);
+        assert!(sim.can_admit_pmd_command());
+
+        sim.reset_pmd_session();
+        let mut queued_failed = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::from([
+                SendOutcome::Queued { id: 8 },
+                SendOutcome::Failed("late queued indication failure".into()),
+            ]),
+            frames: Vec::new(),
+        };
+        assert!(
+            !send_pmd_fragments(
+                &mut queued_failed,
+                &mut sim,
+                &mut log,
+                fragment_delivery(response.clone(), PmdAction::StartEcg),
+            )
+            .await
+        );
+        assert_eq!(sim.settle_pmd_action(8, true), None);
+        assert!(!sim.ecg_streaming);
+
+        sim.reset_pmd_session();
+        let mut queued = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::from([SendOutcome::Queued { id: 7 }, SendOutcome::OsAccepted]),
+            frames: Vec::new(),
+        };
+        assert!(
+            send_pmd_fragments(
+                &mut queued,
+                &mut sim,
+                &mut log,
+                fragment_delivery(response.clone(), PmdAction::StartEcg),
+            )
+            .await
+        );
+        assert!(!sim.ecg_streaming);
+        let settled = sim.settle_pmd_action(7, true);
+        assert_eq!(settled, Some(PmdAction::StartEcg));
+        commit_pmd_action(&mut sim, &mut log, settled.unwrap());
+        assert!(sim.ecg_streaming);
+    }
+
+    #[tokio::test]
+    async fn pmd_fragment_admission_does_not_partially_fill_a_full_queue() {
+        let mut sim = SimState::new(SimConfig::default());
+        sim.queue_pmd_response_group(
+            (0..(radio::SEND_QUEUE_CAPACITY as u64 - 1)).collect(),
+            PmdAction::None,
+            vec![0xf0],
+            false,
+        );
+        let mut radio = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::from([SendOutcome::Queued { id: 64 }]),
+            frames: Vec::new(),
+        };
+        let mut log = EventLog::new();
+        assert!(
+            !send_pmd_fragments(
+                &mut radio,
+                &mut sim,
+                &mut log,
+                fragment_delivery(acc_settings_response(), PmdAction::None),
+            )
+            .await
+        );
+        assert!(radio.frames.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deferred_pmd_admission_reserves_the_whole_logical_response() {
+        let cp = Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap();
+        let mut sim = SimState::new(SimConfig::default());
+        sim.response_delay_ms = 1;
+        sim.queue_pmd_response_group(
+            (0..(radio::SEND_QUEUE_CAPACITY as u64 - 1)).collect(),
+            PmdAction::None,
+            vec![0xf0],
+            false,
+        );
+        let mut timing = timing::TimingRuntime::new(timing::TimingProfile::default_unconfirmed(0));
+        let mut radio = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::new(),
+            frames: Vec::new(),
+        };
+        let mut log = EventLog::new();
+        assert!(
+            !write_request(
+                &mut radio,
+                &mut sim,
+                &mut timing,
+                &mut log,
+                "pmd",
+                &cp,
+                &[
+                    gatt_spec::PMD_OP_GET_SETTINGS,
+                    gatt_spec::PMD_MEASUREMENT_ACC
+                ],
+            )
+            .await
+        );
+        assert!(sim.pending_indications.is_empty());
+        assert!(radio.frames.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deferred_pmd_rechecks_live_capacity_and_fails_explicitly() {
+        let cp = Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap();
+        let mut sim = SimState::new(SimConfig::default());
+        sim.response_delay_ms = 1;
+        let mut timing = timing::TimingRuntime::new(timing::TimingProfile::default_unconfirmed(0));
+        let mut radio = FragmentRadio {
+            capacity: Some(20),
+            outcomes: VecDeque::new(),
+            frames: Vec::new(),
+        };
+        let mut log = EventLog::new();
+        assert!(
+            write_request(
+                &mut radio,
+                &mut sim,
+                &mut timing,
+                &mut log,
+                "pmd",
+                &cp,
+                &[
+                    gatt_spec::PMD_OP_GET_SETTINGS,
+                    gatt_spec::PMD_MEASUREMENT_ACC
+                ],
+            )
+            .await
+        );
+        assert_eq!(sim.pending_indications.len(), 1);
+        sim.pending_indications[0].due = Instant::now() - Duration::from_millis(1);
+        radio.capacity = Some(5);
+        drain_indications(&mut radio, &mut sim, &mut log).await;
+        assert!(radio.frames.is_empty());
+        assert!(sim.pending_indications.is_empty());
+        assert!(sim.acc_settings.is_none());
+    }
+
+    #[tokio::test]
+    async fn pmd_boundary_rejects_unsubscribed_and_too_small_capacity() {
+        let mut timing = timing::TimingRuntime::new(timing::TimingProfile::default_unconfirmed(0));
+        let cp = Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap();
+        let mut log = EventLog::new();
+        for capacity in [None, Some(5)] {
+            let mut radio = FragmentRadio {
+                capacity,
+                outcomes: VecDeque::new(),
+                frames: Vec::new(),
+            };
+            let mut sim = SimState::new(SimConfig::default());
+            assert!(
+                !write_request(
+                    &mut radio,
+                    &mut sim,
+                    &mut timing,
+                    &mut log,
+                    "pmd",
+                    &cp,
+                    &[
+                        gatt_spec::PMD_OP_GET_SETTINGS,
+                        gatt_spec::PMD_MEASUREMENT_ACC
+                    ],
+                )
+                .await
+            );
+            assert!(radio.frames.is_empty());
+            assert!(sim.acc_settings.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn hr_replay_telemetry_decodes_actual_u8_and_u16_packets() {
+        let mut sim = SimState::new(SimConfig::default());
+        sim.hr_replay = Some(sim::HrReplay {
+            packets: vec![vec![0x10, 88, 0xBD, 0x02], vec![1, 44, 1]],
+        });
+        let mut radio = NotifyRadio {
+            outcome: Ok(SendOutcome::OsAccepted),
+            frames: Vec::new(),
+        };
+        let mut log = EventLog::new();
+        let (sender, mut events) = mpsc::channel(4);
+        log.add_listener(sender);
+        for expected in [88, 300] {
+            send_hr(&mut radio, &mut sim, &mut log, 1.0).await;
+            let event = events.try_recv().unwrap();
+            assert_eq!(event["bpm"], expected);
+            assert_eq!(event["kind"], "hr-notify");
+        }
+        assert_eq!(radio.frames, sim.hr_replay.as_ref().unwrap().packets);
+        assert_eq!(
+            sim.run_record()["heartbeat"]["recordingRelationship"],
+            "independent; not retimed"
+        );
+    }
+
+    #[tokio::test]
+    async fn pmd_immediate_and_deferred_replay_require_os_acceptance() {
+        let cp = Uuid::parse_str(gatt_spec::pmd::CONTROL_POINT).unwrap();
+        for deferred in [false, true] {
+            for outcome in [
+                Ok(SendOutcome::OsAccepted),
+                Ok(SendOutcome::Queued { id: 7 }),
+                Ok(SendOutcome::NotSubscribed),
+                Ok(SendOutcome::Failed("injected".into())),
+                Err(radio::RadioError("injected".into())),
+            ] {
+                let mut radio = NotifyRadio {
+                    outcome: outcome.clone(),
+                    frames: Vec::new(),
+                };
+                let mut sim = SimState::new(SimConfig::default());
+                if deferred {
+                    sim.response_delay_ms = 1;
+                }
+                let mut timing =
+                    timing::TimingRuntime::new(timing::TimingProfile::default_unconfirmed(1));
+                let mut log = EventLog::new();
+                let accepted = write_request(
+                    &mut radio,
+                    &mut sim,
+                    &mut timing,
+                    &mut log,
+                    gatt_spec::pmd::SERVICE,
+                    &cp,
+                    &[gatt_spec::PMD_OP_GET_SETTINGS, 0x00],
+                )
+                .await;
+                if deferred {
+                    assert!(accepted);
+                    assert_eq!(sim.last_pmd_response, None);
+                    sim.pending_indications[0].due = Instant::now();
+                    drain_indications(&mut radio, &mut sim, &mut log).await;
+                }
+                let response = radio.frames[0].clone();
+                match outcome {
+                    Ok(SendOutcome::OsAccepted) => {
+                        assert_eq!(sim.last_pmd_response, Some(response))
+                    }
+                    Ok(SendOutcome::Queued { id }) => {
+                        assert_eq!(sim.last_pmd_response, None);
+                        assert_eq!(sim.settle_pmd_action(id, true), Some(PmdAction::None));
+                        assert_eq!(sim.last_pmd_response, Some(response));
+                    }
+                    _ => assert_eq!(sim.last_pmd_response, None),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn temporary_acc_capacity_preserves_stream_and_resumes() {
+        let mut sim = SimState::new(SimConfig::default());
+        let settings = acc::Settings {
+            sample_rate_hz: 200,
+            range_g: 8,
+        };
+        sim.acc_settings = Some(settings);
+        let started = Instant::now() - Duration::from_secs(1);
+        sim.acc_started_at = Some(started);
+        let mut radio = EcgRadio {
+            capacity: Ok(Some(15)),
+            frames: Vec::new(),
+        };
+        let mut runtime = None;
+        let mut log = EventLog::new();
+        send_acc(
+            &mut radio,
+            &mut sim,
+            &mut log,
+            &mut runtime,
+            started,
+            sim::POLAR_EPOCH_OFFSET_NS,
+        )
+        .await;
+        assert_eq!(sim.acc_settings, Some(settings));
+        assert!(radio.frames.is_empty());
+        radio.capacity = Ok(Some(20));
+        send_acc(
+            &mut radio,
+            &mut sim,
+            &mut log,
+            &mut runtime,
+            started,
+            sim::POLAR_EPOCH_OFFSET_NS,
+        )
+        .await;
+        assert!(!radio.frames.is_empty());
+        assert!(radio.frames.iter().all(|f| f.len() <= 20));
     }
 
     #[tokio::test]
@@ -2127,12 +2938,11 @@ mod tests {
                     if let Some(samples) = &sim.ecg_replay {
                         ecg::replay_samples(samples, index, count, &mut expected_samples);
                     } else {
-                        ecg::ecg_frame_samples(
-                            index,
-                            count,
-                            f64::from(sim.config.bpm),
-                            &mut expected_samples,
-                        );
+                        for offset in 0..count {
+                            let phase = (index + offset as u64) as f64 / 130.0 * 72.0 / 60.0;
+                            expected_samples
+                                .push(ecg::ecg_sample_uv((phase + 0.22).rem_euclid(1.0), 60.0));
+                        }
                     }
                     delivered += count as u64;
                     let timestamp = 15_000_000_000 + (delivered - 1) * 1_000_000_000 / 130;
@@ -2288,8 +3098,8 @@ mod tests {
                     assert!(events.try_recv().is_err());
                 }
                 Ok(Some(_)) => {
-                    assert!(!sim.ecg_streaming);
-                    assert_eq!(events.try_recv().unwrap()["kind"], "ecg-stream-failed");
+                    assert!(sim.ecg_streaming);
+                    assert_eq!(events.try_recv().unwrap()["kind"], "ecg-delivery-paused");
                 }
                 Err(_) => {
                     assert!(sim.ecg_streaming);
@@ -2323,6 +3133,95 @@ mod tests {
             assert!(gatt_spec::ecg_frame_samples_for_capacity(73, capacity).is_err());
         }
         assert!(gatt_spec::ecg_frame_samples_for_capacity(0, 512).is_err());
+    }
+
+    #[tokio::test]
+    async fn fractional_start_and_reconnect_ecg_samples_match_packet_timestamps() {
+        let mut sim = SimState::new(SimConfig {
+            scenario: heartbeat::Scenario::Breathing,
+            ..SimConfig::default()
+        });
+        let clock_boot = Instant::now();
+        let mut runtime = None;
+        for origin in [Duration::from_micros(7600), Duration::from_micros(1234567)] {
+            sim.reset_pmd_session();
+            sim.ecg_streaming = true;
+            sim.ecg_started_at = Some(clock_boot + origin);
+            let mut radio = EcgRadio {
+                capacity: Ok(Some(16)),
+                frames: Vec::new(),
+            };
+            send_ecg_at(
+                &mut radio,
+                &mut sim,
+                &mut EventLog::new(),
+                &mut runtime,
+                clock_boot,
+                sim::POLAR_EPOCH_OFFSET_NS,
+                Duration::from_millis(100),
+            )
+            .await;
+            assert!(!radio.frames.is_empty());
+            for frame in &radio.frames {
+                let last_ns = u64::from_le_bytes(frame[1..9].try_into().unwrap());
+                let count = (frame.len() - 10) / 3;
+                for (offset, bytes) in frame[10..].as_chunks::<3>().0.iter().enumerate() {
+                    let sample = (i32::from(bytes[0])
+                        | (i32::from(bytes[1]) << 8)
+                        | (i32::from(bytes[2]) << 16))
+                        << 8
+                        >> 8;
+                    let at = last_ns as f64 / 1e9 - (count - 1 - offset) as f64 / 130.0;
+                    let expected = sim.heartbeat.ecg_sample(at).unwrap();
+                    assert!(
+                        (sample - expected).abs() <= 1,
+                        "sample {sample} != {expected} at timestamp {at}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn temporary_ecg_capacity_does_not_stop_acknowledged_stream() {
+        let mut sim = SimState::new(SimConfig::default());
+        let started = Instant::now();
+        sim.ecg_streaming = true;
+        sim.ecg_started_at = Some(started);
+        let mut radio = EcgRadio {
+            capacity: Ok(Some(12)),
+            frames: Vec::new(),
+        };
+        let mut runtime = None;
+        let mut log = EventLog::new();
+        send_ecg_at(
+            &mut radio,
+            &mut sim,
+            &mut log,
+            &mut runtime,
+            started,
+            sim::POLAR_EPOCH_OFFSET_NS,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(
+            sim.ecg_streaming,
+            "capacity shortage must preserve acknowledged START"
+        );
+        assert!(radio.frames.is_empty());
+        radio.capacity = Ok(Some(20));
+        send_ecg_at(
+            &mut radio,
+            &mut sim,
+            &mut log,
+            &mut runtime,
+            started,
+            sim::POLAR_EPOCH_OFFSET_NS,
+            Duration::from_secs(2),
+        )
+        .await;
+        assert!(!radio.frames.is_empty());
+        assert!(radio.frames.iter().all(|frame| frame.len() <= 20));
     }
 
     #[tokio::test]
@@ -2451,6 +3350,7 @@ mod tests {
             sim.pending_indications.push(sim::PendingIndication {
                 due: Instant::now(),
                 response: vec![1, 2],
+                reserved_fragments: 1,
                 action: sim::PmdAction::StartEcg,
             });
             let before = format!("{:?}", sim);
@@ -2498,6 +3398,7 @@ mod tests {
             sim.pending_indications.push(sim::PendingIndication {
                 due: Instant::now(),
                 response: vec![1],
+                reserved_fragments: 1,
                 action: sim::PmdAction::StartEcg,
             });
             let mut radio = ProfileRadio {
@@ -2534,6 +3435,269 @@ mod tests {
                 1
             );
             assert!(!kinds.iter().any(|kind| kind == "profile-rolled-back"));
+        }
+    }
+
+    /// A radio that scripts exactly what the control handlers may read back:
+    /// the advertising-registration answers, the tracked clients, and the
+    /// disconnect result. Counts every start/stop so a test can prove a
+    /// handler observed registration without acting on it.
+    struct DropRadio {
+        advertising: std::collections::VecDeque<Result<bool, radio::RadioError>>,
+        clients: Vec<String>,
+        starts: usize,
+        stops: usize,
+    }
+
+    impl DropRadio {
+        fn new(advertising: Vec<Result<bool, radio::RadioError>>, clients: &[&str]) -> Self {
+            Self {
+                advertising: advertising.into(),
+                clients: clients.iter().map(|client| client.to_string()).collect(),
+                starts: 0,
+                stops: 0,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PeripheralRadio for DropRadio {
+        async fn open(_: tokio::sync::mpsc::Sender<RadioEvent>) -> Result<Self, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_powered(&mut self) -> Result<bool, radio::RadioError> {
+            unreachable!()
+        }
+        async fn is_advertising(&mut self) -> Result<bool, radio::RadioError> {
+            self.advertising.pop_front().expect("unexpected query")
+        }
+        async fn start_advertising(
+            &mut self,
+            _: &str,
+            _: &[Uuid],
+        ) -> Result<(), radio::RadioError> {
+            self.starts += 1;
+            Ok(())
+        }
+        async fn stop_advertising(&mut self) -> Result<(), radio::RadioError> {
+            self.stops += 1;
+            Ok(())
+        }
+        async fn add_service(&mut self, _: &radio::ServiceSpec) -> Result<(), radio::RadioError> {
+            unreachable!()
+        }
+        async fn notification_payload_capacity(
+            &self,
+            _: Uuid,
+        ) -> Result<Option<usize>, radio::RadioError> {
+            unreachable!()
+        }
+        async fn notify(&mut self, _: Uuid, _: Vec<u8>) -> Result<SendOutcome, radio::RadioError> {
+            unreachable!()
+        }
+        fn simulator_clients(&self) -> Vec<String> {
+            self.clients.clone()
+        }
+        async fn disconnect_centrals(
+            &mut self,
+            targets: &[String],
+        ) -> Result<radio::DisconnectReport, radio::RadioError> {
+            let mut report = radio::DisconnectReport::new();
+            for target in targets {
+                report.add_dropped(target.clone());
+            }
+            Ok(report)
+        }
+    }
+
+    const CLIENT: &str = "40:89:C6:85:71:89";
+
+    /// Every scripted answer of `is_advertising` and the `advertising`
+    /// object it must produce: registered true, false, and an error that is
+    /// `null`, never `false`.
+    type ObservationCase = (
+        Result<bool, radio::RadioError>,
+        Option<bool>,
+        Option<&'static str>,
+    );
+
+    fn observation_cases() -> Vec<ObservationCase> {
+        vec![
+            (Ok(true), Some(true), None),
+            (Ok(false), Some(false), None),
+            (
+                Err(radio::RadioError("ActiveInstances unreadable".into())),
+                None,
+                Some("ActiveInstances unreadable"),
+            ),
+        ]
+    }
+
+    fn drain(
+        events: &mut tokio::sync::mpsc::Receiver<serde_json::Value>,
+    ) -> Vec<serde_json::Value> {
+        let mut drained = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            drained.push(event);
+        }
+        drained
+    }
+
+    fn assert_observed(
+        advertising: &serde_json::Value,
+        registered: Option<bool>,
+        error: Option<&str>,
+        context: &str,
+    ) {
+        match registered {
+            Some(value) => assert_eq!(advertising["registered"], value, "{context}"),
+            None => assert!(
+                advertising["registered"].is_null(),
+                "an unreadable registration must be null, never false: {context}"
+            ),
+        }
+        match error {
+            Some(message) => assert!(
+                advertising["error"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(message)),
+                "the read error must be carried: {context}: {advertising}"
+            ),
+            None => assert!(advertising["error"].is_null(), "{context}"),
+        }
+        assert_eq!(
+            advertising["onAirObservable"], false,
+            "registration is never reported as on-air state: {context}"
+        );
+    }
+
+    #[tokio::test]
+    async fn drop_link_reports_the_observed_advertising_registration() {
+        for (answer, registered, error) in observation_cases() {
+            let context = format!("{answer:?}");
+            let mut sim = SimState::new(SimConfig::default());
+            let mut radio = DropRadio::new(vec![answer], &[CLIENT]);
+            let mut log = EventLog::new();
+            let (sender, mut events) = tokio::sync::mpsc::channel(16);
+            log.add_listener(sender);
+
+            let reply = drop_link(&mut radio, &mut sim, &mut log)
+                .await
+                .expect("the drop itself succeeded");
+
+            assert!(reply.ok, "{context}");
+            let state = reply.state.expect("drop-link state");
+            assert_eq!(state["dropped"], serde_json::json!([CLIENT]), "{context}");
+            assert_observed(&state["advertising"], registered, error, &context);
+            let events = drain(&mut events);
+            let dropped = events
+                .iter()
+                .find(|event| event["kind"] == "link-dropped")
+                .expect("link-dropped log");
+            assert_eq!(
+                dropped["advertising"], state["advertising"],
+                "the log carries the same observation as the reply: {context}"
+            );
+            assert_eq!(
+                events.iter().any(|event| event["kind"] == "radio-error"),
+                error.is_some(),
+                "a failed read is logged loudly, a good one is not: {context}"
+            );
+            // Observation only: no restart, no stop, no re-registration.
+            assert_eq!((radio.starts, radio.stops), (0, 0), "{context}");
+            assert!(radio.advertising.is_empty(), "exactly one read: {context}");
+        }
+    }
+
+    #[tokio::test]
+    async fn drop_link_note_states_the_observation_not_an_assumption() {
+        for (answer, _, _) in observation_cases() {
+            for clients in [&[CLIENT][..], &[][..]] {
+                let context = format!("{answer:?} clients={clients:?}");
+                let mut sim = SimState::new(SimConfig::default());
+                let mut radio = DropRadio::new(vec![answer.clone()], clients);
+                let mut log = EventLog::new();
+                let note = drop_link(&mut radio, &mut sim, &mut log)
+                    .await
+                    .expect("drop")
+                    .note
+                    .expect("note");
+                let lower = note.to_lowercase();
+                assert!(
+                    !lower.contains("unchanged"),
+                    "advertising is never asserted unchanged: {context}: {note}"
+                );
+                assert!(
+                    lower.contains("advertising registration"),
+                    "the note names the observed registration: {context}: {note}"
+                );
+                assert!(
+                    lower.contains("on-air state is not observable"),
+                    "the note says what registration does not prove: {context}: {note}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn get_state_reports_the_observed_advertising_registration() {
+        for (answer, registered, error) in observation_cases() {
+            let context = format!("{answer:?}");
+            let sim = SimState::new(SimConfig::default());
+            let mut radio = DropRadio::new(vec![answer], &[]);
+            let mut log = EventLog::new();
+            let (sender, mut events) = tokio::sync::mpsc::channel(16);
+            log.add_listener(sender);
+
+            let reply = get_state(&mut radio, &sim, &mut log).await;
+
+            assert!(reply.ok, "a failed read still answers the rest: {context}");
+            assert!(reply.error.is_none(), "{context}");
+            let state = reply.state.expect("get-state state");
+            assert_eq!(state["name"], sim.config.name, "existing fields stay");
+            assert_eq!(state["hrRecovery"], sim.snapshot()["hrRecovery"]);
+            assert_observed(&state["advertising"], registered, error, &context);
+            assert_eq!(
+                drain(&mut events)
+                    .iter()
+                    .any(|event| event["kind"] == "radio-error"),
+                error.is_some(),
+                "{context}"
+            );
+            assert_eq!((radio.starts, radio.stops), (0, 0), "{context}");
+        }
+    }
+
+    #[tokio::test]
+    async fn flap_link_reports_registration_observed_after_the_bounce() {
+        // drop-link reads once, the restart reads once more while replacing
+        // the running advertisement (not registered: nothing to stop), and
+        // the final read is what the reply must carry — not the stale read
+        // from before the bounce.
+        for (after, registered, error) in observation_cases() {
+            let context = format!("{after:?}");
+            let mut sim = SimState::new(SimConfig::default());
+            let mut radio = DropRadio::new(vec![Ok(true), Ok(false), after], &[CLIENT]);
+            let mut log = EventLog::new();
+            let (sender, mut events) = tokio::sync::mpsc::channel(16);
+            log.add_listener(sender);
+
+            let reply = flap_link(&mut radio, &mut sim, &mut log)
+                .await
+                .expect("flap");
+
+            let state = reply.state.expect("flap state");
+            assert_observed(&state["advertising"], registered, error, &context);
+            assert_eq!((radio.starts, radio.stops), (1, 1), "{context}");
+            let events = drain(&mut events);
+            let dropped = events
+                .iter()
+                .find(|event| event["kind"] == "link-dropped")
+                .expect("link-dropped log");
+            assert_eq!(
+                dropped["advertising"]["registered"], true,
+                "the drop-time log keeps its own observation: {context}"
+            );
         }
     }
 
@@ -2663,12 +3827,66 @@ mod tests {
     #[test]
     fn drop_summary_with_no_targets_says_no_simulator_clients() {
         let report = radio::DisconnectReport::new();
-        let (note, state) = summarize_drop(&[], &[], &report, &[]);
+        let (note, state) = summarize_drop(
+            &[],
+            &[],
+            &report,
+            &[],
+            &radio::AdvertisingObservation::Registered,
+        );
         assert!(
             note.contains("no simulator clients"),
             "empty targets must never read as a silent success: {note}"
         );
         assert_eq!(state["dropped"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn drop_summary_carries_the_advertising_observation_in_state_and_note() {
+        let mut report = radio::DisconnectReport::new();
+        report.add_dropped("AA:AA:AA:AA:AA:AA".to_string());
+        let clients = ["AA:AA:AA:AA:AA:AA".to_string()];
+        for (observation, registered, described) in [
+            (
+                radio::AdvertisingObservation::Registered,
+                Some(true),
+                "registered",
+            ),
+            (
+                radio::AdvertisingObservation::NotRegistered,
+                Some(false),
+                "not registered",
+            ),
+            (
+                radio::AdvertisingObservation::Unknown("radio error: bus gone".into()),
+                None,
+                "unknown (radio error: bus gone)",
+            ),
+        ] {
+            let (note, state) = summarize_drop(&clients, &[], &report, &[], &observation);
+            assert_eq!(
+                state["advertising"]["registered"],
+                serde_json::json!(registered)
+            );
+            assert_eq!(state["advertising"]["onAirObservable"], false);
+            assert!(
+                note.contains(&format!(
+                    "registration observed after disconnect: {described}"
+                )),
+                "{note}"
+            );
+            assert!(!note.to_lowercase().contains("unchanged"), "{note}");
+            // The no-target note speaks the same observation.
+            let (note, state) =
+                summarize_drop(&[], &[], &radio::DisconnectReport::new(), &[], &observation);
+            assert_eq!(state["advertising"], observation.to_json());
+            assert!(
+                note.contains(&format!(
+                    "registration observed after disconnect: {described}"
+                )),
+                "{note}"
+            );
+        }
     }
 
     #[test]
@@ -2685,7 +3903,13 @@ mod tests {
         );
         let clients = ["AA:AA:AA:AA:AA:AA".to_string()];
         let allowlist = ["BB:BB:BB:BB:BB:BB".to_string()];
-        let (note, state) = summarize_drop(&clients, &allowlist, &report, &[]);
+        let (note, state) = summarize_drop(
+            &clients,
+            &allowlist,
+            &report,
+            &[],
+            &radio::AdvertisingObservation::NotRegistered,
+        );
         assert!(note.contains("AA:AA:AA:AA:AA:AA"), "{note}");
         assert_eq!(state["dropped"], serde_json::json!(["AA:AA:AA:AA:AA:AA"]));
         assert_eq!(state["skipped"].as_array().unwrap().len(), 2);

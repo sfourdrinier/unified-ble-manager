@@ -1,3 +1,4 @@
+// android/src/test/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidFindingsTest.kt
 package com.sfourdrinier.unifiedblemanager.protocol
 
 import org.junit.Assert.assertTrue
@@ -159,7 +160,7 @@ class UnifiedBleProtocolAndroidFindingsTest {
   }
 
   @Test
-  fun `fallback device name projection fails closed without Bluetooth connect permission`() {
+  fun `API 33 association results fail closed without an AssociationInfo record`() {
     val source = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java"
     )
@@ -167,14 +168,9 @@ class UnifiedBleProtocolAndroidFindingsTest {
       source.indexOf("public synchronized void onActivityResult"),
       source.indexOf("public void onNewIntent")
     )
-    val nameProjection = source
-
-    assertTrue(activityResult.contains("deviceDisplayName(device)"))
-    assertTrue(nameProjection.contains("Build.VERSION.SDK_INT >= Build.VERSION_CODES.S"))
-    assertTrue(nameProjection.contains("Manifest.permission.BLUETOOTH_CONNECT"))
-    assertTrue(nameProjection.contains("!= PackageManager.PERMISSION_GRANTED) return null;"))
-    assertTrue(nameProjection.contains("catch (SecurityException error)"))
-    assertTrue(Regex("getName\\(\\)").containsMatchIn(nameProjection))
+    assertTrue(activityResult.contains("unsupportedAssociationMetadata"))
+    assertTrue(activityResult.contains("did not return the API 33 Companion Device Manager association record"))
+    assertTrue(!activityResult.contains("EXTRA_DEVICE"))
   }
 
   @Test
@@ -210,7 +206,7 @@ class UnifiedBleProtocolAndroidFindingsTest {
   }
 
   @Test
-  fun `fallback device address projection fails closed without Bluetooth connect permission or runtime access`() {
+  fun `API 33 association results do not use the deprecated device extra`() {
     val source = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java"
     )
@@ -218,17 +214,8 @@ class UnifiedBleProtocolAndroidFindingsTest {
       source.indexOf("public synchronized void onActivityResult"),
       source.indexOf("public void onNewIntent")
     )
-    val addressProjection = source.substring(
-      source.indexOf("private String deviceAddress").also { assertTrue(it >= 0) },
-      source.indexOf("private String deviceDisplayName").also { assertTrue(it >= 0) }
-    )
-
-    assertTrue(activityResult.contains("deviceAddress(device)"))
-    assertTrue(addressProjection.contains("Build.VERSION.SDK_INT >= Build.VERSION_CODES.S"))
-    assertTrue(addressProjection.contains("Manifest.permission.BLUETOOTH_CONNECT"))
-    assertTrue(addressProjection.contains("!= PackageManager.PERMISSION_GRANTED) return null;"))
-    assertTrue(addressProjection.contains("catch (RuntimeException error)"))
-    assertTrue(Regex("return device.getAddress\\(\\)").containsMatchIn(addressProjection))
+    assertTrue(activityResult.contains("unsupportedAssociationMetadata"))
+    assertTrue(!activityResult.contains("CompanionDeviceManager.EXTRA_DEVICE"))
   }
 
   // Regression guard for issue #140: the dispatcher stamped a literal 1 on

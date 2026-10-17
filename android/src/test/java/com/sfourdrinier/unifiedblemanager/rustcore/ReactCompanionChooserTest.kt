@@ -14,6 +14,7 @@ import android.companion.BluetoothDeviceFilter
 import android.companion.BluetoothLeDeviceFilter
 import android.companion.CompanionDeviceManager
 import android.content.Context
+import android.content.Intent
 import android.net.MacAddress
 import android.os.Build
 import com.facebook.react.bridge.ReactApplicationContext
@@ -165,6 +166,36 @@ class ReactCompanionChooserTest {
       }
     }
   }
+
+  @Test
+  fun api33ActivityResultWithoutAssociationInfoRejectsAndReleasesTheOwnerOnce() {
+    val reactContext = mock(ReactApplicationContext::class.java)
+    val activity = mock(android.app.Activity::class.java)
+    val chooser = ReactCompanionChooser(reactContext, Build.VERSION_CODES.TIRAMISU) { true }
+    var completions = 0
+    var result: Result<CompanionAssociation>? = null
+    val callback: (Result<CompanionAssociation>) -> Unit = {
+      completions++
+      result = it
+    }
+    fun field(name: String, value: Any) {
+      ReactCompanionChooser::class.java.getDeclaredField(name).also { it.isAccessible = true }.set(chooser, value)
+    }
+    field("pending", callback)
+    field("pendingRequestCode", 0x5552)
+    field("pendingAssociationId", 10)
+    field("uiLaunched", true)
+
+    chooser.onActivityResult(activity, 0x5552, android.app.Activity.RESULT_OK, Intent())
+    chooser.onActivityResult(activity, 0x5552, android.app.Activity.RESULT_OK, Intent())
+
+    assertTrue(result!!.isFailure)
+    val failure = result!!.exceptionOrNull() as RadioPortFailure
+    org.junit.Assert.assertEquals(RadioFailureKind.UNSUPPORTED, failure.kind)
+    org.junit.Assert.assertEquals("unsupportedAssociationMetadata", failure.nativeCode)
+    org.junit.Assert.assertEquals(1, completions)
+  }
+
   @Test
   fun detachingClosesOwnedPickerBeforeSettlingItsCallback() {
     val context = mock(ReactApplicationContext::class.java)

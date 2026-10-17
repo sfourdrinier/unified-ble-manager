@@ -15,7 +15,6 @@ import android.content.pm.PackageManager;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
-
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
@@ -203,11 +202,6 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
         final Promise associationPromise = promise;
 
         @Override
-        public void onDeviceFound(IntentSender intentSender) {
-          launchAssociationUi(activity, intentSender, associationPromise, associationRequestCode);
-        }
-
-        @Override
         public void onAssociationPending(IntentSender intentSender) {
           launchAssociationUi(activity, intentSender, associationPromise, associationRequestCode);
         }
@@ -288,15 +282,10 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
         return;
       }
     }
-    final BluetoothDevice device;
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      device = data.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE, BluetoothDevice.class);
-    } else {
-      device = data.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE);
-    }
-    final String peerId = deviceAddress(device);
-    final String displayName = deviceDisplayName(device);
-    resolveAssociation(associationPromise, "associated", pendingAssociationId, peerId, displayName);
+    rejectAssociation(
+        associationPromise,
+        "unsupportedAssociationMetadata",
+        "Android did not return the API 33 Companion Device Manager association record.");
   }
 
   @Override

@@ -1014,6 +1014,7 @@ interface ParameterWatch {
   readonly record: ConnectionRecord
   readonly stream: CoreBoundedStream<ConnectionParametersStreamObservation<string>>
   ordinal: number
+  acceptanceRevision: number
   probed: boolean
   failure: NormalizedBleError | null
   readonly openingCancellation: AbortController
@@ -1029,6 +1030,9 @@ interface ReadinessWatch {
   readonly record: ConnectionRecord
   readonly stream: CoreBoundedStream<ConnectionWriteReadinessObservation<string>>
   ordinal: number
+  acceptanceRevision: number
+  failure: NormalizedBleError | null
+  readonly openingCancellation: AbortController
   /** The last reported state (F2: the reprobe runs while this is false). */
   ready: boolean
   /** The initial probe resolved (F3: earlier reports buffer, never drop). */
@@ -2086,10 +2090,16 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
    * end `source-failed` and its databases go stale; CoreBluetooth and WinRT
    * announce `connection-state-changed` with reason `adapter`, BlueZ ends it
    * silently (the legacy per-OS sequence, `ADAPTER_LOSS_SEQUENCE`).
+   *
+   * The transition's `previous` is the last state announced to the core, which
+   * this provider only ever tells of terminal transitions: `connected`, also
+   * while the caller's own release is in flight. `disconnecting` is the
+   * provider's private marker for that release; announcing it breaks the
+   * core's previous-state invariant and ends the whole manager
+   * `backend-failure` instead of ending this link `adapter-loss`.
    */
   private applyAdapterLostLink(record: ConnectionRecord): void {
     if (record.state !== 'connected' && record.state !== 'disconnecting') return
-    const previous = record.state
     record.state = 'lost'
     for (const subscriptionId of record.subscriptions) {
       const subscription = this.subscriptions.get(subscriptionId)
@@ -2115,7 +2125,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         attachmentId: this.attachment.attachmentId,
         ingressOrdinal: this.nextEventOrdinal(),
         connection: record.path,
-        previous,
+        previous: 'connected',
         current: 'lost',
         reason: 'adapter'
       })
@@ -2977,14 +2987,17 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       record,
       stream,
       ordinal: 0,
+      acceptanceRevision: 0,
       probed: false,
       failure: null,
       buffered: [],
       openingCancellation
     }
     this.parameterWatches.add(watch)
+    const generation = record.coreGeneration
+    const revision = watch.acceptanceRevision
     const probeStartedAt = this.now()
-    let measured: { intervalUs: number; latency: number; supervisionTimeoutUs: number }
+    let measured: { intervalUs: number; latency: number; supervisionTimeoutUs: number } | null = null
     try {
       measured = await this.withTicket(correlation, openingCancellation.signal, operation, ticket =>
         this.central.connectionParameters({
@@ -2995,17 +3008,43 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
           ...this.budget(options)
         })
       )
-      assertConnectionParameterValues(measured, this.op('connection.parameters.result'))
+      await this.acceptParameterReportsDuringProbe(watch)
+      if (watch.acceptanceRevision === revision)
+        assertConnectionParameterValues(measured, this.op('connection.parameters.result'))
     } catch (error) {
+      await this.acceptParameterReportsDuringProbe(watch)
       if (watch.failure !== null) throw new BackendContractError(watch.failure)
       if (!this.parameterWatches.has(watch))
         throw contractError('connection.stale', 'connection', `${operation}.closed`)
-      this.closeParameterWatch(watch, 'source-failed', desktopRustCoreError(error, operation).normalized)
-      throw error
+      if (record.coreGeneration !== generation || record.state !== 'connected') {
+        this.closeParameterWatch(watch, 'connection-lost')
+        throw contractError('connection.stale', 'connection', `${operation}.closed`)
+      }
+      if (
+        watch.acceptanceRevision === revision ||
+        desktopRustCoreError(error, operation).normalized.code === 'operation.aborted' ||
+        desktopRustCoreError(error, operation).normalized.code === 'operation.timed-out' ||
+        openingCancellation.signal.aborted ||
+        record.coreGeneration !== generation ||
+        record.state !== 'connected' ||
+        (options.deadline != null && this.now() >= options.deadline)
+      ) {
+        this.closeParameterWatch(watch, 'source-failed', desktopRustCoreError(error, operation).normalized)
+        throw error
+      }
     } finally {
       options.signal?.removeEventListener('abort', onAbort)
     }
-    if (!this.parameterWatches.has(watch)) {
+    if (watch.failure !== null) throw new BackendContractError(watch.failure)
+    try {
+      this.assertPeerQueryUsable(operation, options)
+    } catch (error) {
+      this.closeParameterWatch(watch, 'source-failed', desktopRustCoreError(error, operation).normalized)
+      throw error
+    }
+    if (!this.parameterWatches.has(watch) || record.coreGeneration !== generation || record.state !== 'connected') {
+      if (record.coreGeneration !== generation || record.state !== 'connected')
+        this.closeParameterWatch(watch, 'connection-lost')
       if (watch.failure !== null) throw new BackendContractError(watch.failure)
       throw contractError('connection.stale', 'connection', `${operation}.closed`)
     }
@@ -3013,9 +3052,10 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     watch.probed = true
     // Native events accepted while the getter was pending have an established
     // source order. The delayed getter has no comparable capture ordinal.
-    if (watch.buffered.length === 0) this.emitConnectionParameters(watch, measured, probeStartedAt)
+    if (watch.acceptanceRevision === revision && measured !== null)
+      this.emitConnectionParameters(watch, measured, probeStartedAt)
     for (const report of watch.buffered.splice(0))
-      this.emitConnectionParameters(watch, report, report.observedAtMonotonicMs)
+      this.emitConnectionParameters(watch, report, report.observedAtMonotonicMs, false)
     return Object.freeze({
       events: stream,
       close: async (): Promise<CleanupRecord> => {
@@ -3040,7 +3080,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private emitConnectionParameters(
     watch: ParameterWatch,
     measured: { readonly intervalUs: number; readonly latency: number; readonly supervisionTimeoutUs: number },
-    observedAtMonotonicMs = this.now()
+    observedAtMonotonicMs = this.now(),
+    accept = true
   ): void {
     if (!this.parameterWatches.has(watch)) return
     try {
@@ -3053,6 +3094,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       )
       return
     }
+    if (accept) watch.acceptanceRevision += 1
     if (!watch.probed) {
       if (watch.buffered.length >= 64) {
         this.closeParameterWatch(
@@ -3179,7 +3221,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         this.closeParameterWatch(watch, 'connection-lost')
         continue
       }
-      const revision = watch.ordinal
+      const revision = watch.acceptanceRevision
       const generation = watch.record.coreGeneration
       try {
         const measured = await this.central.connectionParameters({
@@ -3190,14 +3232,19 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         await this.acceptParameterReportsDuringProbe(watch)
         if (
           this.parameterWatches.has(watch) &&
-          watch.ordinal === revision &&
+          watch.acceptanceRevision === revision &&
           watch.record.coreGeneration === generation &&
           watch.record.state === 'connected'
         )
           this.emitConnectionParameters(watch, measured)
       } catch (error) {
         await this.acceptParameterReportsDuringProbe(watch)
-        if (watch.ordinal === revision && watch.record.coreGeneration === generation)
+        if (
+          this.parameterWatches.has(watch) &&
+          watch.acceptanceRevision === revision &&
+          watch.record.coreGeneration === generation &&
+          watch.record.state === 'connected'
+        )
           this.closeParameterWatch(
             watch,
             'source-failed',
@@ -3230,10 +3277,17 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       // F1: the legacy watch dropped the oldest observation on overflow.
       'drop-oldest'
     )
+    const openingCancellation = new AbortController()
+    const onAbort = (): void => openingCancellation.abort()
+    if (options.signal?.aborted === true) openingCancellation.abort()
+    else options.signal?.addEventListener('abort', onAbort, { once: true })
     const watch: ReadinessWatch = {
       record,
       stream,
       ordinal: 0,
+      acceptanceRevision: 0,
+      failure: null,
+      openingCancellation,
       ready: false,
       probed: false,
       buffered: null,
@@ -3244,9 +3298,11 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     // F3: registered before the probe so reports arriving mid-probe buffer
     // instead of dropping.
     this.readinessWatches.add(watch)
-    let ready: boolean
+    const generation = record.coreGeneration
+    const revision = watch.acceptanceRevision
+    let ready: boolean | null = null
     try {
-      ready = await this.withTicket(correlation, options.signal, operation, ticket =>
+      ready = await this.withTicket(correlation, openingCancellation.signal, operation, ticket =>
         this.central.writeReadiness({
           peerId: record.nativePeerId,
           lease: record.lease,
@@ -3254,16 +3310,47 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
           ...this.budget(options)
         })
       )
+      await this.acceptReadinessReportsDuringProbe(watch)
+    } catch (error) {
+      await this.acceptReadinessReportsDuringProbe(watch)
+      if (watch.failure !== null) throw new BackendContractError(watch.failure)
+      if (!this.readinessWatches.has(watch))
+        throw contractError('connection.stale', 'connection', `${operation}.closed`)
+      if (record.coreGeneration !== generation || record.state !== 'connected') {
+        this.closeReadinessWatch(watch, 'connection-lost')
+        throw contractError('connection.stale', 'connection', `${operation}.closed`)
+      }
+      if (
+        watch.acceptanceRevision === revision ||
+        desktopRustCoreError(error, operation).normalized.code === 'operation.aborted' ||
+        desktopRustCoreError(error, operation).normalized.code === 'operation.timed-out' ||
+        openingCancellation.signal.aborted ||
+        record.coreGeneration !== generation ||
+        record.state !== 'connected' ||
+        (options.deadline != null && this.now() >= options.deadline)
+      ) {
+        this.closeReadinessWatch(watch, 'source-failed', desktopRustCoreError(error, operation).normalized)
+        throw error
+      }
+    } finally {
+      options.signal?.removeEventListener('abort', onAbort)
+    }
+    if (watch.failure !== null) throw new BackendContractError(watch.failure)
+    try {
+      this.assertPeerQueryUsable(operation, options)
     } catch (error) {
       this.closeReadinessWatch(watch, 'source-failed', desktopRustCoreError(error, operation).normalized)
       throw error
     }
-    if (!this.readinessWatches.has(watch)) {
+    if (!this.readinessWatches.has(watch) || record.coreGeneration !== generation || record.state !== 'connected') {
+      if (record.coreGeneration !== generation || record.state !== 'connected')
+        this.closeReadinessWatch(watch, 'connection-lost')
+      if (watch.failure !== null) throw new BackendContractError(watch.failure)
       // The watch ended while the probe was in flight (connection lost).
       throw contractError('connection.stale', 'connection', `${operation}.closed`)
     }
     watch.probed = true
-    this.emitReadiness(watch, ready)
+    if (watch.acceptanceRevision === revision && ready !== null) this.emitReadiness(watch, ready)
     const pending = watch.buffered
     watch.buffered = null
     // F3: replay the latest pre-probe report for this generation, if any.
@@ -3272,7 +3359,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       typeof pending.generation === 'string' &&
       pending.generation === watch.record.coreGeneration
     ) {
-      this.emitReadiness(watch, pending.ready)
+      this.emitReadiness(watch, pending.ready, false)
     }
     if (!watch.ready) this.scheduleReadinessReprobe(watch)
     return Object.freeze({
@@ -3295,10 +3382,19 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       watch.reprobeTimer = null
     }
     this.readinessWatches.delete(watch)
+    if (normalized !== null && watch.failure === null) watch.failure = normalized
+    if (!watch.probed) watch.openingCancellation.abort()
+    watch.buffered = null
     watch.stream.closeWithReason(reason, normalized)
   }
 
-  private emitReadiness(watch: ReadinessWatch, ready: boolean): void {
+  private emitReadiness(watch: ReadinessWatch, ready: boolean, accept = true): void {
+    if (!this.readinessWatches.has(watch)) return
+    if (accept) watch.acceptanceRevision += 1
+    if (!watch.probed) {
+      watch.buffered = Object.freeze({ ready, generation: watch.record.coreGeneration })
+      return
+    }
     watch.ready = ready
     watch.ordinal += 1
     const observation: ConnectionWriteReadinessObservation<string> = Object.freeze({
@@ -3379,7 +3475,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       this.closeReadinessWatch(watch, 'connection-lost')
       return
     }
-    const revision = watch.ordinal
+    const revision = watch.acceptanceRevision
     const generation = watch.record.coreGeneration
     let ready: boolean
     try {
@@ -3389,7 +3485,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       await this.acceptReadinessReportsDuringProbe(watch)
       if (
         this.readinessWatches.has(watch) &&
-        watch.ordinal === revision &&
+        watch.acceptanceRevision === revision &&
         watch.record.coreGeneration === generation
       ) {
         this.closeReadinessWatch(
@@ -3402,7 +3498,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     if (
       this.readinessWatches.has(watch) &&
-      watch.ordinal === revision &&
+      watch.acceptanceRevision === revision &&
       watch.record.coreGeneration === generation &&
       watch.record.state === 'connected'
     )
@@ -3424,7 +3520,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         this.closeReadinessWatch(watch, 'connection-lost')
         continue
       }
-      const revision = watch.ordinal
+      const revision = watch.acceptanceRevision
       const generation = watch.record.coreGeneration
       let ready: boolean
       try {
@@ -3432,7 +3528,12 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         await this.acceptReadinessReportsDuringProbe(watch)
       } catch (error) {
         await this.acceptReadinessReportsDuringProbe(watch)
-        if (watch.ordinal === revision && watch.record.coreGeneration === generation)
+        if (
+          this.readinessWatches.has(watch) &&
+          watch.acceptanceRevision === revision &&
+          watch.record.coreGeneration === generation &&
+          watch.record.state === 'connected'
+        )
           this.closeReadinessWatch(
             watch,
             'source-failed',
@@ -3442,7 +3543,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       }
       if (
         this.readinessWatches.has(watch) &&
-        watch.ordinal === revision &&
+        watch.acceptanceRevision === revision &&
         watch.record.coreGeneration === generation &&
         watch.record.state === 'connected'
       )
@@ -3465,19 +3566,14 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
       if (watch.record.nativePeerId !== event.peerId) continue
       const generation = typeof event.connectionGeneration === 'string' ? event.connectionGeneration : null
       const generationMatches = generation !== null && generation === watch.record.coreGeneration
-      // A missing generation must not update every watch of this peer.
-      // Buffer it until the probe settles; replay applies only a matching one.
-      if (watch.probed && !generationMatches) continue
+      // Only an explicit matching native generation can accept an observation.
+      if (!generationMatches) continue
       if (watch.record.state !== 'connected') {
         this.closeReadinessWatch(watch, 'connection-lost')
         continue
       }
       // F3: a report arriving before the probe resolves buffers (latest
       // wins) and replays after it — it is never dropped.
-      if (!watch.probed) {
-        watch.buffered = Object.freeze({ ready: event.ready === true, generation })
-        continue
-      }
       this.emitReadiness(watch, event.ready === true)
     }
   }
@@ -4771,7 +4867,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private async acquireGattNative(
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions,
-    kind: 'write' | 'notify'
+    kind: 'write' | 'notify',
+    beforeClose: () => void = () => undefined
   ) {
     const operation = this.op(kind === 'write' ? 'gatt.acquire-write' : 'gatt.acquire-notify')
     this.assertOperational(operation)
@@ -4789,18 +4886,25 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         ),
       record.nativePeerId
     )
-    if (
-      typeof acquired.handle !== 'string' ||
-      acquired.handle.length === 0 ||
-      !Number.isInteger(acquired.mtu) ||
-      acquired.mtu < 23 ||
-      acquired.mtu > 517
-    ) {
-      if (typeof acquired.handle === 'string')
-        await this.central.closeAcquired({ handle: acquired.handle, lease: record.lease })
+    if (typeof acquired.handle !== 'string' || acquired.handle.length === 0) {
       throw contractError('protocol.violation', 'gatt', operation)
     }
-    return { acquired, record }
+    // A native handle transfers ownership before its remaining receipt is
+    // validated. Failed compensation stays on this exact connection's ledger.
+    const close = this.ownedAcquiredCloser(record, acquired.handle, beforeClose)
+    if (!Number.isInteger(acquired.mtu) || acquired.mtu < 23 || acquired.mtu > 517) {
+      const primary = contractError('protocol.violation', 'gatt', operation)
+      const cleanup = await close()
+      if (cleanup.failures.length > 0) {
+        throw new AggregateError(
+          [primary, ...cleanup.failures.map(failure => new BackendContractError(failure.error))],
+          'Invalid acquired GATT receipt; cleanup remains owned'
+        )
+      }
+      throw primary
+    }
+    await this.acceptAcquiredConnection(record, close)
+    return { acquired, record, close }
   }
 
   private ownedAcquiredCloser(
@@ -4872,9 +4976,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: PublicOperationOptions
   ): Promise<AcquiredGattWriter<string>> {
-    const { acquired, record } = await this.acquireGattNative(path, options, 'write')
-    const close = this.ownedAcquiredCloser(record, acquired.handle)
-    await this.acceptAcquiredConnection(record, close)
+    const { acquired, record, close } = await this.acquireGattNative(path, options, 'write')
     return Object.freeze({
       mtuBytes: acquired.mtu,
       write: async (
@@ -4909,16 +5011,14 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: SubscriptionOptions
   ): Promise<AcquiredGattNotifications> {
-    const { acquired, record } = await this.acquireGattNative(path, options, 'notify')
     const stream = new CoreBoundedStream<NotificationValue>(options.delivery, options.delivery.overflowPolicy)
     const stop = new AbortController()
     let closing = false
-    const close = this.ownedAcquiredCloser(record, acquired.handle, () => {
+    const { acquired, record, close } = await this.acquireGattNative(path, options, 'notify', () => {
       closing = true
       stream.closeWithReason('owner-released')
       stop.abort()
     })
-    await this.acceptAcquiredConnection(record, close)
     const pump = async (): Promise<void> => {
       try {
         while (!closing) {

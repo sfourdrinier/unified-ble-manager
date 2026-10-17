@@ -77,7 +77,7 @@ class PresenceColdStartTest {
     coordinator().appeared(peer, null)
     host.drainPresenceAppearances()
 
-    adapter.connect(1L, peer, true, emptyArray())
+    adapter.connect(1L, peer, true, emptyArray(), "test-generation-1")
 
     assertTrue(
       "reconnect must request the known peer when-available: ${radio.calls}",

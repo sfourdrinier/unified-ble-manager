@@ -10,6 +10,7 @@ import android.os.SystemClock
 import com.ubm.echo.EchoBridge
 import com.ubm.gatt.GattBridge
 import java.util.concurrent.Executor
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -75,6 +76,7 @@ class UbmGattCoreBinding(
 
     /** Owner label for protocol-driven scans. */
     const val PROTOCOL_SCAN_OWNER = "android-protocol-scan"
+    const val CONNECT_ADMISSION_CAP = 256
 
     private val MAC_ADDRESS = Regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
   }
@@ -83,6 +85,11 @@ class UbmGattCoreBinding(
   private var handle: Long = -1
   private var openFailureValue: String? = null
   private val scanOp = AtomicReference<String?>(null)
+  private val connectAdmissions = ConcurrentHashMap<String, ConnectAdmission>()
+  private val connectReservations = ConcurrentHashMap<String, String>()
+  private val connectFailures = ConcurrentHashMap<String, String>()
+  private val connectAdmissionGuard = Any()
+  private val connectAdmissionDiagnostic = AtomicReference<String?>(null)
 
   /**
    * R02 barriers. [scanGuard] linearizes the post-stop barrier against drain
@@ -145,6 +152,29 @@ class UbmGattCoreBinding(
   private fun onDrained(observations: List<GattObservation>) {
     if (disabled.get()) return
     for (observation in observations) {
+      observation.connectAdmission?.let { admission ->
+        val key = admissionKey(admission.peer, admission.lease)
+        val accepted = synchronized(connectAdmissionGuard) {
+          if (connectReservations[key] != admission.peer) {
+            false
+          } else {
+            connectReservations.remove(key)
+            connectAdmissions[key] = admission
+            true
+          }
+        }
+        if (!accepted) {
+          connectAdmissionDiagnostic.set("connect-admission-stale|$key")
+        }
+      }
+      if (!observation.ok && observation.event == "connect" && observation.connectPeer != null && observation.connectLease != null) {
+        val key = admissionKey(observation.connectPeer, observation.connectLease)
+        synchronized(connectAdmissionGuard) {
+          if (connectReservations.remove(key) != null) {
+            connectFailures[key] = observation.detail ?: "connect-admission-rejected"
+          }
+        }
+      }
       if (observation.ok && observation.raw.contains("\"kind\":\"central.scan-start\"")) {
         scanOpFrom(observation.raw)?.let { op ->
           synchronized(scanGuard) {
@@ -170,6 +200,34 @@ class UbmGattCoreBinding(
   }
 
   private fun nowMs(): Long = clockMs()
+
+  private fun admissionKey(peer: String, lease: String): String = "$peer\u0000$lease"
+
+  /** Returns and consumes the one exact connect admission for this device/lease. */
+  fun takeConnectAdmission(deviceId: String, lease: String): ConnectAdmissionResult {
+    if (lease.isEmpty()) return ConnectAdmissionResult.Rejected("lease-empty")
+    val key = admissionKey(peerKeyFor(deviceId), lease)
+    return synchronized(connectAdmissionGuard) {
+      connectAdmissions.remove(key)?.let { return@synchronized ConnectAdmissionResult.Admitted(it) }
+      connectFailures.remove(key)?.let { return@synchronized ConnectAdmissionResult.Rejected(it) }
+      ConnectAdmissionResult.Missing
+    }
+  }
+
+  /** Withdraws every exact pending/settled admission during cancellation or compensation. */
+  fun withdrawConnectAdmission(deviceId: String, lease: String): ConnectAdmissionResult {
+    if (lease.isEmpty()) return ConnectAdmissionResult.Rejected("lease-empty")
+    val key = admissionKey(peerKeyFor(deviceId), lease)
+    return synchronized(connectAdmissionGuard) {
+      val removed = connectReservations.remove(key) != null ||
+        connectAdmissions.remove(key) != null ||
+        connectFailures.remove(key) != null
+      if (removed) ConnectAdmissionResult.Rejected("withdrawn") else ConnectAdmissionResult.Missing
+    }
+  }
+
+  /** Diagnostic for a bounded admission rejection, retained until replaced. */
+  fun connectAdmissionDiagnostic(): String? = connectAdmissionDiagnostic.get()
 
   /** Peer domain for one Android device id (matches the staged-driver convention). */
   fun peerDomainFor(deviceId: String): String =
@@ -214,21 +272,58 @@ class UbmGattCoreBinding(
    * single returned verdict (see `admitCoreCommand`).
    */
   fun postConnect(deviceId: String, lease: String): UbmGattCentralBridge.PostResult? {
+    if (lease.isEmpty()) return UbmGattCentralBridge.PostResult.EnqueueFailed("connect-lease-empty")
+    val peer = peerKeyFor(deviceId)
+    val key = admissionKey(peer, lease)
+    synchronized(connectAdmissionGuard) {
+      if (connectReservations.size + connectAdmissions.size + connectFailures.size >= CONNECT_ADMISSION_CAP) {
+        connectAdmissionDiagnostic.set("connect-admission-cap")
+        return UbmGattCentralBridge.PostResult.EnqueueFailed("connect-admission-cap")
+      }
+      if (connectReservations.containsKey(key) || connectAdmissions.containsKey(key) || connectFailures.containsKey(key)) {
+        connectAdmissionDiagnostic.set("connect-admission-duplicate|$key")
+        return UbmGattCentralBridge.PostResult.EnqueueFailed("connect-admission-duplicate")
+      }
+      connectReservations[key] = peer
+    }
     val resolved = postPeerResolve(deviceId)
-    if (resolved !is UbmGattCentralBridge.PostResult.Queued) return resolved
-    return post(GattCentralWire.connect(peerKeyFor(deviceId), lease, NO_PROTOCOL_DEADLINE_MS, nowMs()))
+    if (resolved !is UbmGattCentralBridge.PostResult.Queued) {
+      if (resolved !is UbmGattCentralBridge.PostResult.ScheduleFailed) {
+        synchronized(connectAdmissionGuard) { connectReservations.remove(key) }
+      }
+      return resolved
+    }
+    val result = post(GattCentralWire.connect(peer, lease, NO_PROTOCOL_DEADLINE_MS, nowMs()))
+    if (result !is UbmGattCentralBridge.PostResult.Queued &&
+      result !is UbmGattCentralBridge.PostResult.ScheduleFailed
+    ) {
+      synchronized(connectAdmissionGuard) { connectReservations.remove(key) }
+    }
+    return result
   }
 
   fun postLinkEstablished(deviceId: String): UbmGattCentralBridge.PostResult? {
     return post(GattCentralWire.linkEstablished(peerKeyFor(deviceId)))
   }
 
+  fun postLinkEstablished(deviceId: String, generation: String): UbmGattCentralBridge.PostResult? {
+    return post(GattCentralWire.linkEstablishedScoped(peerKeyFor(deviceId), generation))
+  }
+
   fun postLinkReleased(deviceId: String): UbmGattCentralBridge.PostResult? {
     return post(GattCentralWire.linkReleased(peerKeyFor(deviceId)))
   }
 
+  fun postLinkReleased(deviceId: String, generation: String): UbmGattCentralBridge.PostResult? {
+    return post(GattCentralWire.linkReleasedScoped(peerKeyFor(deviceId), generation))
+  }
+
   fun postPeerLoss(deviceId: String): UbmGattCentralBridge.PostResult? {
     return post(GattCentralWire.peerLoss(peerKeyFor(deviceId), nowMs()))
+  }
+
+  fun postPeerLoss(deviceId: String, generation: String): UbmGattCentralBridge.PostResult? {
+    return post(GattCentralWire.peerLossScoped(peerKeyFor(deviceId), generation, nowMs()))
   }
 
   fun postDisconnect(deviceId: String, lease: String): UbmGattCentralBridge.PostResult? {
@@ -257,6 +352,11 @@ class UbmGattCoreBinding(
       scanStopped = true
       scanOp.set(null)
     }
+    synchronized(connectAdmissionGuard) {
+      connectReservations.clear()
+      connectAdmissions.clear()
+      connectFailures.clear()
+    }
     return post(GattCentralWire.adapterReset(nowMs()))
   }
 
@@ -273,6 +373,11 @@ class UbmGattCoreBinding(
     // Latched after the joined final drain (which still forwards, as before):
     // only truly late callbacks are dropped from here on.
     disabled.set(true)
+    synchronized(connectAdmissionGuard) {
+      connectReservations.clear()
+      connectAdmissions.clear()
+      connectFailures.clear()
+    }
     if (isOpen) {
       try {
         jni.close(handle)
@@ -291,6 +396,11 @@ class UbmGattCoreBinding(
     // Latched first: shutdown does not join a running drain, so an in-flight
     // worker callback must already be barred from the gone owner.
     disabled.set(true)
+    synchronized(connectAdmissionGuard) {
+      connectReservations.clear()
+      connectAdmissions.clear()
+      connectFailures.clear()
+    }
     bridge.shutdown()
     if (isOpen) {
       try {

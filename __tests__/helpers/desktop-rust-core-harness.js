@@ -321,6 +321,62 @@ function dispatchCalls(calls) {
   return calls.filter(([name]) => DISPATCH_METHODS.has(name))
 }
 
+/**
+ * A gate over the native lifecycle/adapter event queues of every central the
+ * binding opens next. The `take*` calls are non-blocking polls that run on a
+ * native worker some time after the JS call, so a gate that only reads its
+ * flag when the call is made is not airtight: a poll issued before the gate
+ * closed can still consume an event staged after it and hand it to the
+ * provider. This gate reads the flag again when the native answer returns. An
+ * event consumed while the gate is closed is kept, in order, and served first
+ * once it opens: never delivered early, never lost, and the provider's own
+ * poll sees an empty queue meanwhile. `onDeliver(queue, event)` observes each
+ * event at the moment the provider receives it.
+ */
+const GATED_EVENT_QUEUES = Object.freeze(['takeLifecycleEvent', 'takeAdapterResetEvent', 'takeAdapterEvent'])
+
+function gateNativeEventQueues(harness, { queues = GATED_EVENT_QUEUES, onDeliver = () => {} } = {}) {
+  let closed = false
+  const kept = new Map(queues.map(queue => [queue, []]))
+  const open = harness.binding.openSynthetic
+  harness.binding.openSynthetic = async (...openArgs) => {
+    const central = await open(...openArgs)
+    return new Proxy(central, {
+      get(target, property) {
+        const value = Reflect.get(target, property)
+        const queue = kept.get(String(property))
+        if (queue === undefined)
+          return typeof value === 'function' ? (...args) => Reflect.apply(value, target, args) : value
+        const deliver = event => {
+          onDeliver(String(property), event)
+          return event
+        }
+        return async (...args) => {
+          if (closed) return null
+          if (queue.length > 0) return deliver(queue.shift())
+          const event = await Reflect.apply(value, target, args)
+          if (event === null || event === undefined) return event
+          if (!closed) return deliver(event)
+          queue.push(event)
+          return null
+        }
+      }
+    })
+  }
+  return {
+    hold() {
+      closed = true
+    },
+    open() {
+      closed = false
+    },
+    /** Events consumed from the native queue while the gate was closed and not yet delivered. */
+    keptEvents() {
+      return [...kept.values()].reduce((total, queue) => total + queue.length, 0)
+    }
+  }
+}
+
 module.exports = {
   HOST_PLATFORM,
   HRM_CONTROL,
@@ -334,6 +390,7 @@ module.exports = {
   delivery,
   dispatchCalls,
   drainFor,
+  gateNativeEventQueues,
   hrmServices,
   loadAddon,
   nextEvent,

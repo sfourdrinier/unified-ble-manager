@@ -3688,6 +3688,45 @@ class MobileRadioIngress:
             return True
 
     @dataclass
+    class CONNECTION_SCOPED:
+
+        def __init__(self, peer_id:str, expected_generation:str, connected:bool, status:typing.Optional[int]):
+            self.peer_id = peer_id
+
+
+            self.expected_generation = expected_generation
+
+
+            self.connected = connected
+
+
+            self.status = status
+
+
+            pass
+
+
+
+
+
+        def __str__(self):
+            return "MobileRadioIngress.CONNECTION_SCOPED(peer_id={}, expected_generation={}, connected={}, status={})".format(self.peer_id, self.expected_generation, self.connected, self.status)
+        def __eq__(self, other):
+            if not isinstance(other, MobileRadioIngress):
+                return NotImplemented
+            if not other.is_CONNECTION_SCOPED():
+                return False
+            if self.peer_id != other.peer_id:
+                return False
+            if self.expected_generation != other.expected_generation:
+                return False
+            if self.connected != other.connected:
+                return False
+            if self.status != other.status:
+                return False
+            return True
+
+    @dataclass
     class SERVICES_CHANGED:
 
         def __init__(self, peer_id:str):
@@ -3916,6 +3955,10 @@ class MobileRadioIngress:
         return isinstance(self, MobileRadioIngress.CONNECTION)
     def is_connection(self) -> bool:
         return isinstance(self, MobileRadioIngress.CONNECTION)
+    def is_CONNECTION_SCOPED(self) -> bool:
+        return isinstance(self, MobileRadioIngress.CONNECTION_SCOPED)
+    def is_connection_scoped(self) -> bool:
+        return isinstance(self, MobileRadioIngress.CONNECTION_SCOPED)
     def is_SERVICES_CHANGED(self) -> bool:
         return isinstance(self, MobileRadioIngress.SERVICES_CHANGED)
     def is_services_changed(self) -> bool:
@@ -3955,6 +3998,7 @@ class MobileRadioIngress:
 # We might be able to do this a little more neatly with a metaclass, but this'll do.
 MobileRadioIngress.ADVERTISEMENT = type("MobileRadioIngress.ADVERTISEMENT", (MobileRadioIngress.ADVERTISEMENT, MobileRadioIngress,), {})  # type: ignore
 MobileRadioIngress.CONNECTION = type("MobileRadioIngress.CONNECTION", (MobileRadioIngress.CONNECTION, MobileRadioIngress,), {})  # type: ignore
+MobileRadioIngress.CONNECTION_SCOPED = type("MobileRadioIngress.CONNECTION_SCOPED", (MobileRadioIngress.CONNECTION_SCOPED, MobileRadioIngress,), {})  # type: ignore
 MobileRadioIngress.SERVICES_CHANGED = type("MobileRadioIngress.SERVICES_CHANGED", (MobileRadioIngress.SERVICES_CHANGED, MobileRadioIngress,), {})  # type: ignore
 MobileRadioIngress.NOTIFICATION = type("MobileRadioIngress.NOTIFICATION", (MobileRadioIngress.NOTIFICATION, MobileRadioIngress,), {})  # type: ignore
 MobileRadioIngress.ADAPTER_STATE = type("MobileRadioIngress.ADAPTER_STATE", (MobileRadioIngress.ADAPTER_STATE, MobileRadioIngress,), {})  # type: ignore
@@ -3982,38 +4026,45 @@ class _UniffiFfiConverterTypeMobileRadioIngress(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterOptionalInt32.read(buf),
             )
         if variant == 3:
+            return MobileRadioIngress.CONNECTION_SCOPED(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterBoolean.read(buf),
+                _UniffiFfiConverterOptionalInt32.read(buf),
+            )
+        if variant == 4:
             return MobileRadioIngress.SERVICES_CHANGED(
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 4:
+        if variant == 5:
             return MobileRadioIngress.NOTIFICATION(
                 _UniffiFfiConverterTypeMobileInstance.read(buf),
                 _UniffiFfiConverterUInt64.read(buf),
                 _UniffiFfiConverterBytes.read(buf),
             )
-        if variant == 5:
+        if variant == 6:
             return MobileRadioIngress.ADAPTER_STATE(
                 _UniffiFfiConverterTypeMobileAdapterSnapshot.read(buf),
             )
-        if variant == 6:
+        if variant == 7:
             return MobileRadioIngress.SCAN_FAILED(
                 _UniffiFfiConverterString.read(buf),
             )
-        if variant == 7:
+        if variant == 8:
             return MobileRadioIngress.SECURITY_CHANGED(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterTypeMobileSecurityState.read(buf),
             )
-        if variant == 8:
+        if variant == 9:
             return MobileRadioIngress.WRITE_READINESS(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterBoolean.read(buf),
             )
-        if variant == 9:
+        if variant == 10:
             return MobileRadioIngress.RESTORED(
                 _UniffiFfiConverterSequenceTypeMobileRestoredPeer.read(buf),
             )
-        if variant == 10:
+        if variant == 11:
             return MobileRadioIngress.DROPPED(
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterString.read(buf),
@@ -4027,6 +4078,12 @@ class _UniffiFfiConverterTypeMobileRadioIngress(_UniffiConverterRustBuffer):
             return
         if value.is_CONNECTION():
             _UniffiFfiConverterString.check_lower(value.peer_id)
+            _UniffiFfiConverterBoolean.check_lower(value.connected)
+            _UniffiFfiConverterOptionalInt32.check_lower(value.status)
+            return
+        if value.is_CONNECTION_SCOPED():
+            _UniffiFfiConverterString.check_lower(value.peer_id)
+            _UniffiFfiConverterString.check_lower(value.expected_generation)
             _UniffiFfiConverterBoolean.check_lower(value.connected)
             _UniffiFfiConverterOptionalInt32.check_lower(value.status)
             return
@@ -4071,33 +4128,39 @@ class _UniffiFfiConverterTypeMobileRadioIngress(_UniffiConverterRustBuffer):
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterBoolean.write(value.connected, buf)
             _UniffiFfiConverterOptionalInt32.write(value.status, buf)
-        if value.is_SERVICES_CHANGED():
+        if value.is_CONNECTION_SCOPED():
             buf.write_i32(3)
             _UniffiFfiConverterString.write(value.peer_id, buf)
-        if value.is_NOTIFICATION():
+            _UniffiFfiConverterString.write(value.expected_generation, buf)
+            _UniffiFfiConverterBoolean.write(value.connected, buf)
+            _UniffiFfiConverterOptionalInt32.write(value.status, buf)
+        if value.is_SERVICES_CHANGED():
             buf.write_i32(4)
+            _UniffiFfiConverterString.write(value.peer_id, buf)
+        if value.is_NOTIFICATION():
+            buf.write_i32(5)
             _UniffiFfiConverterTypeMobileInstance.write(value.instance, buf)
             _UniffiFfiConverterUInt64.write(value.epoch, buf)
             _UniffiFfiConverterBytes.write(value.value, buf)
         if value.is_ADAPTER_STATE():
-            buf.write_i32(5)
+            buf.write_i32(6)
             _UniffiFfiConverterTypeMobileAdapterSnapshot.write(value.snapshot, buf)
         if value.is_SCAN_FAILED():
-            buf.write_i32(6)
+            buf.write_i32(7)
             _UniffiFfiConverterString.write(value.detail, buf)
         if value.is_SECURITY_CHANGED():
-            buf.write_i32(7)
+            buf.write_i32(8)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterTypeMobileSecurityState.write(value.state, buf)
         if value.is_WRITE_READINESS():
-            buf.write_i32(8)
+            buf.write_i32(9)
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterBoolean.write(value.ready, buf)
         if value.is_RESTORED():
-            buf.write_i32(9)
+            buf.write_i32(10)
             _UniffiFfiConverterSequenceTypeMobileRestoredPeer.write(value.peers, buf)
         if value.is_DROPPED():
-            buf.write_i32(10)
+            buf.write_i32(11)
             _UniffiFfiConverterString.write(value.ingress_class, buf)
             _UniffiFfiConverterString.write(value.detail, buf)
 
@@ -4261,7 +4324,7 @@ class MobileRadioRequest:
     @dataclass
     class CONNECT:
 
-        def __init__(self, id:int, peer_id:str, auto_connect:bool, preferred_phy:typing.List[str]):
+        def __init__(self, id:int, peer_id:str, auto_connect:bool, preferred_phy:typing.List[str], expected_generation:str):
             self.id = id
 
 
@@ -4274,6 +4337,9 @@ class MobileRadioRequest:
             self.preferred_phy = preferred_phy
 
 
+            self.expected_generation = expected_generation
+
+
             pass
 
 
@@ -4281,7 +4347,7 @@ class MobileRadioRequest:
 
 
         def __str__(self):
-            return "MobileRadioRequest.CONNECT(id={}, peer_id={}, auto_connect={}, preferred_phy={})".format(self.id, self.peer_id, self.auto_connect, self.preferred_phy)
+            return "MobileRadioRequest.CONNECT(id={}, peer_id={}, auto_connect={}, preferred_phy={}, expected_generation={})".format(self.id, self.peer_id, self.auto_connect, self.preferred_phy, self.expected_generation)
         def __eq__(self, other):
             if not isinstance(other, MobileRadioRequest):
                 return NotImplemented
@@ -4294,6 +4360,8 @@ class MobileRadioRequest:
             if self.auto_connect != other.auto_connect:
                 return False
             if self.preferred_phy != other.preferred_phy:
+                return False
+            if self.expected_generation != other.expected_generation:
                 return False
             return True
 
@@ -5537,6 +5605,7 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
                 _UniffiFfiConverterString.read(buf),
                 _UniffiFfiConverterBoolean.read(buf),
                 _UniffiFfiConverterSequenceString.read(buf),
+                _UniffiFfiConverterString.read(buf),
             )
         if variant == 5:
             return MobileRadioRequest.DISCONNECT(
@@ -5741,6 +5810,7 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
             _UniffiFfiConverterString.check_lower(value.peer_id)
             _UniffiFfiConverterBoolean.check_lower(value.auto_connect)
             _UniffiFfiConverterSequenceString.check_lower(value.preferred_phy)
+            _UniffiFfiConverterString.check_lower(value.expected_generation)
             return
         if value.is_DISCONNECT():
             _UniffiFfiConverterUInt64.check_lower(value.id)
@@ -5914,6 +5984,7 @@ class _UniffiFfiConverterTypeMobileRadioRequest(_UniffiConverterRustBuffer):
             _UniffiFfiConverterString.write(value.peer_id, buf)
             _UniffiFfiConverterBoolean.write(value.auto_connect, buf)
             _UniffiFfiConverterSequenceString.write(value.preferred_phy, buf)
+            _UniffiFfiConverterString.write(value.expected_generation, buf)
         if value.is_DISCONNECT():
             buf.write_i32(5)
             _UniffiFfiConverterUInt64.write(value.id, buf)

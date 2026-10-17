@@ -3,6 +3,7 @@
 package com.sfourdrinier.unifiedblemanager.rustcore
 
 import com.sfourdrinier.unifiedblemanager.presence.PresenceRestoredPeer
+import com.sfourdrinier.unifiedblemanager.radio.GattConnectAttempt
 import com.ubm.core.MobileCoreBridge
 import java.util.concurrent.Executor
 
@@ -157,10 +158,20 @@ class FakeCore : MobileCorePort {
     failures.put(requestId, failure).let { record("failure:$requestId:${failure.kind.wire}:${failure.gattStatus}") }
 
   val advertisements = mutableListOf<AdvertisementFacts>()
+  val connectionGenerationIngress = mutableListOf<Triple<String, String, Boolean>>()
 
   override fun ingestAdvertisement(advertisement: AdvertisementFacts) =
     advertisements.add(advertisement).let { ingress("adv:${advertisement.peerId}") }
   override fun ingestConnection(peerId: String, connected: Boolean, status: Int?) = ingress("link:$peerId:$connected:$status")
+  override fun ingestConnectionForGeneration(
+    peerId: String,
+    expectedGeneration: String,
+    connected: Boolean,
+    status: Int?
+  ): Int {
+    connectionGenerationIngress.add(Triple(peerId, expectedGeneration, connected))
+    return ingress("link:$peerId:$connected:$status")
+  }
   override fun ingestServicesChanged(peerId: String) = ingress("services-changed:$peerId")
   override fun ingestNotification(instance: CharacteristicInstance, epoch: Long, value: ByteArray) =
     ingress("value:${instance.peerId}:${instance.characteristicUuid}#${instance.characteristicOccurrence}:$epoch:${value.toList()}")
@@ -176,7 +187,7 @@ class FakeCore : MobileCorePort {
 }
 
 /** Scripted OS driver: records calls; tests answer callbacks explicitly. */
-class FakeRadio : AndroidRadioPort {
+internal class FakeRadio : AndroidRadioPort {
   private var installedEvents: RadioPortEvents? = null
   val events: RadioPortEvents get() = installedEvents ?: throw AssertionError("adapter did not install events")
   val calls = mutableListOf<String>()
@@ -219,8 +230,12 @@ class FakeRadio : AndroidRadioPort {
 
   override fun supportsConnectPhy(): Boolean = connectPhySupported
 
-  override fun connect(peerId: String, autoConnect: Boolean, phyMask: Int) {
+  /** The attempt token of the latest `connect` per peer (what a real driver retains for that generation). */
+  val attempts = mutableMapOf<String, GattConnectAttempt>()
+
+  override fun connect(peerId: String, autoConnect: Boolean, phyMask: Int, attempt: GattConnectAttempt) {
     calls.add(if (phyMask == 0) "connect:$peerId:$autoConnect" else "connect:$peerId:$autoConnect:phy=$phyMask")
+    attempts[peerId] = attempt
     connectFailure?.let { throw it }
   }
 

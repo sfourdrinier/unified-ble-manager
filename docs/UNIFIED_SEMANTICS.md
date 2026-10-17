@@ -236,9 +236,12 @@ bounded streams with an immediate current snapshot followed by transitions; a
 watch cannot miss a transition between its successful registration and the
 returned initial snapshot.
 
-Security and write-readiness watches retain one in-flight source acquisition.
-Iterator return waits for that acquisition and releases any late resource; it
-cannot permit a later value after closure. Acquisition failure is reported by
+Security, parameter and write-readiness watches retain one in-flight source
+acquisition. Parameter and write-readiness iterator return aborts pending
+admission before waiting for its settlement, then releases any late resource.
+An IPC security watch owns its stream immediately; closing that stream aborts
+its pending subscription admission before awaiting settlement and release.
+A closed iterator cannot deliver a later value. Acquisition failure is reported by
 the pending `next()`, not duplicated as cleanup of a nonexistent resource.
 Concurrent cleanup callers share one attempt. Confirmed success is retained;
 failed release remains owned and retryable. Ordinary closure completes, while a
@@ -282,6 +285,11 @@ platform's broad scan, not a fabricated known-peer list. Unsupported filter
 fields fail `capability.unsupported`; a backend MUST NOT silently broaden or
 narrow a filter. The response exposes a session identity, one bounded
 observation stream, and a terminal outcome.
+
+Source and evidence-matching failures retain the same structured cause in the
+observation terminal and discovery-event iterator. Buffered discovery events
+drain before the iterator rejects; subscribers created after failure receive
+the retained cause. Ordinary stop or iterator return completes normally.
 
 The shared service-UUID planner treats a singleton `services.any` as a required
 service, just like an `all` entry. Native filtering uses only services required
@@ -750,6 +758,19 @@ cleanup ownership, and suppresses its later native completion. Reused backend
 correlation values cannot settle a newer operation because correlation includes
 backend generation and an unrepeatable dispatch epoch.
 
+MTU, priority, PHY-selection and subrate requests are effectful controls. A
+request cancelled before native dispatch reports no committed effect. Once
+native dispatch may have applied the request, cancellation without a validated
+answer reports uncertain commitment and forbids automatic retry. A complete
+response already validated at the core boundary, including an accepted/rejected
+request or a normalized owner failure with explicit commitment, retains its
+outcome while owned physical retirement drains; cancellation cannot rewrite
+that known answer. Explicit owner commitment and retry advice are preserved;
+uncertainty is inferred only when an effectful owner leaves commitment unstated. Merely receiving an unvalidated native callback does not
+establish success, and pending requests still settle promptly when cancelled.
+Observation-only controls remain noncommitting. Acceptance is distinct from
+observing the resulting link parameters or PHY.
+
 A failure reports whether the operation may be repeated as `retryability`, and
 that is the operation's own answer, not something derived from the error code.
 `caller-decides` means nothing was committed: the operation never reached the
@@ -966,13 +987,24 @@ canonical runtime capability IDs are:
 | `controls.maximumWriteLength(mode)`           | `gatt:maximum-write-length`             | Authoritative mode-specific write limit for that connection.                 |
 | `controls.writeReadiness('without-response')` | `gatt:write-without-response-readiness` | Bounded readiness snapshots/events, when the backend advertises the feature. |
 
+Measured connection intervals and supervision timeouts are positive safe
+integer microseconds; latency is a nonnegative safe integer. Snapshot and event
+boundaries reject malformed values with `protocol.violation` before exposing a
+measurement. An unavailable observation does not invent numeric measurements.
+
 WinRT registers `connection:parameters` from the instantiated runtime's
 `GetConnectionParameters` and `ConnectionParametersChanged` API presence.
 An absent API reports `unavailable` with the native limitation; an API-probe
 failure reports its structured platform error. Compiling a Windows target
 does not establish that those APIs are present on the host.
-Getter failure terminates the affected parameter watch with the platform's
-original detail. A native parameter broadcast gap is counted and propagated:
+An unsuperseded getter failure terminates the affected parameter watch with the
+platform's original detail. Desktop parameter and readiness watches order
+opening, accepted events (including buffered events) and gap recovery with a
+generation-scoped acceptance revision, separate from public delivery ordinals.
+A delayed probe cannot replace a newer accepted observation or terminate it with
+an older probe failure. Caller cancellation, ended generations and independent
+newer source failures remain terminal contenders.
+A native parameter broadcast gap is counted and propagated:
 the desktop provider reports the discontinuity and re-reads the current value;
 Tauri ends its bounded watch with an overflow error. Neither path turns a
 failed getter into a missing event or fabricates a measured zero value.

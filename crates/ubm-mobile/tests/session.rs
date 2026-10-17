@@ -365,80 +365,212 @@ async fn failed_ingress_worker_closes_admission_and_retains_its_cleanup_result()
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_busy_consumer_does_not_keep_the_other_unpolled() {
-    let radio = Scripted::polar();
-    let (host, _) = open(&radio, MobilePlatform::Android).await;
-    let first = host.open_session("first").expect("first session");
-    let second = host.open_session("second").expect("second session");
-    connect(&first, "connect-first").await;
-    ok(&call(
-        &first,
-        "gatt.discover",
-        &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "discover-first"}).to_string(),
-    )
-    .await);
-    connect(&second, "connect-second").await;
-    ok(&call(
-        &second,
-        "gatt.discover",
-        &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "discover-second"}).to_string(),
-    )
-    .await);
-    for (session, consumer, operation) in [
-        (&first, "first", "sub-first"),
-        (&second, "second", "sub-second"),
-    ] {
+/// Two sessions subscribed to one characteristic: their two routes share one
+/// value scope. Returns the notification epoch for [`hr_value`].
+async fn two_consumers_in_one_scope(
+    radio: &Scripted,
+    first: &ubm_mobile::MobileSession,
+    second: &ubm_mobile::MobileSession,
+) -> u64 {
+    for (session, consumer) in [(first, "first"), (second, "second")] {
+        connect(session, &format!("connect-{consumer}")).await;
+        ok(&call(
+            session,
+            "gatt.discover",
+            &json!({"peerId": POLAR, "lease": "lease-1",
+                "operationId": format!("discover-{consumer}")})
+            .to_string(),
+        )
+        .await);
         ok(&call(
             session,
             "gatt.subscribe",
             &json!({"peerId": POLAR, "selector": selector(), "consumer": consumer,
-                "deliveryMode": "require-notification", "operationId": operation})
+                "deliveryMode": "require-notification",
+                "operationId": format!("sub-{consumer}")})
             .to_string(),
         )
         .await);
     }
-    let epoch = enable_epoch(&radio);
-    const BURST: u8 = 8;
-    for sequence in 0..BURST {
+    enable_epoch(radio)
+}
+
+/// The value payloads of `records`, in order.
+fn value_payloads(records: &[Value]) -> Vec<String> {
+    of_type(records, "value")
+        .into_iter()
+        .map(|record| record["valueB64"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+// Past one commit group, so a backlog cannot be drained in a single turn.
+const GROUP_PAST_BURST: u8 = 40;
+
+/// Both consumers of one scope hold the whole burst before the pump runs: the
+/// single-threaded runtime does not poll it between the ingests. Returns the
+/// consumers each value scope turn committed a group for, in order, without
+/// the turns that found nothing to commit.
+async fn committed_scope_turns_for_a_burst(
+    host: &ubm_mobile::MobileHost,
+    radio: &Scripted,
+    first: &ubm_mobile::MobileSession,
+    second: &ubm_mobile::MobileSession,
+) -> Vec<Vec<String>> {
+    let epoch = two_consumers_in_one_scope(radio, first, second).await;
+    for sequence in 0..GROUP_PAST_BURST {
         host.ingest(hr_value(&[sequence], epoch));
     }
-    let first_records = drain_until(&first, |records| {
-        of_type(records, "value").len() == BURST as usize
+    let first_records = drain_until(first, |records| {
+        of_type(records, "value").len() == GROUP_PAST_BURST as usize
     })
     .await;
-    let second_records = drain_until(&second, |records| {
-        of_type(records, "value").len() == BURST as usize
+    let second_records = drain_until(second, |records| {
+        of_type(records, "value").len() == GROUP_PAST_BURST as usize
     })
     .await;
-    let values = |records: &[Value]| -> Vec<String> {
-        of_type(records, "value")
-            .into_iter()
-            .map(|record| record["valueB64"].as_str().unwrap().to_owned())
-            .collect()
-    };
-    assert_eq!(values(&first_records), values(&second_records));
+    assert_eq!(
+        value_payloads(&first_records),
+        value_payloads(&second_records)
+    );
     assert!(
         of_type(&first_records, "stream-end").is_empty()
             && of_type(&second_records, "stream-end").is_empty(),
         "neither consumer overflows while the other is drained"
     );
-    let turns = host.route_turns();
-    let mut first_polls = 0usize;
-    let mut second_polled_during_backlog = false;
-    for consumer in &turns {
-        match consumer.as_str() {
-            "first" => first_polls += 1,
-            "second" if first_polls < BURST as usize => second_polled_during_backlog = true,
-            _ => {}
-        }
-    }
-    assert!(
-        second_polled_during_backlog,
-        "second consumer was not polled until the first backlog finished: {turns:?}"
+    host.scope_turns()
+        .into_iter()
+        .filter(|turn| !turn.is_empty())
+        .collect()
+}
+
+/// A route that committed a group goes behind the scope's other routes, so a
+/// consumer with a standing backlog cannot keep the other one unpolled while
+/// its own core queue overflows.
+#[tokio::test]
+async fn a_busy_consumer_does_not_keep_the_other_unpolled() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let first = host.open_session("first").expect("first session");
+    let second = host.open_session("second").expect("second session");
+    let turns = committed_scope_turns_for_a_burst(&host, &radio, &first, &second).await;
+    let order: Vec<&str> = turns.iter().flatten().map(String::as_str).collect();
+    // Forty values are a 32-value group and an 8-value group per consumer.
+    // Served in order of arrival the groups would be first, first, second,
+    // second: the second consumer unpolled until the first backlog was gone.
+    assert_eq!(
+        order,
+        ["first", "second", "first", "second"],
+        "consumers alternate while both hold backlog: {turns:?}"
     );
     ok(&call(&first, "session.dispose", "{}").await);
     ok(&call(&second, "session.dispose", "{}").await);
+    host.shutdown().await;
+}
+
+/// One scope turn commits at most one polled group across its routes, so a
+/// queued security or lifecycle signal waits behind one commit, not one per
+/// route.
+#[tokio::test]
+async fn a_value_turn_commits_one_group_across_the_routes_of_its_scope() {
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let first = host.open_session("first").expect("first session");
+    let second = host.open_session("second").expect("second session");
+    let turns = committed_scope_turns_for_a_burst(&host, &radio, &first, &second).await;
+    assert!(
+        turns.iter().all(|turn| turn.len() == 1),
+        "a scope turn committed groups for more than one route: {turns:?}"
+    );
+    assert_eq!(turns.len(), 4, "two groups per consumer: {turns:?}");
+    ok(&call(&first, "session.dispose", "{}").await);
+    ok(&call(&second, "session.dispose", "{}").await);
+    host.shutdown().await;
+}
+
+/// The notifications held before a link loss all land, in bounded groups and
+/// in order, before the transition record and before the stream end it caused.
+/// Nothing is polled between the ingests, so the lifecycle drain finds more
+/// than one commit group of values it must keep ahead of the record.
+#[tokio::test]
+async fn a_lifecycle_transition_retains_every_earlier_value_across_commit_groups() {
+    const HELD: u16 = 100;
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("lifecycle").expect("session");
+    connect(&session, "connect-lifecycle").await;
+    ok(&call(
+        &session,
+        "gatt.discover",
+        &json!({"peerId": POLAR, "lease": "lease-1", "operationId": "discover-lifecycle"})
+            .to_string(),
+    )
+    .await);
+    ok(&call(
+        &session,
+        "gatt.subscribe",
+        &json!({"peerId": POLAR, "selector": selector(), "consumer": "hr",
+            "deliveryMode": "require-notification", "operationId": "sub-lifecycle"})
+        .to_string(),
+    )
+    .await);
+    let epoch = enable_epoch(&radio);
+    let sequence_bytes = |sequence: u16| sequence.to_le_bytes().to_vec();
+    for sequence in 0..HELD {
+        host.ingest(hr_value(&sequence_bytes(sequence), epoch));
+    }
+    host.ingest(RadioIngress::Connection {
+        peer_id: POLAR.to_owned(),
+        connected: false,
+        status: Some(8),
+    });
+    let records = drain_until(&session, |records| {
+        !of_type(records, "link").is_empty() && !of_type(records, "stream-end").is_empty()
+    })
+    .await;
+    // The single-threaded runtime fixes the schedule: value turns commit one
+    // group each before the transition is handled. This guards that more than
+    // one group was left for the unlimited lifecycle drain to retain.
+    let turn_groups: usize = host.scope_turns().iter().map(Vec::len).sum();
+    assert!(
+        HELD as usize - turn_groups * ubm_desktop::continuation_journal::APPEND_BATCH_MAX
+            > ubm_desktop::continuation_journal::APPEND_BATCH_MAX,
+        "the lifecycle drain must hold more than one commit group: {turn_groups} turn groups"
+    );
+    let kinds: Vec<&str> = records
+        .iter()
+        .map(|record| record["t"].as_str().unwrap())
+        .collect();
+    let link = kinds.iter().position(|kind| *kind == "link").unwrap();
+    let end = kinds.iter().position(|kind| *kind == "stream-end").unwrap();
+    assert!(
+        kinds[..link].iter().all(|kind| *kind == "value"),
+        "only values precede the transition: {kinds:?}"
+    );
+    assert_eq!(link, HELD as usize, "every held value precedes the link");
+    assert!(
+        end > link,
+        "the stream end follows its transition: {kinds:?}"
+    );
+    let expected: Vec<String> = (0..HELD)
+        .map(|sequence| ubm_mobile::wire::encode_base64(&sequence_bytes(sequence)))
+        .collect();
+    assert_eq!(
+        value_payloads(&records),
+        expected,
+        "values keep their order"
+    );
+    let ordinals: Vec<u64> = records
+        .iter()
+        .map(|record| record["ordinal"].as_u64().unwrap())
+        .collect();
+    assert!(
+        ordinals.windows(2).all(|pair| pair[0] < pair[1]),
+        "ordinals increase"
+    );
+    let ended = &records[end];
+    assert_eq!(ended["consumer"], "hr");
+    assert_eq!(ended["reason"], "invalidated");
+    ok(&call(&session, "session.dispose", "{}").await);
     host.shutdown().await;
 }
 
@@ -503,24 +635,68 @@ async fn continuation_quiesce_seals_real_notification_intake_for_handoff() {
     let after_cutoff_bytes = final_seal["afterCutoffBytes"]
         .as_u64()
         .expect("after-cutoff byte accounting is numeric");
-    assert!(after_cutoff_bytes > 0);
+    assert_eq!(after_cutoff_bytes, 85);
 
-    let batch = parse(&session.drain(256, 65536));
-    assert_eq!(batch["more"], false);
-    let values = of_type(batch["records"].as_array().unwrap(), "value");
+    // The refused post-cutoff value belongs to the handoff receipt. It does
+    // not end the old route or manufacture a stream terminal. Drain only the
+    // value that crossed the cutoff; waiting for a terminal would wait for an
+    // event the contract deliberately does not emit.
+    let records = drain_until(&session, |records| !of_type(records, "value").is_empty()).await;
+    let values = of_type(&records, "value");
     assert_eq!(
         values.len(),
         1,
         "only the pre-cutoff notification transfers"
     );
     assert_eq!(values[0]["valueB64"], "AQ==");
+    assert!(
+        of_type(&records, "stream-end").is_empty(),
+        "sealed cutoff must not manufacture a terminal: {records:#?}"
+    );
+
+    // Later arrivals remain part of the same bounded handoff accounting. Two
+    // separate fences make each increment observable and prove the count is
+    // cumulative rather than re-counted or silently dropped.
+    host.ingest(hr_value(&[0x04], epoch));
+    let second_seal = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let sealed = ok(&call(&session, "session.quiesce", "{}").await);
+            if sealed["afterCutoffItems"] == 2 {
+                return sealed;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first later post-cutoff notification is accounted");
+    let second_bytes = second_seal["afterCutoffBytes"]
+        .as_u64()
+        .expect("cumulative after-cutoff bytes are numeric");
+    assert_eq!(second_bytes, 170);
+
+    host.ingest(hr_value(&[0x05, 0x06, 0x07], epoch));
+    let third_seal = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let sealed = ok(&call(&session, "session.quiesce", "{}").await);
+            if sealed["afterCutoffItems"] == 3 {
+                return sealed;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("second later post-cutoff notification is accounted");
+    let total_after_cutoff_bytes = third_seal["afterCutoffBytes"]
+        .as_u64()
+        .expect("final after-cutoff bytes are numeric");
+    assert_eq!(total_after_cutoff_bytes, 255);
     assert!(session.drain(256, 65536).contains("\"records\":[]"));
 
     let disposed = ok(&call(&session, "session.continuation-dispose", "{}").await);
     assert_eq!(disposed["state"], "released");
     assert_eq!(disposed["failures"], json!([]));
-    assert_eq!(disposed["afterCutoffItems"], 1);
-    assert_eq!(disposed["afterCutoffBytes"], after_cutoff_bytes);
+    assert_eq!(disposed["afterCutoffItems"], 3);
+    assert_eq!(disposed["afterCutoffBytes"], total_after_cutoff_bytes);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2510,23 +2686,28 @@ async fn reconcile_answers_every_fact_a_lost_control_record_carried() {
     );
 
     // security: the platform's last report.
-    let bonded = ubm_mobile::SecurityState {
-        bond: ubm_mobile::BondState::Bonded,
-        encryption: ubm_mobile::EncryptionState::Encrypted,
-        authentication: ubm_mobile::AuthenticationState::Unauthenticated,
-        secure_connections: ubm_mobile::SecureConnectionsState::Yes,
-        pairing_possible: None,
-    };
-    host.ingest(RadioIngress::SecurityChanged {
-        peer_id: POLAR.to_owned(),
-        state: bonded,
-    });
-    let records = drain_until(&session, |r| !of_type(r, "security").is_empty()).await;
-    let security = of_type(&records, "security")[0].clone();
+    radio.set_responder(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::SecurityState { .. } => {
+            Reply::Now(RadioCompletion::Security(ubm_mobile::SecurityState {
+                bond: ubm_mobile::BondState::Bonded,
+                encryption: ubm_mobile::EncryptionState::Encrypted,
+                authentication: ubm_mobile::AuthenticationState::Unauthenticated,
+                secure_connections: ubm_mobile::SecureConnectionsState::Yes,
+                pairing_possible: None,
+            }))
+        }
+        other => polar_responder(other),
+    }));
+    let security = ok(&call(
+        &session,
+        "security.state",
+        &json!({"peerId": POLAR, "operationId": "security-state"}).to_string(),
+    )
+    .await);
     let snapshot = reconcile(&session).await;
     assert_eq!(
         snapshot["security"],
-        json!([{"peerId": POLAR, "state": security["state"]}])
+        json!([{"peerId": POLAR, "state": security}])
     );
 
     // link loss, then a reconnect under a new generation: both are visible.
@@ -2563,6 +2744,138 @@ async fn reconcile_answers_every_fact_a_lost_control_record_carried() {
         link_of(&snapshot, &first["connectionGeneration"])["state"],
         "ended"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scoped_connection_callback_preserves_replacement_generation() {
+    async fn replacement(
+        host: &std::sync::Arc<ubm_mobile::MobileHost>,
+        session: &ubm_mobile::MobileSession,
+        prefix: &str,
+    ) -> (Value, Value) {
+        let first = connect(session, &format!("{prefix}-a")).await;
+        host.ingest(RadioIngress::Connection {
+            peer_id: POLAR.to_owned(),
+            connected: false,
+            status: Some(8),
+        });
+        drain_until(session, |records| !of_type(records, "link").is_empty()).await;
+        ok(&call(
+            session,
+            "connection.disconnect",
+            &json!({"peerId": POLAR, "lease": "lease-1", "operationId": format!("{prefix}-release")})
+                .to_string(),
+        )
+        .await);
+        let second = connect(session, &format!("{prefix}-b")).await;
+        (first, second)
+    }
+
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("scoped").expect("session");
+    let (first, second) = replacement(&host, &session, "scoped").await;
+    radio.set_responder(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::SecurityState { .. } => {
+            Reply::Now(RadioCompletion::Security(ubm_mobile::SecurityState {
+                bond: ubm_mobile::BondState::Bonded,
+                encryption: ubm_mobile::EncryptionState::Encrypted,
+                authentication: ubm_mobile::AuthenticationState::Authenticated,
+                secure_connections: ubm_mobile::SecureConnectionsState::Yes,
+                pairing_possible: Some(true),
+            }))
+        }
+        other => polar_responder(other),
+    }));
+    ok(&call(
+        &session,
+        "security.state",
+        &json!({"peerId": POLAR, "operationId": "scoped-security"}).to_string(),
+    )
+    .await);
+    host.ingest(RadioIngress::ConnectionScoped {
+        peer_id: POLAR.to_owned(),
+        expected_generation: first["connectionGeneration"]
+            .as_str()
+            .expect("first generation")
+            .to_owned(),
+        connected: false,
+        status: Some(8),
+    });
+    let snapshot = reconcile(&session).await;
+    assert_eq!(
+        link_of(&snapshot, &second["connectionGeneration"])["state"],
+        "connected",
+        "a stale scoped loss must preserve B"
+    );
+    assert_eq!(
+        snapshot["security"][0]["state"],
+        json!({
+            "bond": "bonded",
+            "encryption": "encrypted",
+            "authentication": "authenticated",
+            "secureConnections": "yes",
+            "pairingPossible": true
+        }),
+        "stale A must not reset B's security entry"
+    );
+    host.ingest(RadioIngress::ConnectionScoped {
+        peer_id: POLAR.to_owned(),
+        expected_generation: second["connectionGeneration"]
+            .as_str()
+            .expect("second generation")
+            .to_owned(),
+        connected: false,
+        status: Some(8),
+    });
+    let records = drain_until(&session, |records| !of_type(records, "link").is_empty()).await;
+    assert_eq!(of_type(&records, "link").len(), 1);
+    let security_records = of_type(&records, "security");
+    assert_eq!(
+        security_records.len(),
+        1,
+        "B loss emits one security update"
+    );
+    assert_eq!(
+        security_records[0]["state"],
+        json!({
+            "bond": "bonded",
+            "encryption": "unknown",
+            "authentication": "unknown",
+            "secureConnections": "unknown",
+            "pairingPossible": true
+        })
+    );
+    assert_eq!(
+        link_of(&reconcile(&session).await, &second["connectionGeneration"])["state"],
+        "ended"
+    );
+    host.shutdown().await;
+
+    // Counterfactual: the legacy peer-only ingress has no generation fence and
+    // therefore mutates B, proving the scoped assertion above is meaningful.
+    let radio = Scripted::polar();
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("unscoped").expect("session");
+    let (first, second) = replacement(&host, &session, "unscoped").await;
+    host.ingest(RadioIngress::Connection {
+        peer_id: POLAR.to_owned(),
+        connected: false,
+        status: Some(8),
+    });
+    let records = drain_until(&session, |records| !of_type(records, "link").is_empty()).await;
+    assert_eq!(of_type(&records, "link").len(), 1);
+    let snapshot = reconcile(&session).await;
+    assert_eq!(
+        link_of(&snapshot, &second["connectionGeneration"])["state"],
+        "ended",
+        "peer-only loss is the mutation counterfactual"
+    );
+    assert_ne!(
+        first["connectionGeneration"],
+        second["connectionGeneration"]
+    );
+    host.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3722,4 +4035,231 @@ async fn a_newer_security_failure_survives_an_older_successful_probe() {
     assert_eq!(snapshot["securityFailures"].as_array().unwrap().len(), 1);
     assert!(snapshot["security"].as_array().unwrap().is_empty());
     assert_eq!(parse(&host.shutdown().await)["state"], "released");
+}
+
+#[tokio::test]
+async fn owned_security_query_ignores_unscoped_failure_and_keeps_it_durable() {
+    let radio = Scripted::new(Box::new(|request| match request {
+        ubm_mobile::RadioRequest::SecurityState { .. } => Reply::Hold,
+        other => polar_responder(other),
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("owned-security-race").unwrap();
+    connect(&session, "owned-security-connect").await;
+    let query_args = json!({"peerId": POLAR, "operationId": "owned-security-query"}).to_string();
+    let query = call(&session, "security.state", &query_args);
+    let failure = async {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while radio.held_of(RequestKind::SecurityState).is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("owned security query dispatches");
+        host.ingest(RadioIngress::SecurityFailed {
+            peer_id: Some(POLAR.into()),
+            failure: PlatformFailure::new(
+                FailureKind::PermissionDenied,
+                "stale A security observation",
+            ),
+        });
+        host.ingest(RadioIngress::SecurityChanged {
+            peer_id: POLAR.into(),
+            state: ubm_mobile::SecurityState {
+                bond: ubm_mobile::BondState::Bonded,
+                encryption: ubm_mobile::EncryptionState::Encrypted,
+                authentication: ubm_mobile::AuthenticationState::Authenticated,
+                secure_connections: ubm_mobile::SecureConnectionsState::Yes,
+                pairing_possible: Some(true),
+            },
+        });
+        let id = radio.held_of(RequestKind::SecurityState)[0];
+        radio.answer(
+            id,
+            RadioCompletion::Security(ubm_mobile::SecurityState {
+                bond: ubm_mobile::BondState::Bonded,
+                encryption: ubm_mobile::EncryptionState::Encrypted,
+                authentication: ubm_mobile::AuthenticationState::Authenticated,
+                secure_connections: ubm_mobile::SecureConnectionsState::Yes,
+                pairing_possible: Some(true),
+            }),
+        );
+    };
+    let (answer, ()) = tokio::join!(query, failure);
+    assert_eq!(
+        ok(&answer)["encryption"],
+        "encrypted",
+        "B's typed query completes despite stale A failure"
+    );
+    let snapshot = ok(&call(&session, "session.reconcile", "{}").await);
+    assert_eq!(snapshot["security"][0]["state"]["encryption"], "encrypted");
+    assert_eq!(snapshot["securityFailures"].as_array().unwrap().len(), 1);
+    assert_eq!(parse(&host.shutdown().await)["state"], "released");
+}
+
+fn effectful_control_args(op: &str, budget_ms: Option<u64>) -> Value {
+    let mut args = json!({"peerId":POLAR,"lease":"lease-1","operationId":op});
+    match op {
+        "connection.request-mtu" => args["mtu"] = json!(247),
+        "connection.request-priority" => args["priority"] = json!("balanced"),
+        "connection.request-subrate" => args["mode"] = json!("low-power"),
+        "connection.request-phy" => args["tx"] = json!("le-1m"),
+        _ => {}
+    }
+    if let Some(ms) = budget_ms {
+        args["budgetMs"] = json!(ms);
+    }
+    args
+}
+
+const EFFECTFUL_CONTROLS: [(&str, RequestKind); 4] = [
+    ("connection.request-mtu", RequestKind::RequestMtu),
+    (
+        "connection.request-priority",
+        RequestKind::RequestConnectionPriority,
+    ),
+    ("connection.request-subrate", RequestKind::RequestSubrate),
+    ("connection.request-phy", RequestKind::RequestPhy),
+];
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn effectful_control_post_dispatch_cancel_and_deadline_are_uncertain_and_never_retryable() {
+    for (op, kind) in EFFECTFUL_CONTROLS {
+        for cancelled in [true, false] {
+            let radio = Scripted::new(Box::new(move |request| {
+                if request.kind() == kind {
+                    Reply::Hold
+                } else {
+                    polar_responder(request)
+                }
+            }));
+            radio.subrate_available.store(true, Ordering::SeqCst);
+            let (host, _) = open(&radio, MobilePlatform::Android).await;
+            let session = host.open_session("effectful-control").unwrap();
+            connect(&session, "connect-control").await;
+            let pending = tokio::spawn({
+                let session = session.clone();
+                let args = effectful_control_args(op, Some(1000)).to_string();
+                async move { call(&session, op, &args).await }
+            });
+            wait_for(|| !radio.held_of(kind).is_empty()).await;
+            if cancelled {
+                ok(&call(
+                    &session,
+                    "op.cancel",
+                    &json!({"operationId":op}).to_string(),
+                )
+                .await);
+            } else {
+                tokio::time::advance(Duration::from_millis(1000)).await;
+            }
+            let result = parse(&pending.await.unwrap());
+            assert_eq!(
+                result["error"]["code"],
+                if cancelled {
+                    "operation.aborted"
+                } else {
+                    "operation.timed-out"
+                },
+                "{op}"
+            );
+            assert_eq!(result["commit"], "uncertain", "{op}");
+            assert_eq!(result["retryability"], "never", "{op}");
+            assert_eq!(radio.count(kind), 1, "{op}: no implicit replay");
+        }
+    }
+}
+
+#[tokio::test]
+async fn effectful_control_pre_dispatch_cancel_reports_no_effect_and_caller_decides() {
+    for (op, kind) in EFFECTFUL_CONTROLS {
+        let radio = Scripted::polar();
+        radio.subrate_available.store(true, Ordering::SeqCst);
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("pre-dispatch-control").unwrap();
+        connect(&session, "connect-control").await;
+        let args = admitted_args(&session, op, &effectful_control_args(op, None).to_string());
+        ok(&call(
+            &session,
+            "op.cancel",
+            &json!({"operationId":op}).to_string(),
+        )
+        .await);
+        let result = parse(&call(&session, op, &args).await);
+        assert_eq!(result["error"]["code"], "operation.aborted", "{op}");
+        assert_eq!(result["commit"], "not-dispatched", "{op}");
+        assert_eq!(result["retryability"], "caller-decides", "{op}");
+        assert_eq!(radio.count(kind), 0, "{op}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn read_only_control_timeout_has_no_commit_uncertainty() {
+    let radio = Scripted::new(Box::new(|request| {
+        if request.kind() == RequestKind::ReadPhy {
+            Reply::Hold
+        } else {
+            polar_responder(request)
+        }
+    }));
+    let (host, _) = open(&radio, MobilePlatform::Android).await;
+    let session = host.open_session("read-control").unwrap();
+    connect(&session, "connect-control").await;
+    let result = parse(
+        &call(
+            &session,
+            "connection.read-phy",
+            &effectful_control_args("connection.read-phy", Some(1000)).to_string(),
+        )
+        .await,
+    );
+    assert_eq!(result["error"]["code"], "operation.timed-out");
+    assert!(result["commit"].is_null());
+    assert_eq!(result["retryability"], "caller-decides");
+}
+
+#[tokio::test]
+async fn effectful_controls_preserve_the_platforms_accepted_rejected_and_observed_answers() {
+    for accepted in [true, false] {
+        let radio = Scripted::new(Box::new(move |request| match request {
+            ubm_mobile::RadioRequest::RequestMtu { .. } => {
+                Reply::Now(RadioCompletion::Mtu(Some(185)))
+            }
+            ubm_mobile::RadioRequest::RequestConnectionPriority { .. }
+            | ubm_mobile::RadioRequest::RequestSubrate { .. } => {
+                Reply::Now(RadioCompletion::Accepted(accepted))
+            }
+            ubm_mobile::RadioRequest::RequestPhy { .. } => {
+                Reply::Now(RadioCompletion::PhyRequest {
+                    accepted,
+                    observation: accepted.then_some(ubm_mobile::PhyObservation {
+                        tx: ubm_mobile::Phy::Le2m,
+                        rx: ubm_mobile::Phy::Le2m,
+                    }),
+                })
+            }
+            other => polar_responder(other),
+        }));
+        radio.subrate_available.store(true, Ordering::SeqCst);
+        let (host, _) = open(&radio, MobilePlatform::Android).await;
+        let session = host.open_session("completed-control").unwrap();
+        connect(&session, "connect-control").await;
+        for (op, kind) in EFFECTFUL_CONTROLS {
+            let result =
+                ok(&call(&session, op, &effectful_control_args(op, None).to_string()).await);
+            if op == "connection.request-mtu" {
+                assert_eq!(result["mtu"], 185);
+            } else {
+                assert_eq!(result["accepted"], accepted, "{op}");
+            }
+            if op == "connection.request-phy" {
+                if accepted {
+                    assert_eq!(result["observation"]["tx"], "le-2m");
+                } else {
+                    assert!(result["observation"].is_null());
+                }
+            }
+            assert_eq!(radio.count(kind), 1, "{op}");
+        }
+    }
 }

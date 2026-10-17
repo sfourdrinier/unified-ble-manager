@@ -1,3 +1,4 @@
+// android/src/main/java/com/sfourdrinier/unifiedblemanager/background/AndroidConnectedDeviceForegroundServiceDriver.java
 package com.sfourdrinier.unifiedblemanager.background;
 
 import android.Manifest;
@@ -13,6 +14,7 @@ import android.os.Looper;
 import android.os.ResultReceiver;
 
 import com.sfourdrinier.unifiedblemanager.BlePlxForegroundService;
+import com.sfourdrinier.unifiedblemanager.AndroidBundleMetadata;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -183,8 +185,8 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
     final Map<String, String> values = new HashMap<>();
     if (metadata == null) return values;
     for (String key : metadata.keySet()) {
-      final Object value = metadata.get(key);
-      if (value instanceof String) values.put(key, (String) value);
+      final String value = AndroidBundleMetadata.stringOrNull(metadata, key);
+      if (value != null) values.put(key, value);
     }
     return values;
   }

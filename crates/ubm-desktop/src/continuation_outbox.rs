@@ -12,7 +12,9 @@
 //! arms, then re-checks: a record that raced in after the take disarms
 //! again and the drain answers `more: true`.
 
-use crate::continuation_journal::{ContinuationJournal, JournalError};
+use crate::continuation_journal::{
+    APPEND_BATCH_MAX, AppendBatch, ContinuationJournal, JournalError,
+};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -209,12 +211,59 @@ pub struct AfterCutoffLoss {
 }
 
 /// A data record the session could not queue: the caller turns it into a
-/// terminal (`stream-end overflow`) or an `ingress-drop`.
+/// terminal (`stream-end overflow`) or an `ingress-drop`. The variant is the
+/// cause as decided under the queue lock by the push itself, so a caller never
+/// forms a second opinion by reading the outbox afterwards.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataIngressFailure {
-    Stopped { bytes: usize },
-    Overflow { bytes: usize },
-    Storage { bytes: usize, error: JournalError },
+    /// The journal stopped under this very push; the outbox is now sealed and
+    /// the value was counted after the cutoff.
+    Stopped {
+        bytes: usize,
+    },
+    /// The outbox was already sealed when the push took the queue lock; the
+    /// value was counted after the cutoff.
+    Sealed {
+        bytes: usize,
+    },
+    /// The bounded in-memory queue was full. Nothing was counted after a
+    /// cutoff, whatever seals the outbox later.
+    Overflow {
+        bytes: usize,
+    },
+    Storage {
+        bytes: usize,
+        error: JournalError,
+    },
+}
+
+impl DataIngressFailure {
+    /// The refusal came from the handoff cutoff, which already counted every
+    /// value of the refused group (and the tail behind it) after the cutoff.
+    #[must_use]
+    pub const fn after_cutoff(&self) -> bool {
+        matches!(self, Self::Stopped { .. } | Self::Sealed { .. })
+    }
+}
+
+/// Outcome of [`Outbox::push_data_batch`]: the records of the batch's leading
+/// `accepted` prefix are admitted (and observable) in order; everything from
+/// the first rejection on is `rejected`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataBatchOutcome {
+    pub accepted: usize,
+    pub rejected: Option<DataBatchRejection>,
+}
+
+/// Why a batch stopped admitting, with every uncommitted record counted once.
+/// `failure` names the precise cause for the first rejected record; `items`
+/// and `bytes` also cover each later record the caller already holds, so none
+/// of them can vanish unaccounted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataBatchRejection {
+    pub failure: DataIngressFailure,
+    pub items: u64,
+    pub bytes: u64,
 }
 
 struct Durable {
@@ -276,13 +325,12 @@ impl Outbox {
         // blocking journal admission is pending. Retain their ordinary delivery
         // and persist only the declared-peer/global subset under this same lock.
         for entry in &queues.control {
-            Self::persist(&mut durable, &entry.record, false)?;
+            Self::persist(&mut durable, &entry.record)?;
         }
         if queues.control_lost != 0 {
             Self::persist(
                 &mut durable,
                 &serde_json::json!({"t":"ingress-drop","class":"control","count":queues.control_lost}),
-                false,
             )?;
         }
         queues.durable = Some(durable);
@@ -368,13 +416,21 @@ impl Outbox {
         self.storage_terminal(Value::Null, &failure);
     }
 
-    fn persist(durable: &mut Durable, record: &Value, data: bool) -> Result<(), JournalError> {
+    /// A terminal storage fault is retained with its precise cause; a stopped
+    /// journal is an admission result, not collection failure evidence.
+    fn retain_failure(durable: &mut Durable, failure: &JournalError) {
+        if failure.kind != "storage.stopped" {
+            durable.journal.mark_collection_failure(failure);
+            durable.failure = Some(failure.clone());
+        }
+    }
+
+    fn persist(durable: &mut Durable, record: &Value) -> Result<(), JournalError> {
         // Ordinary mobile control delivery is process-wide, while a durable
         // recording belongs to one declared peer. Foreign controls remain in
         // the ordinary outbox; they must never acquire this journal's context.
         // Global controls without a subject are retained unchanged.
-        if !data
-            && let Some(peer) = record.get("peerId").and_then(Value::as_str)
+        if let Some(peer) = record.get("peerId").and_then(Value::as_str)
             && durable.context.get("peerId").and_then(Value::as_str) != Some(peer)
         {
             return Ok(());
@@ -385,24 +441,48 @@ impl Outbox {
         let metadata = record["consumer"]
             .as_str()
             .and_then(|consumer| durable.consumers.get(consumer));
-        let result = if data && metadata.is_none() {
-            Err(JournalError::invalid(
-                "durable value has no committed consumer registration",
-            ))
-        } else {
-            durable
-                .journal
-                .append(
-                    &serde_json::json!({"session":durable.context,"consumer":metadata}),
-                    record,
-                )
-                .map(|_| ())
-        };
-        if let Err(failure) = &result
-            && failure.kind != "storage.stopped"
-        {
-            durable.journal.mark_collection_failure(failure);
-            durable.failure = Some(failure.clone());
+        let result = durable
+            .journal
+            .append(
+                &serde_json::json!({"session":durable.context,"consumer":metadata}),
+                record,
+            )
+            .map(|_| ());
+        if let Err(failure) = &result {
+            Self::retain_failure(durable, failure);
+        }
+        result
+    }
+
+    /// Data records share one journal transaction. Every record needs a
+    /// committed consumer registration; one without it fails the whole batch
+    /// before any write, so no prefix is claimed.
+    fn persist_data(durable: &mut Durable, records: &[Value]) -> Result<AppendBatch, JournalError> {
+        if let Some(failure) = &durable.failure {
+            return Err(failure.clone());
+        }
+        let mut contexts = Vec::with_capacity(records.len());
+        for record in records {
+            let Some(metadata) = record["consumer"]
+                .as_str()
+                .and_then(|consumer| durable.consumers.get(consumer))
+            else {
+                let failure =
+                    JournalError::invalid("durable value has no committed consumer registration");
+                Self::retain_failure(durable, &failure);
+                return Err(failure);
+            };
+            contexts.push(serde_json::json!({"session":durable.context,"consumer":metadata}));
+        }
+        let items: Vec<(&Value, &Value)> = contexts.iter().zip(records).collect();
+        let result = durable.journal.append_batch(&items);
+        match &result {
+            Err(failure) => Self::retain_failure(durable, failure),
+            Ok(batch) => {
+                if let Some(rejected) = &batch.rejected {
+                    Self::retain_failure(durable, &rejected.error);
+                }
+            }
         }
         result
     }
@@ -465,63 +545,189 @@ impl Outbox {
         })
     }
 
-    /// Queue one data record (`adv` / `value`).
+    /// Queue one data record (`adv` / `value`). The one-element case of
+    /// [`Self::push_data_batch`].
     pub fn push_data(&self, record: Value) -> Result<(), DataIngressFailure> {
-        let bytes = record.to_string().len();
-        {
-            let mut queues = lock(&self.queues);
-            if self.is_sealed() {
-                queues.after_cutoff_items += 1;
-                queues.after_cutoff_bytes += bytes as u64;
-                return Err(DataIngressFailure::Overflow { bytes });
+        match self.push_data_batch(vec![record]).rejected {
+            Some(rejection) => Err(rejection.failure),
+            None => Ok(()),
+        }
+    }
+
+    /// Queue records the caller already holds, in order, committing durable
+    /// ones in one journal transaction. Observation is evaluated only for
+    /// admitted records, after their commit, in order.
+    ///
+    /// Admission is the sequential prefix: it stops at the first refusal. A
+    /// durable storage fault rolls the whole transaction back, so `accepted`
+    /// is 0 and no record is observed. A sealed or stopped outbox counts every
+    /// record of the batch after the cutoff. Every record from the first
+    /// refusal on is counted once in the rejection.
+    ///
+    /// No commit carries more than [`APPEND_BATCH_MAX`] records: a longer batch
+    /// is committed in consecutive bounded groups, stopping at the first refusal.
+    pub fn push_data_batch(&self, records: Vec<Value>) -> DataBatchOutcome {
+        let mut remaining = records.into_iter();
+        let mut accepted = 0;
+        loop {
+            let group: Vec<Value> = remaining.by_ref().take(APPEND_BATCH_MAX).collect();
+            if group.is_empty() {
+                return DataBatchOutcome {
+                    accepted,
+                    rejected: None,
+                };
             }
-            if let Some(durable) = queues.durable.as_mut() {
-                if let Err(error) = Self::persist(durable, &record, true) {
-                    if error.kind == "storage.stopped" {
-                        self.sealed.store(true, Ordering::SeqCst);
-                        queues.after_cutoff_items = queues.after_cutoff_items.saturating_add(1);
-                        queues.after_cutoff_bytes =
-                            queues.after_cutoff_bytes.saturating_add(bytes as u64);
-                        lock(&self.observer).take();
-                        return Err(DataIngressFailure::Stopped { bytes });
-                    }
-                    self.storage_terminal(record["consumer"].clone(), &error);
-                    return Err(DataIngressFailure::Storage { bytes, error });
+            let mut outcome = self.push_data_group(group);
+            accepted += outcome.accepted;
+            if let Some(rejected) = outcome.rejected.as_mut() {
+                let mut tail_items = 0u64;
+                let mut tail_bytes = 0u64;
+                for record in remaining {
+                    tail_items = tail_items.saturating_add(1);
+                    tail_bytes = tail_bytes.saturating_add(record.to_string().len() as u64);
                 }
-                queues.ordinal += 1;
-                let mut observer = lock(&self.observer);
-                if observer.as_ref().is_some_and(|observer| {
-                    record["consumer"] == observer.consumer && (observer.matcher)(&record)
-                }) && let Some(observer) = observer.take()
-                {
-                    let _ = observer.sender.send(record);
+                rejected.items = rejected.items.saturating_add(tail_items);
+                rejected.bytes = rejected.bytes.saturating_add(tail_bytes);
+                // A refusal by the cutoff (already sealed, or a journal that
+                // stopped and sealed under the first group) puts the values held
+                // beyond that group after the same cutoff, too. The cause is the
+                // group's own answer: a seal that lands after a queue or storage
+                // refusal changes neither where those values are counted nor
+                // how many times.
+                if rejected.failure.after_cutoff() {
+                    let mut queues = lock(&self.queues);
+                    queues.after_cutoff_items =
+                        queues.after_cutoff_items.saturating_add(tail_items);
+                    queues.after_cutoff_bytes =
+                        queues.after_cutoff_bytes.saturating_add(tail_bytes);
                 }
-                return Ok(());
+                return DataBatchOutcome {
+                    accepted,
+                    rejected: outcome.rejected,
+                };
             }
+        }
+    }
+
+    fn push_data_group(&self, records: Vec<Value>) -> DataBatchOutcome {
+        if records.is_empty() {
+            return DataBatchOutcome {
+                accepted: 0,
+                rejected: None,
+            };
+        }
+        let sizes: Vec<usize> = records
+            .iter()
+            .map(|record| record.to_string().len())
+            .collect();
+        let refuse = |accepted: usize, failure: DataIngressFailure| DataBatchOutcome {
+            accepted,
+            rejected: Some(DataBatchRejection {
+                failure,
+                items: (sizes.len() - accepted) as u64,
+                bytes: sizes[accepted..].iter().map(|bytes| *bytes as u64).sum(),
+            }),
+        };
+        let mut queues = lock(&self.queues);
+        if self.is_sealed() {
+            Self::count_after_cutoff(&mut queues, &sizes);
+            return refuse(0, DataIngressFailure::Sealed { bytes: sizes[0] });
+        }
+        if let Some(durable) = queues.durable.as_mut() {
+            let batch = match Self::persist_data(durable, &records) {
+                Ok(batch) => batch,
+                Err(error) if error.kind == "storage.stopped" => {
+                    self.sealed.store(true, Ordering::SeqCst);
+                    Self::count_after_cutoff(&mut queues, &sizes);
+                    lock(&self.observer).take();
+                    return refuse(0, DataIngressFailure::Stopped { bytes: sizes[0] });
+                }
+                Err(error) => {
+                    self.storage_terminal(records[0]["consumer"].clone(), &error);
+                    return refuse(
+                        0,
+                        DataIngressFailure::Storage {
+                            bytes: sizes[0],
+                            error,
+                        },
+                    );
+                }
+            };
+            queues.ordinal += batch.accepted as u64;
+            // The commit has happened; observe the admitted prefix in order.
+            for record in &records[..batch.accepted] {
+                Self::observe_admitted(&self.observer, record);
+            }
+            return match batch.rejected {
+                Some(rejected) => {
+                    self.storage_terminal(
+                        records[batch.accepted]["consumer"].clone(),
+                        &rejected.error,
+                    );
+                    refuse(
+                        batch.accepted,
+                        DataIngressFailure::Storage {
+                            bytes: sizes[batch.accepted],
+                            error: rejected.error,
+                        },
+                    )
+                }
+                None => DataBatchOutcome {
+                    accepted: batch.accepted,
+                    rejected: None,
+                },
+            };
+        }
+        let mut accepted = 0;
+        let mut overflow = None;
+        for (record, bytes) in records.into_iter().zip(sizes.iter().copied()) {
             if queues.data.len() >= DATA_RECORD_CAP || queues.data_bytes + bytes > DATA_RECORD_BYTES
             {
-                return Err(DataIngressFailure::Overflow { bytes });
+                overflow = Some(DataIngressFailure::Overflow { bytes });
+                break;
             }
             queues.ordinal += 1;
             let ordinal = queues.ordinal;
             queues.data_bytes += bytes;
-            let mut observer = lock(&self.observer);
-            if observer.as_ref().is_some_and(|observer| {
-                record["consumer"] == observer.consumer && (observer.matcher)(&record)
-            }) && let Some(observer) = observer.take()
-            {
-                // A dropped receiver means its scoped step already ended;
-                // the record remains retained independently below.
-                let _ = observer.sender.send(record.clone());
-            }
+            Self::observe_admitted(&self.observer, &record);
             queues.data.push_back(Entry {
                 ordinal,
                 record,
                 bytes,
             });
+            accepted += 1;
         }
-        self.signal();
-        Ok(())
+        drop(queues);
+        if accepted > 0 {
+            self.signal();
+        }
+        match overflow {
+            Some(failure) => refuse(accepted, failure),
+            None => DataBatchOutcome {
+                accepted,
+                rejected: None,
+            },
+        }
+    }
+
+    fn count_after_cutoff(queues: &mut Queues, sizes: &[usize]) {
+        queues.after_cutoff_items = queues.after_cutoff_items.saturating_add(sizes.len() as u64);
+        queues.after_cutoff_bytes = queues
+            .after_cutoff_bytes
+            .saturating_add(sizes.iter().map(|bytes| *bytes as u64).sum());
+    }
+
+    /// Hand an admitted record to the active observation, at most once. A
+    /// dropped receiver means its scoped step already ended; the record
+    /// remains retained independently.
+    fn observe_admitted(slot: &Mutex<Option<Observer>>, record: &Value) {
+        let mut observer = lock(slot);
+        if observer.as_ref().is_some_and(|observer| {
+            record["consumer"] == observer.consumer && (observer.matcher)(record)
+        }) && let Some(observer) = observer.take()
+        {
+            let _ = observer.sender.send(record.clone());
+        }
     }
 
     /// Establishes the handoff cutoff. The same mutex orders this state
@@ -558,11 +764,17 @@ impl Outbox {
 
     /// Preserve upstream loss observed after handoff, even when the source
     /// could not retain bytes for an ordinary data admission.
-    pub fn note_after_cutoff_loss(&self, items: u64, bytes: u64) {
+    ///
+    /// Returns whether the loss was counted: `false` means the outbox is not
+    /// sealed and the caller still owns reporting it.
+    pub fn note_after_cutoff_loss(&self, items: u64, bytes: u64) -> bool {
         let mut queues = lock(&self.queues);
         if self.is_sealed() {
             queues.after_cutoff_items = queues.after_cutoff_items.saturating_add(items);
             queues.after_cutoff_bytes = queues.after_cutoff_bytes.saturating_add(bytes);
+            true
+        } else {
+            false
         }
     }
 
@@ -579,7 +791,7 @@ impl Outbox {
             let mut queues = lock(&self.queues);
             if !self.is_sealed()
                 && let Some(durable) = queues.durable.as_mut()
-                && let Err(error) = Self::persist(durable, &record, false)
+                && let Err(error) = Self::persist(durable, &record)
             {
                 if error.kind == "storage.stopped" {
                     self.sealed.store(true, Ordering::SeqCst);

@@ -624,6 +624,7 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
   private terminal: {
     readonly mode: 'close' | 'finish'
     readonly reason: PublicScanEventTerminalReason
+    readonly error?: NormalizedBleError | null
   } | null = null
 
   constructor(
@@ -637,16 +638,27 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
       this.subscribers.add(stream)
       this.startPump()
     } else if (this.terminal.mode === 'finish') {
-      stream.finishWithReason(this.terminal.reason)
+      stream.finishWithReason(this.terminal.reason, this.terminal.error ?? null)
     } else {
-      stream.closeWithReason(this.terminal.reason)
+      stream.closeWithReason(this.terminal.reason, this.terminal.error ?? null)
     }
     const iterator = stream[Symbol.asyncIterator]()
     const delivery = this.delivery
+    let returned = false
+    let failed = false
+    const sourceFailure = () =>
+      rehydratePublicError(
+        this.terminal?.error == null
+          ? contractError('platform.failure', 'stream', 'public-scan.events')
+          : new BackendContractError(this.terminal.error)
+      )
     return {
       next: async () => {
+        if (returned) return { done: true, value: undefined }
+        if (failed) throw sourceFailure()
         while (true) {
           const item = await iterator.next()
+          if (returned) return { done: true, value: undefined }
           if (item.done) return { done: true, value: undefined }
           if (item.value.kind === 'value') return { done: false, value: item.value.value }
           if (item.value.kind === 'overflow') {
@@ -670,10 +682,15 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
               )
             )
           }
+          if (item.value.reason === 'source-failed') {
+            failed = true
+            throw sourceFailure()
+          }
           return { done: true, value: undefined }
         }
       },
       return: async () => {
+        returned = true
         this.subscribers.delete(stream)
         await iterator.return()
         return { done: true, value: undefined }
@@ -696,20 +713,20 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
     return terminated
   }
 
-  finish(reason: PublicScanEventTerminalReason): void {
+  finish(reason: PublicScanEventTerminalReason, error?: NormalizedBleError | null): void {
     if (this.terminal !== null) return
-    this.terminal = { mode: 'finish', reason }
+    this.terminal = { mode: 'finish', reason, error }
     for (const subscriber of this.subscribers) {
-      subscriber.finishWithReason(reason)
+      subscriber.finishWithReason(reason, error ?? null)
       this.subscribers.delete(subscriber)
     }
   }
 
-  close(reason: PublicScanEventTerminalReason): void {
+  close(reason: PublicScanEventTerminalReason, error?: NormalizedBleError | null): void {
     if (this.terminal !== null) return
-    this.terminal = { mode: 'close', reason }
+    this.terminal = { mode: 'close', reason, error }
     for (const subscriber of this.subscribers) {
-      subscriber.closeWithReason(reason)
+      subscriber.closeWithReason(reason, error ?? null)
       this.subscribers.delete(subscriber)
     }
   }
@@ -1092,10 +1109,10 @@ class PublicScanSessionController<Attachment extends string> {
             : 'closed'
     if (observationMode === 'close') {
       this.observationBroadcast.closeWithReason(reason, error)
-      this.eventBroadcast.close(eventReason)
+      this.eventBroadcast.close(eventReason, error)
     } else {
       this.observationBroadcast.finishWithReason(reason, error)
-      this.eventBroadcast.finish(eventReason)
+      this.eventBroadcast.finish(eventReason, error)
     }
     this.onDeliveryEnded(reason)
   }
@@ -1114,7 +1131,9 @@ interface OptionalInternalControlConnection<Attachment extends string> {
     readonly platformPduBytes: number | null
     readonly observedAtMonotonicMs?: number
   }>
-  readonly writeWithoutResponseReadiness?: () => Promise<ConnectionWriteReadinessWatch<Attachment>>
+  readonly writeWithoutResponseReadiness?: (
+    options?: PublicOperationOptions
+  ) => Promise<ConnectionWriteReadinessWatch<Attachment>>
   readonly parameters?: () => Promise<{
     readonly connectionId: string
     readonly connectionGeneration: string
@@ -1123,7 +1142,7 @@ interface OptionalInternalControlConnection<Attachment extends string> {
     readonly supervisionTimeoutUs: number
     readonly observedAtMonotonicMs: number
   }>
-  readonly parameterEvents?: () => Promise<ConnectionParametersWatch<Attachment>>
+  readonly parameterEvents?: (options?: PublicOperationOptions) => Promise<ConnectionParametersWatch<Attachment>>
 }
 
 type PublicControlConnection<
@@ -1255,6 +1274,8 @@ function publicParameterStream<Attachment extends string, Identity extends Backe
     [Symbol.asyncIterator](): AsyncIterator<ConnectionParametersObservation> {
       let watch: ConnectionParametersWatch<Attachment> | null = null
       let iterator: BoundedAsyncStreamIterator<ConnectionParametersStreamObservation<Attachment>> | null = null
+      const acquisition = new AbortController()
+      let returned = false
       let closed = false
       let iteratorDone = false
       let opening: Promise<void> | null = null
@@ -1263,15 +1284,19 @@ function publicParameterStream<Attachment extends string, Identity extends Backe
       const open = (): Promise<void> => {
         if (opening === null) {
           opening = Promise.resolve().then(async () => {
+            if (acquisition.signal.aborted) {
+              throw contractError('operation.aborted', 'connection', 'public-connection.controls.watch-open')
+            }
             if (connection.parameterEvents === undefined) {
               throw contractError('capability.unsupported', 'connection', operation)
             }
-            watch = await connection.parameterEvents()
+            watch = await connection.parameterEvents({ signal: acquisition.signal, deadline: null })
           })
         }
         return opening
       }
       const close = (): Promise<void> => {
+        acquisition.abort()
         if (closing !== null) return closing
         const releasing = Promise.resolve().then(async () => {
           if (opening !== null) {
@@ -1346,6 +1371,15 @@ function publicParameterStream<Attachment extends string, Identity extends Backe
             await close()
             return { done: true, value: undefined }
           } catch (error) {
+            if (
+              returned &&
+              acquisition.signal.aborted &&
+              error instanceof BackendContractError &&
+              error.normalized.code === 'operation.aborted'
+            ) {
+              await close()
+              return { done: true, value: undefined }
+            }
             const sourceError = rehydratePublicError(error)
             if (teardownAttempted) throw sourceError
             closed = true
@@ -1361,6 +1395,7 @@ function publicParameterStream<Attachment extends string, Identity extends Backe
           }
         },
         async return(): Promise<IteratorResult<ConnectionParametersObservation, undefined>> {
+          returned = true
           closed = true
           try {
             await close()
@@ -1383,6 +1418,8 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
     [Symbol.asyncIterator](): AsyncIterator<WriteReadinessEvent> {
       let watch: ConnectionWriteReadinessWatch<Attachment> | null = null
       let iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<Attachment>> | null = null
+      const acquisition = new AbortController()
+      let returned = false
       let closed = false
       let iteratorDone = false
       let opening: Promise<void> | null = null
@@ -1391,16 +1428,20 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
       const open = (): Promise<void> => {
         if (opening === null) {
           opening = Promise.resolve().then(async () => {
+            if (acquisition.signal.aborted) {
+              throw contractError('operation.aborted', 'connection', 'public-connection.controls.watch-open')
+            }
             if (connection.writeWithoutResponseReadiness === undefined) {
               throw contractError('capability.unsupported', 'connection', 'public-connection.controls.write-readiness')
             }
-            watch = await connection.writeWithoutResponseReadiness()
+            watch = await connection.writeWithoutResponseReadiness({ signal: acquisition.signal, deadline: null })
           })
         }
         return opening
       }
 
       const close = (): Promise<void> => {
+        acquisition.abort()
         if (closing !== null) return closing
         const operation = Promise.resolve().then(async () => {
           if (opening !== null) {
@@ -1494,6 +1535,15 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
             await close()
             return { done: true, value: undefined }
           } catch (error) {
+            if (
+              returned &&
+              acquisition.signal.aborted &&
+              error instanceof BackendContractError &&
+              error.normalized.code === 'operation.aborted'
+            ) {
+              await close()
+              return { done: true, value: undefined }
+            }
             const sourceError = rehydratePublicError(error)
             if (teardownAttempted) throw sourceError
             closed = true
@@ -1509,6 +1559,7 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
           }
         },
         async return(): Promise<IteratorResult<WriteReadinessEvent, undefined>> {
+          returned = true
           closed = true
           try {
             await close()

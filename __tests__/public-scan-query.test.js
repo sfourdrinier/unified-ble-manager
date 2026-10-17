@@ -936,6 +936,10 @@ describe('canonical public ScanQuery v1', () => {
     const scan = await manager.scan({ query: { anyOf: [{ names: { exact: ['never-matches'] } }] } })
     const iterator = scan.observations[Symbol.asyncIterator]()
     const terminal = iterator.next()
+    const events = scan.events[Symbol.asyncIterator]()
+    const eventFailure = expect(events.next()).rejects.toMatchObject({
+      code: 'stream.quota', domain: 'scan', operation: 'scan.evidence.peer-capacity', retryability: 'never'
+    })
     for (let peer = 0; peer <= 4096; peer += 1) source.emit(scanAdvertisement(`quota-peer-${peer}`), 32)
     await expect(terminal).resolves.toMatchObject({
       done: false,
@@ -945,6 +949,8 @@ describe('canonical public ScanQuery v1', () => {
         error: { code: 'stream.quota', domain: 'scan', operation: 'scan.evidence.peer-capacity', retryability: 'never' }
       }
     })
+    await eventFailure
+    await expect(scan.events[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'stream.quota' })
     await expect(iterator.next()).resolves.toMatchObject({ done: true })
     await scan.stop()
     expect(stop).toHaveBeenCalledTimes(1)
@@ -1575,8 +1581,8 @@ describe('canonical public ScanQuery v1', () => {
       limits: inner.limits,
       overflowPolicy: inner.overflowPolicy,
       emit: (value, bytes) => inner.emit(value, bytes),
-      closeWithReason: reason => inner.closeWithReason(reason),
-      finishWithReason: reason => inner.finishWithReason(reason),
+      closeWithReason: (reason, error) => inner.closeWithReason(reason, error),
+      finishWithReason: (reason, error) => inner.finishWithReason(reason, error),
       [Symbol.asyncIterator]: () => {
         const iterator = inner[Symbol.asyncIterator]()
         return {
@@ -1627,6 +1633,72 @@ describe('canonical public ScanQuery v1', () => {
     await flushMicrotasks()
     return observations
   }
+
+  test('scan event source failure drains buffered events then rejects active and late subscribers with the original cause', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan()
+    const events = scan.events[Symbol.asyncIterator]()
+    const returned = scan.events[Symbol.asyncIterator]()
+    await returned.return()
+    const failure = contractError('adapter.powered-off', 'adapter', 'native.scan', {
+      domain: 'native-radio', code: 'powered-off', safeMessage: 'Radio powered off', metadata: { nativeStatus: 5 }
+    }).normalized
+    fixture.source.emit(scanAdvertisement('buffered-before-failure'), 32)
+    await flushMicrotasks()
+    fixture.source.finishWithReason('source-failed', failure)
+    await flushMicrotasks()
+    await expect(events.next()).resolves.toMatchObject({ value: { kind: 'observed', peer: { id: 'buffered-before-failure' } } })
+    const expected = { code: failure.code, domain: failure.domain, operation: failure.operation,
+      retryability: failure.retryability, platform: { domain: 'native-radio', code: 'powered-off', metadata: { nativeStatus: 5 } } }
+    await expect(events.next()).rejects.toMatchObject(expected)
+    await expect(events.next()).rejects.toMatchObject(expected)
+    const late = scan.events[Symbol.asyncIterator]()
+    await expect(late.next()).rejects.toMatchObject(expected)
+    await expect(returned.next()).resolves.toMatchObject({ done: true })
+    await events.return()
+    await expect(events.next()).resolves.toMatchObject({ done: true })
+    fixture.nativeStop.mockResolvedValueOnce({ state: 'release-failed', failures: [{ resourceKind: 'scan',
+      error: contractError('platform.failure', 'cleanup', 'native.stop').normalized }] })
+    await expect(scan.stop()).resolves.toMatchObject({ state: 'release-failed' })
+    await expect(late.next()).rejects.toMatchObject(expected)
+    await expect(scan.stop()).resolves.toMatchObject({ state: 'released' })
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(2)
+    await expect(late.next()).rejects.toMatchObject(expected)
+    await late.return()
+  })
+
+  test('scan events reject a pending reader when the source fails without native detail', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan()
+    const events = scan.events[Symbol.asyncIterator]()
+    const failure = expect(events.next()).rejects.toMatchObject({
+      code: 'platform.failure', domain: 'stream', operation: 'public-scan.events'
+    })
+    fixture.source.closeWithReason('source-failed')
+    await failure
+    await scan.stop()
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
+    await events.return()
+  })
+
+  test('returning a pending scan event iterator cancels only that view and preserves later source failure for other views', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan()
+    const events = scan.events[Symbol.asyncIterator]()
+    const pending = events.next()
+    await events.return()
+    await expect(pending).resolves.toMatchObject({ done: true })
+    fixture.source.finishWithReason('source-failed', contractError('adapter.powered-off', 'adapter', 'native.scan').normalized)
+    await flushMicrotasks()
+    await expect(events.next()).resolves.toMatchObject({ done: true })
+    const remaining = scan.events[Symbol.asyncIterator]()
+    await expect(remaining.next()).rejects.toMatchObject({ code: 'adapter.powered-off', operation: 'native.scan' })
+    await remaining.return()
+    await scan.stop()
+  })
 
   test('explicit stop does not deliver queued observations or discovery events after it resolves', async () => {
     const fixture = createStopOverflowFixture()

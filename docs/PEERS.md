@@ -124,7 +124,7 @@ React Native directory observations preserve the native host's elapsed-time
 instance and distinct across instances; these values are not JavaScript clock
 timestamps and must not be compared across managers or process lifetimes.
 
-React Native Android supports `bonded()` and `resolve()` through the Android system bond table. The app must request `BLUETOOTH_CONNECT` (and `BLUETOOTH_SCAN` for scanning) before calling them. A bonded peer is paired metadata, not proof that the radio is reachable: Android reports reachability as `unknown` and only reports `connection: 'connected'` when the manager already owns that live connection. Save the returned version-1, system-scoped reference and resolve it again before reconnecting:
+React Native Android supports `bonded()` through the Android system bond table. It also resolves origin-scoped references by validating the canonical Android device address and obtaining the OS device handle; this does not scan, connect, bond, or establish reachability. The app must request `BLUETOOTH_CONNECT` (and `BLUETOOTH_SCAN` for scanning) before calling them. A bonded peer is paired metadata, not proof that the radio is reachable: Android reports reachability as `unknown` and only reports `connection: 'connected'` when the manager already owns that live connection. Save the returned version-1, system-scoped reference and resolve it again before reconnecting:
 
 ```ts
 const bonded = await manager.peers.bonded()

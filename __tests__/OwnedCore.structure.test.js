@@ -35,6 +35,9 @@ describe('Unified Android native protocol structure', () => {
     const buildGradle = fs.readFileSync(path.join(root, 'android/build.gradle'), 'utf8')
 
     expect(javaAndKotlinFiles(androidRoot)).toEqual([
+      // Shared typed metadata access keeps manifest values safe at every
+      // Android bundle boundary; it is part of the current source graph.
+      'AndroidBundleMetadata.java',
       'BlePlxForegroundService.java',
       'BlePlxPackage.java',
       'background/AndroidConnectedDeviceForegroundServiceDriver.java',
@@ -99,6 +102,7 @@ describe('Unified Android native protocol structure', () => {
       'protocol/generated/NativeProtocolV2Schema.kt',
       // Runtime-gated public Android encryption/subrate API adapters.
       'radio/AndroidEncryptionApi.kt',
+      'radio/AndroidGattDisconnectOwners.kt',
       'radio/AndroidSubrateApi.kt',
       'radio/DeferredCoreShadow.kt',
       'radio/GattCentralWire.kt',

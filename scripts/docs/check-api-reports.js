@@ -1,3 +1,4 @@
+// scripts/docs/check-api-reports.js
 'use strict'
 
 const fs = require('node:fs')
@@ -97,10 +98,35 @@ function isReadonlyProperty(symbol) {
   })
 }
 
+function uniqueSymbolIdentity(checker, expression) {
+  const type = checker.getTypeAtLocation(expression)
+  if ((type.flags & ts.TypeFlags.UniqueESSymbol) === 0) return undefined
+  const target = type.symbol
+  if (target === undefined) return undefined
+  const declaration = target.getDeclarations()?.find(Boolean)
+  if (declaration === undefined) return undefined
+  if (declaration.getSourceFile().hasNoDefaultLib) return undefined
+  const declaringModule = path.relative(root, declaration.getSourceFile().fileName).replaceAll(path.sep, '/')
+  return `${declaringModule}#${target.getName()}`
+}
+
+function semanticPropertyName(checker, property) {
+  for (const declaration of property.getDeclarations() ?? []) {
+    if (!('name' in declaration) || declaration.name === undefined) continue
+    if (ts.isComputedPropertyName(declaration.name)) {
+      const expression = declaration.name.expression
+      const identity = uniqueSymbolIdentity(checker, expression)
+      const label = identity === undefined ? expression.getText() : `${expression.getText()} /* ${identity} */`
+      return `[${label}]`
+    }
+  }
+  return property.getName()
+}
+
 function propertySignature(checker, property, flags) {
   const optional = property.flags & ts.SymbolFlags.Optional ? '?' : ''
   const readonly = isReadonlyProperty(property) ? 'readonly ' : ''
-  const name = property.getName()
+  const name = semanticPropertyName(checker, property)
   const propertyType = checker.getTypeOfSymbol(property)
   const methodSignatures = checker.getSignaturesOfType(propertyType, ts.SignatureKind.Call)
   if ((property.flags & ts.SymbolFlags.Method) !== 0 && methodSignatures.length > 0) {
@@ -142,21 +168,11 @@ function signatureForSymbol(checker, exported) {
   return canonicalizeSignature(checker.typeToString(checker.getTypeOfSymbol(symbol), undefined, flags))
 }
 
-function collectExportEntries(sourcePaths) {
-  const config = ts.readConfigFile(path.join(root, 'tsconfig.build.json'), ts.sys.readFile)
-  if (config.error !== undefined) {
-    throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, '\n'))
-  }
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root)
-  const program = ts.createProgram({
-    rootNames: sourcePaths.map(sourcePath => path.join(root, sourcePath)),
-    options: parsed.options
-  })
+function collectExportEntriesFromProgram(program, sourcePaths) {
   const checker = program.getTypeChecker()
   const result = new Map()
   for (const sourcePath of sourcePaths) {
-    const absolutePath = path.join(root, sourcePath)
-    const sourceFile = program.getSourceFile(absolutePath)
+    const sourceFile = program.getSourceFile(sourcePath)
     if (sourceFile === undefined) throw new Error(`API report source is missing: ${sourcePath}`)
     const symbol = checker.getSymbolAtLocation(sourceFile)
     if (symbol === undefined) throw new Error(`API report module has no symbol: ${sourcePath}`)
@@ -174,6 +190,21 @@ function collectExportEntries(sourcePaths) {
     result.set(sourcePath, Object.freeze(entries))
   }
   return result
+}
+
+function collectExportEntries(sourcePaths) {
+  const config = ts.readConfigFile(path.join(root, 'tsconfig.build.json'), ts.sys.readFile)
+  if (config.error !== undefined) {
+    throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, '\n'))
+  }
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root)
+  const program = ts.createProgram({
+    rootNames: sourcePaths.map(sourcePath => path.join(root, sourcePath)),
+    options: parsed.options
+  })
+  const absoluteSourcePaths = sourcePaths.map(sourcePath => path.join(root, sourcePath))
+  const absoluteEntries = collectExportEntriesFromProgram(program, absoluteSourcePaths)
+  return new Map(sourcePaths.map((sourcePath, index) => [sourcePath, absoluteEntries.get(absoluteSourcePaths[index])]))
 }
 
 function verifiedSection(entrypoint, sourcePath, exports) {
@@ -305,4 +336,4 @@ function checkReports() {
 
 if (require.main === module) checkReports()
 
-module.exports = { parseVerifiedSection, collectExportEntries, moduleExports }
+module.exports = { parseVerifiedSection, collectExportEntries, collectExportEntriesFromProgram, moduleExports }

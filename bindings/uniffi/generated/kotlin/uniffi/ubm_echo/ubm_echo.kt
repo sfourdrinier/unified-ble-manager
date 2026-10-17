@@ -4450,6 +4450,18 @@ sealed class MobileRadioIngress {
         companion object
     }
 
+    data class ConnectionScoped(
+        val `peerId`: kotlin.String,
+        val `expectedGeneration`: kotlin.String,
+        val `connected`: kotlin.Boolean,
+        val `status`: kotlin.Int?) : MobileRadioIngress()
+
+    {
+
+
+        companion object
+    }
+
     data class ServicesChanged(
         val `peerId`: kotlin.String) : MobileRadioIngress()
 
@@ -4551,32 +4563,38 @@ public object FfiConverterTypeMobileRadioIngress : FfiConverterRustBuffer<Mobile
                 FfiConverterBoolean.read(buf),
                 FfiConverterOptionalInt.read(buf),
                 )
-            3 -> MobileRadioIngress.ServicesChanged(
+            3 -> MobileRadioIngress.ConnectionScoped(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterBoolean.read(buf),
+                FfiConverterOptionalInt.read(buf),
+                )
+            4 -> MobileRadioIngress.ServicesChanged(
                 FfiConverterString.read(buf),
                 )
-            4 -> MobileRadioIngress.Notification(
+            5 -> MobileRadioIngress.Notification(
                 FfiConverterTypeMobileInstance.read(buf),
                 FfiConverterULong.read(buf),
                 FfiConverterByteArray.read(buf),
                 )
-            5 -> MobileRadioIngress.AdapterState(
+            6 -> MobileRadioIngress.AdapterState(
                 FfiConverterTypeMobileAdapterSnapshot.read(buf),
                 )
-            6 -> MobileRadioIngress.ScanFailed(
+            7 -> MobileRadioIngress.ScanFailed(
                 FfiConverterString.read(buf),
                 )
-            7 -> MobileRadioIngress.SecurityChanged(
+            8 -> MobileRadioIngress.SecurityChanged(
                 FfiConverterString.read(buf),
                 FfiConverterTypeMobileSecurityState.read(buf),
                 )
-            8 -> MobileRadioIngress.WriteReadiness(
+            9 -> MobileRadioIngress.WriteReadiness(
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
-            9 -> MobileRadioIngress.Restored(
+            10 -> MobileRadioIngress.Restored(
                 FfiConverterSequenceTypeMobileRestoredPeer.read(buf),
                 )
-            10 -> MobileRadioIngress.Dropped(
+            11 -> MobileRadioIngress.Dropped(
                 FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
@@ -4597,6 +4615,16 @@ public object FfiConverterTypeMobileRadioIngress : FfiConverterRustBuffer<Mobile
             (
                 4UL
                 + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterBoolean.allocationSize(value.`connected`)
+                + FfiConverterOptionalInt.allocationSize(value.`status`)
+            )
+        }
+        is MobileRadioIngress.ConnectionScoped -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`peerId`)
+                + FfiConverterString.allocationSize(value.`expectedGeneration`)
                 + FfiConverterBoolean.allocationSize(value.`connected`)
                 + FfiConverterOptionalInt.allocationSize(value.`status`)
             )
@@ -4678,47 +4706,55 @@ public object FfiConverterTypeMobileRadioIngress : FfiConverterRustBuffer<Mobile
                 FfiConverterOptionalInt.write(value.`status`, buf)
                 Unit
             }
-            is MobileRadioIngress.ServicesChanged -> {
+            is MobileRadioIngress.ConnectionScoped -> {
                 buf.putInt(3)
+                FfiConverterString.write(value.`peerId`, buf)
+                FfiConverterString.write(value.`expectedGeneration`, buf)
+                FfiConverterBoolean.write(value.`connected`, buf)
+                FfiConverterOptionalInt.write(value.`status`, buf)
+                Unit
+            }
+            is MobileRadioIngress.ServicesChanged -> {
+                buf.putInt(4)
                 FfiConverterString.write(value.`peerId`, buf)
                 Unit
             }
             is MobileRadioIngress.Notification -> {
-                buf.putInt(4)
+                buf.putInt(5)
                 FfiConverterTypeMobileInstance.write(value.`instance`, buf)
                 FfiConverterULong.write(value.`epoch`, buf)
                 FfiConverterByteArray.write(value.`value`, buf)
                 Unit
             }
             is MobileRadioIngress.AdapterState -> {
-                buf.putInt(5)
+                buf.putInt(6)
                 FfiConverterTypeMobileAdapterSnapshot.write(value.`snapshot`, buf)
                 Unit
             }
             is MobileRadioIngress.ScanFailed -> {
-                buf.putInt(6)
+                buf.putInt(7)
                 FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is MobileRadioIngress.SecurityChanged -> {
-                buf.putInt(7)
+                buf.putInt(8)
                 FfiConverterString.write(value.`peerId`, buf)
                 FfiConverterTypeMobileSecurityState.write(value.`state`, buf)
                 Unit
             }
             is MobileRadioIngress.WriteReadiness -> {
-                buf.putInt(8)
+                buf.putInt(9)
                 FfiConverterString.write(value.`peerId`, buf)
                 FfiConverterBoolean.write(value.`ready`, buf)
                 Unit
             }
             is MobileRadioIngress.Restored -> {
-                buf.putInt(9)
+                buf.putInt(10)
                 FfiConverterSequenceTypeMobileRestoredPeer.write(value.`peers`, buf)
                 Unit
             }
             is MobileRadioIngress.Dropped -> {
-                buf.putInt(10)
+                buf.putInt(11)
                 FfiConverterString.write(value.`ingressClass`, buf)
                 FfiConverterString.write(value.`detail`, buf)
                 Unit
@@ -4771,7 +4807,8 @@ sealed class MobileRadioRequest {
         val `id`: kotlin.ULong,
         val `peerId`: kotlin.String,
         val `autoConnect`: kotlin.Boolean,
-        val `preferredPhy`: List<kotlin.String>) : MobileRadioRequest()
+        val `preferredPhy`: List<kotlin.String>,
+        val `expectedGeneration`: kotlin.String) : MobileRadioRequest()
 
     {
 
@@ -5154,6 +5191,7 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 FfiConverterString.read(buf),
                 FfiConverterBoolean.read(buf),
                 FfiConverterSequenceString.read(buf),
+                FfiConverterString.read(buf),
                 )
             5 -> MobileRadioRequest.Disconnect(
                 FfiConverterULong.read(buf),
@@ -5342,6 +5380,7 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 + FfiConverterString.allocationSize(value.`peerId`)
                 + FfiConverterBoolean.allocationSize(value.`autoConnect`)
                 + FfiConverterSequenceString.allocationSize(value.`preferredPhy`)
+                + FfiConverterString.allocationSize(value.`expectedGeneration`)
             )
         }
         is MobileRadioRequest.Disconnect -> {
@@ -5650,6 +5689,7 @@ public object FfiConverterTypeMobileRadioRequest : FfiConverterRustBuffer<Mobile
                 FfiConverterString.write(value.`peerId`, buf)
                 FfiConverterBoolean.write(value.`autoConnect`, buf)
                 FfiConverterSequenceString.write(value.`preferredPhy`, buf)
+                FfiConverterString.write(value.`expectedGeneration`, buf)
                 Unit
             }
             is MobileRadioRequest.Disconnect -> {

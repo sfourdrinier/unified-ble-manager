@@ -693,3 +693,288 @@ test.each([
   const connection = await manager.connect({ id: 'peer-1' })
   await expect(connection.controls.readPhy()).rejects.toMatchObject({ code: 'protocol.violation' })
 })
+
+test.each([
+  { intervalUs: 1.5 },
+  { intervalUs: Number.MAX_SAFE_INTEGER + 1 },
+  { supervisionTimeoutUs: 1.5 },
+  { supervisionTimeoutUs: Number.MAX_SAFE_INTEGER + 1 }
+])('IPC public parameter snapshot and event reject nonintegral/unsafe microseconds: %j', async invalid => {
+  const { manager, base } = setup('unsupported', undefined, 'supported')
+  const values = { intervalUs: 30_000, latency: 0, supervisionTimeoutUs: 4_000_000, ...invalid }
+  base.parameters = async () => values
+  const close = jest.fn(async () => ({ state: 'released', failures: [] }))
+  base.parameterEvents = async () => ({
+    close,
+    events: scriptedStream([
+      {
+        kind: 'value',
+        value: {
+          connectionId: 'connection-1',
+          connectionGeneration: 'connection-generation-1',
+          observedAtMonotonicMs: 42,
+          ordinal: 1,
+          ...values
+        }
+      }
+    ])
+  })
+  const connection = await manager.connect('peer-1')
+  await expect(connection.controls.parameters()).rejects.toMatchObject({ code: 'protocol.violation' })
+  const iterator = connection.controls.parameterEvents()[Symbol.asyncIterator]()
+  await expect(iterator.next()).rejects.toMatchObject({ code: 'protocol.violation' })
+  expect(close).toHaveBeenCalledTimes(1)
+})
+
+const { IpcConnection } = require('../../src/ipc/manager')
+
+test.each([
+  { intervalUs: 1.5 },
+  { intervalUs: Number.MAX_SAFE_INTEGER + 1 },
+  { supervisionTimeoutUs: 1.5 },
+  { supervisionTimeoutUs: Number.MAX_SAFE_INTEGER + 1 },
+  { latency: 1.5 },
+  { intervalUs: 0 },
+  { latency: -1 }
+])('private IPC snapshot and event decoder reject malformed numeric facts %j', async invalid => {
+  const observation = {
+    connectionId: 'c',
+    connectionGeneration: 'g',
+    intervalUs: 30000,
+    latency: 0,
+    supervisionTimeoutUs: 4000000,
+    observedAtMonotonicMs: 12.5,
+    ordinal: 1,
+    ...invalid
+  }
+  let validate
+  const manager = {
+    route: jest.fn(async command => (command === 'connection.parameters' ? observation : { handle: 'watch' })),
+    mintParameterEventsHandle: () => 'watch',
+    registerStream: (_handle, guard) => {
+      validate = guard
+      return scriptedStream([])
+    }
+  }
+  const connection = new IpcConnection(manager, 'h', 'p', 'c', 'owner', 'g')
+  await expect(connection.parameters()).rejects.toMatchObject({
+    normalized: { code: 'protocol.violation', operation: 'ipc-manager.connection-parameters' }
+  })
+  await connection.parameterEvents()
+  expect(validate(observation)).toBe(false)
+})
+
+test('private IPC preserves safe integer measurements and independent fractional clock metadata', async () => {
+  const observation = {
+    connectionId: 'c',
+    connectionGeneration: 'g',
+    intervalUs: Number.MAX_SAFE_INTEGER,
+    latency: 0,
+    supervisionTimeoutUs: 1001,
+    observedAtMonotonicMs: 12.5,
+    ordinal: 1
+  }
+  let validate
+  const manager = {
+    route: jest.fn(async command => (command === 'connection.parameters' ? observation : { handle: 'watch' })),
+    mintParameterEventsHandle: () => 'watch',
+    registerStream: (_handle, guard) => {
+      validate = guard
+      return scriptedStream([])
+    }
+  }
+  const connection = new IpcConnection(manager, 'h', 'p', 'c', 'owner', 'g')
+  await expect(connection.parameters()).resolves.toEqual({
+    intervalUs: Number.MAX_SAFE_INTEGER,
+    latency: 0,
+    supervisionTimeoutUs: 1001
+  })
+  await connection.parameterEvents()
+  expect(validate(observation)).toBe(true)
+})
+
+test.each(['parameters', 'readiness'])('%s return aborts a stalled initial watch admission', async kind => {
+  const { manager, ipc } = setup('supported', undefined, 'supported')
+  const base = await ipc.connect('peer-1')
+  let admittedSignal
+  let entered
+  const started = new Promise(resolve => {
+    entered = resolve
+  })
+  const open = jest.fn(
+    options =>
+      new Promise((_resolve, reject) => {
+        admittedSignal = options?.signal
+        entered()
+        options?.signal?.addEventListener(
+          'abort',
+          () =>
+            reject(
+              require('../../src/backend-contract/errors').contractError(
+                'operation.aborted',
+                'connection',
+                'controlled.initial-probe'
+              )
+            ),
+          { once: true }
+        )
+      })
+  )
+  if (kind === 'parameters') base.parameterEvents = open
+  else base.writeReadiness = open
+  const connection = await manager.connect('peer-1')
+  const iterator = (
+    kind === 'parameters'
+      ? connection.controls.parameterEvents()
+      : connection.controls.writeReadiness('without-response')
+  )[Symbol.asyncIterator]()
+  const pending = iterator.next()
+  await started
+  const returned = iterator.return()
+  expect(admittedSignal).toBeDefined()
+  expect(admittedSignal.aborted).toBe(true)
+  await expect(returned).resolves.toMatchObject({ done: true })
+  await expect(pending).resolves.toMatchObject({ done: true })
+})
+
+test.each(['parameters', 'readiness'])('%s late admission shares close and retries refused cleanup', async kind => {
+  const { manager, ipc } = setup('supported', undefined, 'supported')
+  const base = await ipc.connect('peer-1')
+  let finishOpen, finishClose
+  const opening = new Promise(resolve => {
+    finishOpen = resolve
+  })
+  const closing = new Promise(resolve => {
+    finishClose = resolve
+  })
+  const close = jest
+    .fn()
+    .mockImplementationOnce(() => closing)
+    .mockResolvedValue({ state: 'released', failures: [] })
+  if (kind === 'parameters') base.parameterEvents = () => opening
+  else base.writeReadiness = () => opening
+  const connection = await manager.connect('peer-1')
+  const iterator = (
+    kind === 'parameters'
+      ? connection.controls.parameterEvents()
+      : connection.controls.writeReadiness('without-response')
+  )[Symbol.asyncIterator]()
+  const pending = iterator.next().then(
+    value => ({ value }),
+    error => ({ error })
+  )
+  const first = iterator.return().then(
+    value => ({ value }),
+    error => ({ error })
+  )
+  const concurrent = iterator.return().then(
+    value => ({ value }),
+    error => ({ error })
+  )
+  finishOpen({ events: scriptedStream([]), close })
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(close).toHaveBeenCalledTimes(1)
+  finishClose({
+    state: 'release-failed',
+    failures: [
+      {
+        resourceKind: 'watch',
+        error: {
+          code: 'platform.failure',
+          domain: 'stream',
+          operation: 'controlled.close',
+          platform: null,
+          retryability: 'caller-decides'
+        }
+      }
+    ]
+  })
+  expect((await first).error).toBeDefined()
+  expect((await concurrent).error).toBeDefined()
+  expect((await pending).error).toBeDefined()
+  await expect(iterator.return()).resolves.toMatchObject({ done: true })
+  expect(close).toHaveBeenCalledTimes(2)
+})
+
+test.each(['parameters', 'readiness'])(
+  '%s independent source and close failures survive iterator cleanup retry',
+  async kind => {
+    const { manager, ipc } = setup('supported', undefined, 'supported')
+    const base = await ipc.connect('peer-1')
+    const fault = {
+      code: 'adapter.powered-off',
+      domain: 'adapter',
+      operation: 'controlled.source',
+      platform: null,
+      retryability: 'caller-decides'
+    }
+    const close = jest
+      .fn()
+      .mockResolvedValueOnce({
+        state: 'release-failed',
+        failures: [
+          {
+            resourceKind: 'watch',
+            error: { ...fault, code: 'platform.failure', domain: 'stream', operation: 'controlled.close' }
+          }
+        ]
+      })
+      .mockResolvedValue({ state: 'released', failures: [] })
+    const open = async () => ({
+      events: scriptedStream([{ kind: 'terminal', reason: 'source-failed', error: fault }]),
+      close
+    })
+    if (kind === 'parameters') base.parameterEvents = open
+    else base.writeReadiness = open
+    const connection = await manager.connect('peer-1')
+    const iterator = (
+      kind === 'parameters'
+        ? connection.controls.parameterEvents()
+        : connection.controls.writeReadiness('without-response')
+    )[Symbol.asyncIterator]()
+    const error = await iterator.next().then(
+      () => null,
+      failure => failure
+    )
+    expect(error).toBeInstanceOf(AggregateError)
+    expect(error.errors[0]).toMatchObject({ code: 'adapter.powered-off', operation: 'controlled.source' })
+    expect(error.errors[1].cleanup.failures[0].error).toMatchObject({ operation: 'controlled.close' })
+    await expect(iterator.return()).resolves.toMatchObject({ done: true })
+    expect(close).toHaveBeenCalledTimes(2)
+  }
+)
+
+test.each(['parameters', 'readiness'])('%s pending next cannot expose a value after return', async kind => {
+  const { manager, ipc } = setup('supported', undefined, 'supported')
+  const base = await ipc.connect('peer-1')
+  let resolveNext, entered
+  const started = new Promise(resolve => {
+    entered = resolve
+  })
+  const next = jest.fn(() => {
+    entered()
+    return new Promise(resolve => {
+      resolveNext = resolve
+    })
+  })
+  const close = jest.fn(async () => {
+    resolveNext({ done: false, value: { kind: 'value', value: {} } })
+    return { state: 'released', failures: [] }
+  })
+  const open = async () => ({ events: { [Symbol.asyncIterator]: () => ({ next }) }, close })
+  if (kind === 'parameters') base.parameterEvents = open
+  else base.writeReadiness = open
+  const connection = await manager.connect('peer-1')
+  const iterator = (
+    kind === 'parameters'
+      ? connection.controls.parameterEvents()
+      : connection.controls.writeReadiness('without-response')
+  )[Symbol.asyncIterator]()
+  const pending = iterator.next()
+  await started
+  await expect(iterator.return()).resolves.toMatchObject({ done: true })
+  await expect(pending).resolves.toMatchObject({ done: true })
+  expect(close).toHaveBeenCalledTimes(1)
+})

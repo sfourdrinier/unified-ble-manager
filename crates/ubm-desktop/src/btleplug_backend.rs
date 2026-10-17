@@ -4104,7 +4104,11 @@ impl RadioBoundary for BtleplugRadio {
         Ok(out)
     }
 
-    async fn connect_when_available(&self, peer_id: &str) -> Result<(), DesktopError> {
+    async fn connect_when_available(
+        &self,
+        peer_id: &str,
+        expected_generation: &str,
+    ) -> Result<(), DesktopError> {
         self.validate_peer_identity(peer_id, "connection.connect.when-available")?;
         #[cfg(target_os = "windows")]
         self.winrt
@@ -4115,10 +4119,10 @@ impl RadioBoundary for BtleplugRadio {
             self.bluez_owner("connection.connect.when-available")?;
             self.bluez()?.wait_le_available(peer_id).await?;
         }
-        self.connect(peer_id).await
+        self.connect(peer_id, expected_generation).await
     }
 
-    async fn connect(&self, peer_id: &str) -> Result<(), DesktopError> {
+    async fn connect(&self, peer_id: &str, _expected_generation: &str) -> Result<(), DesktopError> {
         #[cfg(target_os = "linux")]
         let owner = self.bluez_owner("connection.connect")?;
         self.validate_peer_identity(peer_id, "connection.connect")?;

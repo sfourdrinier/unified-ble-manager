@@ -151,6 +151,7 @@ pub enum MobileRadioRequest {
         /// (Rust refuses it before any effect) and fails `unsupported` if
         /// it ever does.
         preferred_phy: Vec<String>,
+        expected_generation: String,
     },
     Disconnect {
         id: u64,
@@ -327,6 +328,7 @@ impl From<&RadioRequest> for MobileRadioRequest {
                 peer_id,
                 auto_connect,
                 preferred_phy,
+                expected_generation,
             } => Self::Connect {
                 id: *id,
                 peer_id: peer_id.clone(),
@@ -335,6 +337,7 @@ impl From<&RadioRequest> for MobileRadioRequest {
                     .iter()
                     .map(|phy| phy.as_str().to_owned())
                     .collect(),
+                expected_generation: expected_generation.clone(),
             },
             RadioRequest::Disconnect { id, peer_id } => Self::Disconnect {
                 id: *id,
@@ -941,6 +944,12 @@ pub enum MobileRadioIngress {
         connected: bool,
         status: Option<i32>,
     },
+    ConnectionScoped {
+        peer_id: String,
+        expected_generation: String,
+        connected: bool,
+        status: Option<i32>,
+    },
     ServicesChanged {
         peer_id: String,
     },
@@ -1024,6 +1033,17 @@ pub fn ingress(value: MobileRadioIngress) -> Result<RadioIngress, String> {
             status,
         } => RadioIngress::Connection {
             peer_id,
+            connected,
+            status,
+        },
+        MobileRadioIngress::ConnectionScoped {
+            peer_id,
+            expected_generation,
+            connected,
+            status,
+        } => RadioIngress::ConnectionScoped {
+            peer_id,
+            expected_generation,
             connected,
             status,
         },
@@ -1588,11 +1608,18 @@ mod tests {
             peer_id: "p".to_owned(),
             auto_connect: false,
             preferred_phy: vec![ubm_mobile::Phy::Le2m, ubm_mobile::Phy::LeCoded],
+            expected_generation: "cg-1".to_owned(),
         });
-        let MobileRadioRequest::Connect { preferred_phy, .. } = request else {
+        let MobileRadioRequest::Connect {
+            preferred_phy,
+            expected_generation,
+            ..
+        } = request
+        else {
             unreachable!("connect maps to connect: {request:?}");
         };
         assert_eq!(preferred_phy, ["le-2m", "le-coded"]);
+        assert_eq!(expected_generation, "cg-1");
     }
 
     #[test]

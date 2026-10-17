@@ -10,8 +10,12 @@ const {
 const { createNodeBleManagerFromProvider } = require('../../../src/node-host-manager')
 const { createPublicBleManager } = require('../../../src/public/ble-manager')
 
-async function opened() {
+async function opened(wrapCentral) {
   const harness = h.realBinding('bluez')
+  if (wrapCentral) {
+    const openSynthetic = harness.binding.openSynthetic
+    harness.binding.openSynthetic = async (...args) => wrapCentral(await openSynthetic(...args))
+  }
   const now = () => performance.now()
   const manager = await createPublicBleManager(
     await createNodeBleManagerFromProvider(
@@ -194,3 +198,107 @@ test('releasing one public connection closes its acquired children while a share
     await manager.destroy()
   }
 }, 30000)
+
+test.each(['write', 'notify'].flatMap(kind => ['disconnect', 'destroy'].map(cleanup => [kind, cleanup])))(
+  '%s malformed native MTU retains failed FD rollback for %s retry',
+  async (kind, cleanup) => {
+    let closeAttempts = 0
+    const current = await opened(
+      central =>
+        new Proxy(central, {
+          get(target, property) {
+            if (property === 'acquireGatt')
+              return async (...args) => ({ ...(await target.acquireGatt(...args)), mtu: 22 })
+            if (property === 'closeAcquired')
+              return async (...args) => {
+                closeAttempts += 1
+                if (closeAttempts === 1) throw new Error('controlled FD close refusal')
+                return target.closeAcquired(...args)
+              }
+            return Reflect.get(target, property)
+          }
+        })
+    )
+    try {
+      const admission =
+        kind === 'write' ? current.characteristic.acquireWrite() : current.characteristic.acquireNotifications()
+      const failure = await admission.then(
+        () => null,
+        error => error
+      )
+      expect(failure).toBeInstanceOf(AggregateError)
+      expect(failure.errors[0]).toMatchObject({ normalized: { code: 'protocol.violation' } })
+      expect(failure.errors[1]).toMatchObject({
+        normalized: { operation: expect.stringContaining('gatt.acquired-close') }
+      })
+      expect(await current.stage.stagedAcquiredGattCount()).toBe(1)
+      if (cleanup === 'disconnect') {
+        await expect(current.connection.release()).resolves.toMatchObject({ state: 'released' })
+        expect(closeAttempts).toBe(2)
+        expect(await current.stage.stagedAcquiredGattCount()).toBe(0)
+      } else {
+        await expect(current.manager.destroy()).resolves.toMatchObject({ state: 'released' })
+      }
+    } finally {
+      await current.connection.release()
+      await current.manager.destroy()
+    }
+  },
+  30000
+)
+
+test.each(['write', 'notify'])(
+  '%s late acquired receipt keeps failed stale-admission cleanup owned',
+  async kind => {
+    let resolveReceipt, entered
+    const held = new Promise(resolve => {
+      resolveReceipt = resolve
+    })
+    const acquired = new Promise(resolve => {
+      entered = resolve
+    })
+    let closeAttempts = 0
+    const current = await opened(
+      central =>
+        new Proxy(central, {
+          get(target, property) {
+            if (property === 'acquireGatt')
+              return async (...args) => {
+                const receipt = await target.acquireGatt(...args)
+                entered()
+                await held
+                return receipt
+              }
+            if (property === 'closeAcquired')
+              return async (...args) => {
+                closeAttempts += 1
+                if (closeAttempts === 1) throw new Error('controlled late FD close refusal')
+                return target.closeAcquired(...args)
+              }
+            return Reflect.get(target, property)
+          }
+        })
+    )
+    try {
+      const admission = (
+        kind === 'write' ? current.characteristic.acquireWrite() : current.characteristic.acquireNotifications()
+      ).then(
+        () => null,
+        error => error
+      )
+      await acquired
+      const release = current.connection.release()
+      await release
+      resolveReceipt()
+      const error = await admission
+      expect(error).toBeInstanceOf(AggregateError)
+      expect(error.errors[0]).toMatchObject({ normalized: { code: 'connection.stale' } })
+      expect(closeAttempts).toBe(1)
+      await expect(current.manager.destroy()).resolves.toMatchObject({ state: 'released' })
+    } finally {
+      resolveReceipt()
+      await current.manager.destroy()
+    }
+  },
+  10000
+)

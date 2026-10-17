@@ -907,6 +907,14 @@ pub enum RadioEvent {
     },
     Advertisement(PeerSnapshot),
     Connected(String),
+    /// A link transition carrying the core generation admitted by the caller.
+    /// The generation is authoritative core identity, not a radio token.
+    ConnectionScoped {
+        peer_id: String,
+        expected_generation: String,
+        connected: bool,
+        errored: bool,
+    },
     Disconnected(String),
     /// The OS reported the link ended with an error (an Android non-zero
     /// GATT status, a CoreBluetooth disconnect `NSError`): a loss, even when
@@ -1187,11 +1195,13 @@ pub trait RadioBoundary: Send + Sync + 'static {
     fn connect<'a>(
         &'a self,
         peer_id: &'a str,
+        expected_generation: &'a str,
     ) -> impl Future<Output = Result<(), DesktopError>> + Send + 'a;
     /// Native deferred mechanism; absence is an explicit refusal, never direct fallback.
     fn connect_when_available<'a>(
         &'a self,
         _peer_id: &'a str,
+        _expected_generation: &'a str,
     ) -> impl Future<Output = Result<(), DesktopError>> + Send + 'a {
         async {
             Err(DesktopError::new(
@@ -2824,12 +2834,16 @@ impl RadioBoundary for FakeRadio {
             .clone())
     }
 
-    async fn connect_when_available(&self, peer_id: &str) -> Result<(), DesktopError> {
+    async fn connect_when_available(
+        &self,
+        peer_id: &str,
+        _expected_generation: &str,
+    ) -> Result<(), DesktopError> {
         self.record("connect_when_available");
-        self.connect(peer_id).await
+        self.connect(peer_id, _expected_generation).await
     }
 
-    async fn connect(&self, peer_id: &str) -> Result<(), DesktopError> {
+    async fn connect(&self, peer_id: &str, _expected_generation: &str) -> Result<(), DesktopError> {
         self.record("connect");
         if let Some(ScriptedFault { detail, platform }) = self.take_fault(FaultOp::Connect) {
             return Err(scripted(DesktopError::connection_failed(detail), platform));

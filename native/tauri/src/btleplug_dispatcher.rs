@@ -1480,7 +1480,6 @@ impl BtleplugDispatcher {
         // the operation task starts; consulting the caller again there would
         // let an envelope from the ended attachment ride the new binding.
         let route_attachment = self.validate_envelope(&caller, &command, &envelope).await?;
-
         if command == "operation.cancel" {
             return self.cancel_operation(&caller, &payload).await;
         }
@@ -1488,25 +1487,58 @@ impl BtleplugDispatcher {
         let control = OpControl::new(budget, OpTicket::new());
         // Once the authenticated target is admitted, reserve the physical
         // connection queue before starting the asynchronous worker.
+        // GATT handle resolution precedes operation tracking. Reject a reset attachment
+        // before looking up its invalidated database. Other commands retain the worker
+        // check so they can be tracked and cancelled while authority admission waits.
+        if matches!(
+            command.as_str(),
+            "gatt.write"
+                | "gatt.write-when-ready"
+                | "gatt.read"
+                | "gatt.subscribe"
+                | "gatt.acquire-write"
+                | "gatt.acquire-notifications"
+                | "gatt.acquired-write"
+                | "gatt.descriptor.read"
+                | "gatt.descriptor.write"
+                | "gatt.discover"
+        ) {
+            self.refuse_stale_attachment(&route_attachment, &command)
+                .await?;
+        }
         let gatt_peer = match command.as_str() {
             "gatt.write"
             | "gatt.write-when-ready"
             | "gatt.read"
             | "gatt.subscribe"
             | "gatt.acquire-write"
-            | "gatt.acquire-notifications" => {
-                Some(self.gatt_target(&caller, &payload).await?.peer_id)
-            }
-            "gatt.acquired-write" => Some(self.acquired_writer(&caller, &payload).await?.peer_id),
+            | "gatt.acquire-notifications" => Some(
+                self.resolve_after_attachment_check(&route_attachment, &command, || {
+                    self.gatt_target(&caller, &payload)
+                })
+                .await?
+                .peer_id,
+            ),
+            "gatt.acquired-write" => Some(
+                self.resolve_after_attachment_check(&route_attachment, &command, || {
+                    self.acquired_writer(&caller, &payload)
+                })
+                .await?
+                .peer_id,
+            ),
             "gatt.descriptor.read" | "gatt.descriptor.write" => Some(
-                self.descriptor_target(&caller, &payload, "tauri.gatt-admission")
-                    .await?
-                    .0,
+                self.resolve_after_attachment_check(&route_attachment, &command, || {
+                    self.descriptor_target(&caller, &payload, "tauri.gatt-admission")
+                })
+                .await?
+                .0,
             ),
             "gatt.discover" => Some(
-                self.connection(&caller, &payload, "tauri.gatt-admission")
-                    .await?
-                    .peer_id,
+                self.resolve_after_attachment_check(&route_attachment, &command, || {
+                    self.connection(&caller, &payload, "tauri.gatt-admission")
+                })
+                .await?
+                .peer_id,
             ),
             "gatt.unsubscribe" => {
                 let handle =
@@ -1764,6 +1796,22 @@ impl BtleplugDispatcher {
             return Err(stale_attachment(route_attachment, &current));
         }
         Ok(())
+    }
+
+    async fn resolve_after_attachment_check<T, F, Fut>(
+        &self,
+        route_attachment: &Attachment,
+        command: &str,
+        resolve: F,
+    ) -> Result<T, DispatchError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T, DispatchError>>,
+    {
+        let result = resolve().await;
+        self.refuse_stale_attachment(route_attachment, command)
+            .await?;
+        result
     }
 
     async fn validate_expected_lease(
@@ -7642,7 +7690,7 @@ mod service_restriction_tests {
         let IpcValue::Object(fields) = record else {
             panic!("service record");
         };
-        assert!(fields.get("restriction").is_none());
+        assert!(!fields.contains_key("restriction"));
         assert_eq!(fields.get("primary"), Some(&IpcValue::Null));
         assert_eq!(fields.get("includedServices"), Some(&IpcValue::Null));
         assert_eq!(fields.get("occurrence"), Some(&string("1")));

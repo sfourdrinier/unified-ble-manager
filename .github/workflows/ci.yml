@@ -505,7 +505,7 @@ jobs:
         run: node tool/h10-sim/tests/xcheck/run-xcheck.cjs
 
       - name: Check dedicated BlueZ simulator-host policy guard
-        run: node --test tool/h10-sim/tests/bluez-host-policy.test.cjs
+        run: node --test tool/h10-sim/tests/bluez-host-policy.test.cjs tool/h10-sim/tests/synthetic-cli.test.cjs
 
       - name: Check driver-hello fixture is fresh
         # The platform and osVersion fields differ per OS (both carry

@@ -1,3 +1,4 @@
+// crates/ubm-mobile/tests/golden.rs
 //! Golden wire vectors: real `ubm-mobile-wire/2` text produced by the Rust
 //! owner over the scripted radio, replayed by the TS parsers in
 //! `__tests__/backends/reactnative/rust-core-wire.golden.test.js`.
@@ -601,7 +602,18 @@ async fn generate() -> String {
         connected: false,
         status: Some(8),
     });
-    r.drain(&session, "link loss", 2).await;
+    r.drain(&session, "link loss", 3).await;
+    let link_loss = r.drains.last().expect("link loss drain");
+    let link_loss_text = link_loss["text"].as_str().expect("link loss text");
+    let link_loss_records: Value = serde_json::from_str(link_loss_text).expect("link loss records");
+    let records = link_loss_records["records"]
+        .as_array()
+        .expect("link loss record array");
+    assert!(records.iter().any(|record| {
+        record["t"] == "security"
+            && record["state"]["encryption"] == "unknown"
+            && record["state"]["bond"] == "bonded"
+    }));
     r.invoke(
         &session,
         "reconcile after loss",

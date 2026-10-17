@@ -540,6 +540,15 @@ database invalidation, `stream-end` with its reason and drop counts,
 saw it (a radio-side `ingress-drop`) is counted, but the owner cannot re-read
 what it never received.
 
+An exceptional `scan.stop` failure classified by its structured scan domain,
+operation and `lifecycle.invalid-state` code triggers this authoritative reconcile
+before cleanup is settled. An absent membership confirms release for the exact
+membership admitted before the snapshot; a membership still present remains
+owned and retryable. A failed reconcile is retained alongside the original stop
+failure, and other stop refusals do not trigger this read. A confirmed absent
+membership settles expected native-expiry cleanup without a warning; unexpected
+late platform refusals remain diagnostic history.
+
 ## Cancellation
 
 - **Live id.** The op's `OpTicket` is cancelled through
@@ -1000,8 +1009,10 @@ the original deadline, and session disposal fence publication of late results.
 
 `peers.resolve` now carries `{reference, operationId, budgetMs?}`. An app-held
 identifier absent from the owner cache is resolved through the native identifier
-lookup: Apple `retrievePeripherals(withIdentifiers:)`, Android current system
-GATT/bond inventory. A native miss returns null. This route adds no owner peer,
+lookup: Apple `retrievePeripherals(withIdentifiers:)`, Android validates the
+canonical device address and obtains an OS device handle, using current system
+GATT/bond inventory first for its cached name. A native miss returns null. This
+route adds no owner peer,
 connection lease or advertisement evidence; a native identifier match reports
 unknown connection/reachability unless another independently retained observation
 establishes those facts. System-connected mobile results use origin references

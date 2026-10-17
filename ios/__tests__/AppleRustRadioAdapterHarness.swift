@@ -187,6 +187,8 @@ final class ScriptedDriver: UnifiedBleRustRadioDriver {
   var subscriptionIdentifiers = [String]()
   var unsubscribeFailures = [NSError]()
   var hangingConnects = [String: (NSError?) -> Void]()
+  var holdConnects = false
+  var connectCompletions = [String: (NSError?) -> Void]()
   var holdSetupWrites = false
   var setupWrites = [(NSError?) -> Void]()
   var holdPreparation = false
@@ -244,11 +246,12 @@ final class ScriptedDriver: UnifiedBleRustRadioDriver {
   func connect(peerIdentifier: String, operationIdentifier: String, completion: @escaping (NSError?) -> Void) {
     workQueue.async {
       self.record("connect \(peerIdentifier)")
-      if peerIdentifier == "HANG" {
+      if self.holdConnects {
+        self.connectCompletions[operationIdentifier] = completion
+      } else if peerIdentifier == "HANG" {
         self.hangingConnects[operationIdentifier] = completion
         return
-      }
-      completion(nil)
+      } else { completion(nil) }
     }
   }
 
@@ -450,9 +453,82 @@ final class Harness {
     driver.workQueue.sync(execute: body)
   }
 
+  func generationScopedConnectionChecks() {
+    final class Sink: UnifiedBleRustRadioSink {
+      var completions = [UInt64: MobileRadioCompletion]()
+      var ingresses = [MobileRadioIngress]()
+
+      func complete(requestId: UInt64, completion: MobileRadioCompletion) -> String {
+        completions[requestId] = completion
+        return "delivered"
+      }
+
+      func ingest(ingress: MobileRadioIngress) -> String {
+        ingresses.append(ingress)
+        return "accepted"
+      }
+    }
+
+    let sink = Sink()
+    let generationDriver = ScriptedDriver()
+    let scopedAdapter = UnifiedBleRustRadioAdapter(driver: generationDriver)
+    scopedAdapter.bind(sink: sink)
+    scopedAdapter.submit(request: .connect(id: 99, peerId: "EMPTY", autoConnect: false, preferredPhy: [], expectedGeneration: ""))
+    let emptyDeadline = Date().addingTimeInterval(10)
+    while Date() < emptyDeadline && sink.completions[99] == nil { Thread.sleep(forTimeInterval: 0.01) }
+    guard case let .failed(kind, _, _, _, _, dispatched)? = sink.completions[99] else {
+      return check(false, "empty generation must be refused structurally")
+    }
+    check(kind == "platform" && !dispatched, "empty generation refusal must precede CoreBluetooth")
+    generationDriver.holdConnects = true
+    func waitForConnect(_ peer: String) {
+      let deadline = Date().addingTimeInterval(10)
+      while Date() < deadline {
+        if generationDriver.onQueue({ generationDriver.calls.contains("connect \(peer)") }) { return }
+        Thread.sleep(forTimeInterval: 0.01)
+      }
+      check(false, "connect dispatch for (peer) was not observed")
+    }
+
+    scopedAdapter.submit(request: .connect(id: 1, peerId: "A", autoConnect: false, preferredPhy: [], expectedGeneration: "gen-A"))
+    waitForConnect("A")
+    generationDriver.onQueue { generationDriver.connectCompletions.removeValue(forKey: "ubm-rust-1")?(nil) }
+    scopedAdapter.submit(request: .connect(id: 2, peerId: "B", autoConnect: false, preferredPhy: [], expectedGeneration: "gen-B"))
+    waitForConnect("B")
+    generationDriver.onQueue { scopedAdapter.protocolRadioDidDisconnectPeer("A", error: nil) }
+    check(sink.ingresses.contains {
+      if case let .connectionScoped(peerId, expectedGeneration, connected, _) = $0 {
+        return peerId == "A" && expectedGeneration == "gen-A" && !connected
+      }
+      return false
+    }, "A loss must retain A's established generation")
+    generationDriver.onQueue { generationDriver.connectCompletions.removeValue(forKey: "ubm-rust-2")?(nil) }
+    generationDriver.onQueue { scopedAdapter.protocolRadioDidDisconnectPeer("B", error: nil) }
+    check(sink.ingresses.contains {
+      if case let .connectionScoped(peerId, expectedGeneration, connected, _) = $0 {
+        return peerId == "B" && expectedGeneration == "gen-B" && !connected
+      }
+      return false
+    }, "B loss must use B's generation after replacement admission")
+
+    scopedAdapter.submit(request: .connect(id: 3, peerId: "C", autoConnect: false, preferredPhy: [], expectedGeneration: "gen-C"))
+    waitForConnect("C")
+    scopedAdapter.cancel(requestId: 3)
+    generationDriver.onQueue { generationDriver.connectCompletions.removeValue(forKey: "ubm-rust-3")?(nil) }
+    generationDriver.onQueue { scopedAdapter.protocolRadioDidDisconnectPeer("C", error: nil) }
+    let counters = waitFor("adapter counters") { done in scopedAdapter.adapterCounters(completion: done) }
+    check(counters.unknownConnectionLosses == 1, "cancelled late connect must not leave a generation owner")
+    generationDriver.onQueue {
+      generationDriver.holdConnects = false
+      generationDriver.connectCompletions.removeAll()
+      generationDriver.calls.removeAll()
+    }
+  }
+
   func run() {
     translationChecks()
     explicitRadioAdmissionChecks()
+    generationScopedConnectionChecks()
     restorationIdentityChecks()
     randomBytesChecks()
 
@@ -1393,13 +1469,13 @@ final class Harness {
     let adapter = UnifiedBleRustRadioAdapter(driver: driver)
     let sink = Sink()
     adapter.bind(sink: sink)
-    adapter.submit(request: .connect(id: 990, peerId: "ASK", autoConnect: false, preferredPhy: []))
+    adapter.submit(request: .connect(id: 990, peerId: "ASK", autoConnect: false, preferredPhy: [], expectedGeneration: "apple-harness-generation"))
     check(driver.preparationAdmitted.wait(timeout: .now() + timeout) == .success, "connect preparation missing")
     check(driver.onQueue { driver.calls.isEmpty }, "connect must not run before observed initial state")
     driver.onQueue { driver.preparations.removeValue(forKey: "ubm-rust-990")?(driver.snapshot, nil) }
     check(sink.answered.wait(timeout: .now() + timeout) == .success, "scoped ready connect not answered")
     check(driver.onQueue { driver.calls == ["connect ASK"] }, "actual poweredOn permits nonblocking global authorization")
-    adapter.submit(request: .connect(id: 991, peerId: "LATE", autoConnect: false, preferredPhy: []))
+    adapter.submit(request: .connect(id: 991, peerId: "LATE", autoConnect: false, preferredPhy: [], expectedGeneration: "apple-harness-generation"))
     check(driver.preparationAdmitted.wait(timeout: .now() + timeout) == .success, "cancel preparation missing")
     adapter.cancel(requestId: 991)
     check(sink.answered.wait(timeout: .now() + timeout) == .success, "cancel did not answer original request")

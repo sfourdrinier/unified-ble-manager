@@ -14,6 +14,19 @@ pub(crate) enum SecurityPermission {
     CustomCeremony,
 }
 
+impl SecurityPermission {
+    #[allow(dead_code)]
+    pub(crate) fn operation_name(self) -> &'static str {
+        match self {
+            Self::State => "state",
+            Self::Pair => "pair",
+            Self::CancelPairing => "cancel-pairing",
+            Self::Unpair => "unpair",
+            Self::CustomCeremony => "custom-ceremony",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,18 +89,5 @@ mod tests {
             serde_json::json!({"operation":"unknown"})
         )
         .is_err());
-    }
-}
-
-impl SecurityPermission {
-    #[allow(dead_code)]
-    pub(crate) fn operation_name(self) -> &'static str {
-        match self {
-            Self::State => "state",
-            Self::Pair => "pair",
-            Self::CancelPairing => "cancel-pairing",
-            Self::Unpair => "unpair",
-            Self::CustomCeremony => "custom-ceremony",
-        }
     }
 }

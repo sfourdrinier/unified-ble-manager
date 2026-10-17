@@ -2,7 +2,173 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## Unreleased — H10 simulator tooling
+
+- Add `--scenario` and reproducible steady, breathing, exercise/recovery and
+  abrupt-rate profiles. Synthetic HR, RR intervals and ECG R-peaks share one
+  bounded heartbeat timeline that preserves phase across rate changes.
+- Expose heartbeat scenario, signal sources and recording relationship in
+  `get-state` and run records. State `bpm` reports the latest generated synthetic
+  HR measurement; `baselineBpm` retains the configured baseline. Recorded replay
+  remains unchanged, with independent HR/ECG recordings labeled explicitly.
+- Retain only accepted PMD responses for replay, preserve acknowledged streams
+  through temporary notification-capacity shortages, reject non-finite comparison
+  tolerances, correct HR/advertisement telemetry and remove unreachable validation.
+- Qualify synchronization, packet boundaries, delayed delivery, reconnects and
+  bounded history with simulator regressions. These tooling changes do not bump
+  the UBM package version or establish physical H10 fidelity.
+
+## [5.0.4] - 2026-10-11
+
+- Resolve saved Android origin references through the OS device handle after
+  app restart, including previously discovered unbonded devices. Preserve
+  connected and bonded inventory precedence, permission failures, and unknown
+  reachability; resolution does not scan, connect, or create a bond.
+
+## [5.0.3] - 2026-10-10
+
+- Preserve connection-generation ownership across Apple, Android, desktop, and
+  Tauri disconnect, reset, cancellation, and stale-callback paths.
+- Close the reviewed Android disconnect-owner and callback cleanup races, and
+  retain the scoped Tauri reset and recording durability fixes from the
+  5.0.2 release line.
+- Retry failed Android physical cleanup or scoped core release without admitting
+  a replacement connection early or releasing an already retired owner twice.
+  Joined disconnects share the scoped release result, and reserved cancellation
+  claims compensation once before any reentrant cleanup can join it.
+- Reset ephemeral security observations for the exact connection generation
+  while preserving bonds, and distinguish stopped or sealed queue cutoffs from
+  actual overflow and storage-loss observations.
+- Keep package identity, native metadata, generated documentation, and release
+  artifacts aligned for the patch release. Backend support labels
+  and physical-radio qualification remain evidence-derived and unchanged.
+
+## [5.0.2] - 2026-10-10
+
+- Map an awaited WinRT direct-address factory result with no
+  `BluetoothLEDevice` (HRESULT 0) to `peer.not-found`, while preserving
+  nonzero WinRT HRESULT failures.
+- Preserve adapter-loss causality during an in-flight desktop release or
+  disconnect. CoreBluetooth and WinRT now end the affected link as lost without
+  failing the whole manager on an unannounced private disconnecting state.
+
+- Read Android manifest metadata through typed AndroidX accessors while preserving
+  Boolean/string flag handling, defaults and invalid-policy rejection. Build
+  foreground notifications and decode acknowledgements through AndroidX APIs.
+- Require the API 33 association record on both Android chooser routes; missing
+  metadata fails closed and releases pending ownership instead of reporting a
+  legacy result with an incomplete association identity.
+
+- Share one Android disconnect owner and immutable safety deadline per GATT
+  generation. Concurrent callers all receive the terminal close result once,
+  including adapter loss, native disconnect exceptions and teardown races.
+  Retain failed physical closes for retry and fence old deadlines from new links.
+- Fail closed if Android refuses or throws while scheduling the disconnect
+  deadline. Finish physical cleanup and settle every waiter before propagating
+  observer errors; resume queued reconnects only after a clean close. Deliver
+  every connection observer even when another throws, including native failed
+  connect and disconnect callbacks.
+- Correlate Android connect outcomes with the exact GATT generation that the
+  request opened, in both the active RustCore host adapter and legacy protocol
+  dispatcher. A prior link's loss cannot fail an admitted replacement connect.
+  Withdraw failed reconnect intents so they cannot open unowned links later;
+  joining an existing teardown does not request native disconnect again.
+
+- Reject a reset Tauri attachment before GATT handle resolution and queue
+  reservation, including when link invalidation arrives before caller rebinding.
+  Releases remain admitted; stale work reports `backend.reset` without native I/O.
+
+- Commit durable recording values already held by the native host in one
+  bounded SQLite transaction (at most 32 per synced commit) instead of one
+  transaction per value. The per-commit cost, not the value count, bounded
+  sustained intake: a setup acknowledgement queued behind a recording backlog
+  could exceed its command deadline on a slow-sync filesystem even though nothing
+  was lost. The pump never waits to fill a group. Each normal session pass commits
+  at most one value group across routes, rotating fairly and releasing the route
+  lock between passes; terminal controls retain their separate commits. Lifecycle
+  collection and disposal preserve earlier values before their terminal.
+  Journal rows, ordinals, the record-capacity
+  cut and observation order are unchanged: a capacity cut commits the sequential
+  accepted prefix and one first-refusal loss marker atomically. The journal
+  counts that first refusal; the route terminal separately accounts for all
+  other already-polled values refused from the group.
+  A storage failure now rolls the whole group back, accepts none of it and
+  observes none of it, and the route terminal's dropped items and bytes count
+  every polled value that was not committed. A refusal reports its atomic cause,
+  so a later seal cannot turn queue overflow into an already-counted cutoff.
+  Refused disposal-tail values after an existing terminal emit an explicit
+  notification ingress-drop count instead of disappearing. Native build
+  identities change with this fix.
+
+- Give the restored-session test's initial setup-write wait the native connect
+  and discovery startup allowance. A slow-sync reproduction exceeded its old
+  three-second fixture limit before ATT setup began. Production and subsequent
+  two-second setup/intake deadlines are unchanged; hosted Windows still qualifies
+  the frozen candidate independently.
+
+- Report simulator advertising registration from the radio on state queries and
+  after injected disconnects. Failed reads remain explicit unknown outcomes;
+  registration is never presented as controller on-air evidence.
+
+## [5.0.1] - 2026-10-08
+
+- Fix Expo Android readiness to use live native location-services and legacy
+  permission observations on every probe, including Fire TV/API 24–30, while
+  retaining fail-closed rebuild behavior for `legacyLocation: 'none'`.
+- Request coarse/fine location alongside Bluetooth permissions on Android API
+  31+ when the explicit `legacyLocation: 'required'` policy requires them.
+
+- Retain failed React Native subscription and database cleanup ownership across
+  disconnect retries, including after the native link releases, rather than
+  discarding failed children or reporting their owner fully released.
+
+- Include canonical origin peer references in React Native RustCore scan
+  observations, avoiding an extra peer-directory query before consumers can
+  present and retain a discovered device.
+- Reconcile an exceptional React Native scan-stop invalid-state after native
+  lifetime expiry, confirming exact absent membership before settling release
+  while retaining active membership and reconciliation failures for retry.
+- Scope Android compatibility deprecations to the required legacy OS routes
+  while preserving modern presence callbacks and typed chooser results.
+- Harden the Linux H10 simulator indication lifecycle and confirmation
+  receipts without changing notify-only waveform delivery. The simulator is
+  a test tool and is not included in the published package.
+
+## [5.0.0] - 2026-10-08
+
+- Stabilize the documented 5.0 bytes-first public package/API, with explicit
+  host construction, runtime capabilities and owned asynchronous teardown.
+  Publish the stable release to npm `latest` through trusted publishing with
+  provenance; numbered 5.x release candidates remain on `next`.
+- Carry the rc.21 runtime and remediation unchanged into the stable release;
+  align installation guides, package identities and generated release artifacts.
+  Backend evidence labels and genuine OS limitations remain unchanged.
+- Retain the owner-authorized deferral of Classic/LE dual-mode physical bearer
+  qualification and all other disclosed scenario limits in the rc.21 closure
+  record. Stable SemVer does not claim unexecuted radio tests or production
+  readiness for every host/profile.
+
 ## [5.0.0-rc.21] - 2026-10-05
+
+- Fence desktop control-watch opening and gap recovery with accepted-observation
+  revisions, preventing delayed probes from overwriting newer state. Bound
+  React Native pairing-cancellation acknowledgement and result waiting by the
+  caller deadline and signal while retaining the original pairing owner.
+
+- Cancel parameter, write-readiness and IPC security watch admission when their
+  iterator closes, while releasing late resources and retaining cleanup retry.
+
+- Retain malformed native acquired-GATT handles for owned cleanup retry while
+  preserving the metadata protocol failure and any compensating cleanup debt.
+
+- Preserve structured scan source and evidence failures for discovery-event
+  consumers, including late subscribers, and reject fractional or unsafe
+  connection-parameter measurements on snapshot and event boundaries.
+
+- Preserve validated effectful control responses across cancellation during
+  cleanup, and report uncertain commitment for dispatched MTU, priority, PHY
+  and subrate requests whose outcome is not yet known. Pre-dispatch cancellation
+  and observation-only controls retain noncommitting semantics.
 
 - Order merged scan facts by comparable capture clocks and ingress ordinals,
   preventing late older packets from replacing newer values or borrowing future

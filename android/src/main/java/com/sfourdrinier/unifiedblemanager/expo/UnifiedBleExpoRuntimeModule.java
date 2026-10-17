@@ -1,11 +1,14 @@
+// android/src/main/java/com/sfourdrinier/unifiedblemanager/expo/UnifiedBleExpoRuntimeModule.java
 package com.sfourdrinier.unifiedblemanager.expo;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -22,6 +25,7 @@ import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.modules.core.PermissionAwareActivity;
 import com.facebook.react.modules.core.PermissionListener;
 import com.facebook.react.module.annotations.ReactModule;
+import com.sfourdrinier.unifiedblemanager.AndroidBundleMetadata;
 import com.sfourdrinier.unifiedblemanager.NativeUnifiedBleExpoRuntimeSpec;
 
 import java.nio.charset.StandardCharsets;
@@ -70,6 +74,8 @@ public final class UnifiedBleExpoRuntimeModule extends NativeUnifiedBleExpoRunti
       result.putString("platform", "android");
       result.putString("configurationDigest", configurationDigest(legacyLocationPolicy));
       result.putString("legacyLocationPolicy", legacyLocationPolicy);
+      result.putBoolean("androidLocationServicesEnabled", androidLocationServicesEnabled());
+      result.putBoolean("androidLocationPermissionGranted", androidLocationPermissionGranted());
       promise.resolve(result);
     } catch (RuntimeException error) {
       promise.reject("nativeConfigurationInvalid", error.getMessage(), error);
@@ -160,21 +166,29 @@ public final class UnifiedBleExpoRuntimeModule extends NativeUnifiedBleExpoRunti
   }
 
   private String[] runtimePermissions() {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-      requireDeclaredPermissions(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT);
+    final String[] permissions = scanAndConnectRuntimePermissions(Build.VERSION.SDK_INT, legacyLocationPolicy());
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) requireDeclaredPermissions(permissions);
+    else requireDeclaredPermissions(Manifest.permission.BLUETOOTH);
+    return permissions;
+  }
+
+  static String[] scanAndConnectRuntimePermissions(int apiLevel, String legacyLocationPolicy) {
+    if (apiLevel >= Build.VERSION_CODES.S) {
+      if ("required".equals(legacyLocationPolicy)) {
+        return new String[] {
+          Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT,
+          Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION
+        };
+      }
       return new String[] { Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT };
     }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-      if ("none".equals(legacyLocationPolicy())) {
+    if (apiLevel >= Build.VERSION_CODES.M) {
+      if ("none".equals(legacyLocationPolicy)) {
         throw new IllegalStateException(
             "Android API 23-30 BLE scanning needs legacy location permission; configure permissions.android.legacyLocation and rebuild.");
       }
-      requireDeclaredPermissions(
-          Manifest.permission.ACCESS_COARSE_LOCATION,
-          Manifest.permission.ACCESS_FINE_LOCATION);
       return new String[] { Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION };
     }
-    requireDeclaredPermissions(Manifest.permission.BLUETOOTH);
     return new String[0];
   }
 
@@ -220,17 +234,36 @@ public final class UnifiedBleExpoRuntimeModule extends NativeUnifiedBleExpoRunti
 
   private String legacyLocationPolicy() {
     final Bundle metadata = applicationMetadata();
-    final Object value = metadata.get(LEGACY_LOCATION_POLICY_METADATA);
+    final String value = AndroidBundleMetadata.optionalString(metadata, LEGACY_LOCATION_POLICY_METADATA);
     if (value == null) return "none";
-    if (!(value instanceof String) ||
-        !("auto".equals(value) || "required".equals(value) || "none".equals(value))) {
+    if (!("auto".equals(value) || "required".equals(value) || "none".equals(value))) {
       throw new IllegalStateException("The native Android legacy location policy is invalid; rebuild the app.");
     }
-    return (String) value;
+    return value;
+  }
+
+  private boolean androidLocationPermissionGranted() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true;
+    return reactContext.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
+        == PackageManager.PERMISSION_GRANTED
+        && reactContext.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+        == PackageManager.PERMISSION_GRANTED;
+  }
+
+  private boolean androidLocationServicesEnabled() {
+    final Object service = reactContext.getSystemService(Context.LOCATION_SERVICE);
+    if (!(service instanceof LocationManager)) {
+      throw new IllegalStateException("The Android location service is unavailable.");
+    }
+    final LocationManager locationManager = (LocationManager) service;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) return locationManager.isLocationEnabled();
+    return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        || locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
   }
 
   private void requireConfigurationMarker() {
-    final Object marker = applicationMetadata().get(CONFIGURATION_MARKER_METADATA);
+    final String marker = AndroidBundleMetadata.optionalString(
+        applicationMetadata(), CONFIGURATION_MARKER_METADATA);
     if (!CONFIGURATION_MARKER.equals(marker)) {
       throw new IllegalStateException(
           "The Unified BLE Expo plugin configuration marker is absent; run expo prebuild and rebuild the native app.");
@@ -257,10 +290,7 @@ public final class UnifiedBleExpoRuntimeModule extends NativeUnifiedBleExpoRunti
    * digests identically - which defeats the purpose of a digest that exists to detect drift.
    */
   private static boolean metadataFlag(Bundle metadata, String key, boolean fallback) {
-    final Object value = metadata.get(key);
-    if (value instanceof Boolean) return (Boolean) value;
-    if (value instanceof String) return Boolean.parseBoolean((String) value);
-    return fallback;
+    return AndroidBundleMetadata.booleanOrDefault(metadata, key, fallback);
   }
 
   private String configurationDigest(String legacyLocationPolicy) {

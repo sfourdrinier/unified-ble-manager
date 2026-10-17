@@ -711,6 +711,14 @@ function cleanupRecordFrom(record: WireCleanupRecord): CleanupRecord {
   })
 }
 
+function isAbsentScanStop(record: CleanupRecord): boolean {
+  if (record.state === 'released' || record.failures.length !== 1) return false
+  const failure = record.failures[0]
+  if (failure === undefined) return false
+  const error = failure.error
+  return error.code === 'lifecycle.invalid-state' && error.domain === 'scan' && error.operation === 'scan.stop'
+}
+
 function mergeCleanup(records: readonly CleanupRecord[]): CleanupRecord {
   const failures = records.flatMap(record => record.failures)
   return failures.length === 0
@@ -2303,10 +2311,26 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       } catch (error) {
         record = { state: 'release-failed', failures: [cleanupFailure('scan', error, `${SCOPE}.scan.stop`)] }
       }
+      if (!group.nativeReleaseConfirmed && isAbsentScanStop(record)) {
+        try {
+          await this.rereadAfterControlLoss()
+          // Native expiry can precede delivery of its terminal event. A fresh
+          // snapshot confirming this exact absence settles normal cleanup.
+          if (group.nativeReleaseConfirmed) return RELEASED
+        } catch (error) {
+          record = mergeCleanup([
+            record,
+            {
+              state: 'release-failed',
+              failures: [cleanupFailure('scan', error, `${SCOPE}.session.reconcile`)]
+            }
+          ])
+        }
+      }
       if (group.nativeReleaseConfirmed) {
         // Native scan-end can settle this exact membership while stop waits.
         // Keep a later refusal as history, never resurrect released ownership.
-        if (record.state !== 'released') {
+        if (record.state !== 'released' && !isAbsentScanStop(record)) {
           this.emitEvent({
             kind: 'diagnostic-warning',
             code: 'scan-stop-after-native-end',
@@ -2387,6 +2411,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         stableAcrossRestarts: false,
         address
       }),
+      peerReference: this.originReference(record.peerId),
       provenance: 'platform-derived' as const,
       sourceTimestamp: present<SourceTimestamp>(
         Object.freeze({

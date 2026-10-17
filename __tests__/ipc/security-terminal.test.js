@@ -50,3 +50,92 @@ test.each(['overflow', 'source-failed'])(
     expect(aborted).toBe(true)
   }
 )
+
+test('security watch close aborts stalled IPC admission without masking unrelated source errors', async () => {
+  let signal
+  const ipc = {
+    route: jest.fn((_command, _payload, _binary, current) => {
+      signal = current
+      return new Promise((_resolve, reject) =>
+        current?.addEventListener(
+          'abort',
+          () => reject(contractError('operation.aborted', 'connection', 'controlled.security.admission')),
+          { once: true }
+        )
+      )
+    })
+  }
+  const watch = createIpcSecurityBackend(ipc).watch('peer')
+  const iterator = watch[Symbol.asyncIterator]()
+  const pending = iterator.next()
+  const close = watch.close()
+  expect(signal).toBeDefined()
+  expect(signal.aborted).toBe(true)
+  await expect(close).resolves.toMatchObject({ state: 'released' })
+  await expect(pending).resolves.toMatchObject({ done: true })
+})
+
+test('security late handle cleanup is shared and failed unsubscribe remains retryable', async () => {
+  let admit, finishClose
+  const admission = new Promise(resolve => {
+    admit = resolve
+  })
+  const cleanup = new Promise(resolve => {
+    finishClose = resolve
+  })
+  let attempts = 0
+  const ipc = {
+    route: jest.fn(command =>
+      command.endsWith('.subscribe') ? admission : ++attempts === 1 ? cleanup : Promise.resolve({ state: 'released' })
+    ),
+    registerStream: () => ({
+      [Symbol.asyncIterator]: () => ({
+        next: async () => ({ done: false, value: 'stale' }),
+        return: async () => ({ done: true })
+      })
+    }),
+    closeStream: jest.fn()
+  }
+  const watch = createIpcSecurityBackend(ipc).watch('peer')
+  const iterator = watch[Symbol.asyncIterator]()
+  const pending = iterator.next()
+  const first = watch.close().then(
+    value => ({ value }),
+    error => ({ error })
+  )
+  const second = iterator.return().then(
+    value => ({ value }),
+    error => ({ error })
+  )
+  admit({ handle: 'late' })
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(attempts).toBe(1)
+  finishClose({ state: 'release-failed' })
+  expect((await first).error).toBeDefined()
+  expect((await second).error).toBeDefined()
+  await expect(pending).resolves.toMatchObject({ done: true })
+  await expect(watch.close()).resolves.toMatchObject({ state: 'released' })
+  expect(attempts).toBe(2)
+  expect(ipc.closeStream).toHaveBeenCalledTimes(1)
+})
+
+test('security watch source admission failure stays specific when close overlaps', async () => {
+  let fail
+  const ipc = {
+    route: () =>
+      new Promise((_resolve, reject) => {
+        fail = reject
+      })
+  }
+  const watch = createIpcSecurityBackend(ipc).watch('peer')
+  const iterator = watch[Symbol.asyncIterator]()
+  const pending = iterator.next()
+  const close = watch.close()
+  fail(contractError('adapter.powered-off', 'adapter', 'controlled.security.source'))
+  await expect(pending).rejects.toMatchObject({
+    normalized: { code: 'adapter.powered-off', operation: 'controlled.security.source' }
+  })
+  await expect(close).resolves.toMatchObject({ state: 'released' })
+})

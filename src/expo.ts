@@ -264,6 +264,10 @@ export interface ExpoRuntimeConfiguration {
   readonly expectedConfiguration?: { readonly digest: string }
   /** Trusted Android API level used to project pre-Android-12 scan prerequisites. */
   readonly androidApiLevel?: number
+  /** Measured native Android location-services state; this is an observation, not an override. */
+  readonly androidLocationServicesEnabled?: boolean
+  /** Measured native Android location-permission state; this is an observation, not an override. */
+  readonly androidLocationPermissionGranted?: boolean
   readonly permissions?: {
     readonly android?: {
       readonly legacyLocation?: 'auto' | 'required' | 'none'
@@ -310,7 +314,13 @@ export async function createExpoBleManager(
       host,
       readinessConfiguration?.settingsBridge ?? nativeSettingsBridge(nativeRuntime),
       readinessConfiguration?.permissionBridge ?? nativePermissionBridge(nativeRuntime),
-      readinessConfiguration
+      readinessConfiguration,
+      async () => {
+        const refreshed = await readNativeExpoRuntimeConfiguration(nativeRuntime)
+        const merged = mergeExpoRuntimeConfiguration(readinessConfiguration, refreshed)
+        assertExpoRuntimeConfiguration(merged)
+        return merged
+      }
     )
   } catch (error) {
     throw rehydratePublicError(error)
@@ -428,10 +438,19 @@ export function mapExpoReadiness(adapter: BleAdapterState, configuration?: ExpoR
         }
       ])
     }
-    return readiness(adapter, 'action-required', [{ kind: 'open-settings', target: 'location-services' }])
   }
-  if (legacyLocation === 'required') {
-    return readiness(adapter, 'action-required', [{ kind: 'open-settings', target: 'location-services' }])
+  const requiresMeasuredLocation =
+    (configuration?.androidApiLevel !== undefined && configuration.androidApiLevel < 31 && legacyLocation !== 'none') ||
+    (configuration?.androidApiLevel !== undefined &&
+      configuration.androidApiLevel >= 31 &&
+      legacyLocation === 'required')
+  if (requiresMeasuredLocation) {
+    if (configuration?.androidLocationPermissionGranted !== true) {
+      return readiness(adapter, 'action-required', [{ kind: 'request-permission', permission: 'bluetooth' }])
+    }
+    if (configuration?.androidLocationServicesEnabled !== true) {
+      return readiness(adapter, 'action-required', [{ kind: 'open-settings', target: 'location-services' }])
+    }
   }
   return readiness(adapter, 'ready', [])
 }
@@ -478,7 +497,9 @@ async function readNativeExpoRuntimeConfiguration(runtime: NativeExpoRuntime): P
     nativeConfiguration: { digest: result.configurationDigest },
     ...(result.legacyLocationPolicy === undefined
       ? {}
-      : { permissions: { android: { legacyLocation: result.legacyLocationPolicy } } })
+      : { permissions: { android: { legacyLocation: result.legacyLocationPolicy } } }),
+    androidLocationServicesEnabled: result.androidLocationServicesEnabled,
+    androidLocationPermissionGranted: result.androidLocationPermissionGranted
   }
 }
 
@@ -490,14 +511,43 @@ function parseNativeExpoRuntimeConfiguration(value: unknown): NativeExpoRuntimeC
     (result.legacyLocationPolicy !== undefined &&
       result.legacyLocationPolicy !== 'auto' &&
       result.legacyLocationPolicy !== 'required' &&
-      result.legacyLocationPolicy !== 'none')
+      result.legacyLocationPolicy !== 'none') ||
+    (result.androidLocationServicesEnabled !== undefined &&
+      typeof result.androidLocationServicesEnabled !== 'boolean') ||
+    (result.androidLocationPermissionGranted !== undefined &&
+      typeof result.androidLocationPermissionGranted !== 'boolean')
   ) {
     throwExpoMalformedResult('expo.runtime.configuration.result')
   }
   return {
     platform: result.platform,
     configurationDigest: result.configurationDigest,
-    ...(result.legacyLocationPolicy === undefined ? {} : { legacyLocationPolicy: result.legacyLocationPolicy })
+    ...(result.legacyLocationPolicy === undefined ? {} : { legacyLocationPolicy: result.legacyLocationPolicy }),
+    ...(result.androidLocationServicesEnabled === undefined
+      ? {}
+      : { androidLocationServicesEnabled: result.androidLocationServicesEnabled }),
+    ...(result.androidLocationPermissionGranted === undefined
+      ? {}
+      : { androidLocationPermissionGranted: result.androidLocationPermissionGranted })
+  }
+}
+
+function mergeExpoRuntimeConfiguration(
+  callerConfiguration: ExpoRuntimeConfiguration | undefined,
+  nativeConfiguration: ExpoRuntimeConfiguration
+): ExpoRuntimeConfiguration {
+  return {
+    ...callerConfiguration,
+    ...nativeConfiguration,
+    ...(callerConfiguration?.expectedConfiguration === undefined
+      ? {}
+      : { expectedConfiguration: callerConfiguration.expectedConfiguration }),
+    ...(callerConfiguration?.settingsBridge === undefined
+      ? {}
+      : { settingsBridge: callerConfiguration.settingsBridge }),
+    ...(callerConfiguration?.permissionBridge === undefined
+      ? {}
+      : { permissionBridge: callerConfiguration.permissionBridge })
   }
 }
 
@@ -541,11 +591,16 @@ function withExpoRuntime(
   host: ReactNativeManagerHost,
   settingsBridge?: ExpoSettingsBridge,
   permissionBridge?: ExpoPermissionBridge,
-  runtimeConfiguration?: ExpoRuntimeConfiguration
+  runtimeConfiguration?: ExpoRuntimeConfiguration,
+  runtimeConfigurationReader?: () => Promise<ExpoRuntimeConfiguration>
 ): ExpoBleManager {
   const activeBackgroundLeases = new Set<string>()
   return Object.assign(manager, {
-    readiness: () => getExpoBleReadiness(manager, runtimeConfiguration),
+    readiness: async () =>
+      getExpoBleReadiness(
+        manager,
+        runtimeConfigurationReader === undefined ? runtimeConfiguration : await runtimeConfigurationReader()
+      ),
     permissions: Object.freeze({
       request: (request: ExpoPermissionRequest) => requestExpoPermissions(request, permissionBridge)
     }),
