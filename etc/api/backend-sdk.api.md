@@ -200,7 +200,8 @@ export { createBackendAuthorDefinition, runBackendAuthorTck } from './backend-sd
 - `NormalizedScanObservation :: { readonly provenance?: ObservationSource | undefined; readonly origin?: ObservationOrigin | undefined; readonly peerReference?: PeerReference | undefined; readonly address?: NormalizedObservationAddress | undefined; readonly localName: string | null; readonly rssi: number | null; readonly connectable: boolean | null; readonly serviceUuids: readonly string[] | null; readonly manufacturerData: readonly { readonly companyId: number; readonly data: Uint8Array<ArrayBufferLike>; }[] | null; readonly serviceData: readonly { readonly service: string; readonly data: Uint8Array<ArrayBufferLike>; }[] | null }`
 - `NormalizedScanQuery :: { readonly anyOf: readonly NormalizedScanClause[] | null; readonly exclude: readonly NormalizedScanClause[] | null; readonly digest: string }`
 - `NormalizedServiceDataPattern :: { readonly service: string; readonly dataPrefix: Readonly<Uint8Array<ArrayBufferLike>> | undefined; readonly mask: Readonly<Uint8Array<ArrayBufferLike>> | undefined }`
-- `NotificationValue :: { readonly value: OwnedBytes; readonly delivery: NotificationDelivery }`
+- `NotificationReceipt :: { readonly receivedAtUtcMs: number; readonly receivedAtMonotonicMs: number; readonly clockId: string; readonly origin: "native" }`
+- `NotificationValue :: { readonly value: OwnedBytes; readonly delivery: NotificationDelivery; readonly receipt?: NotificationReceipt | undefined }`
 - `OpaqueId :: string & { readonly [backendContractBrand]: { readonly kind: Kind; readonly scope: Scope; }; }`
 - `OperationCorrelation :: string & { readonly [backendContractBrand]: { readonly kind: "core-operation"; readonly scope: '${Attachment}:${Operation}'; }; }`
 - `OperationOptions :: { readonly correlation: OperationCorrelation<Attachment, Operation>; readonly signal: AbortSignal | null; readonly deadline: Deadline | null }`

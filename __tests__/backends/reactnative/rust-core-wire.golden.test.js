@@ -140,6 +140,14 @@ describe('ubm-mobile-wire/2 golden vectors (Rust-generated)', () => {
       [0x00, 0x55],
       [0x10, 0x55, 0x20, 0x03]
     ])
+    for (const record of records.filter(record => record.t === 'value')) {
+      expect(record.receipt).toEqual({
+        receivedAtUtcMs: 0,
+        receivedAtMonotonicMs: 0,
+        clockId: 'native-golden-clock',
+        origin: 'native'
+      })
+    }
     const kinds = records.map(record => record.t)
     expect(kinds.indexOf('link')).toBeLessThan(kinds.indexOf('stream-end'))
     for (const t of ['adv', 'value', 'adapter', 'security', 'restored', 'ingress-drop', 'link', 'stream-end']) {

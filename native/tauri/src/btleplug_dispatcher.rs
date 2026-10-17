@@ -4182,27 +4182,36 @@ impl BtleplugDispatcher {
                     }
                 };
                 let ending = match polled {
-                    Ok(NotificationPoll::Value(value)) => {
+                    Ok(
+                        poll @ (NotificationPoll::Value(_)
+                        | NotificationPoll::ValueWithReceipt { .. }),
+                    ) => {
+                        let (value, receipt) = match poll {
+                            NotificationPoll::Value(value) => (value, None),
+                            NotificationPoll::ValueWithReceipt { value, receipt } => {
+                                (value, Some(receipt))
+                            }
+                            _ => unreachable!("notification value pattern already matched"),
+                        };
                         sequence = sequence.saturating_add(1);
                         let observed_at_monotonic_ms =
                             i64::try_from(dispatcher.started_at.elapsed().as_millis())
                                 .unwrap_or(i64::MAX);
-                        match dispatcher
-                            .emit(
-                                &key,
-                                Some((&lease.0, &lease.1)),
-                                &handle,
-                                object([
-                                    ("value", IpcValue::Bytes(value)),
-                                    ("delivery", string(delivery.as_str())),
-                                    ("observedAtMonotonicMs", number(observed_at_monotonic_ms)),
-                                    ("sequence", number(sequence as i64)),
-                                ]),
-                            )
-                            .await
-                        {
-                            Ok(()) => continue,
+                        match notification_value_payload(
+                            value,
+                            delivery,
+                            observed_at_monotonic_ms,
+                            sequence,
+                            receipt.as_ref(),
+                        ) {
                             Err(error) => ("source-failed", Some(error)),
+                            Ok(payload) => match dispatcher
+                                .emit(&key, Some((&lease.0, &lease.1)), &handle, payload)
+                                .await
+                            {
+                                Ok(()) => continue,
+                                Err(error) => ("source-failed", Some(error)),
+                            },
                         }
                     }
                     Ok(NotificationPoll::Empty) => {
@@ -6549,6 +6558,53 @@ fn number(value: i64) -> IpcValue {
     IpcValue::Number(Number::from(value))
 }
 
+fn notification_value_payload(
+    value: Vec<u8>,
+    delivery: ObservedDelivery,
+    observed_at_monotonic_ms: i64,
+    sequence: u64,
+    receipt: Option<&ubm_core::central::NotificationReceipt>,
+) -> Result<IpcValue, DispatchError> {
+    let mut fields = vec![
+        ("value", IpcValue::Bytes(value)),
+        ("delivery", string(delivery.as_str())),
+        ("observedAtMonotonicMs", number(observed_at_monotonic_ms)),
+        ("sequence", number(sequence as i64)),
+    ];
+    if let Some(receipt) = receipt {
+        let received_at_utc_ms = Number::from_f64(receipt.received_at_utc_ms).ok_or_else(|| {
+            DispatchError::new(
+                BleErrorCode::ProtocolViolation,
+                "notification",
+                "tauri.notifications",
+            )
+            .platform("native notification receipt has a non-finite receivedAtUtcMs")
+        })?;
+        let received_at_monotonic_ms = Number::from_f64(receipt.received_at_monotonic_ms)
+            .ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::ProtocolViolation,
+                    "notification",
+                    "tauri.notifications",
+                )
+                .platform("native notification receipt has a non-finite receivedAtMonotonicMs")
+            })?;
+        fields.push((
+            "receipt",
+            object([
+                ("receivedAtUtcMs", IpcValue::Number(received_at_utc_ms)),
+                (
+                    "receivedAtMonotonicMs",
+                    IpcValue::Number(received_at_monotonic_ms),
+                ),
+                ("clockId", string(receipt.clock_id.clone())),
+                ("origin", string("native")),
+            ]),
+        ));
+    }
+    Ok(object(fields))
+}
+
 fn into_object(
     value: IpcValue,
     operation: impl Into<String>,
@@ -6653,11 +6709,86 @@ fn required_string(
 #[cfg(test)]
 mod tests {
     use super::{
-        characteristic_properties, core_identity, negotiate_ipc_versions, object, released,
-        scan_properties_match_optional, string, DispatchError,
+        characteristic_properties, core_identity, negotiate_ipc_versions,
+        notification_value_payload, object, released, scan_properties_match_optional, string,
+        DispatchError, IpcValue,
     };
     use btleplug::api::CharPropFlags;
     use ubm_core::contracts::BleErrorCode;
+
+    #[test]
+    fn notification_value_payload_preserves_native_receipt_and_absence() {
+        let without_receipt = notification_value_payload(
+            vec![0x42],
+            ubm_desktop::ObservedDelivery::Notification,
+            17,
+            3,
+            None,
+        )
+        .expect("value payload");
+        let IpcValue::Object(fields) = without_receipt else {
+            panic!("object")
+        };
+        assert_eq!(fields.get("receipt"), None);
+
+        let receipt = ubm_core::central::NotificationReceipt {
+            received_at_utc_ms: -0.5,
+            received_at_monotonic_ms: 42.25,
+            clock_id: "native-receipt-clock".to_owned(),
+        };
+        let with_receipt = notification_value_payload(
+            vec![0x42],
+            ubm_desktop::ObservedDelivery::Indication,
+            17,
+            3,
+            Some(&receipt),
+        )
+        .expect("receipt payload");
+        let IpcValue::Object(fields) = with_receipt else {
+            panic!("object")
+        };
+        let IpcValue::Object(receipt_fields) = fields.get("receipt").expect("receipt") else {
+            panic!("receipt object")
+        };
+        assert_eq!(
+            receipt_fields.get("receivedAtUtcMs"),
+            Some(&IpcValue::Number(
+                serde_json::Number::from_f64(-0.5).expect("finite")
+            ))
+        );
+        assert_eq!(
+            receipt_fields.get("receivedAtMonotonicMs"),
+            Some(&IpcValue::Number(
+                serde_json::Number::from_f64(42.25).expect("finite")
+            ))
+        );
+        assert_eq!(
+            receipt_fields.get("clockId"),
+            Some(&IpcValue::String("native-receipt-clock".into()))
+        );
+        assert_eq!(
+            receipt_fields.get("origin"),
+            Some(&IpcValue::String("native".into()))
+        );
+    }
+
+    #[test]
+    fn notification_value_payload_rejects_nonfinite_receipt_numbers() {
+        let receipt = ubm_core::central::NotificationReceipt {
+            received_at_utc_ms: f64::NAN,
+            received_at_monotonic_ms: 1.0,
+            clock_id: "clock".to_owned(),
+        };
+        let error = notification_value_payload(
+            vec![0x42],
+            ubm_desktop::ObservedDelivery::Notification,
+            17,
+            3,
+            Some(&receipt),
+        )
+        .expect_err("non-finite receipt must fail");
+        assert_eq!(error.code, BleErrorCode::ProtocolViolation);
+    }
 
     #[test]
     fn trusted_bluez_policy_is_not_a_renderer_option() {

@@ -49,6 +49,7 @@ export interface ContinuationBacklogValue {
   readonly consumer: string
   readonly value: Uint8Array
   readonly delivery: WireDelivery
+  readonly receipt?: import('../../backend-contract/gatt').NotificationReceipt
 }
 
 export interface ContinuationBacklogStreamEnd {
@@ -515,7 +516,14 @@ export function aggregateContinuationClaim(claim: unknown): ContinuationBacklog 
     for (const record of batch.records) {
       if (record.t === 'value') {
         assertDeclaredConsumer(record.consumer, declaredConsumerCount)
-        values.push(Object.freeze({ consumer: record.consumer, value: record.value, delivery: record.delivery }))
+        values.push(
+          Object.freeze({
+            consumer: record.consumer,
+            value: record.value,
+            delivery: record.delivery,
+            ...(record.receipt === undefined ? {} : { receipt: Object.freeze({ ...record.receipt }) })
+          })
+        )
       } else if (record.t === 'stream-end') {
         assertDeclaredConsumer(record.consumer, declaredConsumerCount)
         streamEnds.push(

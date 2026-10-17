@@ -162,6 +162,7 @@ export type {
   GattDatabaseSnapshot,
   MaximumWriteLengthObservation,
   NotificationValue,
+  NotificationReceipt,
   PathValidity,
   Service,
   ServicePath,

@@ -60,6 +60,16 @@ describe('continuation backlog drains with accounted loss', () => {
     expect(claim.controlLost).toBe(0)
   })
 
+  it('preserves and freezes a native receipt through claim aggregation', () => {
+    const receipt = { receivedAtUtcMs: -12.5, receivedAtMonotonicMs: 91.25, clockId: 'native-epoch-test', origin: 'native' }
+    const claim = aggregateContinuationClaim(
+      claimPayload(1, [batch([{ ...valueRecord(1, 'ubm-continuation-0'), receipt }])], true),
+      DECLARATION
+    )
+    expect(claim.values[0].receipt).toEqual(receipt)
+    expect(Object.isFrozen(claim.values[0].receipt)).toBe(true)
+  })
+
   it('surfaces stream-end overflow with exact drop counts, never silent', () => {
     const claim = aggregateContinuationClaim(
       {

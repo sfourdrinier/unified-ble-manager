@@ -6,7 +6,11 @@ import {
 import { parseDrainText, type WireDrainRecord } from '../backends/reactnative/rust-core-wire'
 import { rehydratePublicPromise } from '../public/error-bridge'
 import { utf8ByteLength } from '../backend-contract/serializable'
-import { decodeNativeRecordingEnvelope, nativeContinuationTransportError } from './native-continuation-envelope'
+import {
+  decodeNativePreparedRecordingEnvelope,
+  decodeNativeRecordingEnvelope,
+  nativeContinuationTransportError
+} from './native-continuation-envelope'
 import {
   MAX_RECORDING_BATCH_ITEMS,
   MAX_RECORDING_BATCH_BYTES,
@@ -62,13 +66,22 @@ export function createNativeContinuationRecordingController(
       throw nativeContinuationTransportError(error, hostDomain, `continuation.recording.${operation}`)
     }
   }
-  return createContinuationRecordingController({
-    status: id => call('status', () => access.status(id)),
-    prepare: (id, maxItems, maxBytes) => call('prepare', () => access.prepare(id, maxItems, maxBytes)),
-    acknowledge: (id, token) => call('acknowledge', () => access.acknowledge(id, token)),
-    stop: id => call('stop', () => access.stop(id)),
-    clear: id => call('clear', () => access.clear(id))
-  })
+  return createContinuationRecordingController(
+    {
+      status: id => call('status', () => access.status(id)),
+      prepare: async (id, maxItems, maxBytes) => {
+        try {
+          return decodeNativePreparedRecordingEnvelope(await access.prepare(id, maxItems, maxBytes), hostDomain)
+        } catch (error) {
+          throw nativeContinuationTransportError(error, hostDomain, 'continuation.recording.prepare')
+        }
+      },
+      acknowledge: (id, token) => call('acknowledge', () => access.acknowledge(id, token)),
+      stop: id => call('stop', () => access.stop(id)),
+      clear: id => call('clear', () => access.clear(id))
+    },
+    true
+  )
 }
 
 export interface ContinuationRecordingController {
@@ -235,7 +248,8 @@ function recordingId(value: string): string {
 }
 
 export function createContinuationRecordingController(
-  access: ContinuationRecordingAccess
+  access: ContinuationRecordingAccess,
+  nativePreparedBytes = false
 ): ContinuationRecordingController {
   return Object.freeze({
     status: (id: string) => rehydratePublicPromise((async () => status(await access.status(recordingId(id)), id))()),
@@ -265,7 +279,15 @@ export function createContinuationRecordingController(
             throw contractError('argument.invalid', 'restoration', 'continuation.recording.bounds')
           }
           const limits = { maxItems: options.maxItems, maxBytes: options.maxBytes }
-          return parseContinuationRecordingBatch(await access.prepare(id, limits.maxItems, limits.maxBytes), limits)
+          const prepared = await access.prepare(id, limits.maxItems, limits.maxBytes)
+          if (!nativePreparedBytes) return parseContinuationRecordingBatch(prepared, limits)
+          const native = object(prepared)
+          exact(native, ['value', 'serializedRecordBytes'])
+          return parseContinuationRecordingBatch(
+            native.value,
+            limits,
+            integer(native.serializedRecordBytes, 0, limits.maxBytes)
+          )
         })()
       ),
     acknowledge: (id: string, token: string) =>
@@ -333,7 +355,8 @@ function metadata(input: unknown): ContinuationRecordingMetadata {
  * storage, stops collection, releases radio ownership, or writes a file. */
 export function parseContinuationRecordingBatch(
   input: unknown,
-  limits: ContinuationRecordingPrepareOptions
+  limits: ContinuationRecordingPrepareOptions,
+  serializedRecordBytes?: number
 ): ContinuationRecordingBatch {
   const value = object(input)
   exact(value, ['token', 'records', 'bytes', 'more'])
@@ -344,7 +367,7 @@ export function parseContinuationRecordingBatch(
   if (token !== null && utf8ByteLength(token) > MAX_RECORDING_TOKEN_BYTES) return malformed()
   if ((value.records.length === 0) !== (token === null)) return malformed()
   if (token === null && (bytes !== 0 || value.more)) return malformed()
-  const decoded = parseContinuationRecordingRecords(value.records, limits)
+  const decoded = parseContinuationRecordingRecords(value.records, limits, serializedRecordBytes)
   if (decoded.bytes !== bytes) return malformed()
   return Object.freeze({ token, records: decoded.records, bytes, more: value.more })
 }
@@ -353,16 +376,19 @@ export function parseContinuationRecordingBatch(
  * acknowledgement, storage or radio authority is created by this pure decoder. */
 export function parseContinuationRecordingRecords(
   input: unknown,
-  limits: ContinuationRecordingPrepareOptions
+  limits: ContinuationRecordingPrepareOptions,
+  serializedRecordBytes?: number
 ): Pick<ContinuationRecordingBatch, 'records' | 'bytes'> {
   if (!Array.isArray(input) || input.length > limits.maxItems) return malformed()
+  if (serializedRecordBytes !== undefined) integer(serializedRecordBytes, 0, limits.maxBytes)
   let previous: number | undefined
   let encodedBytes = 0
   const records = input.map(inputRecord => {
     const entry = object(inputRecord)
     exact(entry, ['ordinal', 'metadata', 'record'])
     encodedBytes += utf8ByteLength(JSON.stringify(entry))
-    if (!Number.isSafeInteger(encodedBytes) || encodedBytes > limits.maxBytes) return malformed()
+    if (!Number.isSafeInteger(encodedBytes) || (serializedRecordBytes === undefined && encodedBytes > limits.maxBytes))
+      return malformed()
     const ordinal = integer(entry.ordinal, 1)
     if (previous !== undefined && ordinal !== previous + 1) return malformed()
     previous = ordinal
@@ -388,5 +414,5 @@ export function parseContinuationRecordingRecords(
     if ('peerId' in record && record.peerId !== context.session.peerId) return malformed()
     return Object.freeze({ ordinal, metadata: context, record })
   })
-  return Object.freeze({ records: Object.freeze(records), bytes: encodedBytes })
+  return Object.freeze({ records: Object.freeze(records), bytes: serializedRecordBytes ?? encodedBytes })
 }

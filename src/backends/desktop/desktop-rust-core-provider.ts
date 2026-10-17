@@ -103,7 +103,11 @@ import {
   type SubscriptionId,
   type Uuid
 } from '../../backend-contract/primitives'
-import { createGattCharacteristicProperties, serviceAccessRestriction } from '../../backend-contract/gatt'
+import {
+  createGattCharacteristicProperties,
+  serviceAccessRestriction,
+  isNotificationReceipt
+} from '../../backend-contract/gatt'
 import type {
   CharacteristicPath,
   ConnectionPath,
@@ -5505,7 +5509,22 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
           subscription.notifications.closeWithReason('source-failed', desktopRustCoreError(error, operation).normalized)
           return
         }
-        subscription.notifications.emit(notificationValue(value, subscription.delivery), NOTIFICATION_BYTES)
+        const receipt = poll.receipt
+        if (receipt !== undefined && receipt !== null && !isNotificationReceipt(receipt)) {
+          subscription.closed = true
+          subscription.notifications.closeWithReason(
+            'source-failed',
+            desktopRustCoreError(
+              contractError('protocol.malformed', 'core', `${operation}.notification-receipt`),
+              operation
+            ).normalized
+          )
+          return
+        }
+        subscription.notifications.emit(
+          notificationValue(value, subscription.delivery, receipt ?? undefined),
+          NOTIFICATION_BYTES
+        )
         continue
       }
       if (poll.kind === 'terminal' && subscription.pendingTerminal === null) {
@@ -5619,8 +5638,16 @@ const ADAPTER_LOSS_SEQUENCE: Readonly<
 })
 
 /** The delivery kind the owner reported on each value (FIX-PLAN decision 5). */
-function notificationValue(value: OwnedBytes, delivery: 'notification' | 'indication' | 'unknown'): NotificationValue {
-  return Object.freeze({ value, delivery })
+function notificationValue(
+  value: OwnedBytes,
+  delivery: 'notification' | 'indication' | 'unknown',
+  receipt?: NotificationValue['receipt']
+): NotificationValue {
+  return Object.freeze({
+    value,
+    delivery,
+    ...(receipt === undefined ? {} : { receipt: Object.freeze({ ...receipt }) })
+  })
 }
 
 /** A generation string from the core, checked before it reaches the host's privileged controller. */

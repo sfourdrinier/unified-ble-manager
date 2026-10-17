@@ -1,3 +1,5 @@
+// src/core/native-continuation-envelope.ts
+import { nativeRecordingRecordBytes } from './native-recording-bytes'
 import { BackendContractError, contractError } from '../backend-contract/errors'
 import {
   failureEnvelopeError,
@@ -104,4 +106,14 @@ function decodeEnvelope(parsed: WireResult<WireInvokeEnvelope>, hostDomain: stri
     })
   }
   throw error
+}
+
+/** Retain lexical byte evidence before decoded numbers lose native formatting. */
+export function decodeNativePreparedRecordingEnvelope(
+  text: unknown,
+  hostDomain: string
+): { readonly value: unknown; readonly serializedRecordBytes: number } {
+  const value = decodeNativeRecordingEnvelope(text, hostDomain, 'prepare')
+  if (typeof text !== 'string') throw contractError('protocol.malformed', 'restoration', 'continuation.recording')
+  return { value, serializedRecordBytes: nativeRecordingRecordBytes(text) }
 }

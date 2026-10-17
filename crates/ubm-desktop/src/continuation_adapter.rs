@@ -997,6 +997,16 @@ impl Ending {
     }
 }
 
+fn value_record_with_receipt(
+    consumer: &str,
+    delivery: &str,
+    bytes: &[u8],
+    receipt: ubm_core::central::NotificationReceipt,
+) -> Value {
+    json!({"t":"value", "consumer":consumer, "valueB64":encode_base64(bytes), "delivery":delivery,
+        "receipt": {"receivedAtUtcMs":receipt.received_at_utc_ms, "receivedAtMonotonicMs":receipt.received_at_monotonic_ms, "clockId":receipt.clock_id, "origin":"native"}})
+}
+
 fn value_record(consumer: &str, delivery: &str, bytes: &[u8]) -> Value {
     json!({"t":"value","consumer":consumer,"valueB64":encode_base64(bytes),"delivery":delivery})
 }
@@ -1250,6 +1260,17 @@ impl<B: RadioBoundary> Session<B> {
                 {
                     Ok(NotificationPoll::Value(bytes)) => {
                         records.push(value_record(&route.consumer, route.delivery, &bytes));
+                    }
+                    Ok(NotificationPoll::ValueWithReceipt {
+                        value: bytes,
+                        receipt,
+                    }) => {
+                        records.push(value_record_with_receipt(
+                            &route.consumer,
+                            route.delivery,
+                            &bytes,
+                            receipt,
+                        ));
                     }
                     Ok(NotificationPoll::Empty) => break true,
                     Ok(NotificationPoll::Terminal(terminal)) => {
@@ -1537,6 +1558,20 @@ impl<'a, B: RadioBoundary> DisposalTail<'a, B> {
                 state
                     .held
                     .push(value_record(self.consumer, self.delivery, &bytes));
+                if state.held.len() == VALUE_GROUP {
+                    self.commit(&mut state, None);
+                }
+            }
+            NotificationPoll::ValueWithReceipt {
+                value: bytes,
+                receipt,
+            } => {
+                state.held.push(value_record_with_receipt(
+                    self.consumer,
+                    self.delivery,
+                    &bytes,
+                    receipt,
+                ));
                 if state.held.len() == VALUE_GROUP {
                     self.commit(&mut state, None);
                 }

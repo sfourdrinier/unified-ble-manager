@@ -683,7 +683,11 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
       }
       const outcome = this.runtime.aggregateQuota.emit(
         stream,
-        { value: ownBytes(value, this.runtime.maximumValueBytes), delivery: item.value.delivery },
+        {
+          value: ownBytes(value, this.runtime.maximumValueBytes),
+          delivery: item.value.delivery,
+          ...(item.value.receipt === undefined ? {} : { receipt: Object.freeze({ ...item.value.receipt }) })
+        },
         value.byteLength
       )
       if (outcome.terminated) {

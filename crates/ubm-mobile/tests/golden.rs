@@ -6,7 +6,8 @@
 //! Check (default): regenerate in memory and fail when the committed file
 //! differs. Regenerate: `UBM_MOBILE_GOLDEN_WRITE=1 cargo test -p ubm-mobile --test golden`.
 //! Clock-valued fields (`observedAtMs`, `updatedAt`, `lastSeenAtMonotonicMs`)
-//! are normalized to 0 so the file is reproducible; every other byte is the
+//! and native receipt clock pairs/identities are normalized for reproducibility;
+//! receipt types and finite clocks are checked before normalization. Every other byte is the
 //! owner's own output.
 
 mod common;
@@ -27,6 +28,27 @@ const CLOCK_FIELDS: &[&str] = &["observedAtMs", "updatedAt", "lastSeenAtMonotoni
 fn normalize(value: &mut Value) {
     match value {
         Value::Object(map) => {
+            if map.get("t").and_then(Value::as_str) == Some("value") {
+                let receipt = map.get_mut("receipt").expect("native value has receipt");
+                let receipt = receipt.as_object_mut().expect("receipt is an object");
+                let utc = receipt["receivedAtUtcMs"].as_f64().expect("UTC clock");
+                let monotonic = receipt["receivedAtMonotonicMs"]
+                    .as_f64()
+                    .expect("monotonic clock");
+                assert!(utc.is_finite() && utc.abs() <= 9_007_199_254_740_991.0);
+                assert!(monotonic.is_finite() && monotonic >= 0.0);
+                assert!(
+                    !receipt["clockId"]
+                        .as_str()
+                        .expect("clock ID")
+                        .trim()
+                        .is_empty()
+                );
+                assert_eq!(receipt["origin"], "native");
+                receipt.insert("receivedAtUtcMs".into(), json!(0.0));
+                receipt.insert("receivedAtMonotonicMs".into(), json!(0.0));
+                receipt.insert("clockId".into(), json!("native-golden-clock"));
+            }
             for (key, entry) in map.iter_mut() {
                 if CLOCK_FIELDS.contains(&key.as_str()) && entry.is_u64() {
                     *entry = Value::from(0u64);

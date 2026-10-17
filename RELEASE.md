@@ -247,31 +247,24 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
-## Releasing 5.0.4
+## Releasing 5.1.0
 
-Unpublished patch candidate.
+The 5.1.0 minor candidate adds optional paired native notification receipt
+metadata. Receipts survive bounded queues, fan-out, background continuation,
+NAPI, React Native, Electron and public GATT streams. Hosts without native
+receipt support omit the field; no acquisition-time or hardware accuracy claim
+is introduced. The included H10 driver tooling fixes retain simulator evidence
+limits. Backend support labels remain evidence-derived and unchanged.
 
-The prepared `5.0.4` candidate resolves saved Android origin references after
-app restart through the OS device handle, including previously discovered
-unbonded devices. Its package identity, native metadata, generated
-documentation, and dependency artifacts must be reviewed against one exact
-candidate before any tag or trusted-publisher action. Package SemVer does not
-promote any backend to a support label or replace the required host and
-physical-radio evidence.
+Qualify the exact candidate through the required local and cross-platform gates,
+independent review and sealed-package checks before tagging current `main`.
+Publication uses the existing trusted publisher; never publish from a laptop.
 
-Required release steps are: qualify the exact source commit through the
-existing host gates, confirm the packed-consumer contract and both digests
-for the same sealed tarball, complete the authorized physical receipts, then
-use the normal tag-driven trusted publisher under release-owner authorization.
-Retain the publisher workflow's SHA-256 digest and calculate an independent
-SHA-512 receipt from that exact file:
+## Published 5.0.4
 
-```sh
-sha256sum .release-package/canonical.tgz
-sha512sum .release-package/canonical.tgz
-```
-
-No npm publication, tag, push, or registry claim is made by this checklist.
+The immutable `v5.0.4` release resolves saved Android origin references after
+app restart, including previously discovered unbonded devices. Further changes
+belong to 5.1.0.
 
 ## Published 5.0.3
 
@@ -1187,7 +1180,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.0.4
+version=5.1.0
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -1198,7 +1191,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- for stable `5.0.4`, npm `latest` resolves to `5.0.4` and `next` retains the
+- for stable `5.1.0`, npm `latest` resolves to `5.1.0` and `next` retains the
   separately published rc.21; for a numbered RC, verify `next` resolves to that
   exact candidate without changing `latest`;
 - the npm package page shows provenance for the published artifact;
@@ -1207,8 +1200,8 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.0.4` explicitly and import the documented host
-  entrypoints. A separate bare install must select npm `latest` (`5.0.4` after
+  `unified-ble-manager@5.1.0` explicitly and import the documented host
+  entrypoints. A separate bare install must select npm `latest` (`5.1.0` after
   stable publication). For RC verification, pin the actual numbered candidate
   instead and verify `next` separately. This
   catches a packaging gap the repository's

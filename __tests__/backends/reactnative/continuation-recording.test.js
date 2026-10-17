@@ -1,3 +1,4 @@
+// __tests__/backends/reactnative/continuation-recording.test.js
 const {
   parseContinuationRecordingBatch,
   parseContinuationRecordingRecords,
@@ -51,6 +52,30 @@ test('canonical offline row-array decoding needs no fabricated prepare token and
   expect(() => parseContinuationRecordingRecords(input.records, { maxItems: 20, maxBytes: 2000 })).toThrow()
 })
 
+test('canonical offline row-array decoding preserves a valid native notification receipt', () => {
+  const input = batch()
+  input.records[0].record.receipt = {
+    receivedAtUtcMs: -0.5,
+    receivedAtMonotonicMs: 42.25,
+    clockId: 'native-receipt-clock',
+    origin: 'native'
+  }
+  input.bytes = size(input.records)
+  const result = parseContinuationRecordingRecords(input.records, { maxItems: 20, maxBytes: 2000 })
+  expect(result.records[0].record.receipt).toEqual(input.records[0].record.receipt)
+})
+
+test('canonical offline row-array decoding rejects an invalid native notification receipt', () => {
+  const input = batch()
+  input.records[0].record.receipt = {
+    receivedAtUtcMs: 1,
+    receivedAtMonotonicMs: -1,
+    clockId: 'native-receipt-clock',
+    origin: 'native'
+  }
+  expect(() => parseContinuationRecordingRecords(input.records, { maxItems: 20, maxBytes: 2000 })).toThrow()
+})
+
 test('durable batches expose owned bytes and historical generation metadata without acknowledging', () => {
   const input = batch()
   const result = parseContinuationRecordingBatch(input, { maxItems: 20, maxBytes: 2000 })
@@ -82,7 +107,11 @@ test('peer-scoped lifecycle replay accepts its peer and refuses foreign evidence
   input.records = [input.records[0]]
   input.records[0].metadata.consumer = null
   input.records[0].record = {
-    t: 'link', peerId: 'peer', connectionGeneration: '1', databaseGeneration: '2', reason: 'peer'
+    t: 'link',
+    peerId: 'peer',
+    connectionGeneration: '1',
+    databaseGeneration: '2',
+    reason: 'peer'
   }
   input.bytes = size(input.records)
   const access = { prepare: jest.fn(async () => input), acknowledge: jest.fn(), clear: jest.fn() }
@@ -240,6 +269,58 @@ test('native recording prepare accepts a valid retained prefix larger than the o
   expect(replay).toEqual(first)
   expect(first.records).toHaveLength(1600)
   expect(access.acknowledge).not.toHaveBeenCalled()
+})
+
+const nativeBatchText = (rows, declaredBytes = rows.reduce((count, row) => count + Buffer.byteLength(row), 0)) =>
+  `{"ok":true,"value":{"token":"h10:raw","records":[${rows.join(',')}],"bytes":${declaredBytes},"more":false}}`
+
+test('native recording prepare validates original fractional and integer float lexemes without retiming receipts', async () => {
+  const input = entry(1)
+  input.metadata.session.backendInstanceId = '路線 \"value\": [not a field]'
+  input.record.receipt = { receivedAtUtcMs: -0.5, receivedAtMonotonicMs: 42, clockId: 'native', origin: 'native' }
+  const row = JSON.stringify(input).replace('"receivedAtMonotonicMs":42', '"receivedAtMonotonicMs":42.0')
+  const bytes = Buffer.byteLength(row)
+  expect(bytes).not.toBe(Buffer.byteLength(JSON.stringify(JSON.parse(row))))
+  const controller = createNativeContinuationRecordingController(
+    { prepare: async () => nativeBatchText([row]) },
+    'android'
+  )
+  const result = await controller.prepare('h10', { maxItems: 20, maxBytes: bytes })
+  expect(result.bytes).toBe(bytes)
+  expect(result.records[0].record.receipt).toEqual(input.record.receipt)
+  expect(result.records[0].metadata.session.backendInstanceId).toBe(input.metadata.session.backendInstanceId)
+})
+
+test('native recording prepare rejects false byte totals and ambiguous duplicate fields', async () => {
+  const row = JSON.stringify(entry(1))
+  const bytes = Buffer.byteLength(row)
+  for (const text of [
+    nativeBatchText([row], bytes - 1),
+    nativeBatchText([row], bytes + 1),
+    nativeBatchText([row]).replace('"records":[', '"records":[],"records":['),
+    nativeBatchText([row]).replace('"value":{', '"value":{},"value":{')
+  ]) {
+    const controller = createNativeContinuationRecordingController({ prepare: async () => text }, 'android')
+    await expect(controller.prepare('h10', { maxItems: 20, maxBytes: 2000 })).rejects.toMatchObject({
+      code: 'protocol.malformed'
+    })
+  }
+})
+
+test('retained receipt decoding snapshots inputs and rejects receipts on control records', () => {
+  const input = batch()
+  input.records[0].record.receipt = {
+    receivedAtUtcMs: -0.5,
+    receivedAtMonotonicMs: 42.25,
+    clockId: 'native',
+    origin: 'native'
+  }
+  const result = parseContinuationRecordingRecords(input.records, { maxItems: 20, maxBytes: 2000 })
+  input.records[0].record.receipt.receivedAtUtcMs = 999
+  expect(result.records[0].record.receipt.receivedAtUtcMs).toBe(-0.5)
+  expect(Object.isFrozen(result.records[0].record.receipt)).toBe(true)
+  input.records[0].record = { t: 'ingress-drop', class: 'control', count: 1, receipt: input.records[0].record.receipt }
+  expect(() => parseContinuationRecordingRecords(input.records, { maxItems: 20, maxBytes: 2000 })).toThrow()
 })
 
 test.each(['status', 'prepare'])('native recording %s retains its own bounded operation error', async operation => {

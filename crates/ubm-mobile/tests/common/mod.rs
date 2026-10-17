@@ -1,3 +1,4 @@
+// crates/ubm-mobile/tests/common/mod.rs
 //! ScriptedPlatformRadio: a deterministic platform adapter for the mobile
 //! owner tests. Every request is recorded; a responder answers it at once
 //! or holds it for the test to answer (or never answer) later.
@@ -355,4 +356,50 @@ fn with_admission(clients: &mut Clients, session: &MobileSession, op: &str, args
     });
     map.insert("admission".to_owned(), Value::from(admission));
     Value::Object(map).to_string()
+}
+
+/// Observe the same native ingress independently of a sealed or quota-limited
+/// consumer, retaining its actual per-value receipt for exact loss accounting.
+pub async fn observing_hr_session(host: &MobileHost, consumer: &str) -> MobileSession {
+    let session = host.open_session(consumer).expect("audit session");
+    ok(&call(
+        &session,
+        "connection.connect",
+        &serde_json::json!({
+            "peerId": POLAR, "lease": "lease-1", "operationId": "audit-connect"
+        })
+        .to_string(),
+    )
+    .await);
+    ok(&call(
+        &session,
+        "gatt.discover",
+        &serde_json::json!({
+            "peerId": POLAR, "lease": "lease-1", "operationId": "audit-discover"
+        })
+        .to_string(),
+    )
+    .await);
+    ok(&call(
+        &session,
+        "gatt.subscribe",
+        &serde_json::json!({
+            "peerId": POLAR, "selector": selector(), "consumer": consumer,
+            "deliveryMode": "require-notification", "operationId": "audit-subscribe"
+        })
+        .to_string(),
+    )
+    .await);
+    session
+}
+
+/// Loss counters count the encoded value body, without its outbox ordinal.
+/// Fanout shares ingress receipts; only the consumer identity differs.
+pub fn notification_body_bytes(record: &Value, target_consumer: &str) -> u64 {
+    assert_eq!(record["t"], "value");
+    assert_eq!(record["receipt"]["origin"], "native");
+    let mut body = record.as_object().expect("notification object").clone();
+    body.remove("ordinal");
+    body.insert("consumer".into(), Value::from(target_consumer));
+    u64::try_from(Value::Object(body).to_string().len()).expect("bounded notification size")
 }

@@ -893,7 +893,7 @@ pub struct GattSnapshotIdentity {
 }
 
 /// Radio-side events delivered to the central event loop.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RadioEvent {
     /// Private BlueZ authority observation. The production radio validates
     /// this physical generation against its exact owned lease before any
@@ -1038,6 +1038,16 @@ pub enum RadioEvent {
         /// created after it.
         epoch: u64,
         value: Vec<u8>,
+    },
+    NotificationWithReceipt {
+        peer_id: String,
+        service_uuid: String,
+        service_occurrence: u64,
+        characteristic_uuid: String,
+        characteristic_occurrence: u64,
+        epoch: u64,
+        value: Vec<u8>,
+        receipt: ubm_core::central::NotificationReceipt,
     },
 }
 
