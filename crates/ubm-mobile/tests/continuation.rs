@@ -1,3 +1,4 @@
+// crates/ubm-mobile/tests/continuation.rs
 mod common;
 #[path = "../../test-support/recording_fixture.rs"]
 mod recording_fixture;
@@ -679,6 +680,7 @@ async fn durable_capacity_retains_the_sequential_prefix_under_group_commit() {
     // One consumer registration plus three values fit.
     order["recording"] = json!({"id":"capacity","maxBytes":1048576,"maxRecords":4});
     engine.execute(POLAR, &order.to_string()).await.unwrap();
+    let audit = observing_hr_session(&host, "capacity-audit").await;
     let epoch = setup_notification_epoch(&radio);
     for sequence in 1u8..=12 {
         host.ingest(RadioIngress::Notification {
@@ -722,13 +724,25 @@ async fn durable_capacity_retains_the_sequential_prefix_under_group_commit() {
         .map(|sequence| json!(ubm_mobile::wire::encode_base64(&[0, sequence])))
         .collect();
     assert_eq!(values, expected.iter().collect::<Vec<_>>());
-    let record_bytes = prepared["records"]
+    let audited = drain_until(&audit, |records| of_type(records, "value").len() == 12).await;
+    let audited_values = of_type(&audited, "value");
+    for (index, row) in audited_values.iter().enumerate() {
+        assert_eq!(
+            row["valueB64"],
+            json!(ubm_mobile::wire::encode_base64(&[
+                0,
+                u8::try_from(index + 1).unwrap()
+            ]))
+        );
+    }
+    let retained = prepared["records"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|entry| entry["record"]["t"] == "value")
-        .map(|entry| entry["record"].to_string().len() as u64)
-        .expect("a retained value fixes the record size");
+        .filter(|entry| entry["record"]["t"] == "value");
+    for (entry, observed) in retained.zip(audited_values.iter()) {
+        assert_eq!(entry["record"]["receipt"], observed["receipt"]);
+    }
 
     // The values the journal could not hold are not in the durable status:
     // the route's stream end is their one home. It is emitted after the
@@ -756,13 +770,19 @@ async fn durable_capacity_retains_the_sequential_prefix_under_group_commit() {
     );
     assert_eq!(
         ends[0]["droppedBytes"].as_u64().unwrap(),
-        dropped * record_bytes,
-        "bytes are counted once per refused polled value"
+        audited_values
+            .iter()
+            .skip(3)
+            .take(usize::try_from(dropped).unwrap())
+            .map(|record| notification_body_bytes(record, ends[0]["consumer"].as_str().unwrap()))
+            .sum::<u64>(),
+        "bytes include each refused value's actual ingress receipt exactly once"
     );
     engine
         .acknowledge_claim(claim["claimToken"].as_str().unwrap())
         .await
         .unwrap();
+    ok(&call(&audit, "session.dispose", "{}").await);
     host.shutdown().await;
     drop(engine);
     drop(host);

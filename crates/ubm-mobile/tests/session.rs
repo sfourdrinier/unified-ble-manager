@@ -1,3 +1,4 @@
+// crates/ubm-mobile/tests/session.rs
 //! Mobile owner behaviour over the scripted platform radio.
 
 mod common;
@@ -640,14 +641,24 @@ async fn continuation_quiesce_seals_real_notification_intake_for_handoff() {
         .to_string(),
     )
     .await);
+    let audit = observing_hr_session(&host, "cutoff-audit").await;
     let epoch = enable_epoch(&radio);
 
     // Wake is emitted after `push_data` has retained the record, so this is
     // a real routing fence rather than a timing sleep.
-    let before_wake = wakes.count.load(Ordering::SeqCst);
+    let target_wakes = || {
+        wakes
+            .per_session
+            .lock()
+            .unwrap()
+            .get(&session.id())
+            .copied()
+            .unwrap_or(0)
+    };
+    let before_wake = target_wakes();
     host.ingest(hr_value(&[0x01], epoch));
     tokio::time::timeout(Duration::from_secs(1), async {
-        while wakes.count.load(Ordering::SeqCst) == before_wake {
+        while target_wakes() == before_wake {
             tokio::task::yield_now().await;
         }
     })
@@ -679,7 +690,11 @@ async fn continuation_quiesce_seals_real_notification_intake_for_handoff() {
     let after_cutoff_bytes = final_seal["afterCutoffBytes"]
         .as_u64()
         .expect("after-cutoff byte accounting is numeric");
-    assert_eq!(after_cutoff_bytes, 85);
+    let audited = drain_until(&audit, |records| of_type(records, "value").len() == 2).await;
+    let audited_values = of_type(&audited, "value");
+    assert_eq!(audited_values[1]["valueB64"], "AgM=");
+    let expected_first = notification_body_bytes(audited_values[1], "continuation-0");
+    assert_eq!(after_cutoff_bytes, expected_first);
 
     // The refused post-cutoff value belongs to the handoff receipt. It does
     // not end the old route or manufacture a stream terminal. Drain only the
@@ -693,6 +708,7 @@ async fn continuation_quiesce_seals_real_notification_intake_for_handoff() {
         "only the pre-cutoff notification transfers"
     );
     assert_eq!(values[0]["valueB64"], "AQ==");
+    assert_eq!(values[0]["receipt"], audited_values[0]["receipt"]);
     assert!(
         of_type(&records, "stream-end").is_empty(),
         "sealed cutoff must not manufacture a terminal: {records:#?}"
@@ -716,7 +732,11 @@ async fn continuation_quiesce_seals_real_notification_intake_for_handoff() {
     let second_bytes = second_seal["afterCutoffBytes"]
         .as_u64()
         .expect("cumulative after-cutoff bytes are numeric");
-    assert_eq!(second_bytes, 170);
+    let audited_second = drain_until(&audit, |records| !of_type(records, "value").is_empty()).await;
+    let second_value = of_type(&audited_second, "value")[0];
+    assert_eq!(second_value["valueB64"], "BA==");
+    let expected_second = expected_first + notification_body_bytes(second_value, "continuation-0");
+    assert_eq!(second_bytes, expected_second);
 
     host.ingest(hr_value(&[0x05, 0x06, 0x07], epoch));
     let third_seal = tokio::time::timeout(Duration::from_secs(1), async {
@@ -733,7 +753,11 @@ async fn continuation_quiesce_seals_real_notification_intake_for_handoff() {
     let total_after_cutoff_bytes = third_seal["afterCutoffBytes"]
         .as_u64()
         .expect("final after-cutoff bytes are numeric");
-    assert_eq!(total_after_cutoff_bytes, 255);
+    let audited_third = drain_until(&audit, |records| !of_type(records, "value").is_empty()).await;
+    let third_value = of_type(&audited_third, "value")[0];
+    assert_eq!(third_value["valueB64"], "BQYH");
+    let expected_third = expected_second + notification_body_bytes(third_value, "continuation-0");
+    assert_eq!(total_after_cutoff_bytes, expected_third);
     assert!(session.drain(256, 65536).contains("\"records\":[]"));
 
     let disposed = ok(&call(&session, "session.continuation-dispose", "{}").await);
@@ -741,6 +765,8 @@ async fn continuation_quiesce_seals_real_notification_intake_for_handoff() {
     assert_eq!(disposed["failures"], json!([]));
     assert_eq!(disposed["afterCutoffItems"], 3);
     assert_eq!(disposed["afterCutoffBytes"], total_after_cutoff_bytes);
+    ok(&call(&audit, "session.dispose", "{}").await);
+    host.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

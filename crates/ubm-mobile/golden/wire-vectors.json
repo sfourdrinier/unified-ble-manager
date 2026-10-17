@@ -8,7 +8,7 @@
     {
       "lastOrdinal": 2,
       "name": "notification values",
-      "text": "{\"controlLost\":0,\"more\":false,\"records\":[{\"consumer\":\"hr\",\"delivery\":\"notification\",\"ordinal\":3,\"t\":\"value\",\"valueB64\":\"AFU=\"},{\"consumer\":\"hr\",\"delivery\":\"notification\",\"ordinal\":4,\"t\":\"value\",\"valueB64\":\"EFUgAw==\"}]}"
+      "text": "{\"controlLost\":0,\"more\":false,\"records\":[{\"consumer\":\"hr\",\"delivery\":\"notification\",\"ordinal\":3,\"receipt\":{\"clockId\":\"native-golden-clock\",\"origin\":\"native\",\"receivedAtMonotonicMs\":0.0,\"receivedAtUtcMs\":0.0},\"t\":\"value\",\"valueB64\":\"AFU=\"},{\"consumer\":\"hr\",\"delivery\":\"notification\",\"ordinal\":4,\"receipt\":{\"clockId\":\"native-golden-clock\",\"origin\":\"native\",\"receivedAtMonotonicMs\":0.0,\"receivedAtUtcMs\":0.0},\"t\":\"value\",\"valueB64\":\"EFUgAw==\"}]}"
     },
     {
       "lastOrdinal": 4,
