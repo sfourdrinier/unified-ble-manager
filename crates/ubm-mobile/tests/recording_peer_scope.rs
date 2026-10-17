@@ -278,7 +278,8 @@ async fn mobile_recording_controller_transport() {
                 u32::try_from(request["maxItems"].as_u64().unwrap_or(0)).unwrap(),
                 u32::try_from(request["maxBytes"].as_u64().unwrap_or(0)).unwrap(),
             );
-            respond(serde_json::from_str(&result).unwrap());
+            println!("UBM_RECORDING {}", result);
+            std::io::stdout().flush().unwrap();
         }
         input.join().unwrap(); // TypeScript closes stdin with the finish command.
     } else {

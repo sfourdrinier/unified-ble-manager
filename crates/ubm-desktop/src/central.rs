@@ -149,8 +149,13 @@ fn drain_consumer_before_retirement(
     drain: Option<&(dyn Fn(NotificationPoll) + Send + Sync)>,
 ) {
     if let Some(drain) = drain {
-        while let Some(value) = core.take_notification_value(index, consumer) {
-            drain(NotificationPoll::Value(value));
+        while let Some((value, receipt)) =
+            core.take_notification_value_with_receipt(index, consumer)
+        {
+            drain(match receipt {
+                Some(receipt) => NotificationPoll::ValueWithReceipt { value, receipt },
+                None => NotificationPoll::Value(value),
+            });
         }
         if let Some(terminal) = core.take_terminal(index, consumer) {
             drain(NotificationPoll::Terminal(terminal));
@@ -13747,6 +13752,100 @@ mod adapter_tests {
     }
 
     #[tokio::test]
+    async fn native_unsubscribe_preserves_receipt_in_final_tail() {
+        let central = open().await;
+        ready_peer(&central, "peer-tail", vec![hrm_service()]).await;
+        central
+            .subscribe(
+                "peer-tail",
+                &hrm_selector(0),
+                "native-tail",
+                None,
+                OpControl::unbounded(),
+            )
+            .await
+            .unwrap();
+        central.boundary().block_op(FaultOp::Unsubscribe);
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pending = tokio::spawn({
+            let central = central.clone();
+            let captured = captured.clone();
+            async move {
+                let drain = |value| {
+                    captured.lock().unwrap().push(value);
+                };
+                central
+                    .unsubscribe_draining(
+                        "peer-tail",
+                        &hrm_selector(0),
+                        "native-tail",
+                        OpControl::unbounded(),
+                        Some(&drain),
+                    )
+                    .await
+            }
+        });
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "set_notifications")
+            .count()
+            < 2
+        {
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::task::yield_now().await;
+        }
+        let mut wake = central.native_wakes();
+        let receipt = ubm_core::central::NotificationReceipt {
+            received_at_utc_ms: -0.5,
+            received_at_monotonic_ms: 42.25,
+            clock_id: "native-retirement-clock".to_owned(),
+        };
+        let event = match notification("peer-tail", 0, vec![0, 74]) {
+            RadioEvent::Notification {
+                peer_id,
+                service_uuid,
+                service_occurrence,
+                characteristic_uuid,
+                characteristic_occurrence,
+                epoch,
+                value,
+            } => RadioEvent::NotificationWithReceipt {
+                peer_id,
+                service_uuid,
+                service_occurrence,
+                characteristic_uuid,
+                characteristic_occurrence,
+                epoch,
+                value,
+                receipt: receipt.clone(),
+            },
+            _ => panic!("notification fixture must produce a notification"),
+        };
+        central.boundary().push_event(event);
+        tokio::time::timeout(Duration::from_secs(2), wake.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "no collector or pre-disable drain observes this tail"
+        );
+        central.boundary().unblock_op(FaultOp::Unsubscribe);
+        assert!(pending.await.unwrap().unwrap());
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec![crate::NotificationPoll::ValueWithReceipt {
+                value: vec![0, 74],
+                receipt,
+            }]
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn l7_unsubscribe_disable_failure_retries() {
         let central = open().await;
         ready_peer(&central, "peer-ud", vec![hrm_service()]).await;
@@ -15544,7 +15643,8 @@ mod adapter_tests {
                 .await
                 .expect("poll")
             {
-                crate::central::NotificationPoll::Value(_) => values += 1,
+                crate::central::NotificationPoll::Value(_)
+                | crate::central::NotificationPoll::ValueWithReceipt { .. } => values += 1,
                 crate::central::NotificationPoll::Terminal(terminal) => {
                     terminals += 1;
                     terminal_details = Some((

@@ -1,7 +1,13 @@
+// __tests__/core/mobile-recording-peer-scope.test.ts
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { createNativeContinuationRecordingController } from '../../src/core/continuation-recording'
 import { awaitSignal } from '../helpers/async'
+
+interface NativeFrame {
+  readonly value: unknown
+  readonly text: string
+}
 
 let fixtureExecutable: string | undefined
 
@@ -82,8 +88,8 @@ test.each(['android', 'apple'].flatMap(platform => [1, 2, 3].map(trial => ({ pla
     child.stderr.on('data', chunk => {
       stderr = `${stderr}${String(chunk)}`.slice(-16000)
     })
-    const pending: Array<{ resolve(value: unknown): void; reject(error: Error): void }> = []
-    const queued: unknown[] = []
+    const pending: Array<{ resolve(value: NativeFrame): void; reject(error: Error): void }> = []
+    const queued: NativeFrame[] = []
     let terminated: Error | undefined
     const rejectPending = (failure: Error) => {
       terminated = failure
@@ -105,9 +111,10 @@ test.each(['android', 'apple'].flatMap(platform => [1, 2, 3].map(trial => ({ pla
         child.kill()
         return
       }
+      const frame = { value, text: line.slice(offset + prefix.length) }
       const waiter = pending.shift()
-      if (waiter) waiter.resolve(value)
-      else queued.push(value)
+      if (waiter) waiter.resolve(frame)
+      else queued.push(frame)
     })
     const exit = new Promise<void>((resolve, reject) => {
       child.on('error', error => {
@@ -127,18 +134,19 @@ test.each(['android', 'apple'].flatMap(platform => [1, 2, 3].map(trial => ({ pla
       error => error
     )
     const receive = () => {
-      if (queued.length > 0) return Promise.resolve(queued.shift())
+      const queuedFrame = queued.shift()
+      if (queuedFrame !== undefined) return Promise.resolve(queuedFrame)
       if (terminated !== undefined) return Promise.reject(terminated)
-      return new Promise<unknown>((resolve, reject) => pending.push({ resolve, reject }))
+      return new Promise<NativeFrame>((resolve, reject) => pending.push({ resolve, reject }))
     }
     const next = () => awaitSignal(receive(), 'mobile recording fixture response', 110000)
     const request = (op: string, extra = {}) => {
       child.stdin.write(`${JSON.stringify({ op, ...extra })}\n`)
       return next()
     }
-    const native = async (op: string, extra = {}) => JSON.stringify(await request(op, extra))
+    const native = async (op: string, extra = {}) => (await request(op, extra)).text
     try {
-      const ready = await next()
+      const ready = (await next()).value
       expect(ready).toEqual(
         expect.objectContaining({
           ready: true,

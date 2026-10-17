@@ -1179,6 +1179,21 @@ mod authority_tests {
     use super::*;
 
     #[test]
+    fn receipt_timestamp_storage_round_trip_preserves_float_bits() {
+        let base = 1_760_662_567_890.0_f64.to_bits();
+        for offset in 0..4096 {
+            let timestamp = f64::from_bits(base + offset);
+            let encoded = serde_json::to_string(&timestamp).unwrap();
+            let decoded: f64 = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(
+                timestamp.to_bits(),
+                decoded.to_bits(),
+                "timestamp {encoded}"
+            );
+        }
+    }
+
+    #[test]
     fn held_export_transaction_blocks_shared_writer_without_sqlite_busy() {
         let directory =
             std::env::temp_dir().join(format!("ubm-held-export-{}", std::process::id()));
