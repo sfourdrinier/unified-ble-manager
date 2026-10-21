@@ -1,3 +1,5 @@
+// __tests__/ReleaseRetrySafety.test.js
+
 'use strict'
 
 const fs = require('fs')
@@ -34,7 +36,7 @@ describe('release retry safety', () => {
   test('allows bounded npm processing delays for metadata and provenance', () => {
     const workflow = read('.github/workflows/publish.yml')
 
-    expect(workflow).toContain('TARBALL_MAX_ATTEMPTS=240')
+    expect(workflow).toContain('TARBALL_MAX_ATTEMPTS=720')
     expect(workflow).toContain('for ATTEMPT in $(seq 1 "${TARBALL_MAX_ATTEMPTS}")')
     expect(workflow.match(/for ATTEMPT in \$\(seq 1 120\)/g)).toHaveLength(2)
     expect(workflow).not.toContain('for ATTEMPT in $(seq 1 36)')
@@ -73,7 +75,9 @@ describe('release retry safety', () => {
       'npm registry tarball is not downloadable yet (attempt ${ATTEMPT}/${TARBALL_MAX_ATTEMPTS})'
     )
     expect(tarballBinding).toContain('process.exitCode = 1')
-    expect(tarballBinding).toContain('npm registry tarball did not become downloadable within the bounded retry window')
+    expect(tarballBinding).toContain(
+      'npm registry tarball did not become downloadable within the bounded 60-minute window'
+    )
     expect(tarballBinding.indexOf('curl --fail')).toBeLessThan(
       tarballBinding.indexOf('npm registry tarball is not downloadable yet')
     )
