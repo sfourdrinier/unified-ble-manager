@@ -38,9 +38,11 @@ for cold/warm comparisons and exact-tarball binding. rc.20 is the first
 user-authorized production test; no measured speedup is claimed yet.
 Same-tag runs queue without cancelling an in-flight publish. Production
 artifacts request 90-day retention; an expired/deleted candidate fails closed.
-Recovery requires an entire immutable-tag workflow rerun and all gates again,
-not a protected-job repack or manual publish. See the linked procedure for
-approval holds and existing-version recovery boundaries.
+Recovery with an unavailable candidate requires an entire immutable-tag
+workflow rerun and all gates again, not a protected-job repack or manual
+publish. A retained, verified candidate permits rerunning the failed publisher
+job after npm processing completes. See the linked procedure for approval
+holds and existing-version recovery boundaries.
 
 ## Trusted publisher configuration
 
@@ -1231,6 +1233,20 @@ Never move or recreate a published version tag to hide a failed release.
 - If the workflow fails **before npm publication**, fix the source on `main`, increment/version as appropriate, and create the correct new tag.
 - If npm publication succeeds but a later GitHub-release step fails, preserve the immutable npm version and rerun the workflow. The recovery path skips the current-`main` admission check and attaches the exact npm registry tarball rather than newly linked native binaries.
 - If a defect is discovered after a stable tag is published, fix it and release a new patch; do not replace the published tag.
+
+An accepted npm upload can remain unavailable while npm processes it. The
+production publisher allows 720 attempts with five-second waits (a 60-minute
+retry budget, plus registry request time, within the existing 90-minute job
+timeout), proceeding immediately when the registry tarball becomes
+downloadable. This changes the failure budget, not the normal release duration.
+An upload success followed by a visibility
+timeout is a partial publication; it is not evidence that the version is free
+to publish again. Preserve the tag and candidate, wait for public metadata and
+tarball availability, then rerun the failed publisher job while its candidate
+is retained. Recovery verifies the registry bytes and provenance before
+creating the GitHub Release. If the candidate is unavailable, rerun the entire
+immutable-tag workflow as described above. If npm never makes the accepted
+version public, investigate its processing state before retrying publication.
 
 ## Current 5.x release candidates
 
