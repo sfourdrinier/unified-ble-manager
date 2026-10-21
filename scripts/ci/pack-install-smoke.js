@@ -22,7 +22,7 @@ const root = path.resolve(__dirname, '../..')
 const rootPackage = require(path.join(root, 'package.json'))
 const isolatedConsumerToolVersions = Object.freeze({
   typescript: '5.8.3',
-  webpack: '5.109.2'
+  webpack: rootPackage.devDependencies.webpack
 })
 // npm pack runs prepack then prepare (bob build twice). That exceeded 120s
 // locally (measured 142s); the G6A-only path must survive the pack step.
@@ -31,7 +31,7 @@ const G6A_CHILD_TIMEOUT_MS = 300000
 const PACK_INSTALL_CHILD_TIMEOUT_MS = 600000
 const requiredPackedOptionalHostDependencies = Object.freeze({})
 const requiredPackedOptionalPeerHostDependencies = Object.freeze({
-  expo: '^57.0.0'
+  expo: rootPackage.peerDependencies.expo
 })
 const browserBundleForbiddenHostDependencies = Object.freeze([
   '@expo/config-plugins',

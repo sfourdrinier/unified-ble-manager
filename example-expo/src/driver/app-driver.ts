@@ -9,7 +9,8 @@
 
 /// <reference types="expo/types" />
 
-import { AppState, Platform, TurboModuleRegistry, type AppStateStatus, type TurboModule } from 'react-native'
+import { AppState, Platform, TurboModuleRegistry, type TurboModule } from 'react-native'
+import { readAppState } from './app-state.ts'
 import { resolveExpoDriverPlatform } from './expo-driver-platform.ts'
 import { headlessHistory } from './register-headless-continuation.ts'
 import { createReferenceNativeContinuation, type ReferenceNativeContinuationModule } from './native-continuation.ts'
@@ -34,7 +35,6 @@ import {
   hostLabel,
   toJsonObject,
   toJsonValue,
-  type AppStateReading,
   type AppStateSource,
   type DriverHost,
   type DriverSocket,
@@ -162,10 +162,6 @@ async function createExpoHostManager(
   }
 }
 
-function readAppState(status: AppStateStatus): AppStateReading {
-  return { state: status, foreground: status === 'active' }
-}
-
 const reactNativeAppState: AppStateSource = {
   current: () => readAppState(AppState.currentState),
   subscribe(listener) {
@@ -185,7 +181,7 @@ const identity = {
 } as const
 const nativeContinuationModule = TurboModuleRegistry.get<ReferenceNativeContinuationModule>('UBMReferenceContinuation')
 const nativeContinuation =
-  nativeContinuationModule === null || (Platform.OS !== 'android' && Platform.OS !== 'ios')
+  nativeContinuationModule == null || (Platform.OS !== 'android' && Platform.OS !== 'ios')
     ? undefined
     : createReferenceNativeContinuation(
         nativeContinuationModule,

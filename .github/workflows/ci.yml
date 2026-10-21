@@ -5,7 +5,8 @@ name: CI
 # Cost policy (#20):
 # - package: every PR push, plus pushes to main, release/**, and the 5.0.0 lane base (cheap Ubuntu)
 # - expo-cng-android: only when Android/native-related paths change (or manual)
-# - Apple (macOS): NOT on every PR commit. Runs on:
+# - Apple (macOS): affected ordinary PRs run the Expo SDK matrix only.
+#   Full Apple coverage runs on:
 #     • push to main when Apple-related paths change
 #     • pull_request with label `ci:apple` (opt-in before merge)
 #     • the 5.0.0 release lane: PRs targeting 5.0.0, and pushes to 5.0.0,
@@ -565,6 +566,7 @@ jobs:
               - 'pnpm-lock.yaml'
               - '.github/workflows/ci.yml'
               - '.github/actions/**'
+              - 'scripts/ci/prepare-expo-sdk.js'
             apple:
               - 'ios/**'
               - 'native/desktop-core/**'
@@ -598,8 +600,12 @@ jobs:
               - 'example-electron/**'
 
   expo-cng-android:
-    name: Expo CNG Android build
+    name: Expo CNG Android build (SDK ${{ matrix.expo-sdk }})
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        expo-sdk: ['57', '58']
     needs: changes
     if: |
       !cancelled() &&
@@ -649,6 +655,9 @@ jobs:
           cargo --version
           rustup target add --toolchain "$PINNED_TOOLCHAIN" armv7-linux-androideabi aarch64-linux-android x86_64-linux-android
 
+      - name: Select Expo SDK profile
+        run: node scripts/ci/prepare-expo-sdk.js --sdk ${{ matrix.expo-sdk }}
+
       - name: Install Expo example dependencies
         run: node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
 
@@ -681,6 +690,7 @@ jobs:
         run: node scripts/ci/check-android-apk-abi.js example-expo/android/app/build/outputs/apk/debug/app-debug.apk armeabi-v7a
 
       - name: Compile packed Expo TV ARM32 consumer
+        if: matrix.expo-sdk == '57'
         run: |
           PACK_DIR="$(mktemp -d "${RUNNER_TEMP}/ubm-arm32-pack.XXXXXX")"
           npm pack --ignore-scripts --pack-destination "$PACK_DIR"
@@ -764,8 +774,8 @@ jobs:
 
   # --- Apple compile checks (#20) ---
   # Compile/link only. No simulator boot, no BLE runtime (see #14).
-  # Expensive: gated by main path changes, `ci:apple` label, the 5.0.0 lane
-  # with Apple path changes (RV5 finding 5), or manual run.
+  # Expensive: affected ordinary PRs run the Expo matrix; full Apple coverage
+  # remains gated by main path changes, `ci:apple`, the 5.0.0 lane, or manual run.
   # Implementation lives in reusable workflow apple-ci.yml + composite actions under
   # .github/actions/ (select-xcode, setup-js-package) so we do not triple-copy jobs.
   apple:
@@ -779,6 +789,11 @@ jobs:
         (
           github.event_name == 'pull_request' &&
           contains(github.event.pull_request.labels.*.name, 'ci:apple')
+        ) ||
+        (
+          github.event_name == 'pull_request' &&
+          github.base_ref != '5.0.0' &&
+          needs.changes.outputs.apple == 'true'
         ) ||
         (
           github.event_name == 'push' &&
@@ -796,4 +811,6 @@ jobs:
           needs.changes.outputs.apple == 'true'
         )
       )
+    with:
+      expo-only: "${{ github.event_name == 'pull_request' && github.base_ref != '5.0.0' && !contains(github.event.pull_request.labels.*.name, 'ci:apple') }}"
     uses: ./.github/workflows/apple-ci.yml

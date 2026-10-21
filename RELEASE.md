@@ -247,7 +247,7 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
-## Releasing 5.1.0
+## Published 5.1.0
 
 The 5.1.0 minor candidate adds optional paired native notification receipt
 metadata. Receipts survive bounded queues, fan-out, background continuation,
@@ -259,6 +259,22 @@ limits. Backend support labels remain evidence-derived and unchanged.
 Qualify the exact candidate through the required local and cross-platform gates,
 independent review and sealed-package checks before tagging current `main`.
 Publication uses the existing trusted publisher; never publish from a laptop.
+
+## Releasing 5.1.1
+
+The 5.1.1 patch admits Expo SDK 57 and SDK 58 through the existing peer range,
+and records a selectable CNG qualification matrix for SDK 57 / React Native
+0.86 and SDK 58 / React Native 0.88. Its reference driver preserves unavailable
+app state and handles absent native modules under strict typing. These
+metadata and typing corrections do not promote backend
+support or physical-radio evidence labels.
+
+Release authority is hosted CI with both SDK 57 and SDK 58 Android and iOS
+lanes green, followed by a frozen `main` commit and the normal npm trusted
+publisher/OIDC workflow. The owner explicitly defers all physical testing
+until after npm publication; there are no prepublication physical blockers.
+Retain each existing evidence label and its limitations until the corresponding
+post-publication testing is recorded.
 
 ## Published 5.0.4
 
@@ -1180,7 +1196,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.1.0
+version=5.1.1
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -1191,7 +1207,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- for stable `5.1.0`, npm `latest` resolves to `5.1.0` and `next` retains the
+- for stable `5.1.1`, npm `latest` resolves to `5.1.1` and `next` retains the
   separately published rc.21; for a numbered RC, verify `next` resolves to that
   exact candidate without changing `latest`;
 - the npm package page shows provenance for the published artifact;
@@ -1200,8 +1216,8 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.1.0` explicitly and import the documented host
-  entrypoints. A separate bare install must select npm `latest` (`5.1.0` after
+  `unified-ble-manager@5.1.1` explicitly and import the documented host
+  entrypoints. A separate bare install must select npm `latest` (`5.1.1` after
   stable publication). For RC verification, pin the actual numbered candidate
   instead and verify `next` separately. This
   catches a packaging gap the repository's

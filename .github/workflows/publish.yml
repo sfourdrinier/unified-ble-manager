@@ -184,7 +184,7 @@ jobs:
       - name: Inspect classic RN ARM32 native APK graph
         run: node scripts/ci/check-android-apk-abi.js example/android/app/build/outputs/apk/debug/app-debug.apk armeabi-v7a
   android-expo:
-    name: Source Expo Android (parallel)
+    name: Source Expo Android (SDK ${{ matrix.expo-sdk }}, parallel)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -230,6 +230,8 @@ jobs:
           test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
           cargo --version
           rustup target add --toolchain "$PINNED_TOOLCHAIN" armv7-linux-androideabi aarch64-linux-android x86_64-linux-android
+      - name: Select Expo SDK profile
+        run: node scripts/ci/prepare-expo-sdk.js --sdk ${{ matrix.expo-sdk }}
       - name: Install Expo example dependencies
         run: node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
       - name: Align Expo peer deps to installed SDK
@@ -247,6 +249,12 @@ jobs:
         run: NODE_ENV=development ./gradlew :app:assembleDebug --no-daemon --console=plain -PreactNativeArchitectures=armeabi-v7a,arm64-v8a,x86_64
       - name: Inspect Expo ARM32 native APK graph
         run: node scripts/ci/check-android-apk-abi.js example-expo/android/app/build/outputs/apk/debug/app-debug.apk armeabi-v7a
+    strategy:
+      fail-fast: false
+      matrix:
+        expo-sdk:
+          - "57"
+          - "58"
   canonical-package:
     name: Assemble and seal ONE candidate tarball
     runs-on: ubuntu-latest

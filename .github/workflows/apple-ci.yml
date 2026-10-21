@@ -8,12 +8,19 @@ name: Apple CI
 
 on:
   workflow_call:
+    inputs:
+      expo-only:
+        description: Run only the Expo CNG matrix for an affected ordinary PR
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   ios-example:
+    if: ${{ !inputs.expo-only }}
     name: iOS example (BlePlxExample)
     runs-on: macos-26
     timeout-minutes: 60
@@ -77,8 +84,18 @@ jobs:
             build
 
   ios-expo:
-    name: iOS Expo CNG example
-    runs-on: macos-26
+    name: iOS Expo CNG example (SDK ${{ matrix.expo-sdk }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - expo-sdk: '57'
+            runner: macos-26
+            xcode-series: '26'
+          - expo-sdk: '58'
+            runner: xcode-27
+            xcode-series: '27'
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 75
     env:
       RCT_NEW_ARCH_ENABLED: '1'
@@ -89,6 +106,8 @@ jobs:
 
       - name: Select Xcode
         uses: ./.github/actions/select-xcode
+        with:
+          xcode-series: ${{ matrix.xcode-series }}
 
       - name: Setup JS package
         uses: ./.github/actions/setup-js-package
@@ -113,6 +132,9 @@ jobs:
         env:
           UBM_NATIVE_BUILD: source
         run: pnpm native:refresh --only apple
+
+      - name: Select Expo SDK profile
+        run: node scripts/ci/prepare-expo-sdk.js --sdk ${{ matrix.expo-sdk }}
 
       - name: Install Expo example dependencies
         run: node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
@@ -174,6 +196,7 @@ jobs:
             build
 
   tvos-library:
+    if: ${{ !inputs.expo-only }}
     name: tvOS library and packed reference consumer
     runs-on: macos-26
     timeout-minutes: 60
