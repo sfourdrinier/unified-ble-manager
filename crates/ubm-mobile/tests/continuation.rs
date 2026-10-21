@@ -1522,14 +1522,17 @@ async fn status_observation_cannot_terminate_native_service_change_recovery() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn link_loss_retries_transient_failure_and_collects_values_without_js() {
+    use std::future::Future;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::Poll;
     let radio = Scripted::polar();
     let (host, _) = open(&radio, MobilePlatform::Apple).await;
     let executor = host.continuation();
     executor.execute(POLAR, &declaration()).await.unwrap();
     let attempts = Arc::new(AtomicUsize::new(0));
     let observed = attempts.clone();
+    let mut hold_enable = true;
     radio.set_responder(Box::new(move |request| {
         if matches!(request, RadioRequest::Connect { .. })
             && observed.fetch_add(1, Ordering::SeqCst) == 0
@@ -1538,6 +1541,9 @@ async fn link_loss_retries_transient_failure_and_collects_values_without_js() {
                 FailureKind::Platform,
                 "temporary transport refusal",
             )))
+        } else if matches!(request, RadioRequest::EnableNotifications { .. }) && hold_enable {
+            hold_enable = false;
+            Reply::Hold
         } else {
             polar_responder(request)
         }
@@ -1547,13 +1553,24 @@ async fn link_loss_retries_transient_failure_and_collects_values_without_js() {
         connected: false,
         status: None,
     });
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let held_enable = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while radio.count(RequestKind::EnableNotifications) < 2 {
+            tokio::task::yield_now().await;
+        }
+        loop {
+            if let Some(id) = radio
+                .held_of(RequestKind::EnableNotifications)
+                .first()
+                .copied()
+            {
+                break id;
+            }
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("native recovery retries transient connection failure");
+    .expect("native recovery reaches the held physical notification enable");
+    assert!(radio.count(RequestKind::EnableNotifications) >= 2);
     assert!(attempts.load(Ordering::SeqCst) >= 2);
     let epoch = radio
         .requests
@@ -1566,8 +1583,29 @@ async fn link_loss_retries_transient_failure_and_collects_values_without_js() {
             _ => None,
         })
         .unwrap();
-    // Drain is deliberately not used as a readiness barrier: data must remain
-    // queued until the foreground validates and acknowledges its handoff.
+    // A recorded enable request can still have an Enabling consumer, whose
+    // values are quarantined. Read-only status joins autonomous recovery's
+    // admission lock without draining or sealing the retained handoff.
+    let backlog = executor.describe_backlog();
+    tokio::pin!(backlog);
+    assert!(std::future::poll_fn(|cx| Poll::Ready(backlog.as_mut().poll(cx).is_pending())).await);
+    assert_eq!(
+        radio.answer(
+            held_enable,
+            RadioCompletion::NotifyEnabled(ubm_desktop::ObservedDelivery::Notification),
+        ),
+        ubm_mobile::CompletionStatus::Delivered
+    );
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(5), backlog)
+        .await
+        .expect("native recovery publishes the ready continuation route")
+        .unwrap();
+    assert!(
+        ready["counters"]["subscriptionConsumers"]
+            .as_u64()
+            .is_some_and(|count| count > 0)
+    );
+    assert_eq!(ready["counters"]["physicalCccdEnablements"], 1);
     host.ingest(RadioIngress::Notification {
         instance: Instance {
             peer_id: POLAR.to_owned(),
