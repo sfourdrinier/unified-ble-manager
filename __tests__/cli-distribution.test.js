@@ -1,6 +1,9 @@
+// __tests__/cli-distribution.test.js
+
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const semver = require('semver')
 const { runUnifiedBleCli } = require('../src/cli')
 const { TAURI_PLUGIN_COMPATIBILITY } = require('../src/tauri')
 const { createTestBleEnvironment } = require('../src/testing')
@@ -139,12 +142,14 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
         proofBoundary: 'compile-config-loadability',
         cratePublished: false,
         compatibility: expect.objectContaining({
-          npmRange: `^${UNIFIED_BLE_IMPLEMENTATION_VERSION}`,
-          crateRange: `^${UNIFIED_BLE_IMPLEMENTATION_VERSION}`,
           ipcProtocol: 6
         })
       })
     )
+    expect(result.data.compatibility.npmRange).toBe(TAURI_PLUGIN_COMPATIBILITY.npmRange)
+    expect(result.data.compatibility.crateRange).toBe(TAURI_PLUGIN_COMPATIBILITY.crateRange)
+    expect(semver.satisfies(UNIFIED_BLE_IMPLEMENTATION_VERSION, result.data.compatibility.npmRange)).toBe(true)
+    expect(semver.satisfies(UNIFIED_BLE_IMPLEMENTATION_VERSION, result.data.compatibility.crateRange)).toBe(true)
   })
 
   test('ubm inspect capabilities --host tauri reports protocol compatibility without a backend', async () => {
@@ -243,13 +248,10 @@ describe('PR11 distribution tooling and CLI taxonomy', () => {
 
 describe('PR11 Tauri crate and testkit contracts', () => {
   test('exports machine-readable npm/crate/protocol compatibility', () => {
-    const currentCandidateRange = new RegExp(
-      `\\^${UNIFIED_BLE_IMPLEMENTATION_VERSION.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}`
-    )
+    expect(semver.satisfies(UNIFIED_BLE_IMPLEMENTATION_VERSION, TAURI_PLUGIN_COMPATIBILITY.npmRange)).toBe(true)
+    expect(semver.satisfies(UNIFIED_BLE_IMPLEMENTATION_VERSION, TAURI_PLUGIN_COMPATIBILITY.crateRange)).toBe(true)
     expect(TAURI_PLUGIN_COMPATIBILITY).toEqual(
       expect.objectContaining({
-        npmRange: expect.stringMatching(currentCandidateRange),
-        crateRange: expect.stringMatching(currentCandidateRange),
         ipcProtocol: 6,
         contractRevision: require('../contracts/src/version').CONTRACT_REVISION
       })
