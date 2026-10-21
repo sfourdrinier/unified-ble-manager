@@ -910,9 +910,9 @@ jobs:
           REGISTRY_TARBALL_COPY="$(mktemp)"
           trap 'rm -f "${REGISTRY_TARBALL_COPY}"' EXIT
           REGISTRY_TARBALL_READY=false
-          # npm accepted rc.10 but took longer than ten minutes to expose its
-          # 118 MB tarball. Give processing twenty minutes, still bounded.
-          TARBALL_MAX_ATTEMPTS=240
+          # npm may accept an upload before its metadata and tarball become public.
+          # Give npm processing a bounded 60-minute window.
+          TARBALL_MAX_ATTEMPTS=720
           for ATTEMPT in $(seq 1 "${TARBALL_MAX_ATTEMPTS}"); do
             if REGISTRY_TARBALL="$(npm view "unified-ble-manager@${VER}" dist.tarball --json 2>/dev/null | node -e "let body = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { body += chunk }); process.stdin.on('end', () => { const value = JSON.parse(body); if (typeof value !== 'string' || !value.startsWith('https://')) { process.exitCode = 1; return; } process.stdout.write(value) })")" && \
               curl --fail --location --silent --show-error --proto '=https' \
@@ -926,7 +926,8 @@ jobs:
             sleep 5
           done
           if [ "${REGISTRY_TARBALL_READY}" != true ]; then
-            echo "npm registry tarball did not become downloadable within the bounded retry window"
+            echo "npm registry tarball did not become downloadable within the bounded 60-minute window"
+            echo "The upload may already be accepted: do not republish or retag. Wait until the version is public, then rerun this failed job while the candidate is retained. If the candidate expires, rerun the entire immutable-tag workflow."
             exit 1
           fi
 

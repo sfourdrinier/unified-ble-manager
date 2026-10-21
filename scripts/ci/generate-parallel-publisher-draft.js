@@ -277,6 +277,28 @@ function buildProduction(serial) {
       ...PUBLICATION_ONLY_STEPS.filter(name => name !== 'Ensure npm supports trusted publishing').map(step)
     ]
   }
+  const bind = workflow.jobs.publish.steps.find(
+    item => item.name === 'Bind npm tarball to the generated release artifact'
+  )
+  if (!bind) throw new Error('Parallel publisher has no npm tarball binding step')
+  // npm may accept a large provenance-bearing upload long before its metadata
+  // and tarball are public. Production gets a bounded 60-minute window while
+  // the preserved serial template remains the historical reference.
+  const historicalWindow =
+    '# npm accepted rc.10 but took longer than ten minutes to expose its\n# 118 MB tarball. Give processing twenty minutes, still bounded.\nTARBALL_MAX_ATTEMPTS=240'
+  const historicalTimeout = 'echo "npm registry tarball did not become downloadable within the bounded retry window"'
+  if (!bind.run.includes(historicalWindow) || !bind.run.includes(historicalTimeout)) {
+    throw new Error('Parallel publisher npm binding template changed unexpectedly')
+  }
+  bind.run = bind.run
+    .replace(
+      historicalWindow,
+      '# npm may accept an upload before its metadata and tarball become public.\n# Give npm processing a bounded 60-minute window.\nTARBALL_MAX_ATTEMPTS=720'
+    )
+    .replace(
+      historicalTimeout,
+      'echo "npm registry tarball did not become downloadable within the bounded 60-minute window"\n  echo "The upload may already be accepted: do not republish or retag. Wait until the version is public, then rerun this failed job while the candidate is retained. If the candidate expires, rerun the entire immutable-tag workflow."'
+    )
   return workflow
 }
 
