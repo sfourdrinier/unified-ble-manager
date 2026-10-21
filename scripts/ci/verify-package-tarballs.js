@@ -8,6 +8,7 @@ const path = require('path')
 const zlib = require('zlib')
 
 const root = path.resolve(__dirname, '../..')
+const sourcePackageJson = require('../../package.json')
 const sourceRoot = path.join(root, 'src')
 const pluginSourceRoot = path.join(root, 'plugin', 'src')
 const {
@@ -41,7 +42,7 @@ const expectedNativePrebuildEntries = Object.freeze(
 const publishedOptionalHostDependencies = Object.freeze({})
 
 const publishedOptionalPeerHostDependencies = Object.freeze({
-  expo: '^57.0.0'
+  expo: sourcePackageJson.peerDependencies.expo
 })
 
 const excludedHistoricalDocumentationEntries = Object.freeze([

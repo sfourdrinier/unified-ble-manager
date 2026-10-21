@@ -2,6 +2,7 @@
 
 const fs = require('fs')
 const path = require('path')
+const semver = require('semver')
 const { UNIFIED_BLE_IMPLEMENTATION_VERSION } = require('../src/implementation-version')
 const { TAURI_PLUGIN_COMPATIBILITY } = require('../src/tauri/compatibility')
 
@@ -10,11 +11,11 @@ const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf
 const pkg = JSON.parse(read('package.json'))
 
 describe('PR12 package identity qualification', () => {
-  test('package identity is the stable 5.1.0 release', () => {
-    expect(pkg.version).toBe('5.1.0')
-    expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe('5.1.0')
-    expect(TAURI_PLUGIN_COMPATIBILITY.npmRange).toBe(`^${pkg.version}`)
-    expect(TAURI_PLUGIN_COMPATIBILITY.crateRange).toBe(`^${pkg.version}`)
+  test('package identity is the stable 5.1.1 release', () => {
+    expect(pkg.version).toBe('5.1.1')
+    expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe('5.1.1')
+    expect(semver.satisfies(pkg.version, TAURI_PLUGIN_COMPATIBILITY.npmRange)).toBe(true)
+    expect(semver.satisfies(pkg.version, TAURI_PLUGIN_COMPATIBILITY.crateRange)).toBe(true)
     expect(read('native/tauri/Cargo.toml').split('\n')).toContain(`version = "${pkg.version}"`)
     expect(read('example-tauri/src-tauri/Cargo.lock')).toContain(
       `name = "tauri-plugin-unified-ble-manager"\nversion = "${pkg.version}"`

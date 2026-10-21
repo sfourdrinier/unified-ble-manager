@@ -1,3 +1,5 @@
+// __tests__/Docs.agents-5x.test.js
+
 'use strict'
 
 // D2 (finding 101): AGENTS.md describes the 5.x branch and no longer states
@@ -31,8 +33,10 @@ describe('AGENTS.md 5.x contract', () => {
     }
   )
   test('title names the 5.x line', () => {
-    expect(agents.split('\n')[0]).toMatch(/5\.x/)
-    expect(agents.split('\n')[0]).not.toMatch(/4\.x/)
+    const title = agents.match(/^# .+$/m)?.[0]
+    expect(title).toBeDefined()
+    expect(title).toMatch(/5\.x/)
+    expect(title).not.toMatch(/4\.x/)
   })
 
   test('automated review guidance names the same current contract line', () => {

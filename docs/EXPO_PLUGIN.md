@@ -7,16 +7,18 @@ start a radio, request runtime permissions during prebuild, or prove physical
 radio/restoration reliability. Expo Go is not a supported BLE execution
 environment because it cannot contain this native module.
 
-Use the v2 plugin options in this unpublished `5.1.0` candidate. Those options match
-the schema introduced at `4.0.0-rc.4`. Expo Go cannot load this native module.
+Use the v2 plugin options in this `5.1.1` source. Those options match the schema
+introduced at `4.0.0-rc.4`. Expo Go cannot load this native module.
 
 ## Installation and development build
 
 Pin the package so a later `latest` bump does not change native plugin options
 without a rebuild:
 
-    pnpm add unified-ble-manager@5.1.0
+    pnpm add unified-ble-manager@5.1.1
+    # Choose one SDK line for this app; do not install both.
     pnpm add expo@^57.0.0 expo-dev-client
+    # Or: pnpm add expo@^58.0.0 expo-dev-client
     npx expo prebuild --clean
     npx expo run:ios
     # or
@@ -36,6 +38,42 @@ does not prove a full Expo application build.
 
 expo is an optional host peer. Bare React Native, Web, Node, Electron, and
 Tauri consumers do not resolve Expo tooling.
+
+## Expo SDK 57 and 58
+
+UBM 5.1.x accepts `expo@^57.0.0 || ^58.0.0` and retains the React Native
+floor `>=0.86.0`. Expo SDK 57 maps to React Native 0.86. Expo SDK 58 maps to
+React Native 0.88 and React 19.3. See the [Expo SDK 57 changelog](https://expo.dev/changelog/sdk-57)
+and [Expo SDK 58 changelog](https://expo.dev/changelog/sdk-58) for the official
+SDK release details.
+
+The repository's `example-expo` manifest remains the SDK 57 baseline. For an
+SDK 58 qualification run, use an isolated checkout and select the SDK before
+installing dependencies:
+
+    node scripts/ci/prepare-expo-sdk.js --sdk 58
+    node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
+    node examples-shared/dev/install-example-dependencies.js --expo-fix example-expo
+
+The selector updates `example-expo/package.json`; the installer updates
+`example-expo/pnpm-lock.yaml`. Restore both to the SDK 57 baseline when the
+qualification run ends. The selector is a graph choice, not an app migration,
+and the two SDK lines must not be installed together. For the selected local
+SDK, use `example-expo/node_modules/expo/bundledNativeModules.json` to inspect
+Expo's bundled native-module versions.
+
+The source and build gates that are independent of the Expo graph run once.
+The Android Expo CNG job covers SDK 57 and SDK 58. The iOS matrix uses SDK 57
+on macOS 26 with Xcode 26.4 or newer and SDK 58 on an Xcode 27 runner with
+Xcode 27. The packed Android TV consumer remains SDK 57 only; these jobs do not
+establish SDK 58 TV support.
+
+SDK compatibility qualification covers typechecking, Expo Doctor, native
+project generation, and Android/iOS compilation for each SDK graph. These
+checks do not establish physical-radio, permission, background, or restoration
+reliability. For 5.1.1, the owner selected hosted CI as the release gate and
+deferred physical-device testing until after npm publication. Retained
+qualification results belong in the release evidence, not these setup recipes.
 
 ## Current v2 schema
 

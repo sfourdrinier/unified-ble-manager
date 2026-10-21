@@ -132,7 +132,7 @@ describe('published package contains the files and scripts it claims', () => {
     // D3/finding 101: dbus-next ships to no consumer; the legacy D-Bus
     // boundary is an unreachable parity reference until Phase 4 deletion.
     expect(packageJson.peerDependencies).toMatchObject({
-      expo: '^57.0.0',
+      expo: '^57.0.0 || ^58.0.0',
       react: '*',
       'react-native': '>=0.86.0'
     })
@@ -147,7 +147,7 @@ describe('published package contains the files and scripts it claims', () => {
     expect(packageJson.optionalDependencies ?? {}).not.toHaveProperty('@expo/config-plugins')
     expect(packageJson.optionalDependencies ?? {}).not.toHaveProperty('dbus-next')
     expect(packageJson.dependencies).toEqual({ '@babel/runtime': '^7.29.7' })
-    expect(packageJson.devDependencies.webpack).toBe('5.109.2')
+    expect(packageJson.devDependencies.webpack).toBe('5.112.0')
     expect(packInstallSmokeSource).toContain('createPackedBrowserBundleConsumer')
     expect(packInstallSmokeSource).toContain('bundlePackedBrowserConsumer')
     expect(packInstallSmokeSource).toContain('assertBrowserBundleHostDependenciesAreUnavailable')
@@ -187,7 +187,7 @@ describe('published package contains the files and scripts it claims', () => {
     const thirdPartyFixtureManifest = require('../fixtures/third-party-backend-sdk/package.json')
 
     expect(packInstallSmokeSource).toContain("typescript: '5.8.3'")
-    expect(packInstallSmokeSource).toContain("webpack: '5.109.2'")
+    expect(packInstallSmokeSource).toContain('webpack: rootPackage.devDependencies.webpack')
     expect(packInstallSmokeSource).toContain(
       'devDependencies: {\n          webpack: isolatedConsumerToolVersions.webpack'
     )
@@ -204,7 +204,7 @@ describe('published package contains the files and scripts it claims', () => {
     const loader = fs.readFileSync(path.join(root, 'native/desktop-core/index.js'), 'utf8')
     const verifier = fs.readFileSync(tarballVerifier, 'utf8')
     expect(packageJson.optionalDependencies ?? {}).toEqual({})
-    expect(packageJson.peerDependencies).toMatchObject({ expo: '^57.0.0' })
+    expect(packageJson.peerDependencies).toMatchObject({ expo: '^57.0.0 || ^58.0.0' })
     expect(packageJson.peerDependenciesMeta).toMatchObject({ expo: { optional: true } })
     expect(packageJson.dependencies).toEqual({ '@babel/runtime': '^7.29.7' })
     expect(packageJson.devDependencies).not.toHaveProperty('node-addon-api')

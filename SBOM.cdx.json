@@ -6,20 +6,20 @@
   "metadata": {
     "component": {
       "type": "library",
-      "bom-ref": "pkg:npm/unified-ble-manager@5.1.0",
+      "bom-ref": "pkg:npm/unified-ble-manager@5.1.1",
       "name": "unified-ble-manager",
-      "version": "5.1.0",
+      "version": "5.1.1",
       "licenses": [
         {
           "expression": "LicenseRef-UBM-Source-Available-1.0"
         }
       ],
-      "purl": "pkg:npm/unified-ble-manager@5.1.0"
+      "purl": "pkg:npm/unified-ble-manager@5.1.1"
     },
     "properties": [
       {
         "name": "unified-ble-manager:pnpm-lock-sha256",
-        "value": "751a6a894c9b1ec872d6e0b21049c885e45b4333d6b9b2f10e090a3dd96fe77d"
+        "value": "d428984e742c6a1222aa0e7e75c95e6796487984e95fc90161333545f2f4dc36"
       },
       {
         "name": "unified-ble-manager:dependency-scope",
@@ -4002,7 +4002,7 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:npm/unified-ble-manager@5.1.0",
+      "ref": "pkg:npm/unified-ble-manager@5.1.1",
       "dependsOn": [
         "pkg:npm/%40babel/runtime@7.29.7"
       ]

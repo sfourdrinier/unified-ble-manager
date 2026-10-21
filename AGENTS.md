@@ -1,3 +1,5 @@
+<!-- AGENTS.md | CLAUDE.md -->
+
 # AGENTS.md — Unified BLE Manager 5.x
 
 The single source of agent guidance for this repository. `CLAUDE.md` imports
@@ -196,7 +198,8 @@ resolves the `UnifiedBleRustCore` TurboModule and speaks the versioned
 `UnifiedBleProtocolControl` boundary remains only where legacy protocol
 artifacts and their compatibility tests still name it; it is not the active
 factory route. The modernization floor is React Native 0.86+; Expo integration
-targets SDK 57+. The package contains native code and does not run in Expo Go.
+targets SDK 57 or SDK 58 (SDK 57 uses RN 0.86; SDK 58 uses RN 0.88 and React
+19.3). The package contains native code and does not run in Expo Go.
 Keep package metadata, examples, native defaults and docs aligned unless the
 project intentionally raises a floor.
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// scripts/ci/generate-parallel-publisher-draft.js
+
 'use strict'
 
 const fs = require('node:fs')
@@ -230,6 +232,18 @@ function buildProduction(serial) {
       if (step.uses?.startsWith('actions/upload-artifact@')) step.with['retention-days'] = 90
     }
   }
+  const androidExpo = workflow.jobs['android-expo']
+  androidExpo.name = 'Source Expo Android (SDK ${{ matrix.expo-sdk }}, parallel)'
+  androidExpo.strategy = {
+    'fail-fast': false,
+    matrix: { 'expo-sdk': ['57', '58'] }
+  }
+  const expoInstallIndex = androidExpo.steps.findIndex(step => step.name === 'Install Expo example dependencies')
+  if (expoInstallIndex < 0) throw new Error('Parallel publisher has no Expo dependency install step')
+  androidExpo.steps.splice(expoInstallIndex, 0, {
+    name: 'Select Expo SDK profile',
+    run: 'node scripts/ci/prepare-expo-sdk.js --sdk ${{ matrix.expo-sdk }}'
+  })
   workflow.jobs.results.name = 'Require ALL parallel release gates'
   workflow.jobs.results.steps[0].run = workflow.jobs.results.steps[0].run.replace(
     'Dry-run only: no npm publication, release creation, current-main admission or registry/provenance verification.',

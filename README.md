@@ -22,11 +22,10 @@ root import does not pick a radio. Package SemVer and backend support labels are
 independent: each radio backend keeps its evidence-derived label. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
-This source tree is versioned `5.1.0`. It is an unpublished candidate; verify the
-published version in the npm
-registry. During release preparation, the version in `package.json` can be ahead
-of npm until the matching tag-driven workflow publishes it; the registry and
-GitHub release remain authoritative.
+This source tree is versioned `5.1.1`. Verify the current published version in
+the npm registry. During release preparation, the version
+in `package.json` can be ahead of npm until the matching tag-driven workflow
+publishes it; the registry and GitHub release remain authoritative.
 
 > **5.0 contract:** This release stabilizes the documented package/API.
 > Pin the version you validate, read the changelog when upgrading, inspect
@@ -57,7 +56,7 @@ links in one fetch. Agents contributing to this repository start at
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.1.0
+pnpm add unified-ble-manager@5.1.1
 ```
 
 Installable with npm, yarn, or Bun. This repository uses pnpm. Bun 1.4.2 loads the same desktop Node-API addon as Node. `bun scripts/ci/bun-desktop-host-smoke.js` opens the synthetic central and closes it. `--list-adapters` lists the OS adapters; on glibc Linux x64 it returned both host adapters. `scripts/ci/bun-desktop-h10-session.js` is an opt-in session for a simulator named exactly `SIM Polar H10 0001`. On macOS Apple Silicon that session scanned, connected, read, wrote, notified, and disconnected. On glibc Linux x64 the same GATT session completed and `setEventWaker` ran. Against the installed `5.87-ubm.4` daemon, disconnect after discovery returned `lease-released-protected` and left the link up, as Node does on that stack. Source `5.87-ubm.6` ends a finished read or write hold when the call completes. That daemon was installed and the same H10 session then returned `lease-released-indeterminate` and left the link up, because profile-probe auto-connect bookkeeping was recorded as an unknown holder. Source `5.87-ubm.7` does not treat that bookkeeping as a hold on an exclusive link this process created, and that exclusive release stops kernel auto-connect for an untrusted device. Installing it changed the same H10 disconnect to `lease-released-protected` and left the link up: the controller had already initiated the bonded link, and the lease adopted it as borrowed. Source `5.87-ubm.8` releases a locally initiated link when no other application hold remains. Installing it, the same H10 session reported disconnect `released` and close `released`, and the link was down. Source `5.87-ubm.9` leaves an unbonded link up when an encrypted attribute returns Insufficient Encryption. Installing it, the unbonded Linux session, the macOS session, and two back-to-back Windows sessions on source digest `0b31ce8e` each completed the same exchange and left the link down. Neither the smoke nor those receipts is a platform evidence label.
@@ -133,7 +132,7 @@ or another supported host). It does not select or load a radio backend.
 
 ## Create a React Native manager
 
-Requirements: React Native 0.86+, Expo SDK 57+ when using Expo, Android min SDK 24, iOS 16.4. The package contains native code and does not run in Expo Go.
+Requirements: React Native 0.86+, Expo SDK 57 or 58 when using Expo, Android min SDK 24, iOS 16.4. Expo SDK 57 uses React Native 0.86; SDK 58 uses React Native 0.88 and React 19.3. The package contains native code and does not run in Expo Go.
 
 ```ts
 import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
@@ -188,6 +187,31 @@ second manager, or reuse old GATT/database handles.
 
 Use an Expo development build, never Expo Go. Plugin options live in
 [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md).
+
+### Expo SDK 57 and 58
+
+UBM 5.1.x declares the Expo peer as `^57.0.0 || ^58.0.0` and retains the
+React Native floor `>=0.86.0`. Choose one Expo SDK line for an app: SDK 57
+uses React Native 0.86, while SDK 58 uses React Native 0.88 and React 19.3.
+Read the [Expo SDK 57 changelog](https://expo.dev/changelog/sdk-57) or
+[Expo SDK 58 changelog](https://expo.dev/changelog/sdk-58) for the platform
+release details.
+
+The `example-expo` manifest is intentionally kept at the SDK 57 baseline. To
+exercise SDK 58, use an isolated checkout and select its graph before running
+the example installer and Expo peer alignment:
+
+```sh
+node scripts/ci/prepare-expo-sdk.js --sdk 58
+node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
+node examples-shared/dev/install-example-dependencies.js --expo-fix example-expo
+```
+
+The selector changes the example manifest; installation changes its lockfile.
+Restore the SDK 57 manifest and lockfile after qualification. Do not install
+both SDK lines in one example or silently migrate the checked-in baseline.
+The installed SDK's `example-expo/node_modules/expo/bundledNativeModules.json`
+is the local source for Expo's bundled module versions.
 
 For an Expo development build, use the Expo host factory and inspect readiness
 before starting a user action:
@@ -404,9 +428,10 @@ after disconnect, service change, or rediscovery.
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship the Node-API desktop-core prebuild for macOS Apple Silicon (`arm64`) and Windows/Linux `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
-`5.1.0` is prepared as an unpublished candidate for npm `latest`; after publication, a bare install selects
-the stable 5.0 line. Numbered 5.x RCs use `next`. Publication uses npm trusted
-publishing/OIDC with provenance.
+`5.1.1` is the selected patch release. Keep consumers pinned to `5.1.1` after
+the matching publication is verified. Numbered
+5.x RCs use `next`. Publication uses npm trusted publishing/OIDC with
+provenance.
 
 ## Migrating from react-native-ble-plx
 
@@ -419,7 +444,7 @@ comparison material, not current installation or restoration guidance.
 ## Examples
 
 - [`example/`](example/) — classic React Native fixture (`file:..`).
-- [`example-expo/`](example-expo/) — Expo SDK 57 CNG fixture; requires a native prebuild.
+- [`example-expo/`](example-expo/) — Expo SDK 57 baseline CNG fixture; SDK 58 is selected only in an isolated qualification checkout and requires a native prebuild.
 - [`example-electron/`](example-electron/) — deterministic package/IPC smoke, not a live-radio claim.
 - [`example-web/`](example-web/) — Chrome + physical Heart Rate Service harness.
 - [`example-tauri/`](example-tauri/) — Tauri v2 public-manager proof.

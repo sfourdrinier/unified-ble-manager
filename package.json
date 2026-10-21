@@ -1,6 +1,6 @@
 {
   "name": "unified-ble-manager",
-  "version": "5.1.0",
+  "version": "5.1.1",
   "description": "Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop",
   "packageManager": "pnpm@10.14.0",
   "main": "lib/commonjs/index.js",
@@ -226,7 +226,7 @@
     "turbo": "^1.10.7",
     "typescript": "^5.2.2",
     "vite": "^8.2.2",
-    "webpack": "5.109.2",
+    "webpack": "5.112.0",
     "yaml": "2.9.0"
   },
   "resolutions": {
@@ -234,7 +234,7 @@
   },
   "peerDependencies": {
     "@tauri-apps/api": "^2.0.0",
-    "expo": "^57.0.0",
+    "expo": "^57.0.0 || ^58.0.0",
     "react": "*",
     "react-native": ">=0.86.0"
   },

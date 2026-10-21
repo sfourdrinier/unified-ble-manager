@@ -1,6 +1,18 @@
+<!-- CHANGELOG.md -->
+
 # Changelog
 
 All notable changes to `unified-ble-manager` are documented here.
+
+## [5.1.1] - 2026-10-20
+
+- Admit Expo SDK 57 and SDK 58 in the peer range, with a selectable CNG
+  qualification matrix for SDK 57 / React Native 0.86 and SDK 58 / React Native
+  0.88.
+- Preserve unavailable app state explicitly and handle absent native
+  continuation modules under React Native 0.88's strict types in the
+  reference driver. Backend evidence labels remain unchanged; physical-device
+  qualification is deferred until after npm publication.
 
 ## [5.1.0] - 2026-10-16
 

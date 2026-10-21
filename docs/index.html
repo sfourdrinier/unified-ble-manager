@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 5.1.0 | Documentation</title>
+    <title>unified-ble-manager 5.1.1 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>5.1.0</code></div>
+          <div class="mb1"><code>5.1.1</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -64,10 +64,7 @@
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
-            <p>
-              This source targets the unpublished <code>5.1.0</code> candidate; verify the published version in the npm
-              registry.
-            </p>
+            <p>This source targets <code>5.1.1</code>; verify the published version in the npm registry.</p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -140,7 +137,7 @@
               registry before installing: source preparation is not publication. Install the exact release and commit
               the resolved lockfile for a known native rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.1.0
+            <pre><code>pnpm add unified-ble-manager@5.1.1
 </code></pre>
             <p>
               Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
@@ -149,9 +146,9 @@
             <h4>Expo / CNG v2</h4>
             <p>
               The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. Install
-              <code>5.1.0</code> and keep that exact version in your lockfile while validating the native build:
+              <code>5.1.1</code> and keep that exact version in your lockfile while validating the native build:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.1.0
+            <pre><code>pnpm add unified-ble-manager@5.1.1
 </code></pre>
             <p>The package does not run in Expo Go.</p>
             <p>Expo also needs a native build and development client:</p>
@@ -1020,16 +1017,18 @@ await resetHeartRateEnergyExpended(database, { ...operation, mode: 'with-respons
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in this unpublished <code>5.1.0</code> candidate. Those options match the schema
-              introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
+              Use the v2 plugin options in this <code>5.1.1</code> source. Those options match the schema introduced at
+              <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
             <p>
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@5.1.0
+            <pre><code>pnpm add unified-ble-manager@5.1.1
+# Choose one SDK line for this app; do not install both.
 pnpm add expo@^57.0.0 expo-dev-client
+# Or: pnpm add expo@^58.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
 # or
@@ -1050,6 +1049,43 @@ bunx eas build --profile development --platform android
             <p>
               expo is an optional host peer. Bare React Native, Web, Node, Electron, and Tauri consumers do not resolve
               Expo tooling.
+            </p>
+            <h2>Expo SDK 57 and 58</h2>
+            <p>
+              UBM 5.1.x accepts <code>expo@^57.0.0 || ^58.0.0</code> and retains the React Native floor
+              <code>>=0.86.0</code>. Expo SDK 57 maps to React Native 0.86. Expo SDK 58 maps to React Native 0.88 and
+              React 19.3. See the <a href="https://expo.dev/changelog/sdk-57">Expo SDK 57 changelog</a> and
+              <a href="https://expo.dev/changelog/sdk-58">Expo SDK 58 changelog</a> for the official SDK release
+              details.
+            </p>
+            <p>
+              The repository's <code>example-expo</code> manifest remains the SDK 57 baseline. For an SDK 58
+              qualification run, use an isolated checkout and select the SDK before installing dependencies:
+            </p>
+            <pre><code>node scripts/ci/prepare-expo-sdk.js --sdk 58
+node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
+node examples-shared/dev/install-example-dependencies.js --expo-fix example-expo
+</code></pre>
+            <p>
+              The selector updates <code>example-expo/package.json</code>; the installer updates
+              <code>example-expo/pnpm-lock.yaml</code>. Restore both to the SDK 57 baseline when the qualification run
+              ends. The selector is a graph choice, not an app migration, and the two SDK lines must not be installed
+              together. For the selected local SDK, use
+              <code>example-expo/node_modules/expo/bundledNativeModules.json</code> to inspect Expo's bundled
+              native-module versions.
+            </p>
+            <p>
+              The source and build gates that are independent of the Expo graph run once. The Android Expo CNG job
+              covers SDK 57 and SDK 58. The iOS matrix uses SDK 57 on macOS 26 with Xcode 26.4 or newer and SDK 58 on an
+              Xcode 27 runner with Xcode 27. The packed Android TV consumer remains SDK 57 only; these jobs do not
+              establish SDK 58 TV support.
+            </p>
+            <p>
+              SDK compatibility qualification covers typechecking, Expo Doctor, native project generation, and
+              Android/iOS compilation for each SDK graph. These checks do not establish physical-radio, permission,
+              background, or restoration reliability. For 5.1.1, the owner selected hosted CI as the release gate and
+              deferred physical-device testing until after npm publication. Retained qualification results belong in the
+              release evidence, not these setup recipes.
             </p>
             <h2>Current v2 schema</h2>
             <pre><code>[
@@ -1359,7 +1395,7 @@ await manager.background.updateNotification({
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              This source targets <code>5.1.0</code>. It is an unpublished minor candidate. Main executes the shared
+              This source targets <code>5.1.1</code>. Verify publication in the npm registry. Main executes the shared
               Rust core (<code>DesktopCentral</code>) through one N-API addon. Tagged releases ship it prebuilt for
               macOS Apple Silicon (<code>arm64</code>) and Windows/Linux <code>arm64</code>/<code>x64</code>. The addon
               is Node-API, so one binary serves Node and modern Electron alike.

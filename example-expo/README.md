@@ -1,22 +1,43 @@
 <!-- example-expo/README.md -->
 
-# Expo SDK 57 CNG fixture
+# Expo SDK 57/58 CNG fixture (SDK 57 baseline)
 
-This repository fixture validates the Expo SDK 57 continuous-native-generation
-path. The app constructs the host with `createExpoBleManager()` from
+This repository fixture uses Expo SDK 57 as its checked-in continuous-native-
+generation baseline. The app constructs the host with `createExpoBleManager()` from
 `unified-ble-manager/expo`. It uses `unified-ble-manager: file:..` and the v2
 config plugin, so it is not a published-package install recipe. The v2 Expo
-surface is in the `5.0.0` source; this workspace fixture remains
+surface is in the current `5.1.1` source; this workspace fixture remains
 source-checkout evidence only. Registry installation is checked separately.
 
+UBM 5.1.x accepts Expo SDK 57 or 58. SDK 57 uses React Native 0.86; SDK 58
+uses React Native 0.88 and React 19.3. The [Expo plugin reference](../docs/EXPO_PLUGIN.md)
+has the peer range, official SDK links, and the isolated SDK selector workflow.
+Choose one SDK line per checkout. Do not install both.
+
 The BLE host includes native code and cannot run in Expo Go. Generate and build
-the native project from the repository root:
+the SDK 57 baseline native project from the repository root:
 
 ```sh
 pnpm --dir example-expo install --no-frozen-lockfile
 pnpm --dir example-expo exec expo prebuild --clean --no-install
 pnpm --dir example-expo android
 ```
+
+To qualify SDK 58, work in an isolated checkout and select its dependency graph
+before the installer and Expo peer alignment:
+
+```sh
+node scripts/ci/prepare-expo-sdk.js --sdk 58
+node examples-shared/dev/install-example-dependencies.js example-expo --no-frozen-lockfile
+node examples-shared/dev/install-example-dependencies.js --expo-fix example-expo
+```
+
+The selector changes `example-expo/package.json` and installation changes
+`example-expo/pnpm-lock.yaml`; restore the SDK 57 baseline after qualification.
+The local selected Expo package's `node_modules/expo/bundledNativeModules.json`
+records the bundled module versions. SDK 58 typecheck and native-build work is
+still qualification evidence under review; it does not promote support or
+radio claims.
 
 On macOS with the required Xcode and CocoaPods environment, use
 `pnpm --dir example-expo ios` after prebuild. That command refreshes the root
@@ -298,7 +319,9 @@ companion-presence and background-service capabilities at runtime; a phone pass
 or a TV build does not establish those capabilities or hardware qualification.
 Run the shared scenarios only for mechanisms that the instantiated backend
 reports, retaining platform refusals rather than replacing them with phone
-assumptions. Android TV store/launcher packaging is application-owned.
+assumptions. Android TV store/launcher packaging is application-owned. The
+packed Android TV consumer gate uses the SDK 57 baseline only; SDK 58 TV
+support has not been established.
 
 ### Android headless continuation reference task
 
