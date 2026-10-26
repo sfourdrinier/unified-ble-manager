@@ -262,7 +262,23 @@ Qualify the exact candidate through the required local and cross-platform gates,
 independent review and sealed-package checks before tagging current `main`.
 Publication uses the existing trusted publisher; never publish from a laptop.
 
-## Releasing 5.1.1
+## Releasing 5.1.2
+
+The 5.1.2 patch ships Android consumer R8/ProGuard keep rules
+(`android/consumer-rules.pro`, wired through `consumerProguardFiles`). Release
+builds with minification enabled otherwise remove classes the Rust and C++
+native libraries resolve by name over JNI (for example
+`com/ubm/core/MobileCoreBridge$MobileCoreException`), failing startup with
+`platform.failure|platform|mobile.host.install|jni-call-failed`. The rules keep
+`com.ubm.**`, the callback implementers, the JSI binding statics and every JNI
+native method name; `__tests__/AndroidConsumerKeepRules.test.js` ties them to the
+shipped `.so` files and JNI sources. No runtime behavior, native binary or
+backend evidence label changes.
+
+Release authority is green hosted CI on the frozen `main` commit, followed by
+the normal npm trusted publisher/OIDC workflow.
+
+## Published 5.1.1
 
 The 5.1.1 patch admits Expo SDK 57 and SDK 58 through the existing peer range,
 and records a selectable CNG qualification matrix for SDK 57 / React Native
@@ -1198,7 +1214,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.1.1
+version=5.1.2
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -1209,7 +1225,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- for stable `5.1.1`, npm `latest` resolves to `5.1.1` and `next` retains the
+- for stable `5.1.2`, npm `latest` resolves to `5.1.2` and `next` retains the
   separately published rc.21; for a numbered RC, verify `next` resolves to that
   exact candidate without changing `latest`;
 - the npm package page shows provenance for the published artifact;
@@ -1218,8 +1234,8 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.1.1` explicitly and import the documented host
-  entrypoints. A separate bare install must select npm `latest` (`5.1.1` after
+  `unified-ble-manager@5.1.2` explicitly and import the documented host
+  entrypoints. A separate bare install must select npm `latest` (`5.1.2` after
   stable publication). For RC verification, pin the actual numbered candidate
   instead and verify `next` separately. This
   catches a packaging gap the repository's

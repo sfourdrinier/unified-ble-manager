@@ -6,7 +6,7 @@ This repository fixture uses Expo SDK 57 as its checked-in continuous-native-
 generation baseline. The app constructs the host with `createExpoBleManager()` from
 `unified-ble-manager/expo`. It uses `unified-ble-manager: file:..` and the v2
 config plugin, so it is not a published-package install recipe. The v2 Expo
-surface is in the current `5.1.1` source; this workspace fixture remains
+surface is in the current `5.1.2` source; this workspace fixture remains
 source-checkout evidence only. Registry installation is checked separately.
 
 UBM 5.1.x accepts Expo SDK 57 or 58. SDK 57 uses React Native 0.86; SDK 58

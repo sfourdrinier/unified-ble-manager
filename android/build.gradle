@@ -68,6 +68,7 @@ android {
   defaultConfig {
     minSdk = getExtOrIntegerDefault("minSdkVersion")
     targetSdk = getExtOrIntegerDefault("targetSdkVersion")
+    consumerProguardFiles "consumer-rules.pro"
     buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", "true"
     buildConfigField "String", "OWNED_RADIO_ID", "\"owned-android-gatt-v1\""
     externalNativeBuild {

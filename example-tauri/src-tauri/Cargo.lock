@@ -3600,7 +3600,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-unified-ble-manager"
-version = "5.1.1"
+version = "5.1.2"
 dependencies = [
  "btleplug",
  "futures-util",

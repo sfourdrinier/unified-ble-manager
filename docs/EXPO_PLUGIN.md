@@ -7,7 +7,7 @@ start a radio, request runtime permissions during prebuild, or prove physical
 radio/restoration reliability. Expo Go is not a supported BLE execution
 environment because it cannot contain this native module.
 
-Use the v2 plugin options in this `5.1.1` source. Those options match the schema
+Use the v2 plugin options in this `5.1.2` source. Those options match the schema
 introduced at `4.0.0-rc.4`. Expo Go cannot load this native module.
 
 ## Installation and development build
@@ -15,7 +15,7 @@ introduced at `4.0.0-rc.4`. Expo Go cannot load this native module.
 Pin the package so a later `latest` bump does not change native plugin options
 without a rebuild:
 
-    pnpm add unified-ble-manager@5.1.1
+    pnpm add unified-ble-manager@5.1.2
     # Choose one SDK line for this app; do not install both.
     pnpm add expo@^57.0.0 expo-dev-client
     # Or: pnpm add expo@^58.0.0 expo-dev-client
