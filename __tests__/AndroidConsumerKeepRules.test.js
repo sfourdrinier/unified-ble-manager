@@ -23,8 +23,7 @@ const fullKeepPatterns = ruleLines
   .filter(Boolean)
   .map(match => classGlobToRegExp(match[1]))
 
-const isFullyKept = binaryName =>
-  fullKeepPatterns.some(pattern => pattern.test(binaryName.replace(/\//g, '.')))
+const isFullyKept = binaryName => fullKeepPatterns.some(pattern => pattern.test(binaryName.replace(/\//g, '.')))
 
 const walk = directory =>
   fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -36,7 +35,11 @@ const walk = directory =>
 // (top-level files plus nested declarations as Outer$Inner).
 const declaredClasses = new Set()
 for (const file of walk(javaRoot).filter(f => /\.(java|kt)$/.test(f))) {
-  const top = path.relative(javaRoot, file).replace(/\.(java|kt)$/, '')
+  const top = path
+    .relative(javaRoot, file)
+    .split(path.sep)
+    .join('/')
+    .replace(/\.(java|kt)$/, '')
   declaredClasses.add(top)
   for (const match of fs.readFileSync(file, 'utf8').matchAll(/\b(?:class|interface|enum)\s+([A-Za-z0-9_]+)/g)) {
     declaredClasses.add(`${top}$${match[1]}`)
@@ -62,7 +65,15 @@ describe('Android consumer R8/ProGuard keep rules', () => {
     const shipped = walk(path.join(javaRoot, 'com/ubm'))
     expect(shipped.length).toBeGreaterThan(0)
     for (const file of shipped) {
-      expect(isFullyKept(path.relative(javaRoot, file).replace(/\.(java|kt)$/, ''))).toBe(true)
+      expect(
+        isFullyKept(
+          path
+            .relative(javaRoot, file)
+            .split(path.sep)
+            .join('/')
+            .replace(/\.(java|kt)$/, '')
+        )
+      ).toBe(true)
     }
   })
 
@@ -90,7 +101,9 @@ describe('Android consumer R8/ProGuard keep rules', () => {
   test('every Java_ native entry exported by the Rust sources maps to a kept com.ubm class', () => {
     const exported = new Set()
     for (const file of walk(path.join(root, 'bindings/jni/src')).filter(f => f.endsWith('.rs'))) {
-      for (const match of fs.readFileSync(file, 'utf8').matchAll(/\bJava_com_ubm_([a-z]+)_([A-Za-z0-9]+)_[A-Za-z0-9]+/g)) {
+      for (const match of fs
+        .readFileSync(file, 'utf8')
+        .matchAll(/\bJava_com_ubm_([a-z]+)_([A-Za-z0-9]+)_[A-Za-z0-9]+/g)) {
         exported.add(`com/ubm/${match[1]}/${match[2]}`)
       }
     }
