@@ -1402,15 +1402,11 @@ impl BtleplugRadio {
         self.bluez.as_ref().map_err(Clone::clone)
     }
 
-    /// The `GattCharacteristic1.MTU` BlueZ reports for the link, or `None`
-    /// when it reports none. Admission and the reported write length read
-    /// it the same way.
+    /// The `GattCharacteristic1.MTU` BlueZ reports for the link: `None`
+    /// when it reports none, an error when the read itself failed.
     #[cfg(target_os = "linux")]
-    async fn bluez_reported_mtu(&self, peer_id: &str) -> Option<u16> {
-        match self.bluez() {
-            Ok(bluez) => bluez.mtu(peer_id).await.ok().flatten(),
-            Err(_) => None,
-        }
+    async fn bluez_reported_mtu(&self, peer_id: &str) -> Result<Option<u16>, DesktopError> {
+        self.bluez()?.mtu(peer_id).await
     }
 
     #[cfg(target_os = "linux")]
@@ -3296,7 +3292,7 @@ fn bluez_observed_write_limit(mtu: Option<u16>, with_response: bool) -> Result<u
         .map(|measured| measured.without_response)
         .ok_or_else(|| {
             crate::boundary::unobserved_write_limit(
-                "BlueZ did not report GattCharacteristic1.MTU (absent before BlueZ 5.62), so no command limit was observed; writes without response stay admitted up to 512 bytes and BlueZ answers them",
+                "BlueZ reported no GattCharacteristic1.MTU for this link (absent before BlueZ 5.62, or no characteristics resolved yet), so no command limit was observed; writes without response stay admitted up to 512 bytes and BlueZ answers them",
             )
         })
 }
@@ -5039,7 +5035,12 @@ impl RadioBoundary for BtleplugRadio {
             // `characteristic_write_value` / `descriptor_write_value`), so
             // a with-response write carries a whole attribute value; a
             // command must fit one ATT payload of the negotiated MTU.
-            Some(bluez_write_limits(self.bluez_reported_mtu(peer_id).await))
+            // A failed MTU read admits like a withheld one and lets BlueZ
+            // answer the write (finding 97); the reported length below
+            // surfaces the failure instead.
+            Some(bluez_write_limits(
+                self.bluez_reported_mtu(peer_id).await.ok().flatten(),
+            ))
         }
         // WinRT `WriteValueAsync` with `WriteWithResponse` (characteristic)
         // and descriptor `WriteValueAsync` perform the long write
@@ -5092,7 +5093,13 @@ impl RadioBoundary for BtleplugRadio {
     ) -> Result<u16, DesktopError> {
         #[cfg(target_os = "linux")]
         {
-            bluez_observed_write_limit(self.bluez_reported_mtu(peer_id).await, with_response)
+            // A request limit needs no MTU; only a command limit reads it.
+            let mtu = if with_response {
+                None
+            } else {
+                self.bluez_reported_mtu(peer_id).await?
+            };
+            bluez_observed_write_limit(mtu, with_response)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -6581,7 +6588,7 @@ mod tests {
         assert!(
             withheld
                 .detail()
-                .is_some_and(|detail| detail.contains("GattCharacteristic1.MTU")),
+                .is_some_and(|detail| detail.contains("no GattCharacteristic1.MTU")),
             "{withheld:?}"
         );
     }

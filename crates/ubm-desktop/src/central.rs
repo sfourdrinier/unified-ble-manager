@@ -5259,8 +5259,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// [`Self::measured_write_limit`]. The outer result is the window
     /// (expiry, cancel); the inner one is the radio's answer, which is
     /// `capability.unavailable` with its reason where the admission bound
-    /// is not an observation (finding 97), so callers can apply it after
-    /// their own admission checks.
+    /// is not an observation (finding 97), or the failure of the read that
+    /// would have observed it, so callers can apply it after their own
+    /// admission checks.
     async fn observed_write_limit(
         &self,
         peer_id: &str,
@@ -5278,7 +5279,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         )
         .await
         {
-            Wait::Done(observed) => Ok(observed),
+            Wait::Done(observed) => {
+                Ok(observed.map_err(|error| classify(error, OpKind::Read, true)))
+            }
             Wait::Expired => Err(classify(timed_out(OPERATION, window), OpKind::Write, false)),
             Wait::Cancelled => Err(classify(
                 ticket.interruption(OPERATION),

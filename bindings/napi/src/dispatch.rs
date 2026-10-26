@@ -6387,6 +6387,31 @@ mod tests {
         );
     }
 
+    /// A missing forward would fall back to the default, the admission
+    /// limit, and report BlueZ's unobserved 512-byte command bound again.
+    #[tokio::test]
+    async fn observed_write_limit_dispatch_uses_the_inner_radio_answer() {
+        let radio = FakeRadio::new();
+        radio.set_write_limits(
+            "peer",
+            WriteLimits {
+                with_response: ubm_desktop::ATT_MAX_ATTRIBUTE_VALUE,
+                without_response: ubm_desktop::ATT_MAX_ATTRIBUTE_VALUE,
+            },
+        );
+        radio.withhold_observed_write_limit("peer", false);
+        let dispatch = DispatchRadio::Synthetic(Box::new(radio));
+        let withheld = dispatch
+            .observed_write_limit("peer", false)
+            .await
+            .expect_err("the inner radio withholds the command limit");
+        assert_eq!(withheld.code_str(), "capability.unavailable");
+        assert_eq!(
+            dispatch.observed_write_limit("peer", true).await.unwrap(),
+            ubm_desktop::ATT_MAX_ATTRIBUTE_VALUE
+        );
+    }
+
     #[tokio::test]
     async fn connection_parameters_dispatch_uses_the_inner_radio_answer() {
         let radio = FakeRadio::new();

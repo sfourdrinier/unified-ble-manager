@@ -661,12 +661,12 @@ async fn an_unobserved_mode_reports_unavailable_while_writes_stay_admitted() {
         .write(
             "peer-u",
             &selector(),
-            vec![0; 244],
+            vec![0; 512],
             "without-response",
             OpControl::budget_ms(1000),
         )
         .await
-        .expect("admission still lets the OS answer the command");
+        .expect("admission still lets the OS answer a command up to the bound");
     let foreign = central
         .connection_maximum_write_length("peer-u", "lease-z", false, OpControl::budget_ms(1000))
         .await

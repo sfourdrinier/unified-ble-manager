@@ -1093,8 +1093,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// (finding 65; legacy CoreBluetooth `maximumWriteValueLengthForType:`
     /// on the peripheral). Admitted like
     /// [`DesktopCentral::maximum_write_length`]: the lease holder of a
-    /// connected link. An unmeasured limit is `capability.unavailable`,
-    /// never a guessed 20.
+    /// connected link. An unmeasured limit, or an admission bound the OS
+    /// did not observe (BlueZ without a reported MTU, finding 97), is
+    /// `capability.unavailable` with the radio's reason, never a guessed 20.
     pub async fn connection_maximum_write_length(
         &self,
         peer_id: &str,
