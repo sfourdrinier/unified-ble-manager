@@ -1402,6 +1402,17 @@ impl BtleplugRadio {
         self.bluez.as_ref().map_err(Clone::clone)
     }
 
+    /// The `GattCharacteristic1.MTU` BlueZ reports for the link, or `None`
+    /// when it reports none. Admission and the reported write length read
+    /// it the same way.
+    #[cfg(target_os = "linux")]
+    async fn bluez_reported_mtu(&self, peer_id: &str) -> Option<u16> {
+        match self.bluez() {
+            Ok(bluez) => bluez.mtu(peer_id).await.ok().flatten(),
+            Err(_) => None,
+        }
+    }
+
     #[cfg(target_os = "linux")]
     fn bluez_owner(&self, operation: &str) -> Result<&str, DesktopError> {
         self.bluez_connection_contract
@@ -3270,6 +3281,26 @@ fn bluez_write_limits(mtu: Option<u16>) -> WriteLimits {
         .unwrap_or(unmeasured)
 }
 
+/// What `gatt:maximum-write-length` reports from BlueZ: the request limit
+/// (`WriteValue` performs the long write), and a command limit only from a
+/// reported MTU. A withheld MTU leaves the command bound of
+/// [`bluez_write_limits`] an admission bound, not an observation, so the
+/// command query answers `capability.unavailable` rather than a plausible
+/// 512 or a guessed 20.
+#[cfg(any(target_os = "linux", test))]
+fn bluez_observed_write_limit(mtu: Option<u16>, with_response: bool) -> Result<u16, DesktopError> {
+    if with_response {
+        return Ok(bluez_write_limits(mtu).with_response);
+    }
+    mtu.and_then(WriteLimits::os_long_write)
+        .map(|measured| measured.without_response)
+        .ok_or_else(|| {
+            crate::boundary::unobserved_write_limit(
+                "BlueZ did not report GattCharacteristic1.MTU (absent before BlueZ 5.62), so no command limit was observed; writes without response stay admitted up to 512 bytes and BlueZ answers them",
+            )
+        })
+}
+
 /// The discovered database as the snapshot the central registers, in
 /// discovery order (finding 96): btleplug's sets iterate UUID-first, so each
 /// level is re-sorted by `instance` (the ATT handle, or the CoreBluetooth
@@ -5008,11 +5039,7 @@ impl RadioBoundary for BtleplugRadio {
             // `characteristic_write_value` / `descriptor_write_value`), so
             // a with-response write carries a whole attribute value; a
             // command must fit one ATT payload of the negotiated MTU.
-            let mtu = match self.bluez() {
-                Ok(bluez) => bluez.mtu(peer_id).await.ok().flatten(),
-                Err(_) => None,
-            };
-            Some(bluez_write_limits(mtu))
+            Some(bluez_write_limits(self.bluez_reported_mtu(peer_id).await))
         }
         // WinRT `WriteValueAsync` with `WriteWithResponse` (characteristic)
         // and descriptor `WriteValueAsync` perform the long write
@@ -5055,6 +5082,24 @@ impl RadioBoundary for BtleplugRadio {
         )))]
         {
             self.mtu(peer_id).await.and_then(WriteLimits::from_mtu)
+        }
+    }
+
+    async fn observed_write_limit(
+        &self,
+        peer_id: &str,
+        with_response: bool,
+    ) -> Result<u16, DesktopError> {
+        #[cfg(target_os = "linux")]
+        {
+            bluez_observed_write_limit(self.bluez_reported_mtu(peer_id).await, with_response)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            crate::boundary::observed_write_limit_of(
+                self.write_limits(peer_id).await,
+                with_response,
+            )
         }
     }
 
@@ -6517,6 +6562,28 @@ mod tests {
         assert_eq!(limits(Some(185)), (512, 182));
         assert_eq!(limits(Some(23)), (512, 20));
         assert_eq!(limits(None), (512, 512));
+    }
+
+    /// Finding 97 follow-up (5.1.3): `maximumWriteLength` reports only what
+    /// BlueZ observed. A command limit comes from a reported MTU; a withheld
+    /// MTU answers `capability.unavailable` with the reason, although
+    /// admission (above) still lets BlueZ answer. A request is always a
+    /// whole attribute value because `WriteValue` performs the long write.
+    #[test]
+    fn f97_bluez_reports_a_command_limit_only_from_a_reported_mtu() {
+        let observed = super::bluez_observed_write_limit;
+        assert_eq!(observed(Some(185), false).expect("measured"), 182);
+        assert_eq!(observed(Some(23), false).expect("measured"), 20);
+        assert_eq!(observed(Some(185), true).expect("request"), 512);
+        assert_eq!(observed(None, true).expect("request"), 512);
+        let withheld = observed(None, false).expect_err("no observed command limit");
+        assert_eq!(withheld.code_str(), "capability.unavailable");
+        assert!(
+            withheld
+                .detail()
+                .is_some_and(|detail| detail.contains("GattCharacteristic1.MTU")),
+            "{withheld:?}"
+        );
     }
 
     /// Finding 96: the snapshot is in discovery (handle) order, not the

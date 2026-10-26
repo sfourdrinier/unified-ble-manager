@@ -1053,10 +1053,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
 
     /// The largest single write the link to `peer_id` accepts for one mode
     /// (`gatt:maximum-write-length`) — the same limit
-    /// [`DesktopCentral::write`] enforces. Admitted like
-    /// [`DesktopCentral::read_rssi`]; an unmeasured limit is
-    /// `capability.unavailable`, never a guess. `selector` must address a
-    /// characteristic of the current database.
+    /// [`DesktopCentral::write`] enforces wherever the OS observed it.
+    /// Admitted like [`DesktopCentral::read_rssi`]; an unmeasured limit, or
+    /// an admission bound the OS did not observe (BlueZ without a reported
+    /// MTU, finding 97), is `capability.unavailable` with the radio's
+    /// reason, never a guess. `selector` must address a characteristic of
+    /// the current database.
     pub async fn maximum_write_length(
         &self,
         peer_id: &str,
@@ -1071,14 +1073,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let peer_key = self.known_peer_key(peer_id).await?;
         self.require_connected_lease(&peer_key, lease, "gatt.maximum-write-length")
             .await?;
-        let measured = self
-            .measured_write_limit(
-                peer_id,
-                with_response,
-                &ctl.ticket,
-                window,
-                "gatt.maximum-write-length",
-            )
+        let observed = self
+            .observed_write_limit(peer_id, with_response, &ctl.ticket, window)
             .await?;
         let core = self.inner.core.lock().await;
         self.resolve_instance(
@@ -1089,7 +1085,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             "gatt.maximum-write-length",
             false,
         )?;
-        Self::write_maximum(&core, measured, "gatt.maximum-write-length")
+        Self::reported_write_maximum(&core, observed)
     }
 
     /// The largest single write the OS accepts on the link to `peer_id`,
@@ -1112,17 +1108,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         let peer_key = self.known_peer_key(peer_id).await?;
         self.require_connected_lease(&peer_key, lease, "gatt.maximum-write-length")
             .await?;
-        let measured = self
-            .measured_write_limit(
-                peer_id,
-                with_response,
-                &ctl.ticket,
-                window,
-                "gatt.maximum-write-length",
-            )
+        let observed = self
+            .observed_write_limit(peer_id, with_response, &ctl.ticket, window)
             .await?;
         let core = self.inner.core.lock().await;
-        Self::write_maximum(&core, measured, "gatt.maximum-write-length")
+        Self::reported_write_maximum(&core, observed)
     }
 
     /// Effective ATT MTU of the live link to `peer_id`

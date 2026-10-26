@@ -608,6 +608,72 @@ async fn maximum_write_length_is_per_mode_and_matches_what_write_enforces() {
     assert_eq!(foreign.code_str(), "ownership.denied");
 }
 
+/// Finding 97 follow-up (5.1.3): a radio whose admission bound for a mode
+/// is not an observation (BlueZ without `GattCharacteristic1.MTU`) answers
+/// `maximumWriteLength` for that mode with `capability.unavailable` and its
+/// reason, while writes of that mode stay admitted up to the bound and the
+/// OS answers them. The other mode keeps its reported limit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unobserved_mode_reports_unavailable_while_writes_stay_admitted() {
+    let central = open().await;
+    connected_peer(&central, "peer-u").await;
+    central.boundary().set_write_limits(
+        "peer-u",
+        WriteLimits {
+            with_response: ubm_desktop::ATT_MAX_ATTRIBUTE_VALUE,
+            without_response: ubm_desktop::ATT_MAX_ATTRIBUTE_VALUE,
+        },
+    );
+    central
+        .boundary()
+        .withhold_observed_write_limit("peer-u", false);
+    let unavailable = central
+        .connection_maximum_write_length("peer-u", "lease-a", false, OpControl::budget_ms(1000))
+        .await
+        .expect_err("an unobserved command limit is not reported");
+    assert_eq!(unavailable.code_str(), "capability.unavailable");
+    assert!(
+        unavailable
+            .detail()
+            .is_some_and(|detail| !detail.is_empty()),
+        "the refusal says why: {unavailable:?}"
+    );
+    let per_characteristic = central
+        .maximum_write_length(
+            "peer-u",
+            "lease-a",
+            &selector(),
+            false,
+            OpControl::budget_ms(1000),
+        )
+        .await
+        .expect_err("the per-characteristic query agrees");
+    assert_eq!(per_characteristic.code_str(), "capability.unavailable");
+    let with_response = central
+        .connection_maximum_write_length("peer-u", "lease-a", true, OpControl::budget_ms(1000))
+        .await
+        .expect("the with-response limit is still reported");
+    assert_eq!(
+        with_response,
+        u64::from(ubm_desktop::ATT_MAX_ATTRIBUTE_VALUE)
+    );
+    central
+        .write(
+            "peer-u",
+            &selector(),
+            vec![0; 244],
+            "without-response",
+            OpControl::budget_ms(1000),
+        )
+        .await
+        .expect("admission still lets the OS answer the command");
+    let foreign = central
+        .connection_maximum_write_length("peer-u", "lease-z", false, OpControl::budget_ms(1000))
+        .await
+        .expect_err("foreign lease");
+    assert_eq!(foreign.code_str(), "ownership.denied");
+}
+
 /// Finding 41: a write that reached the radio and failed with any code may
 /// still have reached the peer. Its commit is `unknown` and it is never
 /// caller-retryable — not only when it was aborted or timed out.

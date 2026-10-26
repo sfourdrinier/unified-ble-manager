@@ -5254,6 +5254,53 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
     }
 
+    /// The OS-observed single-write limit for one mode, the answer of
+    /// `gatt:maximum-write-length`, read inside the operation window like
+    /// [`Self::measured_write_limit`]. The outer result is the window
+    /// (expiry, cancel); the inner one is the radio's answer, which is
+    /// `capability.unavailable` with its reason where the admission bound
+    /// is not an observation (finding 97), so callers can apply it after
+    /// their own admission checks.
+    async fn observed_write_limit(
+        &self,
+        peer_id: &str,
+        with_response: bool,
+        ticket: &OpTicket,
+        window: Window,
+    ) -> Result<Result<u16, DesktopError>, DesktopError> {
+        const OPERATION: &str = crate::boundary::MAXIMUM_WRITE_LENGTH_OPERATION;
+        match drive(
+            ticket,
+            window,
+            self.inner
+                .boundary
+                .observed_write_limit(peer_id, with_response),
+        )
+        .await
+        {
+            Wait::Done(observed) => Ok(observed),
+            Wait::Expired => Err(classify(timed_out(OPERATION, window), OpKind::Write, false)),
+            Wait::Cancelled => Err(classify(
+                ticket.interruption(OPERATION),
+                OpKind::Write,
+                false,
+            )),
+        }
+    }
+
+    /// [`Self::write_maximum`] for a reported limit: an unobserved one
+    /// answers the radio's own refusal.
+    fn reported_write_maximum(
+        core: &Central,
+        observed: Result<u16, DesktopError>,
+    ) -> Result<u64, DesktopError> {
+        Self::write_maximum(
+            core,
+            Some(observed?),
+            crate::boundary::MAXIMUM_WRITE_LENGTH_OPERATION,
+        )
+    }
+
     async fn validate_gatt_prerequisite(
         &self,
         peer_id: &str,

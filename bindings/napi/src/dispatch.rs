@@ -899,6 +899,17 @@ impl RadioBoundary for DispatchRadio {
         }
     }
 
+    async fn observed_write_limit(
+        &self,
+        peer_id: &str,
+        with_response: bool,
+    ) -> std::result::Result<u16, DesktopError> {
+        match self {
+            Self::Radio(radio) => radio.observed_write_limit(peer_id, with_response).await,
+            Self::Synthetic(radio) => radio.observed_write_limit(peer_id, with_response).await,
+        }
+    }
+
     fn reports_security_changes(&self) -> bool {
         match self {
             Self::Radio(radio) => radio.reports_security_changes(),
