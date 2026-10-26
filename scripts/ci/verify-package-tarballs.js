@@ -697,6 +697,7 @@ function verifyRootTarball(tarballPath) {
     'package/native/protocol/src/OwnedJsiBinaryTransport.cpp',
     'package/android/src/main/jni/CMakeLists.txt',
     'package/android/bundle-js-inputs.gradle',
+    'package/android/consumer-rules.pro',
     'package/android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV2Schema.kt',
     'package/ios/Generated/NativeProtocolV2Schema.swift'
   ]

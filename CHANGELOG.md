@@ -4,6 +4,17 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.1.2] - 2026-10-25
+
+- Ship Android consumer R8/ProGuard rules (`android/consumer-rules.pro`, via
+  `consumerProguardFiles`). Release builds with `android.enableMinifyInReleaseBuilds=true`
+  no longer strip the Java classes and members the native libraries look up by
+  name, which failed startup with
+  `platform.failure|platform|mobile.host.install|jni-call-failed`. The rules keep
+  `com.ubm.**`, the `RadioHost`/`WakeListener`/`InvokeCallback` implementers, the
+  JSI binding static methods the protocol library calls, and JNI native method
+  names. No runtime or native binary change.
+
 ## [5.1.1] - 2026-10-20
 
 - Admit Expo SDK 57 and SDK 58 in the peer range, with a selectable CNG
