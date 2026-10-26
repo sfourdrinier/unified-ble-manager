@@ -16,7 +16,7 @@ can settle them without dispatching native I/O.
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@5.1.2 @tauri-apps/api
+pnpm add unified-ble-manager@5.1.3 @tauri-apps/api
 ```
 
 Use the Rust plugin source shipped in the same npm package. In the normal
@@ -206,7 +206,7 @@ Planning is separate from observation: notification values preserve the native
 host's reported `delivery`, including `unknown` where the platform cannot report
 the mode.
 
-The maximum write length (`connection.maximum-write-length`, per `mode`) is the core's answer for that write mode, the same limit a write of that mode is admitted against: a reported maximum is never refused. Windows admits ordinary OS-managed with-response writes up to 512 bytes; commands use `GattSession.MaxPduSize` − 3. Linux admits with-response values up to 512 bytes and, with a reported MTU, commands up to MTU − 3. When BlueZ withholds the MTU, it admits both write modes up to 512 bytes and lets the OS answer the write; that is an admission limit, not an invented MTU measurement. macOS uses the OS-reported per-mode maximum. Tauri 4.x reported `mtu - 3` for every mode.
+The maximum write length (`connection.maximum-write-length`, per `mode`) is the core's answer for that write mode, the same limit a write of that mode is admitted against: a reported maximum is never refused. Windows admits ordinary OS-managed with-response writes up to 512 bytes; commands use `GattSession.MaxPduSize` − 3. Linux admits with-response values up to 512 bytes and, with a reported MTU, commands up to MTU − 3. When BlueZ withholds the MTU, it admits both write modes up to 512 bytes and lets the OS answer the write; that command bound is an admission limit, not an observation, so the `without-response` query answers `capability.unavailable` with the reason instead of reporting 512 or a guessed 20. The `with-response` query still answers 512. macOS uses the OS-reported per-mode maximum. Tauri 4.x reported `mtu - 3` for every mode.
 
 Ordinary `with-response` writes within the admitted maximum use the OS-managed
 write procedure; Windows and Linux can therefore accept a value larger than one

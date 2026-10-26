@@ -627,7 +627,7 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
             },
             OsOverride::adapter(
                 DesktopOs::Linux,
-                "BlueZ (os::linux): GattCharacteristic1.MTU for commands; a request carries a whole attribute value because BlueZ WriteValue performs the long-write procedure (src/gatt-client.c).",
+                "BlueZ (os::linux): GattCharacteristic1.MTU for commands; a request carries a whole attribute value because BlueZ WriteValue performs the long-write procedure (src/gatt-client.c). When BlueZ withholds the MTU, the without-response length answers capability.unavailable: the 512-byte command admission bound is not an observation.",
             ),
             OsOverride {
                 os: DesktopOs::MacOs,

@@ -4,6 +4,19 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.1.3] - 2026-10-26
+
+- Desktop Linux (BlueZ): when BlueZ withholds `GattCharacteristic1.MTU`
+  (absent before BlueZ 5.62), `maximumWriteLength('without-response')` now
+  answers `capability.unavailable` with the reason instead of 512. The 512-byte
+  command bound only lets BlueZ answer the write (finding 97); it is not an
+  observed limit, and a write without response cannot exceed one ATT payload.
+  Consumers that size frames from this value choose their own conservative
+  length. Write admission is unchanged, `with-response` still reports 512
+  because BlueZ `WriteValue` performs the long write, and a reported MTU still
+  gives MTU − 3. The README no longer calls the query "authoritative" for
+  unobserved limits. Deterministic evidence only; no backend label changes.
+
 ## [5.1.2] - 2026-10-25
 
 - Ship Android consumer R8/ProGuard rules (`android/consumer-rules.pro`, via

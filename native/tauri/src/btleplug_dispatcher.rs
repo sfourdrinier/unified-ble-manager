@@ -4592,7 +4592,8 @@ impl BtleplugDispatcher {
     /// write of that mode is admitted against, so the reported maximum is
     /// never refused. With an OS long write (Windows, Linux) a
     /// with-response write reaches 512 bytes; without response it stays one
-    /// ATT payload. An unmeasured limit fails loudly, never guessed.
+    /// ATT payload. An unmeasured limit, or BlueZ's command admission bound
+    /// without a reported MTU (finding 97), fails loudly, never guessed.
     async fn maximum_write_length(
         &self,
         caller: &AuthenticatedCaller,

@@ -262,7 +262,26 @@ Qualify the exact candidate through the required local and cross-platform gates,
 independent review and sealed-package checks before tagging current `main`.
 Publication uses the existing trusted publisher; never publish from a laptop.
 
-## Releasing 5.1.2
+## Releasing 5.1.3
+
+The 5.1.3 patch stops desktop Linux (BlueZ) from reporting a 512-byte
+`maximumWriteLength('without-response')` when BlueZ withholds
+`GattCharacteristic1.MTU` (absent before BlueZ 5.62). That 512-byte command
+bound is an admission limit that lets BlueZ answer the write (finding 97), not
+an observation, and a command cannot exceed one ATT payload, so consumers that
+sized frames from it sent writes the link cannot carry. The query now answers
+`capability.unavailable` with the reason; write admission, the with-response
+512-byte limit and every measured-MTU answer are unchanged.
+`crates/ubm-desktop/tests/parity_ops.rs` and the `btleplug_backend` unit tests
+pin both halves. The Rust change refreshes the committed Android prebuilts and
+the expected native build identity; Android and Apple mobile behaviour is
+unchanged. Evidence is deterministic only; backend evidence labels do not
+change.
+
+Release authority is green hosted CI on the frozen `main` commit, followed by
+the normal npm trusted publisher/OIDC workflow.
+
+## Published 5.1.2
 
 The 5.1.2 patch ships Android consumer R8/ProGuard keep rules
 (`android/consumer-rules.pro`, wired through `consumerProguardFiles`). Release
@@ -1214,7 +1233,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.1.2
+version=5.1.3
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -1225,7 +1244,7 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- for stable `5.1.2`, npm `latest` resolves to `5.1.2` and `next` retains the
+- for stable `5.1.3`, npm `latest` resolves to `5.1.3` and `next` retains the
   separately published rc.21; for a numbered RC, verify `next` resolves to that
   exact candidate without changing `latest`;
 - the npm package page shows provenance for the published artifact;
@@ -1234,8 +1253,8 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.1.2` explicitly and import the documented host
-  entrypoints. A separate bare install must select npm `latest` (`5.1.2` after
+  `unified-ble-manager@5.1.3` explicitly and import the documented host
+  entrypoints. A separate bare install must select npm `latest` (`5.1.3` after
   stable publication). For RC verification, pin the actual numbered candidate
   instead and verify `next` separately. This
   catches a packaging gap the repository's

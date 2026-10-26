@@ -497,6 +497,34 @@ impl WriteLimits {
     }
 }
 
+/// The operation `gatt:maximum-write-length` answers under.
+pub(crate) const MAXIMUM_WRITE_LENGTH_OPERATION: &str = "gatt.maximum-write-length";
+
+/// The reported single-write limit for one mode when the admission bound
+/// is itself the OS's observation: `limits.for_mode`, or
+/// `capability.unavailable` when the OS withholds the limits.
+pub(crate) fn observed_write_limit_of(
+    limits: Option<WriteLimits>,
+    with_response: bool,
+) -> Result<u16, DesktopError> {
+    limits
+        .map(|limits| limits.for_mode(with_response))
+        .ok_or_else(|| {
+            unobserved_write_limit("the OS has not reported a single-write limit for this link")
+        })
+}
+
+/// `capability.unavailable` for a `gatt:maximum-write-length` mode the OS
+/// has not observed, with the reason.
+pub(crate) fn unobserved_write_limit(detail: &str) -> DesktopError {
+    DesktopError::new(
+        ubm_core::contracts::BleErrorCode::CapabilityUnavailable,
+        ubm_core::contracts::BleErrorDomain::Capability,
+        MAXIMUM_WRITE_LENGTH_OPERATION,
+    )
+    .with_detail(detail.to_owned())
+}
+
 /// `capability.unsupported` for a radio that cannot answer `operation`.
 fn unsupported(operation: &str, detail: &str) -> DesktopError {
     DesktopError::new(
@@ -1452,6 +1480,19 @@ pub trait RadioBoundary: Send + Sync + 'static {
     ) -> impl Future<Output = Option<WriteLimits>> + Send + 'a {
         async move { self.mtu(peer_id).await.and_then(WriteLimits::from_mtu) }
     }
+    /// The single-write limit the OS observed for one mode, which
+    /// `gatt:maximum-write-length` reports. Defaults to the admission limit
+    /// ([`Self::write_limits`]); a radio whose admission bound for a mode
+    /// is not an observation (BlueZ without a reported MTU, finding 97)
+    /// answers `capability.unavailable` for that mode with its reason, and
+    /// writes stay admitted up to the bound.
+    fn observed_write_limit<'a>(
+        &'a self,
+        peer_id: &'a str,
+        with_response: bool,
+    ) -> impl Future<Output = Result<u16, DesktopError>> + Send + 'a {
+        async move { observed_write_limit_of(self.write_limits(peer_id).await, with_response) }
+    }
     /// Request an OS preferred preset. Acceptance never reports that the
     /// link adopted it; the radio owns the closeable request until replaced
     /// or disconnected.
@@ -1836,6 +1877,9 @@ struct FakeInner {
     cancelled_pairings: HashSet<String>,
     /// Scripted per-peer write limits (unset: derived from the MTU).
     write_limits: HashMap<String, WriteLimits>,
+    /// Scripted (peer, with_response) modes whose write limit is an
+    /// admission bound the OS did not observe.
+    unobserved_write_limits: HashSet<(String, bool)>,
     /// Scripted address resolutions: (address, type) -> peer id.
     addresses: HashMap<(String, AddressType), String>,
     /// Scripted per-peer address types.
@@ -2013,6 +2057,7 @@ impl FakeRadio {
                 pair_outcomes: HashMap::new(),
                 cancelled_pairings: HashSet::new(),
                 write_limits: HashMap::new(),
+                unobserved_write_limits: HashSet::new(),
                 addresses: HashMap::new(),
                 address_types: HashMap::new(),
                 access: HashMap::new(),
@@ -2314,6 +2359,17 @@ impl FakeRadio {
             .expect("fake radio state")
             .write_limits
             .insert(peer_id.to_owned(), limits);
+    }
+
+    /// Script one mode's write limit for `peer_id` as an admission bound
+    /// the OS did not observe: `observed_write_limit` answers
+    /// `capability.unavailable` while writes stay admitted.
+    pub fn withhold_observed_write_limit(&self, peer_id: &str, with_response: bool) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .unobserved_write_limits
+            .insert((peer_id.to_owned(), with_response));
     }
 
     /// Script `resolve_address(address, address_type)` to answer `peer_id`.
@@ -3376,6 +3432,25 @@ impl RadioBoundary for FakeRadio {
             Some(limits) => Some(limits),
             None => self.mtu(peer_id).await.and_then(WriteLimits::from_mtu),
         }
+    }
+
+    async fn observed_write_limit(
+        &self,
+        peer_id: &str,
+        with_response: bool,
+    ) -> Result<u16, DesktopError> {
+        let withheld = self
+            .state
+            .lock()
+            .expect("fake radio state")
+            .unobserved_write_limits
+            .contains(&(peer_id.to_owned(), with_response));
+        if withheld {
+            return Err(unobserved_write_limit(
+                "scripted: the admission bound for this mode is not an OS observation",
+            ));
+        }
+        observed_write_limit_of(self.write_limits(peer_id).await, with_response)
     }
 
     async fn security_state(&self, peer_id: &str) -> Result<SecurityState, DesktopError> {
