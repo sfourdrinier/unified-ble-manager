@@ -330,11 +330,7 @@ jobs:
           java-version: 21
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4.0.1
-        with:
-          # Match the source-build CI lane: the obsolete `tools` package is
-          # gone, and AGP's automatic NDK install has flaked on clean runners.
-          packages: 'platform-tools ndk;27.1.12297006'
+        uses: ./.github/actions/setup-android-sdk
 
       - name: Install pinned Rust + Android targets
         # The publish job builds both RN examples with UBM_NATIVE_BUILD=source.

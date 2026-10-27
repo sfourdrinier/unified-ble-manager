@@ -101,18 +101,26 @@ describe('release retry safety', () => {
     expect(YAML.parse(workflow).concurrency['cancel-in-progress']).toBe(false)
   })
 
-  test('every Android build installs only the supported platform-tools SDK package', () => {
-    for (const workflowPath of ['.github/workflows/ci.yml', '.github/workflows/publish.yml']) {
-      const workflow = read(workflowPath)
-      const setupSteps = Object.values(YAML.parse(workflow).jobs)
-        .flatMap(job => job.steps || [])
-        .filter(step => step.uses === 'android-actions/setup-android@v4.0.1')
-      expect(setupSteps).toHaveLength(workflowPath.endsWith('ci.yml') ? 2 : 3)
-      for (const setupStep of setupSteps) {
-        expect(setupStep.with.packages.split(' ')).toContain('platform-tools')
-        expect(setupStep.with.packages.split(' ')).not.toContain('tools')
-      }
+  test('every Android build sets up the SDK through the one retrying action', () => {
+    const expectedSetups = {
+      '.github/workflows/ci.yml': 2,
+      '.github/workflows/publish.yml': 3,
+      '.github/workflows/publish-parallel-draft.yml': 3,
+      '.github/publish-serial-reference.yml': 1
     }
+    for (const [workflowPath, count] of Object.entries(expectedSetups)) {
+      const steps = Object.values(YAML.parse(read(workflowPath)).jobs).flatMap(job => job.steps || [])
+      expect(steps.filter(step => String(step.uses).startsWith('android-actions/setup-android'))).toEqual([])
+      const setupSteps = steps.filter(step => step.uses === './.github/actions/setup-android-sdk')
+      expect(setupSteps).toHaveLength(count)
+      for (const setupStep of setupSteps) expect(setupStep.name).toBe('Setup Android SDK')
+    }
+
+    const action = YAML.parse(read('.github/actions/setup-android-sdk/action.yml'))
+    const [cmdlineTools, ndk] = action.runs.steps
+    expect(cmdlineTools.uses).toBe('android-actions/setup-android@v4.0.1')
+    expect(cmdlineTools.with.packages.split(' ')).toEqual(['platform-tools'])
+    expect(ndk.run).toBe('node scripts/ci/install-android-ndk.js')
   })
 
   test('source-built release Android examples install every maintained pinned Rust ABI target first', () => {

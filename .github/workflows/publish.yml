@@ -167,9 +167,7 @@ jobs:
           distribution: temurin
           java-version: 21
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4.0.1
-        with:
-          packages: platform-tools ndk;27.1.12297006
+        uses: ./.github/actions/setup-android-sdk
       - name: Install pinned Rust + Android targets
         run: |
           PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
@@ -221,9 +219,7 @@ jobs:
           distribution: temurin
           java-version: 21
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4.0.1
-        with:
-          packages: platform-tools ndk;27.1.12297006
+        uses: ./.github/actions/setup-android-sdk
       - name: Install pinned Rust + Android targets
         run: |
           PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
@@ -697,9 +693,7 @@ jobs:
           distribution: temurin
           java-version: 21
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4.0.1
-        with:
-          packages: platform-tools ndk;27.1.12297006
+        uses: ./.github/actions/setup-android-sdk
       - name: Compile exact packed Expo TV ARM32 consumer
         run: TV_PACKAGE_TARBALL="${GITHUB_WORKSPACE}/${PUBLISH_TARBALL}" bash scripts/ci/check-android-tv-packed-consumer.sh
       - name: Record passing source and artifact receipt

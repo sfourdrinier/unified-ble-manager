@@ -1266,6 +1266,7 @@ Then verify:
 Never move or recreate a published version tag to hide a failed release.
 
 - If the workflow fails **before npm publication**, fix the source on `main`, increment/version as appropriate, and create the correct new tag.
+- If a gate fails before npm publication because of runner infrastructure (a download or service outage, not the tagged source), rerun the entire immutable-tag workflow so every gate runs again; do not retag or bump. Android setup goes through `.github/actions/setup-android-sdk`, which already retries a truncated NDK download from a clean slate, so an Android setup failure that survives its bounded attempts is worth reading before rerunning.
 - If npm publication succeeds but a later GitHub-release step fails, preserve the immutable npm version and rerun the workflow. The recovery path skips the current-`main` admission check and attaches the exact npm registry tarball rather than newly linked native binaries.
 - If a defect is discovered after a stable tag is published, fix it and release a new patch; do not replace the published tag.
 

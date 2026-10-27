@@ -1,0 +1,20 @@
+name: Setup Android SDK
+description: >
+  cmdline-tools, licences and platform-tools, then the NDK android/build.gradle
+  pins, installed with bounded retries because a single truncated runner
+  download otherwise fails the job. Requires the repository checkout.
+runs:
+  using: composite
+  steps:
+    - name: Setup Android command-line tools
+      uses: android-actions/setup-android@v4.0.1
+      with:
+        # Default is 'tools platform-tools'; the obsolete `tools` package no
+        # longer exists upstream and fails install on new cmdline-tools. The
+        # NDK is installed below rather than by AGP, whose automatic install
+        # flaked in CI (InstallFailedException on one leg of the same commit).
+        packages: platform-tools
+
+    - name: Install pinned Android NDK
+      shell: bash
+      run: node scripts/ci/install-android-ndk.js
