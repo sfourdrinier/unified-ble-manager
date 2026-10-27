@@ -15,10 +15,12 @@ This document is the canonical release procedure for `unified-ble-manager`.
 - Numbered 5.x release-candidate npm dist-tag: `next`. Stable 5.x publishes to
   `latest`; the registry establishes which version is currently published.
 - `next` never resolves older than `latest`: after a stable release is
-  published and its provenance verified, the publisher moves `next` to it when
-  `next` holds an older version or is absent, and leaves a newer candidate in
-  place (`scripts/release/advance-next-dist-tag.js`, read back from the
-  registry).
+  published and its provenance verified, the publisher converges `next` on the
+  highest published version, which is that release or a newer candidate
+  (`scripts/release/advance-next-dist-tag.js`). `npm dist-tag add` is an
+  unconditional write and other release tags publish concurrently, so it
+  re-reads the registry after every write and corrects `next` until it matches;
+  a candidate that publishes mid-step is therefore kept.
 
 The current publisher and packaging guards share
 `scripts/release/release-version-policy.js`: stable `5.x.y` selects `latest`;
