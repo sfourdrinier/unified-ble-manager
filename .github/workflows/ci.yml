@@ -634,13 +634,7 @@ jobs:
           java-version: 21
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4.0.1
-        with:
-          # Default is 'tools platform-tools'; the obsolete `tools` package
-          # no longer exists upstream and fails install on new cmdline-tools.
-          # The NDK is pinned explicitly: AGP auto-install flaked in CI
-          # (InstallFailedException on a PR leg while the push leg passed).
-          packages: 'platform-tools ndk;27.1.12297006'
+        uses: ./.github/actions/setup-android-sdk
 
       - name: Install pinned Rust + Android targets
         # buildUbmRustCdylib compiles bindings/jni via rustup-run on the
@@ -732,13 +726,7 @@ jobs:
           java-version: 21
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4.0.1
-        with:
-          # Default is 'tools platform-tools'; the obsolete `tools` package
-          # no longer exists upstream and fails install on new cmdline-tools.
-          # The NDK is pinned explicitly: AGP auto-install flaked in CI
-          # (InstallFailedException on a PR leg while the push leg passed).
-          packages: 'platform-tools ndk;27.1.12297006'
+        uses: ./.github/actions/setup-android-sdk
 
       - name: Install pinned Rust + Android targets
         # buildUbmRustCdylib compiles bindings/jni via rustup-run on the
