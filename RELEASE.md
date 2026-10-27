@@ -14,6 +14,13 @@ This document is the canonical release procedure for `unified-ble-manager`.
 - Stable npm dist-tag: `latest`
 - Numbered 5.x release-candidate npm dist-tag: `next`. Stable 5.x publishes to
   `latest`; the registry establishes which version is currently published.
+- `next` never resolves older than `latest`: after a stable release is
+  published and its provenance verified, the publisher converges `next` on the
+  highest published version, which is that release or a newer candidate
+  (`scripts/release/advance-next-dist-tag.js`). `npm dist-tag add` is an
+  unconditional write and other release tags publish concurrently, so it
+  re-reads the registry after every write and corrects `next` until it matches;
+  a candidate that publishes mid-step is therefore kept.
 
 The current publisher and packaging guards share
 `scripts/release/release-version-policy.js`: stable `5.x.y` selects `latest`;
@@ -54,8 +61,15 @@ The npm package's trusted publisher must identify this repository, not the legac
 - workflow filename: `publish.yml`
 - environment: `npm`
 - package: `unified-ble-manager`
+- **Allow npm dist-tag**: enabled (off by default; publish permission does not
+  grant it)
 
-The workflow requests `id-token: write` and publishes with provenance.
+The workflow requests `id-token: write` and publishes with provenance. It also
+moves `next` with an OIDC `npm dist-tag add`, which needs npm CLI 11.21.0 or
+later and the dist-tag permission above. Without that permission a stable
+release is published but its job fails at "Advance npm next past an older
+release", before the GitHub Release: enable the permission and rerun the failed
+job; the recovery path skips the already-published upload.
 
 If the trusted publisher still points at the legacy repository, update it before pushing a stable tag. A valid source tree and green CI cannot compensate for an OIDC publisher identity mismatch.
 
@@ -1244,8 +1258,9 @@ npm view "unified-ble-manager@$version" dist.integrity
 
 Then verify:
 
-- for stable `5.1.3`, npm `latest` resolves to `5.1.3` and `next` retains the
-  separately published rc.21; for a numbered RC, verify `next` resolves to that
+- for a stable release, npm `latest` resolves to it and `next` resolves to it
+  too unless a newer numbered candidate already holds `next` (5.1.3 predates
+  this rule and shipped with `next` on rc.21); for a numbered RC, verify `next` resolves to that
   exact candidate without changing `latest`;
 - the npm package page shows provenance for the published artifact;
 - the GitHub Release exists at that tag, and is marked prerelease only if the

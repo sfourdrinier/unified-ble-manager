@@ -95,6 +95,19 @@ describe('release retry safety', () => {
     expect(verify).toBeGreaterThan(download)
   })
 
+  test('advances npm next after provenance is verified and before the GitHub Release', () => {
+    const names = YAML.parse(read('.github/workflows/publish.yml')).jobs.publish.steps.map(step => step.name)
+    const advance = names.indexOf('Advance npm next past an older release')
+
+    expect(advance).toBeGreaterThan(names.indexOf('Bind npm provenance to this exact tag commit'))
+    expect(names.indexOf('Create GitHub Release')).toBe(advance + 1)
+    const step = YAML.parse(read('.github/workflows/publish.yml')).jobs.publish.steps[advance]
+    expect(step).toEqual({
+      name: 'Advance npm next past an older release',
+      run: 'node scripts/release/advance-next-dist-tag.js'
+    })
+  })
+
   test('queues a repeated same-tag run without cancelling in-flight OIDC publication', () => {
     const workflow = read('.github/workflows/publish.yml')
     expect(workflow).toContain('group: ${{ github.workflow }}-${{ github.ref }}')

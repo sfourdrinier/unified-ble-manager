@@ -19,6 +19,7 @@ const PUBLICATION_ONLY_STEPS = [
   'Publish unified-ble-manager (OIDC + provenance)',
   'Bind npm tarball to the generated release artifact',
   'Bind npm provenance to this exact tag commit',
+  'Advance npm next past an older release',
   'Create GitHub Release'
 ]
 

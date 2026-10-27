@@ -66,7 +66,7 @@ describe('canonical package modernization', () => {
     expect(workflow).toContain('id-token: write')
     expect(workflow).toContain('environment: npm')
     expect(workflow).toContain('node-version: 24')
-    expect(workflow).toContain("npm install -g 'npm@^11.5.1'")
+    expect(workflow).toContain("npm install -g 'npm@^11.21.0'")
     expect(workflow).toContain('registry-url: https://registry.npmjs.org')
     expect(workflow).toContain('npm view "unified-ble-manager@${VER}"')
     expect(workflow).toContain('package_published=${PACKAGE_PUBLISHED}')
