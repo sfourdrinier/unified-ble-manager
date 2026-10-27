@@ -821,9 +821,10 @@ jobs:
           package-manager-cache: false
       - name: Ensure npm supports trusted publishing
         run: |
-          # Pin npm 11.x (docs floor 11.5.1). Avoid npm@latest if its engines
-          # move beyond the selected Node release line.
-          npm install -g 'npm@^11.5.1'
+          # Pin npm 11.x: 11.5.1 is the trusted-publishing floor and 11.21.0
+          # the floor for OIDC dist-tag commands. Avoid npm@latest if its
+          # engines move beyond the selected Node release line.
+          npm install -g 'npm@^11.21.0'
           node --version
           npm --version
           test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || {
@@ -999,6 +1000,8 @@ jobs:
             "${GITHUB_SHA}" \
             "${GITHUB_REF_NAME}" \
             "https://github.com/sfourdrinier/unified-ble-manager"
+      - name: Advance npm next past an older release
+        run: node scripts/release/advance-next-dist-tag.js
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

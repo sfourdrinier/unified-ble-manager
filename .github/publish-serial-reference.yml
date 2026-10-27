@@ -9,7 +9,7 @@
 #    Repository:        unified-ble-manager
 #    Workflow filename: publish.yml
 #    Environment name:  npm
-#    Allowed actions:   npm publish
+#    Allowed actions:   npm publish, npm dist-tag ("Allow npm dist-tag")
 #    https://www.npmjs.com/package/unified-ble-manager/access
 #
 # Release flow: merge release PR → manually tag vX.Y.Z on main → push tag →
@@ -200,9 +200,10 @@ jobs:
 
       - name: Ensure npm supports trusted publishing
         run: |
-          # Pin npm 11.x (docs floor 11.5.1). Avoid npm@latest if its engines
-          # move beyond the selected Node release line.
-          npm install -g 'npm@^11.5.1'
+          # Pin npm 11.x: 11.5.1 is the trusted-publishing floor and 11.21.0
+          # the floor for OIDC dist-tag commands. Avoid npm@latest if its
+          # engines move beyond the selected Node release line.
+          npm install -g 'npm@^11.21.0'
           node --version
           npm --version
           test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || {
@@ -588,6 +589,12 @@ jobs:
             "${GITHUB_SHA}" \
             "${GITHUB_REF_NAME}" \
             "https://github.com/sfourdrinier/unified-ble-manager"
+
+      # `next` is the release-candidate channel and must never resolve older
+      # than `latest`. Before the GitHub Release, so a refused tag write is
+      # rerun in this job; recovery reruns repeat it idempotently.
+      - name: Advance npm next past an older release
+        run: node scripts/release/advance-next-dist-tag.js
 
       # Tags remain manual. After npm succeeds, create the GitHub Release from
       # CHANGELOG.md notes so the Releases page matches the published package.
