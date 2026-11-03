@@ -289,6 +289,7 @@ export const BRIDGE_SHAPES: Record<string, BridgeShape> = {
       'readDescriptor',
       'writeDescriptor',
       'subscribe',
+      'subscribeRecorded',
       'resolveCharacteristicPath',
       'resolveDescriptorPath'
     ],

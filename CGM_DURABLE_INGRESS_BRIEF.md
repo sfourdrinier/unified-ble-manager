@@ -116,3 +116,17 @@ Replay must preserve fragment ordering and packet assembly boundaries, authentic
 - App integration belongs to Heart Studio: vendor notification consumption, idempotent archive linkage, account-scoped session-secret lifecycle, background wake/replay, explicit pressure/error status. It must read the **published** UBM build, not sibling source.
 - Tests: real journal prepare/reopen/ACK across restart before/after archive commit; selector registration before immediate callback; two peers and multiple selectors; same physical selector with independent existing consumers; cancellation during subscribe and retained cleanup; storage full/overflow and missing receipt; original-byte equality and native receipt identity; synthetic Libre encrypted fragmented replay after restart with the correct session secret and explicit inaccessible/wrong-key failure; G7 control response plus glucose ordering and live/history identity. Native synthetic tests do not establish physical collection or power-loss guarantees.
 - Complete source/docs/public contract, generated wire/bindings and native artifacts according to `AGENTS.md`, `RELEASE.md`, and `docs/NATIVE_ARTIFACTS.md`. Freeze and qualify a release commit through its required checks, publish through the prescribed release workflow, bump monorepo catalog and install/rebuild both consumer platforms. Final device proof must cover iOS and Android background/locked acquisition, interruption/restart and replay, capacity/failure behavior, and each available Libre/G7/Stelo product. Missing physical devices or unresolved secret access remain explicit required blockers.
+
+## Local native refresh receipt
+
+On 2026-11-03 the canonical `pnpm native:refresh --only android,apple,desktop`
+ran from source commit `69c17df53d092c5342b3c2d23a0727675f705bcf`.
+Android (three ABIs), Apple (four slices), and macOS arm64 desktop artifacts
+passed their producer identity checks. Their respective source digests were
+`c2714a19514fc0d9f604348239f6d63e742c0793050975bf3866e7f3dd76bf24`,
+`4b22069f0e91cb278ab3d63964e4745664f774887c5fd7203fc95ed2dd8d6976`, and
+`a6f5f482856541176b554646395dc96a3b1cbc98d2fb05981af2786906adbf22`.
+The Android producer warned that standalone `readelf` was absent and skipped
+its separate machine check; NDK `llvm-readelf` verified 16 KiB alignment. This
+is local build/identity evidence, not a physical-radio qualification. Other
+desktop platform artifacts remain for their respective CI hosts.
