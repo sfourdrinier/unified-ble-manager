@@ -403,3 +403,31 @@ pub fn notification_body_bytes(record: &Value, target_consumer: &str) -> u64 {
     body.insert("consumer".into(), Value::from(target_consumer));
     u64::try_from(Value::Object(body).to_string().len()).expect("bounded notification size")
 }
+
+/// Run a recording test in a child so process-wide cached journal owners close
+/// before the parent removes its test directory, including on Windows.
+#[allow(dead_code)]
+pub fn recording_test_directory(test_name: &str) -> Option<std::path::PathBuf> {
+    const DIRECTORY: &str = "UBM_ISOLATED_RECORDING_TEST_DIRECTORY";
+    if let Some(path) = std::env::var_os(DIRECTORY) {
+        return Some(path.into());
+    }
+    // Fully qualified libtest names contain `::`, which is not a portable path.
+    let directory_name = test_name.replace("::", "-");
+    let directory = std::env::temp_dir().join(format!(
+        "ubm-isolated-{}-{directory_name}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory).expect("create isolated recording directory");
+    let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .args(["--exact", test_name, "--nocapture"])
+        .env(DIRECTORY, &directory)
+        .status()
+        .expect("start isolated recording test");
+    assert!(
+        status.success(),
+        "isolated recording test {test_name} failed: {status}"
+    );
+    std::fs::remove_dir_all(directory).expect("remove closed recording test directory");
+    None
+}

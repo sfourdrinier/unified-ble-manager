@@ -14,6 +14,10 @@ export interface RustCoreSessionWake {
   sessionId: string
 }
 
+export interface RustCoreRecoveryHint {
+  kind: string
+}
+
 export interface Spec extends TurboModule {
   /** ubm-accessory-chooser/1 OS setup, available on configured iOS 18+ hosts. */
   chooseAccessory(requestId: string, optionsJson: string, timeoutMs: number): Promise<string>
@@ -81,6 +85,8 @@ export interface Spec extends TurboModule {
   acknowledgeContinuationClaim(claimToken: string): Promise<string>
   /** One emission per armed Rust wake; JS drains until `more` is false. */
   readonly onSessionWake: CodegenTypes.EventEmitter<RustCoreSessionWake>
+  /** Payload-free cleanup hint; inspect recordings for retained data and failures. */
+  readonly onRecoveryHint: CodegenTypes.EventEmitter<RustCoreRecoveryHint>
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('UnifiedBleRustCore')

@@ -392,6 +392,14 @@ export function createReactNativeRustCoreBinding(
           }
         }
       : {}),
+    ...(typeof native.onRecoveryHint === 'function'
+      ? {
+          onRecoveryHint: (listener: () => void): (() => void) => {
+            const subscription = native.onRecoveryHint(() => listener())
+            return () => subscription.remove()
+          }
+        }
+      : {}),
     ...(typeof native.continuationRecordingStatus === 'function'
       ? {
           continuationRecordingStatus: async (id: string): Promise<string> => {

@@ -168,7 +168,14 @@
       "op": "gatt.write"
     },
     {
-      "args": "{\"admission\":18,\"consumer\":\"hr\",\"deliveryMode\":\"require-notification\",\"operationId\":\"sub-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"}}",
+      "args": "{\"admission\":18,\"consumer\":\"recorded\",\"operationId\":\"recorded-sub-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"recording\":{\"id\":\"golden\",\"maxBytes\":1048576,\"maxRecords\":100},\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"}}",
+      "envelope": "{\"commit\":null,\"error\":{\"code\":\"platform.failure\",\"detail\":\"host has not configured a private recording directory\",\"domain\":\"platform\",\"operation\":\"gatt.subscribe-recorded.storage\",\"platform\":{\"code\":\"storage.unconfigured\",\"domain\":\"sqlite\",\"message\":\"host has not configured a private recording directory\",\"metadata\":{}}},\"ok\":false,\"retryability\":\"never\"}",
+      "expect": "failure",
+      "name": "recorded subscribe requires configured storage",
+      "op": "gatt.subscribe-recorded"
+    },
+    {
+      "args": "{\"admission\":19,\"consumer\":\"hr\",\"deliveryMode\":\"require-notification\",\"operationId\":\"sub-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"}}",
       "envelope": "{\"ok\":true,\"value\":{\"consumer\":\"hr\",\"delivery\":\"notification\"}}",
       "expect": "value",
       "name": "subscribe",
@@ -182,35 +189,35 @@
       "op": "session.reconcile"
     },
     {
-      "args": "{\"admission\":19,\"lease\":\"lease-1\",\"operationId\":\"rssi-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":20,\"lease\":\"lease-1\",\"operationId\":\"rssi-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"rssi\":-61}}",
       "expect": "value",
       "name": "rssi",
       "op": "connection.rssi"
     },
     {
-      "args": "{\"admission\":20,\"lease\":\"lease-1\",\"operationId\":\"mtu-obs-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":21,\"lease\":\"lease-1\",\"operationId\":\"mtu-obs-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"mtu\":247}}",
       "expect": "value",
       "name": "effective mtu",
       "op": "connection.effective-mtu"
     },
     {
-      "args": "{\"admission\":21,\"lease\":\"lease-1\",\"mode\":\"without-response\",\"operationId\":\"mwl-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":22,\"lease\":\"lease-1\",\"mode\":\"without-response\",\"operationId\":\"mwl-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"maximumWriteLength\":244}}",
       "expect": "value",
       "name": "maximum write length",
       "op": "connection.maximum-write-length"
     },
     {
-      "args": "{\"admission\":22,\"lease\":\"lease-1\",\"operationId\":\"ready-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":23,\"lease\":\"lease-1\",\"operationId\":\"ready-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"commit\":null,\"error\":{\"code\":\"capability.unsupported\",\"detail\":\"Android reports no write-without-response readiness\",\"domain\":\"capability\",\"operation\":\"gatt.write-readiness\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
       "expect": "failure",
       "name": "write readiness on android",
       "op": "connection.write-readiness"
     },
     {
-      "args": "{\"admission\":23,\"lease\":\"lease-1\",\"mtu\":247,\"operationId\":\"mtu-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":24,\"lease\":\"lease-1\",\"mtu\":247,\"operationId\":\"mtu-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"mtu\":247}}",
       "expect": "value",
       "name": "request mtu",
@@ -224,7 +231,7 @@
       "op": "connection.control-capabilities"
     },
     {
-      "args": "{\"admission\":24,\"lease\":\"lease-1\",\"mode\":\"low-power\",\"operationId\":\"subrate-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":25,\"lease\":\"lease-1\",\"mode\":\"low-power\",\"operationId\":\"subrate-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"commit\":\"not-dispatched\",\"error\":{\"code\":\"capability.unsupported\",\"detail\":\"Android public subrate requests require an available SDK 36.1+ API\",\"domain\":\"capability\",\"operation\":\"connection.request-subrate\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
       "expect": "failure",
       "name": "subrate unavailable",
@@ -238,28 +245,28 @@
       "op": "connection.control-capabilities"
     },
     {
-      "args": "{\"admission\":25,\"lease\":\"lease-1\",\"mode\":\"low-power\",\"operationId\":\"subrate-2\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":26,\"lease\":\"lease-1\",\"mode\":\"low-power\",\"operationId\":\"subrate-2\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"accepted\":true}}",
       "expect": "value",
       "name": "subrate accepted",
       "op": "connection.request-subrate"
     },
     {
-      "args": "{\"admission\":26,\"lease\":\"lease-1\",\"operationId\":\"prio-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"priority\":\"high-throughput\"}",
+      "args": "{\"admission\":27,\"lease\":\"lease-1\",\"operationId\":\"prio-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"priority\":\"high-throughput\"}",
       "envelope": "{\"ok\":true,\"value\":{\"accepted\":true}}",
       "expect": "value",
       "name": "request priority",
       "op": "connection.request-priority"
     },
     {
-      "args": "{\"admission\":27,\"lease\":\"lease-1\",\"operationId\":\"phy-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":28,\"lease\":\"lease-1\",\"operationId\":\"phy-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"rx\":\"le-1m\",\"tx\":\"le-2m\"}}",
       "expect": "value",
       "name": "read phy",
       "op": "connection.read-phy"
     },
     {
-      "args": "{\"admission\":28,\"lease\":\"lease-1\",\"operationId\":\"phy-2\",\"peerId\":\"A0:9E:1A:00:00:01\",\"rx\":\"le-2m\",\"tx\":\"le-2m\"}",
+      "args": "{\"admission\":29,\"lease\":\"lease-1\",\"operationId\":\"phy-2\",\"peerId\":\"A0:9E:1A:00:00:01\",\"rx\":\"le-2m\",\"tx\":\"le-2m\"}",
       "envelope": "{\"ok\":true,\"value\":{\"accepted\":true,\"observation\":{\"rx\":\"le-2m\",\"tx\":\"le-2m\"}}}",
       "expect": "value",
       "name": "request phy",
@@ -273,7 +280,7 @@
       "op": "security.state"
     },
     {
-      "args": "{\"admission\":29,\"operationId\":\"pair-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"transport\":\"auto\"}",
+      "args": "{\"admission\":30,\"operationId\":\"pair-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"transport\":\"auto\"}",
       "envelope": "{\"ok\":true,\"value\":{\"outcome\":\"paired\",\"state\":{\"authentication\":\"unauthenticated\",\"bond\":\"bonded\",\"encryption\":\"encrypted\",\"pairingPossible\":null,\"secureConnections\":\"yes\"}}}",
       "expect": "value",
       "name": "pair",
@@ -287,14 +294,14 @@
       "op": "security.cancel-pairing"
     },
     {
-      "args": "{\"admission\":30,\"operationId\":\"bonded-1\"}",
+      "args": "{\"admission\":31,\"operationId\":\"bonded-1\"}",
       "envelope": "{\"ok\":true,\"value\":[{\"bond\":\"bonded\",\"connection\":\"unknown\",\"lastSeenAtMonotonicMs\":null,\"name\":\"Bonded Sensor\",\"peerId\":\"C0:FF:EE:00:00:02\",\"reachability\":\"unknown\",\"rssi\":null,\"source\":\"system-bonded\"}]}",
       "expect": "value",
       "name": "bonded peers",
       "op": "peers.bonded"
     },
     {
-      "args": "{\"admission\":31,\"kind\":\"connected-device\",\"operationId\":\"bg-1\",\"reason\":\"heart rate streaming\"}",
+      "args": "{\"admission\":32,\"kind\":\"connected-device\",\"operationId\":\"bg-1\",\"reason\":\"heart rate streaming\"}",
       "envelope": "{\"ok\":true,\"value\":{\"leaseId\":\"fgs-lease-1\"}}",
       "expect": "value",
       "name": "background acquire",
@@ -336,21 +343,21 @@
       "op": "companion.disassociate"
     },
     {
-      "args": "{\"admission\":32,\"operationId\":\"presence-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":33,\"operationId\":\"presence-1\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"state\":\"observing\"}}",
       "expect": "value",
       "name": "presence observe",
       "op": "presence.observe"
     },
     {
-      "args": "{\"admission\":33,\"operationId\":\"presence-2\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
+      "args": "{\"admission\":34,\"operationId\":\"presence-2\",\"peerId\":\"A0:9E:1A:00:00:01\"}",
       "envelope": "{\"ok\":true,\"value\":{\"state\":\"idle\"}}",
       "expect": "value",
       "name": "presence unobserve",
       "op": "presence.unobserve"
     },
     {
-      "args": "{\"admission\":34,\"operationId\":\"never-seen\"}",
+      "args": "{\"admission\":35,\"operationId\":\"never-seen\"}",
       "envelope": "{\"ok\":true,\"value\":{\"state\":\"cancellation-requested\"}}",
       "expect": "value",
       "name": "cancel before admission",
@@ -371,7 +378,7 @@
       "op": "gatt.bogus"
     },
     {
-      "args": "{\"admission\":35,\"duplicatePolicy\":\"merged\",\"operationId\":\"scan-2\",\"serviceUuids\":[]}",
+      "args": "{\"admission\":36,\"duplicatePolicy\":\"merged\",\"operationId\":\"scan-2\",\"serviceUuids\":[]}",
       "envelope": "{\"commit\":null,\"error\":{\"code\":\"capability.unsupported\",\"detail\":\"the radio reports every advertisement; apply first/merged above it\",\"domain\":\"capability\",\"operation\":\"scan.start.duplicate-policy\",\"platform\":null},\"ok\":false,\"retryability\":\"never\"}",
       "expect": "failure",
       "name": "unsupported duplicate policy",
@@ -399,7 +406,7 @@
       "op": "session.reconcile"
     },
     {
-      "args": "{\"admission\":36,\"consumer\":\"hr\",\"operationId\":\"unsub-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"}}",
+      "args": "{\"admission\":37,\"consumer\":\"hr\",\"operationId\":\"unsub-1\",\"peerId\":\"A0:9E:1A:00:00:01\",\"selector\":{\"characteristicOccurrence\":0,\"characteristicUuid\":\"2A37\",\"serviceOccurrence\":0,\"serviceUuid\":\"180D\"}}",
       "envelope": "{\"ok\":true,\"value\":{\"physicalDisabled\":false,\"state\":\"released\"}}",
       "expect": "value",
       "name": "unsubscribe",

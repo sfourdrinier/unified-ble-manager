@@ -68,6 +68,7 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   private let continuationDeclarationGate = NSRecursiveLock()
   private var host: MobileCoreHost?
   private let recordingQueue: DispatchQueue
+  private let invokeQueue = DispatchQueue(label: "com.ubm.rust-core.invoke")
   private let recordingLock = NSLock()
   private var recordingConfigured = false
 
@@ -123,6 +124,38 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
       } catch { completion(nil, Self.recordingFailureJson(error)) }
     }
   }
+  private final class RecoveryObserver {
+    weak var owner: NSObject?
+    let callback: () -> Void
+    init(_ owner: NSObject, _ callback: @escaping () -> Void) {
+      self.owner = owner
+      self.callback = callback
+    }
+  }
+  private var recoveryObservers = [ObjectIdentifier: RecoveryObserver]()
+
+  @objc(addRecoveryObserver:callback:)
+  public func addRecoveryObserver(_ owner: NSObject, callback: @escaping () -> Void) {
+    lock.lock()
+    recoveryObservers[ObjectIdentifier(owner)] = RecoveryObserver(owner, callback)
+    lock.unlock()
+  }
+
+  @objc(removeRecoveryObserver:)
+  public func removeRecoveryObserver(_ owner: NSObject) {
+    lock.lock()
+    recoveryObservers.removeValue(forKey: ObjectIdentifier(owner))
+    lock.unlock()
+  }
+
+  private func notifyRecoveryHint() {
+    lock.lock()
+    recoveryObservers = recoveryObservers.filter { $0.value.owner != nil }
+    let callbacks = recoveryObservers.values.map(\.callback)
+    lock.unlock()
+    for callback in callbacks { callback() }
+  }
+
   private var sessions = [UInt64: Entry]()
   private var ownerStates = [ObjectIdentifier: OwnerState]()
   private var cleanupPending = Set<UInt64>()
@@ -331,11 +364,32 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     argsJson: String,
     completion: @escaping (String?, String?) -> Void
   ) {
+    // Preserve session admission order while recorded storage is configured.
+    // Cancellation is allowed ahead so a delayed admission can be cancelled.
+    if op == "op.cancel" {
+      invokeConfigured(sessionId: sessionId, op: op, argsJson: argsJson, completion: completion)
+      return
+    }
+    invokeQueue.async {
+      do {
+        if op == "gatt.subscribe-recorded" { try self.configureRecordingStorage() }
+        self.invokeConfigured(sessionId: sessionId, op: op, argsJson: argsJson, completion: completion)
+      } catch { completion(nil, Self.recordingFailureJson(error)) }
+    }
+  }
+
+  private func invokeConfigured(
+    sessionId: String, op: String, argsJson: String,
+    completion: @escaping (String?, String?) -> Void
+  ) {
     switch entry(sessionId, operation: "rust-core.invoke") {
     case let .failure(failure):
       completion(nil, failure)
     case let .success(entry):
       entry.session.invoke(op: op, argsJson: argsJson, completion: InvokeCompletion { envelope in
+        if (op == "session.dispose" || op == "gatt.unsubscribe") && Self.disposeFailure(envelope) == nil {
+          self.notifyRecoveryHint()
+        }
         completion(envelope, nil)
       })
     }
@@ -428,6 +482,7 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     }
     let shouldRetry = failure != nil && cleanupPending.contains(id)
     lock.unlock()
+    if failure == nil { notifyRecoveryHint() }
     for callback in flight.completions { callback(failure) }
     if shouldRetry { scheduleRetry(id) }
   }

@@ -1,14 +1,23 @@
 // src/core/subscription-registry.ts
 
-// src/core/subscription-registry.ts
-
 import { BackendContractError, contractError } from '../backend-contract/errors'
+import {
+  isRecordingId,
+  MIN_RECORDING_BYTES,
+  MAX_RECORDING_BYTES,
+  MIN_RECORDING_RECORDS,
+  MAX_RECORDING_RECORDS
+} from '../backend-contract/continuation-recording-bounds'
 import { ownBytes } from '../backend-contract/primitives'
 import type { BackendSubscription, BleCentralBackend } from '../backend-contract/backend'
 import type { CleanupFailure, CleanupRecord, NormalizedBleError } from '../backend-contract/errors'
 import type { CharacteristicPath, ConnectionPath, DatabasePath, NotificationValue } from '../backend-contract/gatt'
 import type { BackendIdentity } from '../backend-contract/identity'
-import type { PublicOperationOptions, SubscriptionOptions } from '../backend-contract/operations'
+import type {
+  PublicOperationOptions,
+  RecordedSubscriptionOptions,
+  SubscriptionOptions
+} from '../backend-contract/operations'
 import type { AttachmentBoundIdFactory, AttachmentId, ByteLimit, SubscriptionId } from '../backend-contract/primitives'
 import type { BoundedAsyncStream, StreamItem } from '../backend-contract/streams'
 import { AggregateStreamQuota } from './aggregate-stream-quota'
@@ -37,6 +46,7 @@ interface PhysicalSubscription<Attachment extends string, Identity extends Backe
   readonly key: string
   readonly path: CurrentCharacteristicPath<Attachment>
   readonly queueKey: string
+  readonly recording: RecordedSubscriptionOptions['recording'] | null
   readonly consumers: Set<CoreSubscription<Attachment, Identity>>
   backend: BackendSubscription<Attachment, string, string, string, string> | null
   ready: Promise<void> | null
@@ -141,9 +151,58 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     options: SubscriptionOptions,
     queueKey: string
   ): Promise<CoreSubscription<Attachment, Identity>> {
+    return this.subscribeOwned(path, options, queueKey, null)
+  }
+
+  async subscribeRecorded(
+    path: CurrentCharacteristicPath<Attachment>,
+    options: RecordedSubscriptionOptions,
+    queueKey: string
+  ): Promise<import('../backend-contract/gatt').RecordedSubscription<Attachment>> {
+    const recording = options.recording
+    if (
+      typeof recording !== 'object' ||
+      recording === null ||
+      !isRecordingId(recording.id) ||
+      !Number.isSafeInteger(recording.maxBytes) ||
+      recording.maxBytes < MIN_RECORDING_BYTES ||
+      recording.maxBytes > MAX_RECORDING_BYTES ||
+      !Number.isSafeInteger(recording.maxRecords) ||
+      recording.maxRecords < MIN_RECORDING_RECORDS ||
+      recording.maxRecords > MAX_RECORDING_RECORDS
+    ) {
+      throw contractError('argument.invalid', 'gatt', 'subscription-registry.recording')
+    }
+    if (this.runtime.backend.gatt.subscribeRecorded === undefined) {
+      throw contractError('capability.unsupported', 'gatt', 'subscription-registry.recorded')
+    }
+    const key = `recorded:${this.nextSubscription}`
+    const subscription = await this.subscribeOwned(path, options, queueKey, options.recording)
+    const changed = this.physicalByPath.get(key)?.backend?.changed
+    if (changed === undefined) {
+      await subscription.remove()
+      throw contractError('protocol.violation', 'gatt', 'subscription-registry.recorded-changed')
+    }
+    return Object.freeze({
+      subscriptionId: subscription.subscriptionId,
+      path: subscription.path,
+      recordingId: options.recording.id,
+      changed,
+      observedDelivery: subscription.observedDelivery,
+      remove: () => subscription.remove()
+    })
+  }
+
+  private async subscribeOwned(
+    path: CurrentCharacteristicPath<Attachment>,
+    options: SubscriptionOptions,
+    queueKey: string,
+    recording: RecordedSubscriptionOptions['recording'] | null
+  ): Promise<CoreSubscription<Attachment, Identity>> {
     this.assertCurrent(path)
     this.assertAdmission(options)
-    const key = physicalSubscriptionKey(path, options.deliveryMode)
+    const key =
+      recording === null ? physicalSubscriptionKey(path, options.deliveryMode) : `recorded:${this.nextSubscription}`
     const stream = new CoreBoundedStream<NotificationValue>(options.delivery, options.delivery.overflowPolicy)
     this.runtime.aggregateQuota.register(stream)
     const subscription = new CoreSubscription(
@@ -198,6 +257,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
       key,
       path,
       queueKey,
+      recording,
       consumers: new Set([subscription]),
       backend: null,
       ready: null,
@@ -351,10 +411,18 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     options: SubscriptionOptions,
     correlation: import('../backend-contract/primitives').OperationCorrelation<Attachment, string>
   ): CoreOperationDispatch<BackendSubscription<Attachment, string, string, string, string>> {
-    const dispatch = this.runtime.backend.gatt.subscribe(physical.path, {
-      operation: { ...options, correlation },
-      options
-    })
+    const recorded = this.runtime.backend.gatt.subscribeRecorded
+    const dispatch =
+      physical.recording === null
+        ? this.runtime.backend.gatt.subscribe(physical.path, { operation: { ...options, correlation }, options })
+        : recorded === undefined
+          ? (() => {
+              throw contractError('capability.unsupported', 'gatt', 'subscription-registry.recorded')
+            })()
+          : recorded.call(this.runtime.backend.gatt, physical.path, {
+              operation: { ...options, correlation },
+              options: { ...options, recording: physical.recording }
+            })
     return {
       completion: dispatch.completion.then(async subscription => {
         try {

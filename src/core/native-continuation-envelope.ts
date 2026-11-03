@@ -7,7 +7,7 @@ import {
   parseRecordingControlEnvelope,
   type WireInvokeEnvelope,
   type WireResult
-} from '../backends/reactnative/rust-core-wire'
+} from './recording-wire'
 import type { RecordingControlOperation } from '../backend-contract/continuation-recording-bounds'
 import { BleError } from '../public/errors'
 import { toPublicNormalizedError } from '../public/cleanup'

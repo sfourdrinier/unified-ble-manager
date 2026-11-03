@@ -46,10 +46,18 @@ RCT_EXPORT_MODULE(UnifiedBleRustCore)
 
 - (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
     (const facebook::react::ObjCTurboModule::InitParams &)params {
-  return std::make_shared<facebook::react::NativeUnifiedBleRustCoreSpecJSI>(params);
+  auto module = std::make_shared<facebook::react::NativeUnifiedBleRustCoreSpecJSI>(params);
+  // SpecJSI installs the emitter callback during construction. Observe only
+  // afterward so cleanup on another native thread cannot emit during setup.
+  __weak UnifiedBleRustCore *weakSelf = self;
+  [[UnifiedBleRustCoreSessions shared] addRecoveryObserver:self callback:^{
+    [weakSelf emitOnRecoveryHint:@{@"kind": @"cleanup"}];
+  }];
+  return module;
 }
 
 - (void)invalidate {
+  [[UnifiedBleRustCoreSessions shared] removeRecoveryObserver:self];
   [[UnifiedBleRustCoreSessions shared] closeSessionsOwnedBy:self];
   dispatch_async(dispatch_get_main_queue(), ^{
     self->_accessoryChoicesInvalidated = YES;

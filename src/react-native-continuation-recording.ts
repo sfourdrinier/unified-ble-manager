@@ -1,3 +1,4 @@
+// src/react-native-continuation-recording.ts
 import { Platform } from 'react-native'
 import { rehydratePublicError } from './public/error-bridge'
 import { contractError } from './backend-contract/errors'
@@ -8,12 +9,17 @@ import {
   type ContinuationRecordingController
 } from './core/continuation-recording'
 
+export interface ReactNativeContinuationRecordingController extends ContinuationRecordingController {
+  /** Recheck recordings after native cleanup. The hint is not a persistence receipt. */
+  onRecoveryHint(listener: () => void): () => void
+}
+
 /** Opens no BLE session and requests no Bluetooth permission. Native chooses
  * protected app-private storage; callers supply only recording IDs, not paths.
  * The production binding verifies the sealed binary identity before each call. */
 export function createReactNativeContinuationRecordings(
   options: { readonly rustCore?: ReactNativeRustCoreBinding } = {}
-): ContinuationRecordingController {
+): ReactNativeContinuationRecordingController {
   let binding: ReactNativeRustCoreBinding
   try {
     binding = options.rustCore ?? defaultBinding()
@@ -22,7 +28,7 @@ export function createReactNativeContinuationRecordings(
   }
   const missing = () =>
     Promise.reject(contractError('capability.unsupported', 'restoration', 'continuation.recording.native-controls'))
-  return createNativeContinuationRecordingController(
+  const controller = createNativeContinuationRecordingController(
     {
       status: id =>
         typeof binding.continuationRecordingStatus === 'function' ? binding.continuationRecordingStatus(id) : missing(),
@@ -41,6 +47,19 @@ export function createReactNativeContinuationRecordings(
     },
     'ubm-mobile'
   )
+  return Object.freeze({
+    ...controller,
+    onRecoveryHint(listener: () => void): () => void {
+      try {
+        if (binding.onRecoveryHint === undefined) {
+          throw contractError('capability.unsupported', 'restoration', 'continuation.recording.recovery-hint')
+        }
+        return binding.onRecoveryHint(listener)
+      } catch (error) {
+        throw rehydratePublicError(error)
+      }
+    }
+  })
 }
 
 function defaultBinding(): ReactNativeRustCoreBinding {

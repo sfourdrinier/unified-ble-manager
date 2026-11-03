@@ -91,6 +91,10 @@ const ARG_SCHEMAS = Object.freeze({
     ['peerId', 'selector', 'consumer', 'operationId'],
     ['deliveryMode', 'budgetMs']
   ],
+  'gatt.subscribe-recorded': [
+    ['peerId', 'selector', 'consumer', 'operationId', 'recording'],
+    ['deliveryMode', 'budgetMs']
+  ],
   'gatt.unsubscribe': [['peerId', 'selector', 'consumer', 'operationId'], ['budgetMs']],
   'background.acquire': [
     ['kind', 'reason'],
@@ -874,11 +878,7 @@ class DeterministicRustCoreNative {
   }
 
   commitFor(op, dispatched) {
-    return EFFECTFUL_OPS.has(op)
-      ? dispatched
-        ? 'uncertain'
-        : 'not-dispatched'
-      : null
+    return EFFECTFUL_OPS.has(op) ? (dispatched ? 'uncertain' : 'not-dispatched') : null
   }
 
   takeFault(op) {
@@ -1386,7 +1386,8 @@ class DeterministicRustCoreNative {
         this.completedWrites.push({ peerId: args.peerId, value: Uint8Array.from(attribute.value), mode: args.mode })
         return { commitState: args.mode === 'with-response' ? 'confirmed' : 'unknown' }
       }
-      case 'gatt.subscribe': {
+      case 'gatt.subscribe':
+      case 'gatt.subscribe-recorded': {
         this.connectedLease(session, args.peerId)
         const characteristic = this.characteristic(args.peerId, args.selector, false)
         const notify = Math.floor(characteristic.properties / 0x08) % 2 === 1

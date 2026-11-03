@@ -81,6 +81,7 @@ pub const OPS: &[&str] = &[
     "gatt.write-when-ready",
     "gatt.write-descriptor",
     "gatt.subscribe",
+    "gatt.subscribe-recorded",
     "gatt.unsubscribe",
     "background.acquire",
     "background.release",
@@ -187,6 +188,7 @@ pub(crate) struct SessionState {
     op_sequence: AtomicU64,
     leases: Mutex<HashMap<String, String>>,
     subscriptions: Mutex<HashMap<String, Subscription>>,
+    pending_subscriptions: Mutex<HashSet<String>>,
     /// Leases and subscriptions an adapter reset ended: the core forgot
     /// them, and their release answers `released`, as the legacy backends'
     /// adapter-loss cleanup left terminalized handles.
@@ -195,6 +197,16 @@ pub(crate) struct SessionState {
     scan: Mutex<ScanSlot>,
     scan_ordinal: AtomicU64,
     pub background_scope: BackgroundScope,
+}
+
+struct SubscriptionReservation<'a> {
+    pending: &'a Mutex<HashSet<String>>,
+    consumer: &'a str,
+}
+impl Drop for SubscriptionReservation<'_> {
+    fn drop(&mut self) {
+        lock(self.pending).remove(self.consumer);
+    }
 }
 
 struct AdmissionState {
@@ -225,6 +237,7 @@ impl SessionState {
             op_sequence: AtomicU64::new(0),
             leases: Mutex::new(HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
+            pending_subscriptions: Mutex::new(HashSet::new()),
             reset_leases: Mutex::new(HashMap::new()),
             reset_subscriptions: Mutex::new(HashMap::new()),
             scan: Mutex::new(ScanSlot::Idle),
@@ -300,6 +313,25 @@ fn error(code: BleErrorCode, domain: BleErrorDomain, operation: &str) -> Desktop
     } else {
         error
     }
+}
+
+fn recording_storage_error(failure: &Value, operation: &str) -> DesktopError {
+    let code = if failure["code"] == "argument.invalid" {
+        BleErrorCode::ArgumentInvalid
+    } else {
+        BleErrorCode::PlatformFailure
+    };
+    let detail = failure["detail"]
+        .as_str()
+        .unwrap_or("recording storage operation failed");
+    let platform_code = failure["platform"]["code"]
+        .as_str()
+        .unwrap_or("recording-worker-failed");
+    error(code, BleErrorDomain::Platform, operation)
+        .with_detail(detail)
+        .with_platform(
+            ubm_desktop::PlatformDetail::new("sqlite", platform_code).with_message(detail),
+        )
 }
 
 fn unsupported(operation: &str, detail: &str) -> DesktopError {
@@ -1354,11 +1386,14 @@ impl MobileSession {
                     budget(args, received)?,
                 )
             }
-            "gatt.subscribe" => {
-                args.exact(
-                    &["peerId", "selector", "consumer", "operationId"],
-                    &["deliveryMode", "budgetMs"],
-                )?;
+            "gatt.subscribe" | "gatt.subscribe-recorded" => {
+                let recorded = op == "gatt.subscribe-recorded";
+                let required: &[&str] = if recorded {
+                    &["peerId", "selector", "consumer", "operationId", "recording"]
+                } else {
+                    &["peerId", "selector", "consumer", "operationId"]
+                };
+                args.exact(required, &["deliveryMode", "budgetMs"])?;
                 let mode = args.opt_one_of(
                     "deliveryMode",
                     &[
@@ -1374,6 +1409,17 @@ impl MobileSession {
                         selector: characteristic_selector(args)?,
                         consumer: args.string("consumer")?,
                         mode,
+                        recording: if recorded {
+                            let recording = args.object("recording")?;
+                            recording.exact(&["id", "maxBytes", "maxRecords"], &[])?;
+                            Some(RecordingOptions {
+                                id: recording.string("id")?,
+                                max_bytes: recording.integer("maxBytes", 1 << 30)?,
+                                max_records: recording.integer("maxRecords", 1_000_000)?,
+                            })
+                        } else {
+                            None
+                        },
                     },
                     id_required(args)?,
                     budget(args, received)?,
@@ -2181,7 +2227,11 @@ impl MobileSession {
                 selector,
                 consumer,
                 mode,
-            } => self.subscribe(peer_id, selector, consumer, mode, ctl).await,
+                recording,
+            } => {
+                self.subscribe(peer_id, selector, consumer, mode, recording, ctl)
+                    .await
+            }
             Body::Unsubscribe {
                 peer_id,
                 selector,
@@ -2211,14 +2261,29 @@ impl MobileSession {
                     )
                     .with_detail("no such consumer in this session"));
                 };
-                let physical_disabled = central
-                    .unsubscribe(
-                        &peer_id,
-                        &subscription.selector,
+                let physical_disabled = if host
+                    .recorded_route(&subscription.scope, self.state.id, &consumer)
+                    .is_some()
+                {
+                    host.unsubscribe_recorded(
+                        &subscription.scope,
+                        self.state.id,
+                        &consumer,
                         &subscription.core_consumer,
+                        &subscription.selector,
                         ctl,
                     )
-                    .await?;
+                    .await?
+                } else {
+                    central
+                        .unsubscribe(
+                            &peer_id,
+                            &subscription.selector,
+                            &subscription.core_consumer,
+                            ctl,
+                        )
+                        .await?
+                };
                 host.remove_route(&subscription.scope, self.state.id, &consumer);
                 lock(&self.state.subscriptions).remove(&consumer);
                 Ok(object(vec![
@@ -2642,12 +2707,24 @@ impl MobileSession {
         selector: PathSelector,
         consumer: String,
         mode: Option<&'static str>,
+        recording: Option<RecordingOptions>,
         ctl: OpControl,
     ) -> Result<Value, DesktopError> {
         let host = &*self.host;
-        if lock(&self.state.subscriptions).contains_key(&consumer) {
-            return Err(wire::invalid("args.consumer").with_detail("consumer already subscribed"));
+        {
+            let mut pending = lock(&self.state.pending_subscriptions);
+            if lock(&self.state.subscriptions).contains_key(&consumer)
+                || !pending.insert(consumer.clone())
+            {
+                return Err(
+                    wire::invalid("args.consumer").with_detail("consumer already subscribed")
+                );
+            }
         }
+        let _reservation = SubscriptionReservation {
+            pending: &self.state.pending_subscriptions,
+            consumer: &consumer,
+        };
         let scope = scope_of(&peer_id, &selector);
         let required = match mode {
             Some("require-notification") => Some(DeliveryMode::Notification),
@@ -2707,6 +2784,113 @@ impl MobileSession {
             MobilePlatform::Android => required,
             MobilePlatform::Apple => None,
         };
+        let recorded_route = if let Some(options) = recording {
+            let peer = self.peer_record(&peer_id).await.ok_or_else(|| {
+                error(
+                    BleErrorCode::ConnectionNotFound,
+                    BleErrorDomain::Connection,
+                    "gatt.subscribe-recorded",
+                )
+            })?;
+            let connection_generation = peer.connection_generation.ok_or_else(|| {
+                error(
+                    BleErrorCode::ConnectionStale,
+                    BleErrorDomain::Connection,
+                    "gatt.subscribe-recorded",
+                )
+            })?;
+            let database_generation = peer.database_generation.ok_or_else(|| {
+                error(
+                    BleErrorCode::GattDiscoveryRequired,
+                    BleErrorDomain::Gatt,
+                    "gatt.subscribe-recorded",
+                )
+            })?;
+            if peer.connection_state != Some(ConnectionState::Connected)
+                || peer.database_state != Some(ubm_desktop::DatabaseState::Current)
+            {
+                return Err(error(
+                    BleErrorCode::GattStaleHandle,
+                    BleErrorDomain::Gatt,
+                    "gatt.subscribe-recorded",
+                ));
+            }
+            let clock = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| {
+                    error(
+                        BleErrorCode::PlatformFailure,
+                        BleErrorDomain::Platform,
+                        "gatt.subscribe-recorded.clock",
+                    )
+                })?
+                .as_nanos()
+                .to_string();
+            let backend = host
+                .central
+                .attachment()
+                .backend_instance_id()
+                .as_str()
+                .to_owned();
+            let session = serde_json::json!({"peerId":peer_id,"sessionId":self.id().to_string(),
+                "backendInstanceId":backend,"sessionStartedAtUnixNs":clock,
+                "sessionEpoch":format!("{}:{}:{}", backend, self.id(), clock)});
+            // The wire uses zero-based native occurrences; prepared recording
+            // metadata uses the existing one-based continuation selector contract.
+            let service_occurrence = selector
+                .service_occurrence
+                .and_then(|value| value.checked_add(1))
+                .filter(|value| *value <= wire::MAX_SAFE_INTEGER)
+                .ok_or_else(|| wire::invalid("args.selector.serviceOccurrence"))?;
+            let characteristic_occurrence = selector
+                .characteristic_occurrence
+                .and_then(|value| value.checked_add(1))
+                .filter(|value| *value <= wire::MAX_SAFE_INTEGER)
+                .ok_or_else(|| wire::invalid("args.selector.characteristicOccurrence"))?;
+            let metadata = serde_json::json!({"session":session,"consumer":{
+            "consumer":consumer,"peerId":peer_id,"connectionGeneration":connection_generation,
+            "databaseGeneration":database_generation,"selector":{
+                "serviceUuid":selector.service_uuid,"serviceOccurrence":service_occurrence,
+                "characteristicUuid":selector.characteristic_uuid,"characteristicOccurrence":characteristic_occurrence
+            }}});
+            let declaration = serde_json::json!({"kind":"ordinary-subscription","peerId":peer_id});
+            let recording_id = options.id.clone();
+            let registry = Arc::clone(&host.recording_registry);
+            let registration = serde_json::json!({"t":"consumer-registration","consumer":consumer});
+            let metadata_for_open = metadata.clone();
+            let journal = ubm_desktop::continuation_journal::run_blocking_result(move || {
+                let journal = registry
+                    .open(
+                        &options.id,
+                        &declaration,
+                        ubm_desktop::continuation_journal::JournalQuota {
+                            max_bytes: options.max_bytes,
+                            max_records: options.max_records,
+                        },
+                    )
+                    .map_err(ubm_desktop::continuation::recording_failure)?;
+                journal
+                    .append(&metadata_for_open, &registration)
+                    .map_err(ubm_desktop::continuation::recording_failure)?;
+                Ok(journal)
+            })
+            .await
+            .map_err(|failure| {
+                recording_storage_error(&failure, "gatt.subscribe-recorded.storage")
+            })?;
+            Some(crate::host::RecordedRoute {
+                recording_id,
+                journal,
+                metadata,
+                order: Arc::new(tokio::sync::Mutex::new(())),
+                radio_released: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            })
+        } else {
+            None
+        };
+        let _pending_recording = recorded_route.as_ref().map(|recorded| {
+            host.register_pending_recording(self.state.id, &consumer, recorded.clone())
+        });
         if host.platform == MobilePlatform::Android
             && let Some(preferred) = preferred
         {
@@ -2720,7 +2904,39 @@ impl MobileSession {
             .await;
         host.radio
             .clear_staging(None, Some(&instance_of(&peer_id, &selector)), false);
-        let observed = subscribed?;
+        let observed = match subscribed {
+            Ok(observed) => observed,
+            Err(failure) => {
+                if let Some(recorded) = recorded_route {
+                    host.settle_recorded_ingress_drops().await?;
+                    let terminal = serde_json::json!({"t":"stream-end","consumer":consumer,
+                        "reason":"closed","droppedItems":0,"droppedBytes":0});
+                    let metadata = recorded.metadata;
+                    let journal = recorded.journal;
+                    let result =
+                        ubm_desktop::continuation_journal::run_blocking_result(move || {
+                            journal
+                                .append(&metadata, &terminal)
+                                .map(|_| ())
+                                .map_err(|error| {
+                                    journal.mark_collection_failure(&error);
+                                    ubm_desktop::continuation::recording_failure(error)
+                                })
+                        })
+                        .await;
+                    self.state
+                        .outbox
+                        .recording_changed(&consumer, &recorded.recording_id);
+                    result.map_err(|diagnostic| {
+                        recording_storage_error(
+                            &diagnostic,
+                            "gatt.subscribe-recorded.terminal-storage",
+                        )
+                    })?;
+                }
+                return Err(failure);
+            }
+        };
         let delivery = match host.platform {
             MobilePlatform::Android => observed.as_str(),
             MobilePlatform::Apple => ObservedDelivery::Unknown.as_str(),
@@ -2743,6 +2959,7 @@ impl MobileSession {
                 peer_id,
                 selector,
                 delivery,
+                recorded: recorded_route,
                 terminal: None,
             },
         );
@@ -2750,7 +2967,7 @@ impl MobileSession {
         // flushed now instead of waiting for the next notification.
         host.kick(scope);
         Ok(object(vec![
-            ("consumer", Value::from(consumer)),
+            ("consumer", Value::from(consumer.clone())),
             ("delivery", Value::from(delivery)),
         ]))
     }
@@ -3123,16 +3340,30 @@ impl MobileSession {
             .map(|(consumer, subscription)| (consumer.clone(), subscription.clone()))
             .collect();
         for (consumer, subscription) in subscriptions {
-            match host
-                .central
-                .unsubscribe(
-                    &subscription.peer_id,
-                    &subscription.selector,
+            let released = if host
+                .recorded_route(&subscription.scope, self.state.id, &consumer)
+                .is_some()
+            {
+                host.unsubscribe_recorded(
+                    &subscription.scope,
+                    self.state.id,
+                    &consumer,
                     &subscription.core_consumer,
+                    &subscription.selector,
                     OpControl::unbounded(),
                 )
                 .await
-            {
+            } else {
+                host.central
+                    .unsubscribe(
+                        &subscription.peer_id,
+                        &subscription.selector,
+                        &subscription.core_consumer,
+                        OpControl::unbounded(),
+                    )
+                    .await
+            };
+            match released {
                 Ok(_) => {
                     host.remove_route(&subscription.scope, self.state.id, &consumer);
                     lock(&self.state.subscriptions).remove(&consumer);
@@ -3242,6 +3473,12 @@ impl Control {
     }
 }
 
+struct RecordingOptions {
+    id: String,
+    max_bytes: u64,
+    max_records: u64,
+}
+
 enum Body {
     AdapterState,
     ControlCapabilities,
@@ -3305,6 +3542,7 @@ enum Body {
         selector: PathSelector,
         consumer: String,
         mode: Option<&'static str>,
+        recording: Option<RecordingOptions>,
     },
     Unsubscribe {
         peer_id: String,

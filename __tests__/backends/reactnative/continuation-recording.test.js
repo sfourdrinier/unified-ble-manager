@@ -218,6 +218,11 @@ test('status distinguishes persisted collection failure from retryable local dia
     collectionFailure: { ...diagnostic, persisted: false, persistenceFailure: diagnostic }
   })
   expect((await controller.status('h10')).collectionFailure.persistenceFailure.sqliteExtendedCode).toBe(5)
+  expect((await controller.status('h10')).collectionFailure).not.toHaveProperty('knownRecordedLoss')
+  access.status.mockResolvedValue({ ...snapshot, accepting: false, collectionFailure: { ...diagnostic, persisted: true, knownRecordedLoss: { items: 2, bytes: 7 } } })
+  expect((await controller.status('h10')).collectionFailure.knownRecordedLoss).toEqual({ items: 2, bytes: 7 })
+  access.status.mockResolvedValue({ ...snapshot, accepting: false, collectionFailure: { ...diagnostic, persisted: true, knownRecordedLoss: { items: 2 } } })
+  expect((await controller.status('h10')).collectionFailure.knownRecordedLoss).toEqual({ items: 2 })
   access.status.mockResolvedValue({ ...snapshot, collectionFailure: { ...diagnostic, persisted: true } })
   await expect(controller.status('h10')).rejects.toMatchObject({ code: 'protocol.malformed' })
   access.status.mockResolvedValue({ ...snapshot, recordingId: 'other' })

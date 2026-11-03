@@ -33,3 +33,29 @@ test('unsupported default host throws the public typed error without attempting 
 })
 jest.mock('react-native', () => ({ Platform: { OS: 'web' }, TurboModuleRegistry: { get: jest.fn() } }))
 const { BleError } = require('../../../src/public/errors')
+
+
+test('recovery hint subscribes without a native session and detaches independently', () => {
+  const listeners = new Set()
+  const binding = {
+    openSession: jest.fn(),
+    onRecoveryHint: listener => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    }
+  }
+  const recordings = createReactNativeContinuationRecordings({ rustCore: binding })
+  const listener = jest.fn()
+  const remove = recordings.onRecoveryHint(listener)
+  for (const callback of listeners) callback()
+  expect(listener).toHaveBeenCalledTimes(1)
+  remove()
+  for (const callback of listeners) callback()
+  expect(listener).toHaveBeenCalledTimes(1)
+  expect(binding.openSession).not.toHaveBeenCalled()
+})
+
+test('missing recovery hint capability fails explicitly', () => {
+  const recordings = createReactNativeContinuationRecordings({ rustCore: {} })
+  expect(() => recordings.onRecoveryHint(() => {})).toThrow(BleError)
+})

@@ -1,5 +1,7 @@
 // src/public/gatt.ts
 
+import type { ContinuationRecordingConfiguration } from '../backend-contract/continuation-recording-bounds'
+
 import { canonicalUuidInput } from '../backend-contract/primitives'
 import { awaitWithOperationAdmission } from '../core/unified-ble-core-helpers'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
@@ -82,6 +84,11 @@ export interface GattSubscribeOptions extends OperationOptions {
   readonly stream?: StreamPolicy
 }
 
+export interface GattRecordedSubscribeOptions extends OperationOptions {
+  readonly delivery?: GattSubscribeOptions['delivery']
+  readonly recording: ContinuationRecordingConfiguration
+}
+
 export type GattDelivery = 'notification' | 'indication' | 'unknown'
 
 export interface GattValueEvent {
@@ -154,6 +161,7 @@ export interface GattCharacteristic {
    * characteristic admits a later subscription.
    */
   subscribe(options?: GattSubscribeOptions): Promise<GattSubscription>
+  subscribeRecorded(options: GattRecordedSubscribeOptions): Promise<GattRecordedSubscription>
   withSubscription<T>(options: GattSubscribeOptions, action: (subscription: GattSubscription) => Promise<T>): Promise<T>
   descriptor(uuid: UuidInput, selector?: OccurrenceSelector): GattDescriptor
 }
@@ -190,6 +198,15 @@ export interface GattSubscription {
   remove(): Promise<CleanupRecord>
 }
 
+export interface GattRecordedSubscription {
+  readonly subscriptionId: string
+  readonly recordingId: string
+  readonly changed: PublicBoundedAsyncStream<{ readonly recordingId: string }>
+  readonly requestedDelivery: GattSubscribeOptions['delivery']
+  readonly effectiveDelivery: GattDelivery
+  remove(): Promise<CleanupRecord>
+}
+
 export interface PublicGattDatabaseSource extends DiscoveredGattDatabaseHandle {
   readonly changed?: BoundedAsyncStream<GattDatabaseChangedEvent>
   assertCurrent?(): void
@@ -198,9 +215,9 @@ export interface PublicGattDatabaseSource extends DiscoveredGattDatabaseHandle {
 
 /** Retains unpublishable subscriptions until retry or manager teardown settles them. */
 export class ProvisionalGattSubscriptionOwner {
-  private readonly pending = new Set<SubscriptionHandle>()
-  private readonly scopes = new Map<SubscriptionHandle, string>()
-  private readonly removals = new Map<SubscriptionHandle, Promise<CleanupRecord>>()
+  private readonly pending = new Set<Pick<SubscriptionHandle, 'remove'>>()
+  private readonly scopes = new Map<Pick<SubscriptionHandle, 'remove'>, string>()
+  private readonly removals = new Map<Pick<SubscriptionHandle, 'remove'>, Promise<CleanupRecord>>()
   private readonly releasedCleanup: CleanupRecord = { state: 'released', failures: [] }
   private released = false
   private readonly parentRelease: Promise<CleanupRecord>
@@ -217,7 +234,7 @@ export class ProvisionalGattSubscriptionOwner {
   }
 
   async compensate(
-    subscription: SubscriptionHandle,
+    subscription: Pick<SubscriptionHandle, 'remove'>,
     path: PortableCurrentCharacteristicPath,
     primaryError: unknown
   ): Promise<never> {
@@ -256,7 +273,7 @@ export class ProvisionalGattSubscriptionOwner {
     this.confirmParentRelease(this.releasedCleanup)
   }
 
-  private remove(subscription: SubscriptionHandle): Promise<CleanupRecord> {
+  private remove(subscription: Pick<SubscriptionHandle, 'remove'>): Promise<CleanupRecord> {
     if (this.released) return Promise.resolve(this.releasedCleanup)
     const inFlight = this.removals.get(subscription)
     if (inFlight !== undefined) return inFlight
@@ -612,6 +629,66 @@ class PublicGattCharacteristic implements GattCharacteristic {
           requestedDelivery: options.delivery,
           effectiveDelivery,
           values: mapGattValueStream(subscription.values, () => this.source.monotonicNow()),
+          remove: () => rehydrateCleanup(subscription.remove())
+        })
+      } catch (error) {
+        return this.provisionalOwner.compensate(subscription, this.indexedRecord.record.path, error)
+      }
+    })
+  }
+
+  async subscribeRecorded(options: GattRecordedSubscribeOptions): Promise<GattRecordedSubscription> {
+    return this.run(async () => {
+      const now = () => this.source.monotonicNow()
+      const operation = normalizeOperationOptions(options, now)
+      assertSubscribeAdmission(operation, now)
+      await awaitWithOperationAdmission(
+        runWithCleanup(
+          async () => undefined,
+          () => this.provisionalOwner.retryPending(this.indexedRecord.record.path)
+        ),
+        operation,
+        now,
+        'public-gatt.subscribe-recorded.provisional-cleanup'
+      )
+      assertSubscribeAdmission(operation, now)
+      this.source.assertCurrent?.()
+      const selected = resolveDelivery(this.properties, options.delivery)
+      if (this.source.deliverySelection === 'unknown' && options.delivery?.startsWith('require-')) {
+        throw contractError('capability.limited', 'gatt', 'public-gatt.subscribe-recorded.delivery-selection')
+      }
+      const subscribe = this.source.subscribeRecorded
+      if (subscribe === undefined)
+        throw contractError('capability.unsupported', 'gatt', 'public-gatt.subscribe-recorded')
+      const subscription = await subscribe.call(this.source, this.indexedRecord.record.path, {
+        ...operation,
+        recording: options.recording,
+        delivery: resolveStreamPolicy('balanced'),
+        deliveryMode:
+          options.delivery ??
+          (selected === 'notification'
+            ? 'prefer-notification'
+            : selected === 'indication'
+              ? 'prefer-indication'
+              : undefined)
+      })
+      try {
+        const effectiveDelivery = subscription.observedDelivery ?? 'unknown'
+        if (
+          effectiveDelivery !== 'notification' &&
+          effectiveDelivery !== 'indication' &&
+          effectiveDelivery !== 'unknown'
+        ) {
+          throw contractError('protocol.violation', 'gatt', 'public-gatt.subscribe-recorded.observed-delivery')
+        }
+        return Object.freeze({
+          subscriptionId: subscription.subscriptionId,
+          recordingId: subscription.recordingId,
+          changed: mapPublicBoundedAsyncStream(subscription.changed, value =>
+            Object.freeze({ recordingId: value.recordingId })
+          ),
+          requestedDelivery: options.delivery,
+          effectiveDelivery,
           remove: () => rehydrateCleanup(subscription.remove())
         })
       } catch (error) {

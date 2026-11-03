@@ -21,6 +21,7 @@ import type {
   CharacteristicReadResult,
   ReadResult,
   SubscribeRequest,
+  RecordedSubscribeRequest,
   WriteRequest,
   WriteResult
 } from './operations'
@@ -332,6 +333,17 @@ export interface GattBackend<Attachment extends string> {
     path: CharacteristicPath<Attachment, Connection, Database, Service, Characteristic, 'current'>,
     request: SubscribeRequest<Attachment, Operation>
   ): BackendOperationDispatch<Attachment, BackendSubscription<Attachment, string, string, string, string>>
+  /** An independently owned native consumer; unsupported hosts omit this capability. */
+  subscribeRecorded?<
+    Connection extends string,
+    Database extends string,
+    Service extends string,
+    Characteristic extends string,
+    Operation extends string
+  >(
+    path: CharacteristicPath<Attachment, Connection, Database, Service, Characteristic, 'current'>,
+    request: RecordedSubscribeRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, BackendSubscription<Attachment, string, string, string, string>>
   unsubscribe<
     Connection extends string,
     Database extends string,
@@ -356,6 +368,7 @@ export interface BackendSubscription<
   /** Delivery observed by the host after enablement; absence means unobserved. */
   readonly observedDelivery?: NotificationValue['delivery']
   readonly notifications: BoundedAsyncStream<NotificationValue>
+  readonly changed?: BoundedAsyncStream<{ readonly recordingId: string }>
 }
 export interface BackendEventBase<Attachment extends string> {
   readonly attachment: AttachmentRecord<Attachment>

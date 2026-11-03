@@ -1,4 +1,6 @@
 const { createPublicGattDatabase } = require('../src/public/gatt')
+const { CoreBoundedStream } = require('../src/core/bounded-stream')
+const { resolveStreamPolicy } = require('../src/public/stream-presets')
 
 function terminal() {
   return { correlation: 'operation-1', outcome: 'succeeded', cause: null }
@@ -148,5 +150,70 @@ describe('GattCharacteristic.writeWhenReady', () => {
     await expect(characteristic.writeWhenReady(new Uint8Array([1]))).rejects.toMatchObject({
       code: 'capability.unsupported'
     })
+  })
+})
+
+describe('GattCharacteristic.subscribeRecorded', () => {
+  test('forwards the existing characteristic path and returns no value stream', async () => {
+    const { source } = createSource()
+    const snapshot = source.snapshot
+    source.snapshot = async () => {
+      const graph = await snapshot()
+      graph.characteristics[0].properties.notify = true
+      return graph
+    }
+    const remove = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const changed = new CoreBoundedStream(resolveStreamPolicy('latest'), 'latest')
+    changed.emit({ recordingId: 'recording-1' }, 0)
+    source.subscribeRecorded = jest.fn(async path => ({
+      subscriptionId: 'subscription-1',
+      path,
+      recordingId: 'recording-1',
+      changed,
+      observedDelivery: 'notification',
+      remove
+    }))
+    const database = await createPublicGattDatabase(source)
+    const subscription = await database.characteristic('180f', '2a19').subscribeRecorded({
+      recording: { id: 'recording-1', maxBytes: 1048576, maxRecords: 100 },
+      delivery: 'require-notification'
+    })
+    expect(source.subscribeRecorded).toHaveBeenCalledWith(
+      expect.objectContaining({ characteristicUuid: '2a19' }),
+      expect.objectContaining({
+        recording: { id: 'recording-1', maxBytes: 1048576, maxRecords: 100 },
+        deliveryMode: 'require-notification'
+      })
+    )
+    expect(subscription).toMatchObject({
+      subscriptionId: 'subscription-1',
+      recordingId: 'recording-1',
+      effectiveDelivery: 'notification'
+    })
+    expect(subscription).not.toHaveProperty('values')
+    expect((await subscription.changed[Symbol.asyncIterator]().next()).value).toEqual({
+      kind: 'value',
+      value: { recordingId: 'recording-1' }
+    })
+    await expect(subscription.remove()).resolves.toMatchObject({ state: 'released' })
+    expect(remove).toHaveBeenCalledTimes(1)
+  })
+
+  test('fails unsupported without falling back to an ordinary subscription', async () => {
+    const { source } = createSource()
+    const snapshot = source.snapshot
+    source.snapshot = async () => {
+      const graph = await snapshot()
+      graph.characteristics[0].properties.notify = true
+      return graph
+    }
+    source.subscribe = jest.fn(source.subscribe)
+    const database = await createPublicGattDatabase(source)
+    await expect(
+      database.characteristic('180f', '2a19').subscribeRecorded({
+        recording: { id: 'recording-1', maxBytes: 1048576, maxRecords: 100 }
+      })
+    ).rejects.toMatchObject({ code: 'capability.unsupported' })
+    expect(source.subscribe).not.toHaveBeenCalled()
   })
 })

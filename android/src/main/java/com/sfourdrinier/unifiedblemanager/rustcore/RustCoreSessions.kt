@@ -65,8 +65,12 @@ class RustCoreSessions(
 
   fun invoke(sessionIdText: String, op: String, argsJson: String, reply: Reply) = perform(reply, op) {
     val sessionId = sessionId(sessionIdText, op)
+    if (op == "gatt.subscribe-recorded") host.configureRecordingStorage()
     core.invoke(sessionId, op, argsJson, MobileCoreBridge.InvokeCallback { envelope ->
-      if (op == DISPOSE && disposeReleased(envelope)) released.add(sessionId)
+      if ((op == DISPOSE || op == "gatt.unsubscribe") && disposeReleased(envelope)) {
+        if (op == DISPOSE) released.add(sessionId)
+        host.notifyRecoveryHint()
+      }
       reply.resolve(envelope)
     })
   }
@@ -297,6 +301,7 @@ class RustCoreSessions(
   private fun dispose(sessionId: Long, onOutcome: (RustCoreRejection?) -> Unit) {
     try {
       core.invoke(sessionId, DISPOSE, "{}", MobileCoreBridge.InvokeCallback { envelope ->
+        if (disposeReleased(envelope)) host.notifyRecoveryHint()
         onOutcome(disposeOutcome(envelope))
       })
     } catch (error: RuntimeException) {

@@ -276,6 +276,16 @@ Qualify the exact candidate through the required local and cross-platform gates,
 independent review and sealed-package checks before tagging current `main`.
 Publication uses the existing trusted publisher; never publish from a laptop.
 
+## Releasing 5.2.0
+
+The 5.2.0 minor candidate adds opt-in journaled ordinary React Native
+characteristic subscriptions using the existing recording controller. Native
+queue admission is not a durable commit. Device, background and power-loss
+qualification remain separate from the source and synthetic test evidence.
+
+Qualify the frozen candidate, including refreshed native artifacts and the
+required release checks, before the normal trusted-publisher workflow.
+
 ## Releasing 5.1.3
 
 The 5.1.3 patch stops desktop Linux (BlueZ) from reporting a 512-byte
@@ -1247,7 +1257,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=5.1.3
+version=5.2.0
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
@@ -1268,8 +1278,8 @@ Then verify:
 - its attached tarball/SBOM/license artifacts correspond to the release
   workflow output;
 - a clean consumer, in a directory outside this repository, can install
-  `unified-ble-manager@5.1.3` explicitly and import the documented host
-  entrypoints. A separate bare install must select npm `latest` (`5.1.3` after
+  `unified-ble-manager@5.2.0` explicitly and import the documented host
+  entrypoints. A separate bare install must select npm `latest` (`5.2.0` after
   stable publication). For RC verification, pin the actual numbered candidate
   instead and verify `next` separately. This
   catches a packaging gap the repository's

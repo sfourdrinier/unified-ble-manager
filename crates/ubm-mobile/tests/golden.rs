@@ -375,6 +375,9 @@ async fn generate() -> String {
     .await;
     r.invoke(&session, "write malformed base64", "gatt.write",
         json!({"peerId": peer, "selector": sel, "valueB64": "AID", "mode": "with-response", "operationId": "w-3"})).await;
+    r.invoke(&session, "recorded subscribe requires configured storage", "gatt.subscribe-recorded",
+        json!({"peerId": peer, "selector": sel, "consumer": "recorded", "operationId": "recorded-sub-1",
+            "recording": {"id":"golden","maxBytes":1048576,"maxRecords":100}})).await;
     r.invoke(&session, "subscribe", "gatt.subscribe",
         json!({"peerId": peer, "selector": sel, "consumer": "hr", "deliveryMode": "require-notification", "operationId": "sub-1"})).await;
     let epoch = radio

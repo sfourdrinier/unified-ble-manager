@@ -18,6 +18,7 @@ import type {
 import type {
   CharacteristicRead,
   PublicOperationOptions,
+  RecordedSubscriptionOptions,
   SubscriptionOptions,
   WriteMode,
   WritePolicy,
@@ -326,6 +327,11 @@ export interface GattDatabase<Attachment extends string, Connection extends stri
     value: BorrowedBytes,
     options: WritePolicy
   ): Promise<WriteReceipt<Attachment, string>>
+  /** Opens a journaled consumer; values are read only through recording prepare/acknowledge. */
+  subscribeRecorded?<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
+    path: CharacteristicPath<Attachment, Connection, Database, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
+    options: RecordedSubscriptionOptions
+  ): Promise<RecordedSubscription<Attachment, Connection, Database, string, string, string>>
   subscribe<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
     path: CharacteristicPath<Attachment, Connection, Database, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
     options: SubscriptionOptions
@@ -382,6 +388,35 @@ export interface NotificationValue {
   readonly value: OwnedBytes
   readonly delivery: NotificationDelivery
   readonly receipt?: NotificationReceipt
+}
+export interface RecordedSubscription<
+  Attachment extends string = string,
+  Connection extends string = string,
+  Database extends string = string,
+  ServiceOccurrence extends string = string,
+  CharacteristicOccurrence extends string = string,
+  SubscriptionScope extends string = string
+> {
+  readonly subscriptionId: SubscriptionId<
+    Attachment,
+    Connection,
+    Database,
+    ServiceOccurrence,
+    CharacteristicOccurrence,
+    SubscriptionScope
+  >
+  readonly path: CharacteristicPath<
+    Attachment,
+    Connection,
+    Database,
+    ServiceOccurrence,
+    CharacteristicOccurrence,
+    'current'
+  >
+  readonly recordingId: string
+  readonly changed: BoundedAsyncStream<{ readonly recordingId: string }>
+  readonly observedDelivery?: NotificationDelivery
+  remove(): Promise<CleanupRecord>
 }
 export interface Subscription<
   Attachment extends string = string,

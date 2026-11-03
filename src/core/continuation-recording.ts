@@ -1,9 +1,11 @@
+// src/core/continuation-recording.ts
+
 import { contractError } from '../backend-contract/errors'
 import {
   normalizeContinuationSelector,
   type BackgroundContinuationResubscribeSelector
 } from '../backend-contract/continuation-selector'
-import { parseDrainText, type WireDrainRecord } from '../backends/reactnative/rust-core-wire'
+import { parseDrainText, type WireDrainRecord } from './recording-wire'
 import { rehydratePublicPromise } from '../public/error-bridge'
 import { utf8ByteLength } from '../backend-contract/serializable'
 import {
@@ -12,6 +14,11 @@ import {
   nativeContinuationTransportError
 } from './native-continuation-envelope'
 import {
+  isRecordingId,
+  MIN_RECORDING_BYTES,
+  MAX_RECORDING_BYTES,
+  MIN_RECORDING_RECORDS,
+  MAX_RECORDING_RECORDS,
   MAX_RECORDING_BATCH_ITEMS,
   MAX_RECORDING_BATCH_BYTES,
   MAX_RECORDING_TOKEN_BYTES,
@@ -41,6 +48,7 @@ export interface ContinuationRecordingStatus {
     | (ContinuationRecordingFailure & {
         readonly persisted: boolean
         readonly persistenceFailure?: ContinuationRecordingFailure
+        readonly knownRecordedLoss?: { readonly items: number; readonly bytes?: number }
       })
     | null
 }
@@ -100,7 +108,7 @@ export interface ContinuationRecordingController {
 }
 
 export interface ContinuationRecordingMetadata {
-  /** Session clock context and ordering, not per-notification host receive timing. */
+  /** Session context and durable ordering; individual value receipts are carried on their records when available. */
   readonly session: {
     readonly peerId: string
     readonly sessionId: string
@@ -208,7 +216,8 @@ function status(input: unknown, id: string): ContinuationRecordingStatus {
     exact(diagnostic, [
       ...keys,
       'persisted',
-      ...(Object.hasOwn(diagnostic, 'persistenceFailure') ? ['persistenceFailure'] : [])
+      ...(Object.hasOwn(diagnostic, 'persistenceFailure') ? ['persistenceFailure'] : []),
+      ...(Object.hasOwn(diagnostic, 'knownRecordedLoss') ? ['knownRecordedLoss'] : [])
     ])
     if (typeof diagnostic.persisted !== 'boolean') return malformed()
     let persistenceFailure: ContinuationRecordingFailure | undefined
@@ -218,10 +227,20 @@ function status(input: unknown, id: string): ContinuationRecordingStatus {
       if (diagnostic.persisted) return malformed()
       persistenceFailure = failure(nested)
     }
+    let knownRecordedLoss: { readonly items: number; readonly bytes?: number } | undefined
+    if (diagnostic.knownRecordedLoss !== undefined) {
+      const loss = object(diagnostic.knownRecordedLoss)
+      exact(loss, ['items', ...(Object.hasOwn(loss, 'bytes') ? ['bytes'] : [])])
+      knownRecordedLoss = Object.freeze({
+        items: integer(loss.items, 0),
+        ...(Object.hasOwn(loss, 'bytes') ? { bytes: integer(loss.bytes, 0) } : {})
+      })
+    }
     collectionFailure = Object.freeze({
       ...failure(diagnostic),
       persisted: diagnostic.persisted,
-      ...(persistenceFailure === undefined ? {} : { persistenceFailure })
+      ...(persistenceFailure === undefined ? {} : { persistenceFailure }),
+      ...(knownRecordedLoss === undefined ? {} : { knownRecordedLoss })
     })
   }
   if (value.accepting !== (value.phase === 'recording' && collectionFailure === null)) return malformed()
@@ -232,8 +251,8 @@ function status(input: unknown, id: string): ContinuationRecordingStatus {
     records: integer(value.records, 0),
     bytes: integer(value.bytes, 0),
     lostRecords: integer(value.lostRecords, 0),
-    maxBytes: integer(value.maxBytes, 1048576, 1073741824),
-    maxRecords: integer(value.maxRecords, 1, 1000000),
+    maxBytes: integer(value.maxBytes, MIN_RECORDING_BYTES, MAX_RECORDING_BYTES),
+    maxRecords: integer(value.maxRecords, MIN_RECORDING_RECORDS, MAX_RECORDING_RECORDS),
     encrypted: false,
     runtimeFailure,
     collectionFailure
@@ -241,7 +260,7 @@ function status(input: unknown, id: string): ContinuationRecordingStatus {
 }
 
 function recordingId(value: string): string {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(value)) {
+  if (!isRecordingId(value)) {
     throw contractError('argument.invalid', 'restoration', 'continuation.recording.id')
   }
   return value

@@ -1,4 +1,15 @@
+// src/backend-contract/continuation-setup.ts
+
 import { contractError } from './errors'
+import {
+  isRecordingId,
+  MIN_RECORDING_BYTES,
+  MAX_RECORDING_BYTES,
+  MIN_RECORDING_RECORDS,
+  MAX_RECORDING_RECORDS,
+  type ContinuationRecordingConfiguration
+} from './continuation-recording-bounds'
+export type { ContinuationRecordingConfiguration } from './continuation-recording-bounds'
 import { normalizeContinuationSelector, type BackgroundContinuationResubscribeSelector } from './continuation-selector'
 
 /** A correlated, single-packet application acknowledgement, not an ATT acknowledgement.
@@ -42,21 +53,13 @@ export interface ContinuationLinkConfiguration {
   }
 }
 
-/** Opt-in plaintext journal in the host's private storage. No implicit retention
- * quota or caller-selected path; acknowledgement and deletion are explicit. */
-export interface ContinuationRecordingConfiguration {
-  readonly id: string
-  readonly maxBytes: number
-  readonly maxRecords: number
-}
-
 export function normalizeContinuationRecording(input: unknown): ContinuationRecordingConfiguration {
   const value = record(input, ['id', 'maxBytes', 'maxRecords'], 'recording')
-  if (typeof value.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(value.id)) return invalid('recording.id')
+  if (!isRecordingId(value.id)) return invalid('recording.id')
   return Object.freeze({
     id: value.id,
-    maxBytes: integer(value.maxBytes, 1048576, 1073741824, 'recording.maxBytes'),
-    maxRecords: integer(value.maxRecords, 1, 1000000, 'recording.maxRecords')
+    maxBytes: integer(value.maxBytes, MIN_RECORDING_BYTES, MAX_RECORDING_BYTES, 'recording.maxBytes'),
+    maxRecords: integer(value.maxRecords, MIN_RECORDING_RECORDS, MAX_RECORDING_RECORDS, 'recording.maxRecords')
   })
 }
 

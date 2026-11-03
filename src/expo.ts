@@ -32,6 +32,7 @@ import type { ReactNativeBleManagerOptions } from './react-native-manager'
 export type { BleManagerCreateOptions } from './public/host-identity'
 export { normalizeBleManagerCreateOptions } from './public/host-identity'
 export { createReactNativeContinuationRecordings } from './react-native-continuation-recording'
+export type { ReactNativeContinuationRecordingController } from './react-native-continuation-recording'
 export type {
   ContinuationRecordingController,
   ContinuationRecordingStatus,

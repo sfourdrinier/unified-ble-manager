@@ -778,6 +778,37 @@ impl Outbox {
         }
     }
 
+    /// Queue a coalesced, payload-free wake for a committed recording change.
+    pub fn recording_changed(&self, consumer: &str, recording_id: &str) {
+        {
+            let mut queues = lock(&self.queues);
+            if queues.control.iter().any(|entry| {
+                entry.record["t"] == "recording-changed"
+                    && entry.record["consumer"] == consumer
+                    && entry.record["recordingId"] == recording_id
+            }) {
+                return;
+            }
+            if queues.control.len() >= CONTROL_RECORD_CAP {
+                queues.control_lost += 1;
+                queues.control_lost_total += 1;
+            } else {
+                queues.ordinal += 1;
+                let ordinal = queues.ordinal;
+                queues.control.push_back(Entry { ordinal, bytes: 0,
+                    record: serde_json::json!({"t":"recording-changed", "consumer":consumer, "recordingId":recording_id}) });
+            }
+        }
+        self.signal();
+    }
+
+    /// Retire queued hints together with their route.
+    pub fn remove_recording_hints(&self, consumer: &str) {
+        lock(&self.queues).control.retain(|entry| {
+            !(entry.record["t"] == "recording-changed" && entry.record["consumer"] == consumer)
+        });
+    }
+
     /// Queue one control record.
     pub fn push_control(&self, record: Value) {
         self.push_control_record(record, false);
@@ -982,6 +1013,39 @@ mod tests {
 
     fn data(n: u64) -> Value {
         object(vec![("t", Value::from("adv")), ("n", Value::from(n))])
+    }
+
+    #[test]
+    fn recorded_hints_coalesce_until_drain_and_can_be_enqueued_again() {
+        let outbox = Outbox::new(7, Arc::new(NoWake));
+        outbox.recording_changed("consumer", "recording");
+        outbox.recording_changed("consumer", "recording");
+        let first = outbox.drain(10, 1024);
+        assert_eq!(first["records"].as_array().unwrap().len(), 1);
+        assert_eq!(first["records"][0]["recordingId"], "recording");
+        outbox.recording_changed("consumer", "recording");
+        assert_eq!(
+            outbox.drain(10, 1024)["records"].as_array().unwrap().len(),
+            1
+        );
+        outbox.recording_changed("consumer", "recording");
+        outbox.remove_recording_hints("consumer");
+        assert!(
+            outbox.drain(10, 1024)["records"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn refused_recording_hint_increments_control_loss() {
+        let outbox = Outbox::new(7, Arc::new(NoWake));
+        for index in 0..CONTROL_RECORD_CAP {
+            outbox.push_control(control(index as u64));
+        }
+        outbox.recording_changed("consumer", "recording");
+        assert_eq!(outbox.drain(1, 1024)["controlLost"], 1);
     }
 
     /// X-R5: control loss is reported within a bounded number of drains even

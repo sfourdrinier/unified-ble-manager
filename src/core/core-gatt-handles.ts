@@ -23,6 +23,7 @@ import type {
   LongWritePolicy,
   LongWriteReceipt,
   PublicOperationOptions,
+  RecordedSubscriptionOptions,
   SubscriptionOptions,
   WriteMode,
   WritePolicy,
@@ -594,6 +595,10 @@ export class CoreGattDatabase<Attachment extends string, Identity extends Backen
     options: SubscriptionOptions
   ): Promise<CoreSubscription<Attachment, Identity>> {
     return this.core.subscribe(this, path, options)
+  }
+
+  subscribeRecorded(path: CurrentCharacteristicPath<Attachment>, options: RecordedSubscriptionOptions) {
+    return this.core.subscribeRecorded(this, path, options)
   }
 
   isCurrent(): boolean {

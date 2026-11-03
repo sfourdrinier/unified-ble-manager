@@ -42,6 +42,17 @@ class RustCoreProcessHost(
   private var presenceForeground: PresenceForegroundContinuation? = null
   private val routes = ConcurrentHashMap<Long, (Long) -> Unit>()
   private val unroutedWakes = AtomicLong()
+  private val recoveryObservers = ConcurrentHashMap.newKeySet<Runnable>()
+
+  fun addRecoveryObserver(observer: Runnable) { recoveryObservers.add(observer) }
+  fun removeRecoveryObserver(observer: Runnable) { recoveryObservers.remove(observer) }
+  internal fun notifyRecoveryHint() {
+    recoveryObservers.forEach { observer ->
+      try { observer.run() } catch (error: RuntimeException) {
+        log("recovery hint delivery failed: ${error.javaClass.name}")
+      }
+    }
+  }
   private sealed interface CleanupObligation {
     data class Session(val id: Long) : CleanupObligation
     data class Scope(val id: String) : CleanupObligation
@@ -282,7 +293,7 @@ class RustCoreProcessHost(
     try {
       when (obligation) {
         is CleanupObligation.Session -> core.invoke(obligation.id, RustCoreSessions.DISPOSE, "{}", MobileCoreBridge.InvokeCallback { envelope ->
-          finishRetainedCleanup(obligation, generation, attempt, RustCoreSessions.disposeOutcome(envelope))
+          finishRetainedCleanup(obligation, generation, attempt, RustCoreSessions.disposeOutcome(envelope), RustCoreSessions.disposeReleased(envelope))
         })
         is CleanupObligation.Scope -> {
           val record = core.releaseBackgroundScope(obligation.id)
@@ -302,7 +313,7 @@ class RustCoreProcessHost(
     }
   }
 
-  private fun finishRetainedCleanup(obligation: CleanupObligation, generation: Long, attempt: Int, outcome: RustCoreRejection?) {
+  private fun finishRetainedCleanup(obligation: CleanupObligation, generation: Long, attempt: Int, outcome: RustCoreRejection?, confirmedSessionRelease: Boolean = false) {
     val accepted = synchronized(cleanupLock) {
       val state = retainedCleanups[obligation]
       if (state == null || state.generation != generation || !state.inFlight) false else {
@@ -312,6 +323,7 @@ class RustCoreProcessHost(
       }
     }
     if (!accepted) return
+    if (outcome == null && confirmedSessionRelease) notifyRecoveryHint()
     if (outcome == null) log("process owner released $obligation on attempt $attempt") else {
       log("process owner $obligation cleanup attempt $attempt failed: ${outcome.toJson()}")
       scheduleRetainedCleanup(obligation, cleanupRetryDelay(attempt))

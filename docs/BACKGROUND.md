@@ -651,7 +651,9 @@ bytes, not filesystem allocation units or backups. Storage and capacity failures
 are explicit; there is no silent fallback to volatile collection. A terminal
 `collectionFailure` stops admission and remains observable even when the disk
 cannot persist that failure. Its `persisted` field distinguishes that situation.
-An ordinary `runtimeFailure` is diagnostic history, not evidence that collection
+When available, `knownRecordedLoss` reports the number of known refused source
+items and, if known, their raw byte count. An absent byte count means unknown;
+older failure records may omit the aggregate entirely. An ordinary `runtimeFailure` is diagnostic history, not evidence that collection
 was stopped. Committed-process-restart tests are not power-loss qualification.
 
 Consumer registration metadata is committed before subscribing. Records retain
@@ -674,13 +676,53 @@ remain part of the recording. Ingress-loss deltas are durable evidence even
 when the volatile delivery queue coalesces them or reaches its control limit;
 later deltas never modify an already prepared prefix.
 
-The current recording schema has no per-notification host receive timestamp.
-The session start/epoch and durable ordinal establish context and ordering, not
-arrival spacing. Device timestamps carried in payloads remain unchanged. Do not
-derive an arrival time from export time or assume uniformly spaced arrivals.
-Applications requiring host receive timing cannot obtain it from this schema;
-adding it requires a separately specified native-ingress clock and schema
-compatibility change. This corrective candidate does not invent that timing.
+Value records preserve paired native UTC and monotonic ingress receipt clocks
+when the host supplies them, including the clock ID. Receipt evidence can be
+absent and is never reconstructed at prepare time. The session epoch and
+durable ordinal provide context and ordering; a host receipt is not a device
+timestamp and does not establish when the sensor measured the value.
+
+React Native ordinary subscriptions may opt into the same journal with
+`characteristic.subscribeRecorded({ recording: { id, maxBytes, maxRecords } })`.
+A recorded subscription has no value stream: read bounded batches through
+`manager.continuation.recordings.prepare(id, limits)`, archive their records
+idempotently by recording ID and ordinal, then acknowledge the exact token.
+The same peer may contribute multiple selectors; different peers need distinct
+recording IDs. Ordinary consumers continue independently. The subscription's
+bounded `changed` stream carries payload-free recording ID hints after journal
+commit or an append/status failure, and can report overflow. A hint is not a
+durability receipt. Prepare and check status once after subscribing,
+then drain prepared batches and inspect status on hints or overflow; hints are
+not values, cursors, acknowledgements, or a guarantee of OS wake. After confirmed
+`remove()`, prepare again until drained and check status even if `changed` has
+already ended: cleanup can commit a final tail.
+
+For offline row storage, `serializeContinuationRecordingRecords(records)` and
+`deserializeContinuationRecordingRecords(serialized, limits)` preserve typed
+bytes and metadata. The decoded `bytes` count describes that serialization, not
+the original native prefix. These helpers neither create an ACK token nor confer
+acknowledgement authority; retain the original prepare token for the journal.
+
+`remove()` releases
+only the radio subscription; stopping or clearing the recording is separate.
+The application owns account authorization and must fence retired-account reads
+and acknowledgments while retaining unacknowledged records. During removal an
+ordered ingress cutoff separates that consumer's final values from later OS
+callbacks. Before reporting successful release, values already routed before
+the cutoff are journaled or a storage failure is reported in recording status.
+A successful `remove()` reports radio cleanup, not preservation; `prepare()` does
+not include recording status. Call `status(id)` separately to inspect collection
+failure and known loss. If its failure evidence is unpersisted, it remains in
+memory only and can be lost on process death; status itself can fail if the
+database cannot be read. When another consumer shares the characteristic,
+callbacks after the cutoff remain available to that consumer.
+
+Admission to a native memory queue is not a durable acceptance. A value is
+recoverable only after its SQLite transaction commits; process death earlier can
+lose it. Notification ingress overflow is reported as loss evidence, but neither
+that reporting nor a native receipt is a guarantee against process death before
+commit. This mechanism does not claim physical-radio, background or power-loss
+qualification.
 
 The recording controller has separate operations:
 
@@ -778,8 +820,15 @@ React Native and Expo expose `createReactNativeContinuationRecordings()` from
 their explicit host entrypoints. It requires no manager, Bluetooth session, or
 Bluetooth permission. Native code selects the app's private directory and the
 binding checks the exact installed binary identity before storage operations.
-Expo also exposes the same controller at `manager.continuation.recordings`;
-it remains usable after `manager.destroy()` because the recording is not owned
+Subscribe with `controller.onRecoveryHint(listener)` before the initial recovery
+pass; unsubscribe the listener when its owner retires. A payload-free hint asks
+the application to recheck status and drain recordings after native subscription
+or session cleanup. If a hint arrives during a pass, run another pass. A hint is
+not proof of persistence, quiescence, or an OS wake; retry and resume recovery are
+still application responsibilities. Failed native cleanup emits no success hint.
+Expo also exposes the shared recording controls at `manager.continuation.recordings`;
+the recovery observer is available on the standalone mobile controller. The
+recording controls remain usable after `manager.destroy()` because the recording is not owned
 by that manager's radio lease. Android uses no-backup app storage. Apple uses
 Application Support excluded from backup with protection available after the
 first device unlock; an OS refusal before that unlock remains explicit.

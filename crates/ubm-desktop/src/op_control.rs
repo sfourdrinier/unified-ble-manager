@@ -411,9 +411,22 @@ pub struct OpControl {
     connection_lease: Option<String>,
     delivery_preference: Option<crate::boundary::DeliveryMode>,
     gatt_admission: Option<std::sync::Arc<crate::GattAdmission>>,
+    unsubscribe_window: Option<Window>,
 }
 
 impl OpControl {
+    /// Keep ticket settlement owned while a host wraps an operation before
+    /// the central's operation future takes over that responsibility.
+    pub fn settlement_guard(&self) -> impl Drop + Send + 'static {
+        struct OwnedSettlement(OpTicket);
+        impl Drop for OwnedSettlement {
+            fn drop(&mut self) {
+                self.0.settle();
+            }
+        }
+        OwnedSettlement(self.ticket.clone())
+    }
+
     /// Control from an explicit budget and ticket.
     #[must_use]
     pub fn new(budget: Budget, ticket: OpTicket) -> Self {
@@ -423,6 +436,7 @@ impl OpControl {
             connection_lease: None,
             delivery_preference: None,
             gatt_admission: None,
+            unsubscribe_window: None,
         }
     }
 
@@ -435,6 +449,17 @@ impl OpControl {
 
     pub(crate) fn gatt_admission(&self) -> Option<std::sync::Arc<crate::GattAdmission>> {
         self.gatt_admission.clone()
+    }
+
+    pub(crate) fn prepare_unsubscribe_window(&mut self) -> Window {
+        *self
+            .unsubscribe_window
+            .get_or_insert_with(|| self.budget.window(LIVENESS_CLEANUP))
+    }
+
+    pub(crate) fn unsubscribe_window(&self) -> Window {
+        self.unsubscribe_window
+            .unwrap_or_else(|| self.budget.window(LIVENESS_CLEANUP))
     }
 
     /// Bind GATT admission to the caller's existing authoritative lease.
