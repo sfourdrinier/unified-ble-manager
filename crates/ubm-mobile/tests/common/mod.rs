@@ -412,8 +412,12 @@ pub fn recording_test_directory(test_name: &str) -> Option<std::path::PathBuf> {
     if let Some(path) = std::env::var_os(DIRECTORY) {
         return Some(path.into());
     }
-    let directory =
-        std::env::temp_dir().join(format!("ubm-isolated-{}-{test_name}", std::process::id()));
+    // Fully qualified libtest names contain `::`, which is not a portable path.
+    let directory_name = test_name.replace("::", "-");
+    let directory = std::env::temp_dir().join(format!(
+        "ubm-isolated-{}-{directory_name}",
+        std::process::id()
+    ));
     std::fs::create_dir(&directory).expect("create isolated recording directory");
     let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
         .args(["--exact", test_name, "--nocapture"])
