@@ -6,9 +6,11 @@ use ubm_mobile::{Instance, MobilePlatform, RadioIngress, RadioRequest};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recorded_and_ordinary_consumers_have_independent_delivery_and_cursor() {
-    let directory =
-        std::env::temp_dir().join(format!("ubm-ordinary-recording-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
+    let Some(directory) = recording_test_directory(
+        "recorded_and_ordinary_consumers_have_independent_delivery_and_cursor",
+    ) else {
+        return;
+    };
     let radio = Scripted::polar();
     let (host, _) = open(&radio, MobilePlatform::Android).await;
     host.continuation()
@@ -129,15 +131,16 @@ async fn recorded_and_ordinary_consumers_have_independent_delivery_and_cursor() 
     );
     ok(&call(&session, "session.dispose", "{}").await);
     host.shutdown().await;
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn notification_queued_during_disable_is_recorded_before_release() {
+    let Some(directory) =
+        recording_test_directory("notification_queued_during_disable_is_recorded_before_release")
+    else {
+        return;
+    };
     use ubm_mobile::{RadioCompletion, RequestKind};
-    let directory =
-        std::env::temp_dir().join(format!("ubm-recorded-disable-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
     let radio = Scripted::new(Box::new(|request| match request {
         RadioRequest::DisableNotifications { .. } => Reply::Hold,
         request => polar_responder(request),
@@ -228,11 +231,15 @@ async fn notification_queued_during_disable_is_recorded_before_release() {
     assert_eq!(entry["record"]["receipt"]["origin"], "native");
     ok(&call(&session, "session.dispose", "{}").await);
     host.shutdown().await;
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn committed_recording_reopens_after_process_exit_before_ack() {
+    let Some(directory) =
+        recording_test_directory("committed_recording_reopens_after_process_exit_before_ack")
+    else {
+        return;
+    };
     const KEY: &str = "UBM_ORDINARY_RESTART_DIRECTORY";
     if let Some(path) = std::env::var_os(KEY) {
         let directory = std::path::PathBuf::from(path);
@@ -305,9 +312,6 @@ async fn committed_recording_reopens_after_process_exit_before_ack() {
         std::fs::write(directory.join("prepared.json"), batch.to_string()).unwrap();
         std::process::exit(0);
     }
-    let directory =
-        std::env::temp_dir().join(format!("ubm-recorded-restart-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
     let result = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -334,15 +338,17 @@ async fn committed_recording_reopens_after_process_exit_before_ack() {
         0,
         0,
     ));
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recording_id_refuses_other_peer_and_quota_before_cccd() {
+    let Some(directory) =
+        recording_test_directory("recording_id_refuses_other_peer_and_quota_before_cccd")
+    else {
+        return;
+    };
     use ubm_mobile::RequestKind;
     const OTHER: &str = "A0:9E:1A:00:00:02";
-    let directory = std::env::temp_dir().join(format!("ubm-recorded-owner-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
     let radio = Scripted::polar();
     let (host, _) = open(&radio, MobilePlatform::Android).await;
     host.continuation()
@@ -394,13 +400,15 @@ async fn recording_id_refuses_other_peer_and_quota_before_cccd() {
     assert_eq!(radio.count(RequestKind::EnableNotifications), before);
     ok(&call(&session, "session.dispose", "{}").await);
     host.shutdown().await;
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn quota_refusal_is_explicit_and_never_becomes_an_ordinary_value() {
-    let directory = std::env::temp_dir().join(format!("ubm-recorded-quota-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
+    let Some(directory) =
+        recording_test_directory("quota_refusal_is_explicit_and_never_becomes_an_ordinary_value")
+    else {
+        return;
+    };
     let radio = Scripted::polar();
     let (host, _) = open(&radio, MobilePlatform::Android).await;
     host.continuation()
@@ -465,14 +473,16 @@ async fn quota_refusal_is_explicit_and_never_becomes_an_ordinary_value() {
     assert!(status["collectionFailure"].is_object());
     ok(&call(&session, "session.dispose", "{}").await);
     host.shutdown().await;
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn different_peers_record_independently_in_one_session() {
+    let Some(directory) =
+        recording_test_directory("different_peers_record_independently_in_one_session")
+    else {
+        return;
+    };
     const OTHER: &str = "A0:9E:1A:00:00:02";
-    let directory = std::env::temp_dir().join(format!("ubm-recorded-peers-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
     let radio = Scripted::polar();
     let (host, _) = open(&radio, MobilePlatform::Android).await;
     host.continuation()
@@ -549,16 +559,17 @@ async fn different_peers_record_independently_in_one_session() {
     }
     ok(&call(&session, "session.dispose", "{}").await);
     host.shutdown().await;
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shared_cccd_cutoff_excludes_later_ingress_but_keeps_ordinary_delivery() {
+    let Some(directory) = recording_test_directory(
+        "shared_cccd_cutoff_excludes_later_ingress_but_keeps_ordinary_delivery",
+    ) else {
+        return;
+    };
     use ubm_mobile::{RadioCompletion, ReadProvenance, RequestKind};
-    let directory =
-        std::env::temp_dir().join(format!("ubm-recorded-cutoff-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
     let radio = Scripted::new(Box::new(|request| match request {
         RadioRequest::Read { .. } => Reply::Hold,
         request => polar_responder(request),
@@ -730,15 +741,17 @@ async fn shared_cccd_cutoff_excludes_later_ingress_but_keeps_ordinary_delivery()
     assert_eq!(values, vec!["AQ=="]);
     ok(&call(&session, "session.dispose", "{}").await);
     host.shutdown().await;
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refused_physical_cleanup_retains_owner_and_can_retry() {
+    let Some(directory) =
+        recording_test_directory("refused_physical_cleanup_retains_owner_and_can_retry")
+    else {
+        return;
+    };
     use std::sync::atomic::{AtomicBool, Ordering};
     use ubm_mobile::{FailureKind, PlatformFailure, RadioCompletion};
-    let directory = std::env::temp_dir().join(format!("ubm-recorded-retry-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
     let first = AtomicBool::new(true);
     let radio = Scripted::new(Box::new(move |request| match request {
         RadioRequest::DisableNotifications { .. } if first.swap(false, Ordering::SeqCst) => {
@@ -804,5 +817,4 @@ async fn refused_physical_cleanup_retains_owner_and_can_retry() {
     );
     ok(&call(&session, "session.dispose", "{}").await);
     host.shutdown().await;
-    std::fs::remove_dir_all(directory).unwrap();
 }

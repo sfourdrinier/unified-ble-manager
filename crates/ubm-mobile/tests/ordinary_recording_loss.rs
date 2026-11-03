@@ -6,10 +6,12 @@ use ubm_mobile::{Instance, MobilePlatform, RadioIngress, RadioRequest};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refused_final_drain_reports_loss_after_radio_release() {
+    let Some(directory) =
+        recording_test_directory("refused_final_drain_reports_loss_after_radio_release")
+    else {
+        return;
+    };
     use ubm_mobile::{RadioCompletion, RequestKind};
-    let directory =
-        std::env::temp_dir().join(format!("ubm-recorded-disable-loss-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
     let radio = Scripted::new(Box::new(|request| match request {
         RadioRequest::DisableNotifications { .. } => Reply::Hold,
         request => polar_responder(request),
@@ -110,5 +112,4 @@ async fn refused_final_drain_reports_loss_after_radio_release() {
     assert_eq!(status["collectionFailure"]["persisted"], true);
     ok(&call(&session, "session.dispose", "{}").await);
     host.shutdown().await;
-    std::fs::remove_dir_all(directory).unwrap();
 }

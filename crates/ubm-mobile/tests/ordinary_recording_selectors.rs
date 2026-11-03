@@ -6,10 +6,11 @@ use ubm_mobile::{MobilePlatform, RadioCompletion, RadioIngress, RadioRequest};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_recording_contains_independent_selectors() {
+    let Some(directory) = recording_test_directory("one_recording_contains_independent_selectors")
+    else {
+        return;
+    };
     const SECOND: &str = "00002a38-0000-1000-8000-00805f9b34fb";
-    let directory =
-        std::env::temp_dir().join(format!("ubm-recorded-selectors-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
     let radio = Scripted::new(Box::new(|request| match request {
         RadioRequest::Discover { .. } => {
             let mut services = polar_services();
@@ -86,5 +87,4 @@ async fn one_recording_contains_independent_selectors() {
     }
     ok(&call(&session, "session.dispose", "{}").await);
     host.shutdown().await;
-    std::fs::remove_dir_all(directory).unwrap();
 }

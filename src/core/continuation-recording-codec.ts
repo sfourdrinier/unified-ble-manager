@@ -3,7 +3,7 @@
 import { contractError } from '../backend-contract/errors'
 import { MAX_RECORDING_BATCH_BYTES, MAX_RECORDING_BATCH_ITEMS } from '../backend-contract/continuation-recording-bounds'
 import { utf8ByteLength } from '../backend-contract/serializable'
-import { encodeBase64 } from '../backends/reactnative/rust-core-wire'
+import { encodeBase64 } from './recording-wire'
 import { rehydratePublicValue } from '../public/error-bridge'
 import {
   parseContinuationRecordingRecords,

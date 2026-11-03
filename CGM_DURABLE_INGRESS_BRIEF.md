@@ -130,3 +130,23 @@ The Android producer warned that standalone `readelf` was absent and skipped
 its separate machine check; NDK `llvm-readelf` verified 16 KiB alignment. This
 is local build/identity evidence, not a physical-radio qualification. Other
 desktop platform artifacts remain for their respective CI hosts.
+
+## CI follow-up at 9835a3e
+
+PR CI run 41631061127 failed both Linux Node packed-browser gates because the
+public recording codec reached a React Native wire module, and its Windows Rust
+lane failed twelve new recording tests at directory removal while the process-wide
+journal authority still retained SQLite handles. The wire validators now have one
+host-neutral owner reused by the React Native wire surface. Recording tests run
+in isolated child processes; their parent removes each directory only after the
+child succeeds and exits. Independent review found no further actionable cleanup
+issue; the Windows lane still requires hosted verification.
+
+Local verification on the corrected tree passed the root/web production Webpack
+host-module guard, 289 focused wire/recording tests, all twelve mobile recording
+integration tests including subprocess and restart paths, lint/typecheck, Rust
+formatting, protocol, docs, native identity and native status. An intermediate
+full package run had one desktop acquired-GATT timing failure (448 of 449 suites
+passed); that test passed in isolation. A subsequent full package run passed all
+449 suites and 5,850 tests. These are local and synthetic results; a new
+source-bound packed candidate and Windows hosted results are still required.

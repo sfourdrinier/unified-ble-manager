@@ -5,7 +5,7 @@ import {
   normalizeContinuationSelector,
   type BackgroundContinuationResubscribeSelector
 } from '../backend-contract/continuation-selector'
-import { parseDrainText, type WireDrainRecord } from '../backends/reactnative/rust-core-wire'
+import { parseDrainText, type WireDrainRecord } from './recording-wire'
 import { rehydratePublicPromise } from '../public/error-bridge'
 import { utf8ByteLength } from '../backend-contract/serializable'
 import {

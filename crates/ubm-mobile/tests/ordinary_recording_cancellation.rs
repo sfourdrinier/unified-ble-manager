@@ -8,9 +8,11 @@ use ubm_mobile::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_inflight_recorded_subscribe_retains_registration_and_no_owner() {
-    let directory =
-        std::env::temp_dir().join(format!("ubm-recorded-cancel-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
+    let Some(directory) = recording_test_directory(
+        "cancelling_inflight_recorded_subscribe_retains_registration_and_no_owner",
+    ) else {
+        return;
+    };
     let radio = Scripted::new(Box::new(|request| match request {
         RadioRequest::EnableNotifications { .. } => Reply::Hold,
         request => polar_responder(request),
@@ -112,17 +114,18 @@ async fn cancelling_inflight_recorded_subscribe_retains_registration_and_no_owne
     let disposal = ok(&call(&session, "session.dispose", "{}").await);
     assert_eq!(disposal["state"], "released");
     host.shutdown().await;
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_waits_for_an_already_queued_global_drop() {
+    let Some(directory) =
+        recording_test_directory("cancellation_waits_for_an_already_queued_global_drop")
+    else {
+        return;
+    };
     use ubm_mobile::{RadioCompletion, ReadProvenance};
     const OTHER: &str = "A0:9E:1A:00:00:02";
-    let directory =
-        std::env::temp_dir().join(format!("ubm-recorded-drop-fence-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
     let radio = Scripted::new(Box::new(|request| match request {
         RadioRequest::Read { .. } => Reply::Hold,
         RadioRequest::EnableNotifications { instance, .. } if instance.peer_id == OTHER => {
@@ -266,5 +269,4 @@ async fn cancellation_waits_for_an_already_queued_global_drop() {
     );
     ok(&call(&session, "session.dispose", "{}").await);
     host.shutdown().await;
-    std::fs::remove_dir_all(directory).unwrap();
 }
