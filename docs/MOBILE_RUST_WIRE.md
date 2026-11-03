@@ -1038,7 +1038,9 @@ are retained when present. Queue admission alone is not durable acceptance.
 After a journal commit, the host coalesces payload-free `recording-changed`
 controls by consumer and recording ID through the existing session wake path.
 These bounded hints can overflow or end; they carry neither values nor ACK
-rights. Callers perform an initial prepare/status check and repeat on hints or
+rights. Append/status failures also emit hints, including failures whose status
+could not be persisted; a hint does not establish storage success. Callers
+perform an initial prepare/status check and repeat on hints or
 overflow. After confirmed removal, they must prepare until drained and check
 status again even if the hint stream ended before cleanup committed its final
 tail. Recording status remains the authority for collection failure.

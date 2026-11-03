@@ -3498,6 +3498,8 @@ mod signal_tests {
             .with_gatt_admission(host.inner.central.admit_gatt(POLAR).unwrap());
         let second = OpControl::budget_ms(3000)
             .with_gatt_admission(host.inner.central.admit_gatt(POLAR).unwrap());
+        let order = &route.recorded.as_ref().unwrap().order;
+        let held_order = order.lock().await;
         let later = host.inner.unsubscribe_recorded(
             &scope,
             route.session_id,
@@ -3513,7 +3515,7 @@ mod signal_tests {
                 .is_pending()
         );
         assert!(!host.recorded_ingress_paused());
-        assert!(route.recorded.as_ref().unwrap().order.try_lock().is_ok());
+        drop(held_order);
         host.ingest(crate::RadioIngress::Notification {
             instance: crate::Instance {
                 peer_id: POLAR.into(),

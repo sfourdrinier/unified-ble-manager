@@ -690,7 +690,8 @@ idempotently by recording ID and ordinal, then acknowledge the exact token.
 The same peer may contribute multiple selectors; different peers need distinct
 recording IDs. Ordinary consumers continue independently. The subscription's
 bounded `changed` stream carries payload-free recording ID hints after journal
-commit, and can report overflow. Prepare and check status once after subscribing,
+commit or an append/status failure, and can report overflow. A hint is not a
+durability receipt. Prepare and check status once after subscribing,
 then drain prepared batches and inspect status on hints or overflow; hints are
 not values, cursors, acknowledgements, or a guarantee of OS wake. After confirmed
 `remove()`, prepare again until drained and check status even if `changed` has
