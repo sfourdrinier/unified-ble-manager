@@ -819,8 +819,15 @@ React Native and Expo expose `createReactNativeContinuationRecordings()` from
 their explicit host entrypoints. It requires no manager, Bluetooth session, or
 Bluetooth permission. Native code selects the app's private directory and the
 binding checks the exact installed binary identity before storage operations.
-Expo also exposes the same controller at `manager.continuation.recordings`;
-it remains usable after `manager.destroy()` because the recording is not owned
+Subscribe with `controller.onRecoveryHint(listener)` before the initial recovery
+pass; unsubscribe the listener when its owner retires. A payload-free hint asks
+the application to recheck status and drain recordings after native subscription
+or session cleanup. If a hint arrives during a pass, run another pass. A hint is
+not proof of persistence, quiescence, or an OS wake; retry and resume recovery are
+still application responsibilities. Failed native cleanup emits no success hint.
+Expo also exposes the shared recording controls at `manager.continuation.recordings`;
+the recovery observer is available on the standalone mobile controller. The
+recording controls remain usable after `manager.destroy()` because the recording is not owned
 by that manager's radio lease. Android uses no-backup app storage. Apple uses
 Application Support excluded from backup with protection available after the
 first device unlock; an OS refusal before that unlock remains explicit.

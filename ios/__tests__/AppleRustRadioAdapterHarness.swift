@@ -1252,6 +1252,18 @@ final class Harness {
     )
     let ownerA = NSObject()
     let ownerB = NSObject()
+    let observerOwner = NSObject()
+    let hintLock = NSLock()
+    var hints = 0
+    lifecycle.addRecoveryObserver(observerOwner) {
+      hintLock.lock(); hints += 1; hintLock.unlock()
+    }
+    func hintCount() -> Int { hintLock.lock(); defer { hintLock.unlock() }; return hints }
+    func waitForHints(_ expected: Int) {
+      let deadline = Date().addingTimeInterval(10)
+      while hintCount() < expected && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+      check(hintCount() == expected, "expected \(expected) recovery hints, got \(hintCount())")
+    }
     func open(_ owner: NSObject) -> String {
       let result: (String?, String?) = waitFor("lifecycle open") { done in
         lifecycle.openSession("lifecycle", expectedWireRevision: mobileWireRevision(), ownerToken: owner, onWake: { _ in }) {
@@ -1278,12 +1290,14 @@ final class Harness {
     lifecycle.closeSessions(ownedBy: ownerA)
     check(gate.waitForAttempts(first, 2), "failed module cleanup was not retried without another module event")
     waitUntilClosed(lifecycle, first)
+    waitForHints(1)
     let other: (String?, String?) = waitFor("unrelated owner") { done in
       lifecycle.invoke(sessionId: unaffected, op: "adapter.state", argsJson: "{}") { done(($0, $1)) }
     }
     check(json(other.0 ?? "{}")["ok"] as? Bool == true, "another module's session was disposed")
     let otherClose: String? = waitFor("unrelated close") { done in lifecycle.closeSession(unaffected) { done($0) } }
     check(otherClose == nil, "unrelated close failed")
+    check(hintCount() == 2, "explicit successful close must emit a recovery hint")
 
     let ownerC = NSObject()
     let racing = open(ownerC)
@@ -1292,13 +1306,20 @@ final class Harness {
     lifecycle.closeSession(racing) { _ in explicitDone.signal() }
     lifecycle.closeSessions(ownedBy: ownerC)
     check(gate.attempts(racing) == 1, "explicit close and invalidation overlapped native disposal")
+    check(hintCount() == 2, "pending disposal emitted a false recovery hint")
     gate.releaseHeldFailure(racing)
     check(explicitDone.wait(timeout: .now() + timeout) == .success, "explicit close did not settle")
     check(gate.waitForAttempts(racing, 2), "racing failed disposal was not retried")
     waitUntilClosed(lifecycle, racing)
+    waitForHints(3)
     gate.repeatHeldFailure(racing)
     Thread.sleep(forTimeInterval: 0.05)
     check(gate.attempts(racing) == 2, "stale disposal callback scheduled another retry")
+    lifecycle.removeRecoveryObserver(observerOwner)
+    let detachedOwner = NSObject()
+    let detached = open(detachedOwner)
+    let detachedClose: String? = waitFor("detached observer close") { done in lifecycle.closeSession(detached) { done($0) } }
+    check(detachedClose == nil && hintCount() == 3, "detached observer received a recovery hint")
 
     let admissionEntered = DispatchSemaphore(value: 0)
     let allowAdmission = DispatchSemaphore(value: 0)
@@ -1319,6 +1340,9 @@ final class Harness {
       disposeInvoker: gate.invoke,
       retryDelay: .milliseconds(20)
     )
+    admission.addRecoveryObserver(observerOwner) {
+      hintLock.lock(); hints += 1; hintLock.unlock()
+    }
     let openDone = DispatchSemaphore(value: 0)
     DispatchQueue.global().async {
       admission.openSession("late", expectedWireRevision: mobileWireRevision(), ownerToken: admissionOwner, onWake: { _ in }) { value, failure in
@@ -1336,6 +1360,8 @@ final class Harness {
     check(lateId != nil, "native admission did not create a session")
     check(gate.waitForAttempts(lateId!, 1), "late native session was not handed to process cleanup")
     waitUntilClosed(admission, lateId!)
+    waitForHints(4)
+    admission.removeRecoveryObserver(observerOwner)
   }
 
   func translationChecks() {

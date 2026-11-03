@@ -21,6 +21,48 @@ class RustCoreSessionsTest {
   private var packageName: String? = "com.example.app"
   private val sessions = RustCoreSessions(core, host, DirectExecutor, { wakes.add(it) }, { packageName }, SecureRandom(), { logs.add(it) })
 
+  @Test fun recoveryObserversSeeOnlyCompletedCleanupAndCanDetachWithoutRadio() {
+    var first = 0
+    var second = 0
+    val observer = Runnable { first++ }
+    val other = Runnable { second++ }
+    host.addRecoveryObserver(observer)
+    host.addRecoveryObserver(other)
+    assertEquals(0, radioHostBuilds)
+    open()
+    val failed = Captured()
+    sessions.invoke("7", "gatt.unsubscribe", "{}", failed)
+    core.callbacks.last().onResult("{\"ok\":false,\"error\":{\"code\":\"platform.failure\"}}")
+    assertEquals(0, first)
+    val pending = Captured()
+    sessions.invoke("7", "gatt.unsubscribe", "{}", pending)
+    assertEquals(0, first) // initial recovery can run while the old cleanup is held
+    core.callbacks.last().onResult("{\"ok\":true,\"value\":{\"state\":\"released\"}}")
+    assertEquals(1, first)
+    assertEquals(1, second)
+    host.removeRecoveryObserver(observer)
+    val dispose = Captured()
+    sessions.invoke("7", "session.dispose", "{}", dispose)
+    core.callbacks.last().onResult("{\"ok\":true,\"value\":{\"state\":\"released\"}}")
+    assertEquals(1, first)
+    assertEquals(2, second)
+  }
+
+  @Test fun recoveryHintWaitsForRetainedCleanupRetrySuccess() {
+    val tasks = QueuedExecutor()
+    val processHost = RustCoreProcessHost(core, { unusedRadioHost() }, { _, task -> tasks.execute(task) }, { logs.add(it) })
+    var hints = 0
+    processHost.addRecoveryObserver(Runnable { hints++ })
+    processHost.retainSessionCleanup(7L, "failed")
+    tasks.runNext()
+    core.callbacks[0].onResult("{\"ok\":true,\"value\":{\"state\":\"release-failed\",\"failures\":[]}}")
+    assertEquals(0, hints)
+    tasks.runNext()
+    core.callbacks[1].onResult("{\"ok\":true,\"value\":{\"state\":\"released\",\"failures\":[]}}")
+    assertEquals(1, hints)
+    assertTrue(processHost.retainedCleanupSessions().isEmpty())
+  }
+
   @Test fun trustedDirectRecordingRefusesMissingStorageBeforeNativeAcquisition() {
     val declaration = com.sfourdrinier.unifiedblemanager.presence.BackgroundContinuationDeclaration.parse(
       """{"onAppearance":"native","peerId":"AA:BB:CC:DD:EE:FF","resubscribe":[],"recording":{"id":"direct","maxBytes":1048576,"maxRecords":1000}}"""

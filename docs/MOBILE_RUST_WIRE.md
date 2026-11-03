@@ -1042,3 +1042,12 @@ rights. Callers perform an initial prepare/status check and repeat on hints or
 overflow. After confirmed removal, they must prepare until drained and check
 status again even if the hint stream ended before cleanup committed its final
 tail. Recording status remains the authority for collection failure.
+
+The standalone React Native recording controller also exposes a payload-free
+`onRecoveryHint` observer. Successful native unsubscribe or session cleanup
+notifies active module observers, including cleanup completed by a retained
+retry. Failed cleanup does not notify. This is a request to recheck recording
+status and data, not a persistence receipt or proof all owners are quiescent.
+Install the observer before the initial recovery pass and repeat a pass when a
+hint arrives during it. Observer installation does not open or close a session
+or install Bluetooth; delivery is not an OS wake guarantee.

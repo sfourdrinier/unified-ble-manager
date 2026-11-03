@@ -40,6 +40,16 @@ void rejectWithFailure(RCTPromiseRejectBlock reject, NSString *failureJson) {
 
 RCT_EXPORT_MODULE(UnifiedBleRustCore)
 
+- (instancetype)init {
+  if ((self = [super init])) {
+    __weak UnifiedBleRustCore *weakSelf = self;
+    [[UnifiedBleRustCoreSessions shared] addRecoveryObserver:self callback:^{
+      [weakSelf emitOnRecoveryHint:@{@"kind": @"cleanup"}];
+    }];
+  }
+  return self;
+}
+
 // Loading this module also exposes offline recording controls. Radio ownership
 // begins at openSession or the separate configured native launch bootstrap,
 // never as a side effect of requesting retained data.
@@ -50,6 +60,7 @@ RCT_EXPORT_MODULE(UnifiedBleRustCore)
 }
 
 - (void)invalidate {
+  [[UnifiedBleRustCoreSessions shared] removeRecoveryObserver:self];
   [[UnifiedBleRustCoreSessions shared] closeSessionsOwnedBy:self];
   dispatch_async(dispatch_get_main_queue(), ^{
     self->_accessoryChoicesInvalidated = YES;

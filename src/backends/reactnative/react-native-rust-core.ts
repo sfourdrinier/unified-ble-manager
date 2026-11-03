@@ -58,6 +58,7 @@ export interface ReactNativeRustCoreBinding {
   authorizedAccessories?(): Promise<string>
   /** Verify the sealed binary and protocol revisions without acquiring a session. */
   verifyNativeIdentity(): Promise<void>
+  onRecoveryHint?(listener: () => void): () => void
   continuationRecordingStatus?(id: string): Promise<string>
   continuationRecordingPrepare?(id: string, maxItems: number, maxBytes: number): Promise<string>
   continuationRecordingAcknowledge?(id: string, token: string): Promise<string>

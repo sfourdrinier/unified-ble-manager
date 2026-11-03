@@ -10,6 +10,10 @@ All notable changes to `unified-ble-manager` are documented here.
   consumer routing and existing recording prepare/acknowledge controls. Native
   ingress queue admission is not a durable commit; physical collection and
   power-loss behavior remain unqualified.
+- Expose a payload-free mobile recovery hint after successful native cleanup so
+  a recreated JavaScript runtime can recheck recordings for a final tail.
+- Acquire recorded-unsubscribe FIFO admission before pausing ingress, preserving
+  the operation deadline and cleanup ownership through cancellation and retry.
 
 ## [5.1.3] - 2026-10-26
 

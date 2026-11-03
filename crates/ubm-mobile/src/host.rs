@@ -1395,6 +1395,7 @@ impl HostInner {
         selector: &PathSelector,
         ctl: OpControl,
     ) -> Result<bool, DesktopError> {
+        let settlement = ctl.settlement_guard();
         let recorded = self
             .recorded_route(scope, session_id, consumer)
             .ok_or_else(|| {
@@ -1404,6 +1405,12 @@ impl HostInner {
                     "gatt.unsubscribe.recorded-route",
                 )
             })?;
+        // A later FIFO slot must never hold the route or global ingress fence
+        // while an earlier slot is waiting to acquire that same fence.
+        let ctl = self
+            .central
+            .wait_unsubscribe_admission(&scope.0, ctl)
+            .await?;
         let guard = recorded.order.clone().lock_owned().await;
         if recorded.radio_released.load(Ordering::SeqCst) {
             drop(guard);
@@ -1441,6 +1448,7 @@ impl HostInner {
         let wake_session = self.session(session_id);
         let released_state = Arc::clone(&recorded.radio_released);
         let (result, guard) = tokio::task::spawn_blocking(move || {
+            let _settlement = settlement;
             let _guard = guard;
             let _disable_guard = _disable_guard;
             let drain = |poll| {
@@ -1469,12 +1477,12 @@ impl HostInner {
                 }
             };
             let result = runtime.block_on(central.unsubscribe_draining(&peer, &selector, &core_consumer, ctl, Some(&drain)));
+            if result.is_ok() {
+                released_state.store(true, Ordering::SeqCst);
+            }
             (result, _guard)
         }).await.map_err(|_| DesktopError::new(ubm_core::contracts::BleErrorCode::PlatformFailure,
             ubm_core::contracts::BleErrorDomain::Platform, "gatt.unsubscribe.recorded-worker"))?;
-        if result.is_ok() {
-            released_state.store(true, Ordering::SeqCst);
-        }
         // The signal pump needs this same route-order lock to persist a queued
         // global drop. Retain the route, but release the lock before waiting.
         drop(guard);
@@ -3430,6 +3438,122 @@ fn shutdown_failures(report: ubm_desktop::ShutdownReport) -> Vec<Value> {
 
 #[cfg(test)]
 mod signal_tests {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recorded_unsubscribe_later_slot_cannot_hold_the_ingress_fence() {
+        use crate::test_common::*;
+        use serde_json::json;
+        use std::future::Future;
+        use std::task::Poll;
+        use ubm_desktop::OpControl;
+
+        let Some(directory) = recording_test_directory(
+            "host::signal_tests::recorded_unsubscribe_later_slot_cannot_hold_the_ingress_fence",
+        ) else {
+            return;
+        };
+        let radio = Scripted::polar();
+        let (host, _) = open(&radio, crate::MobilePlatform::Android).await;
+        host.continuation()
+            .configure_recording_directory(&directory)
+            .unwrap();
+        let session = host.open_session("reverse-admission").unwrap();
+        for (operation, id) in [
+            ("connection.connect", "connect"),
+            ("gatt.discover", "discover"),
+        ] {
+            ok(&call(
+                &session,
+                operation,
+                &json!({"peerId":POLAR,"lease":"lease","operationId":id}).to_string(),
+            )
+            .await);
+        }
+        ok(&call(&session, "gatt.subscribe-recorded", &json!({"peerId":POLAR,"selector":selector(),"consumer":"recorded","operationId":"subscribe","recording":{"id":"reverse","maxBytes":1048576,"maxRecords":1000}}).to_string()).await);
+        let epoch = radio
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|request| match request {
+                crate::RadioRequest::EnableNotifications { epoch, .. } => Some(*epoch),
+                _ => None,
+            })
+            .unwrap();
+        let (scope, route) = {
+            let routes = super::lock(&host.inner.routes);
+            let (scope, routes) = routes
+                .iter()
+                .find(|(_, routes)| routes.iter().any(|route| route.consumer == "recorded"))
+                .unwrap();
+            (
+                scope.clone(),
+                routes
+                    .iter()
+                    .find(|route| route.consumer == "recorded")
+                    .unwrap()
+                    .clone(),
+            )
+        };
+        let first = OpControl::budget_ms(3000)
+            .with_gatt_admission(host.inner.central.admit_gatt(POLAR).unwrap());
+        let second = OpControl::budget_ms(3000)
+            .with_gatt_admission(host.inner.central.admit_gatt(POLAR).unwrap());
+        let later = host.inner.unsubscribe_recorded(
+            &scope,
+            route.session_id,
+            &route.consumer,
+            &route.core_consumer,
+            &route.selector,
+            second,
+        );
+        tokio::pin!(later);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(later.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        assert!(!host.recorded_ingress_paused());
+        assert!(route.recorded.as_ref().unwrap().order.try_lock().is_ok());
+        host.ingest(crate::RadioIngress::Notification {
+            instance: crate::Instance {
+                peer_id: POLAR.into(),
+                service_uuid: HR_SERVICE.into(),
+                service_occurrence: 0,
+                characteristic_uuid: HR_MEASUREMENT.into(),
+                characteristic_occurrence: 0,
+            },
+            epoch,
+            value: vec![42],
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            host.inner.unsubscribe_recorded(
+                &scope,
+                route.session_id,
+                &route.consumer,
+                &route.core_consumer,
+                &route.selector,
+                first,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), later)
+            .await
+            .unwrap()
+            .unwrap();
+        let batch = ok(&host.continuation_recording_prepare("reverse", 100, 65536));
+        assert!(
+            batch["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["record"]["valueB64"] == "Kg==")
+        );
+        host.shutdown().await;
+    }
+
     #[test]
     fn native_receipt_utc_preserves_signed_fractional_milliseconds() {
         assert_eq!(

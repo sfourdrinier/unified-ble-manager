@@ -57,6 +57,7 @@ export type { ReactNativeRestorationAuthority } from './backends/reactnative/rea
 export type { ReactNativeRustCoreRuntimeFacts } from './backends/reactnative/react-native-rust-core-features'
 export { createReactNativeBleManager } from './react-native-app-manager'
 export { createReactNativeContinuationRecordings } from './react-native-continuation-recording'
+export type { ReactNativeContinuationRecordingController } from './react-native-continuation-recording'
 export type {
   ContinuationRecordingController,
   ContinuationRecordingStatus,

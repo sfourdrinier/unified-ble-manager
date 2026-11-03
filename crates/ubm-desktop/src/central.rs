@@ -2197,6 +2197,40 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
     }
 
+    /// Wait for an unsubscribe's FIFO turn before acquiring host-side cleanup
+    /// fences. The returned control retains the same slot for the actual
+    /// unsubscribe, which remains responsible for dispatching and retiring it.
+    pub async fn wait_unsubscribe_admission(
+        &self,
+        peer_id: &str,
+        ctl: OpControl,
+    ) -> Result<OpControl, DesktopError> {
+        // The normal unsubscribe takes over ticket settlement only after this
+        // method returns. A cancelled or failed wait must settle it here.
+        struct PendingTicket(Option<OpTicket>);
+        impl Drop for PendingTicket {
+            fn drop(&mut self) {
+                if let Some(ticket) = &self.0 {
+                    ticket.settle();
+                }
+            }
+        }
+        let mut pending = PendingTicket(Some(ctl.ticket.clone()));
+        let mut ctl = self.bind_gatt_admission(peer_id, ctl)?;
+        // Confirmed shutdown has a local retirement path that does not enter
+        // the GATT queue or dispatch to the radio.
+        if self.inner.shutdown_release_confirmed.load(Ordering::SeqCst) {
+            pending.0 = None;
+            return Ok(ctl);
+        }
+        self.precheck(&ctl, "gatt.unsubscribe")?;
+        let window = ctl.prepare_unsubscribe_window();
+        self.wait_gatt_admission(peer_id, &ctl, "gatt.unsubscribe", window)
+            .await?;
+        pending.0 = None;
+        Ok(ctl)
+    }
+
     async fn wait_gatt_admission(
         &self,
         peer_id: &str,
@@ -6342,7 +6376,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
         }
         self.precheck(&ctl, "gatt.unsubscribe")?;
-        let window = ctl.budget.window(LIVENESS_CLEANUP);
+        let window = ctl.unsubscribe_window();
         let _gatt_admission = self
             .wait_gatt_admission(peer_id, &ctl, "gatt.unsubscribe", window)
             .await?;
@@ -14112,6 +14146,109 @@ mod adapter_tests {
             .expect("original probe failure");
         assert_eq!(error.operation(), "directory.probe");
         assert_eq!(error.detail(), Some("native getter failure"));
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_waits_for_fifo_before_taking_a_cleanup_fence() {
+        use futures_util::FutureExt;
+        let central = ready_write_central().await;
+        let first =
+            OpControl::unbounded().with_gatt_admission(central.admit_gatt("ready-peer").unwrap());
+        let second = OpControl::budget_ms(5000)
+            .with_gatt_admission(central.admit_gatt("ready-peer").unwrap());
+        let fence = tokio::sync::Mutex::new(());
+        let later = async {
+            let ctl = central
+                .wait_unsubscribe_admission("ready-peer", second)
+                .await
+                .unwrap();
+            let _guard = fence.lock().await;
+            drop(ctl);
+        };
+        tokio::pin!(later);
+        assert!(later.as_mut().now_or_never().is_none());
+        let earlier = central
+            .wait_unsubscribe_admission("ready-peer", first)
+            .await
+            .unwrap();
+        let admission_window = earlier.unsubscribe_window();
+        assert!(admission_window.backstop);
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        assert_eq!(earlier.unsubscribe_window(), admission_window);
+        let guard = fence
+            .try_lock()
+            .expect("later slot must not hold the fence");
+        drop(guard);
+        drop(earlier);
+        later.await;
+        central.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unsubscribe_admission_and_cleanup_share_window_and_expiry_classification() {
+        let mut unbounded = OpControl::unbounded();
+        let admission = unbounded.prepare_unsubscribe_window();
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        let cleanup = unbounded.unsubscribe_window();
+        assert_eq!(admission, cleanup);
+        assert_eq!(
+            super::timed_out("gatt.unsubscribe", cleanup).detail(),
+            Some(crate::op_control::LIVENESS_BACKSTOP_DETAIL)
+        );
+
+        let mut bounded = OpControl::budget_ms(20_000);
+        let admission = bounded.prepare_unsubscribe_window();
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        let cleanup = bounded.unsubscribe_window();
+        assert_eq!(admission, cleanup);
+        assert_eq!(super::timed_out("gatt.unsubscribe", cleanup).detail(), None);
+
+        let direct = OpControl::unbounded().unsubscribe_window();
+        assert!(direct.backstop);
+        assert_eq!(
+            direct.at,
+            Some(tokio::time::Instant::now() + super::LIVENESS_CLEANUP)
+        );
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_wrong_admission_owner_settles_ticket() {
+        let central = ready_write_central().await;
+        let ctl =
+            OpControl::unbounded().with_gatt_admission(central.admit_gatt("another-peer").unwrap());
+        let ticket = ctl.ticket.clone();
+        let error = central
+            .wait_unsubscribe_admission("ready-peer", ctl)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), BleErrorCode::OwnershipDenied);
+        assert!(ticket.is_settled());
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_admission_timeout_retires_its_slot() {
+        let central = ready_write_central().await;
+        let earlier = central.admit_gatt("ready-peer").unwrap();
+        let waiting =
+            OpControl::budget_ms(10).with_gatt_admission(central.admit_gatt("ready-peer").unwrap());
+        let ticket = waiting.ticket.clone();
+        let failure = central
+            .wait_unsubscribe_admission("ready-peer", waiting)
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code(), BleErrorCode::OperationTimedOut);
+        assert!(ticket.is_settled());
+        let next = OpControl::budget_ms(5000)
+            .with_gatt_admission(central.admit_gatt("ready-peer").unwrap());
+        drop(earlier);
+        drop(
+            central
+                .wait_unsubscribe_admission("ready-peer", next)
+                .await
+                .unwrap(),
+        );
+        central.shutdown().await;
     }
 
     #[tokio::test]

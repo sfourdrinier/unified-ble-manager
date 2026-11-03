@@ -12,6 +12,8 @@
 //! test in `tests/no_fake_radio.rs`).
 
 mod companion_filters;
+#[cfg(test)]
+extern crate self as ubm_mobile;
 pub mod compat;
 pub mod continuation;
 pub mod drain;
@@ -20,6 +22,9 @@ pub mod host;
 pub mod identity;
 pub mod radio;
 pub mod session;
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod test_common;
 pub mod wire;
 
 pub use foreign::{CompletionStatus, ForeignRadio, RadioCounters};

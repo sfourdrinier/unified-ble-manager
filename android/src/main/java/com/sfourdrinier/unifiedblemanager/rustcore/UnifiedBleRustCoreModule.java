@@ -34,12 +34,14 @@ public class UnifiedBleRustCoreModule extends NativeUnifiedBleRustCoreSpec {
   private final RustCoreProcessHost host;
   private final ReactCompanionChooser companionChooser;
   private final RustCoreSessions sessions;
+  private final Runnable recoveryObserver = this::emitRecoveryHint;
 
   public UnifiedBleRustCoreModule(ReactApplicationContext reactContext) {
     super(reactContext);
     this.host = RustCoreProcessHost.shared(reactContext);
     this.companionChooser = new ReactCompanionChooser(reactContext);
     host.attachCompanionChooser(companionChooser);
+    host.addRecoveryObserver(recoveryObserver);
     this.sessions = new RustCoreSessions(
         JniMobileCorePort.INSTANCE,
         host,
@@ -161,11 +163,18 @@ public class UnifiedBleRustCoreModule extends NativeUnifiedBleRustCoreSpec {
 
   @Override
   public void invalidate() {
+    host.removeRecoveryObserver(recoveryObserver);
     sessions.invalidate();
     host.detachCompanionChooser(companionChooser);
     companionChooser.detach();
     executor.shutdown();
     super.invalidate();
+  }
+
+  private void emitRecoveryHint() {
+    WritableMap payload = Arguments.createMap();
+    payload.putString("kind", "cleanup");
+    emitOnRecoveryHint(payload);
   }
 
   private void emitWake(String sessionId) {
