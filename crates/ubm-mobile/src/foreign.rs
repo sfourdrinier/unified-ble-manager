@@ -114,8 +114,23 @@ struct Ingress {
     data: VecDeque<(u64, RadioEvent)>,
     data_bytes: usize,
     control: VecDeque<(u64, RadioEvent)>,
+    barriers: VecDeque<(u64, IngressBarrier)>,
     sequence: u64,
     closed: bool,
+}
+
+struct IngressBarrier {
+    arrived: oneshot::Sender<()>,
+    resume: oneshot::Receiver<()>,
+}
+
+pub(crate) struct IngressFence(Option<oneshot::Sender<()>>);
+impl Drop for IngressFence {
+    fn drop(&mut self) {
+        if let Some(resume) = self.0.take() {
+            let _ = resume.send(());
+        }
+    }
 }
 
 struct Pending {
@@ -151,6 +166,9 @@ struct Shared {
     /// new waiter would split the section in two.
     connect_sections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     staged_preference: Mutex<HashMap<Instance, DeliveryMode>>,
+    recorded_disables: Mutex<HashMap<Instance, Arc<Mutex<Option<IngressFence>>>>>,
+    #[cfg(debug_assertions)]
+    ingress_paused: std::sync::atomic::AtomicBool,
     close_failures: Mutex<Vec<RadioCloseFailure>>,
     close_error: Mutex<Option<DesktopError>>,
 }
@@ -175,6 +193,16 @@ impl Drop for ConnectSecurityAdmission {
         {
             host.clear_security_generation(&self.peer_id, &self.generation);
         }
+    }
+}
+
+pub(crate) struct RecordedDisableGuard {
+    shared: Arc<Shared>,
+    instance: Instance,
+}
+impl Drop for RecordedDisableGuard {
+    fn drop(&mut self) {
+        lock(&self.shared.recorded_disables).remove(&self.instance);
     }
 }
 
@@ -303,6 +331,9 @@ impl ForeignRadio {
                 staged_connect: Mutex::new(HashMap::new()),
                 connect_sections: Mutex::new(HashMap::new()),
                 staged_preference: Mutex::new(HashMap::new()),
+                recorded_disables: Mutex::new(HashMap::new()),
+                #[cfg(debug_assertions)]
+                ingress_paused: std::sync::atomic::AtomicBool::new(false),
                 close_failures: Mutex::new(Vec::new()),
                 close_error: Mutex::new(None),
             }),
@@ -478,7 +509,8 @@ impl ForeignRadio {
                     Ok(())
                 }
             }
-            RadioEvent::Notification { ref value, .. } => {
+            RadioEvent::Notification { ref value, .. }
+            | RadioEvent::NotificationWithReceipt { ref value, .. } => {
                 let bytes = value.len();
                 if ingress.data.len() >= NOTIFICATION_INGRESS_CAP
                     || ingress.data_bytes + bytes > NOTIFICATION_INGRESS_BYTES
@@ -519,6 +551,82 @@ impl ForeignRadio {
         if let Some(hook) = hook {
             hook(class);
         }
+    }
+
+    pub(crate) fn stage_recorded_disable(
+        &self,
+        instance: Instance,
+        fence: IngressFence,
+    ) -> Result<RecordedDisableGuard, DesktopError> {
+        let mut active = lock(&self.shared.recorded_disables);
+        if active.contains_key(&instance) {
+            return Err(DesktopError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Gatt,
+                "notification.disable-fence",
+            ));
+        }
+        active.insert(instance.clone(), Arc::new(Mutex::new(Some(fence))));
+        Ok(RecordedDisableGuard {
+            shared: Arc::clone(&self.shared),
+            instance,
+        })
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn ingress_paused(&self) -> bool {
+        self.shared.ingress_paused.load(Ordering::SeqCst)
+    }
+
+    /// Pause the event lane after every earlier admitted event is processed.
+    /// Dropping the returned fence resumes it, including cancellation paths.
+    pub(crate) async fn fence_ingress(&self) -> Result<IngressFence, DesktopError> {
+        let (arrived, receiver) = oneshot::channel();
+        let (resume, released) = oneshot::channel();
+        {
+            let mut ingress = lock(&self.shared.ingress);
+            if ingress.closed {
+                return Err(DesktopError::new(
+                    BleErrorCode::StreamClosed,
+                    BleErrorDomain::Gatt,
+                    "notification.ingress-fence",
+                ));
+            }
+            if ingress.barriers.len() >= CONTROL_INGRESS_CAP {
+                return Err(DesktopError::new(
+                    BleErrorCode::StreamQuota,
+                    BleErrorDomain::Gatt,
+                    "notification.ingress-fence",
+                ));
+            }
+            ingress.sequence += 1;
+            let sequence = ingress.sequence;
+            ingress.barriers.push_back((
+                sequence,
+                IngressBarrier {
+                    arrived,
+                    resume: released,
+                },
+            ));
+        }
+        self.shared.notify.notify_one();
+        tokio::time::timeout(ubm_desktop::LIVENESS_OP, receiver)
+            .await
+            .map_err(|_| {
+                DesktopError::new(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Gatt,
+                    "notification.ingress-fence",
+                )
+            })?
+            .map_err(|_| {
+                DesktopError::new(
+                    BleErrorCode::StreamClosed,
+                    BleErrorDomain::Gatt,
+                    "notification.ingress-fence",
+                )
+            })?;
+        Ok(IngressFence(Some(resume)))
     }
 
     /// End the event source: the central's loop sees `None` after the
@@ -977,10 +1085,18 @@ impl RadioBoundary for ForeignRadio {
             characteristic_occurrence,
         );
         if !enable {
-            return self
-                .unit(|id| RadioRequest::DisableNotifications { id, instance })
-                .await
-                .map(|()| ObservedDelivery::Unknown);
+            let fence = lock(&self.shared.recorded_disables).get(&instance).cloned();
+            // A last consumer stays in the core while the physical disable is
+            // in flight, so admit its final callbacks until disable settles.
+            if let Some(slot) = &fence {
+                lock(slot).take();
+            }
+            self.unit(|id| RadioRequest::DisableNotifications { id, instance })
+                .await?;
+            if let Some(slot) = fence {
+                *lock(&slot) = Some(self.fence_ingress().await?);
+            }
+            return Ok(ObservedDelivery::Unknown);
         }
         let preferred = lock(&self.shared.staged_preference).remove(&instance);
         match self
@@ -1048,12 +1164,13 @@ impl RadioBoundary for ForeignRadio {
     async fn next_event(&self) -> Option<RadioEvent> {
         loop {
             let notified = self.shared.notify.notified();
-            {
+            let barrier = {
                 let mut ingress = lock(&self.shared.ingress);
                 let heads = [
                     ingress.advertisements.front().map(|(seq, _)| *seq),
                     ingress.data.front().map(|(seq, _)| *seq),
                     ingress.control.front().map(|(seq, _)| *seq),
+                    ingress.barriers.front().map(|(seq, _)| *seq),
                 ];
                 let next = heads
                     .iter()
@@ -1064,15 +1181,29 @@ impl RadioBoundary for ForeignRadio {
                     Some((_, 0)) => return ingress.advertisements.pop_front().map(|(_, e)| e),
                     Some((_, 1)) => {
                         let event = ingress.data.pop_front().map(|(_, e)| e);
-                        if let Some(RadioEvent::Notification { ref value, .. }) = event {
+                        if let Some(
+                            RadioEvent::Notification { ref value, .. }
+                            | RadioEvent::NotificationWithReceipt { ref value, .. },
+                        ) = event
+                        {
                             ingress.data_bytes = ingress.data_bytes.saturating_sub(value.len());
                         }
                         return event;
                     }
-                    Some(_) => return ingress.control.pop_front().map(|(_, e)| e),
+                    Some((_, 2)) => return ingress.control.pop_front().map(|(_, e)| e),
+                    Some(_) => ingress.barriers.pop_front().map(|(_, barrier)| barrier),
                     None if ingress.closed => return None,
-                    None => {}
+                    None => None,
                 }
+            };
+            if let Some(barrier) = barrier {
+                #[cfg(debug_assertions)]
+                self.shared.ingress_paused.store(true, Ordering::SeqCst);
+                let _ = barrier.arrived.send(());
+                let _ = barrier.resume.await;
+                #[cfg(debug_assertions)]
+                self.shared.ingress_paused.store(false, Ordering::SeqCst);
+                continue;
             }
             notified.await;
         }
@@ -1223,6 +1354,37 @@ mod tests {
             MobilePlatform::Android,
             "stub-adapter".to_owned(),
         )
+    }
+
+    #[tokio::test]
+    async fn receipt_notification_uses_bounded_data_queue_and_releases_bytes() {
+        let radio = radio();
+        let event = RadioEvent::NotificationWithReceipt {
+            peer_id: "peer".into(),
+            service_uuid: "service".into(),
+            service_occurrence: 0,
+            characteristic_uuid: "characteristic".into(),
+            characteristic_occurrence: 0,
+            epoch: 1,
+            value: vec![1, 2, 3],
+            receipt: ubm_core::central::NotificationReceipt {
+                received_at_utc_ms: 1.0,
+                received_at_monotonic_ms: 2.0,
+                clock_id: "clock".into(),
+            },
+        };
+        radio.push_event(event).unwrap();
+        {
+            let ingress = lock(&radio.shared.ingress);
+            assert_eq!(ingress.data.len(), 1);
+            assert_eq!(ingress.data_bytes, 3);
+            assert!(ingress.control.is_empty());
+        }
+        assert!(matches!(
+            radio.next_event().await,
+            Some(RadioEvent::NotificationWithReceipt { .. })
+        ));
+        assert_eq!(lock(&radio.shared.ingress).data_bytes, 0);
     }
 
     #[tokio::test(start_paused = true)]

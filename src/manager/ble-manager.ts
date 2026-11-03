@@ -68,6 +68,7 @@ import {
   type PortableCurrentDescriptorPath,
   type PortableOperationOptions,
   type PortableSubscriptionOptions,
+  type PortableRecordedSubscriptionOptions,
   type PortableWritePolicy,
   type SubscriptionHandle
 } from './consumer-handles'
@@ -829,6 +830,13 @@ export class DiscoveredGattDatabase<Attachment extends string, Identity extends 
     return new Subscription(
       await this.database.subscribe(this.resolveCharacteristicPath(path), toPublicSubscriptionOptions(options))
     )
+  }
+
+  async subscribeRecorded(path: PortableCurrentCharacteristicPath, options: PortableRecordedSubscriptionOptions) {
+    return this.database.subscribeRecorded(this.resolveCharacteristicPath(path), {
+      ...toPublicSubscriptionOptions(options),
+      recording: options.recording
+    })
   }
 
   private resolveCharacteristicPath(path: PortableCurrentCharacteristicPath): CurrentCharacteristicPath<Attachment> {

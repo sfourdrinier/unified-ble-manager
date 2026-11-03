@@ -6302,7 +6302,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// Internal native handoff: drain accepted values under the same core
     /// lock that retires the consumer, so a final value cannot disappear
     /// between the collector's last poll and physical disable completion.
-    pub(crate) async fn unsubscribe_draining(
+    pub async fn unsubscribe_draining(
         &self,
         peer_id: &str,
         selector: &PathSelector,

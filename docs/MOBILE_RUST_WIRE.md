@@ -1023,3 +1023,22 @@ Required native FIFO/acquired-resource counters, observed nullable service
 metadata and the new owned operations are negotiated on both sides. A
 revision-1 binary or client is rejected before opening a session; legacy
 recording and platform receipts keep their original wire identity.
+
+### Recorded ordinary subscriptions
+
+`gatt.subscribe-recorded` uses the ordinary peer, selector, consumer, operation,
+and delivery fields plus `recording: { id, maxBytes, maxRecords }`. The owner
+commits generation and selector registration before enabling notifications and
+routes that consumer's values to its peer-bound journal. Other consumers retain
+their ordinary outbox routes. Values are available through bounded recording
+prepare and explicit acknowledgement, including after a process restart; they are
+not delivered in the recorded consumer's ordinary stream. Native receipt fields
+are retained when present. Queue admission alone is not durable acceptance.
+
+After a journal commit, the host coalesces payload-free `recording-changed`
+controls by consumer and recording ID through the existing session wake path.
+These bounded hints can overflow or end; they carry neither values nor ACK
+rights. Callers perform an initial prepare/status check and repeat on hints or
+overflow. After confirmed removal, they must prepare until drained and check
+status again even if the hint stream ended before cleanup committed its final
+tail. Recording status remains the authority for collection failure.

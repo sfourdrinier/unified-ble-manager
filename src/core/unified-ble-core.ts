@@ -27,6 +27,7 @@ import {
 import type {
   CharacteristicRead,
   PublicOperationOptions,
+  RecordedSubscriptionOptions,
   SubscriptionOptions,
   WritePolicy,
   WriteReceipt
@@ -925,6 +926,15 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   ): Promise<CoreSubscription<Attachment, Identity>> {
     database.assertPath(path)
     return this.subscriptions.subscribe(path, options, String(path.connectionId))
+  }
+
+  async subscribeRecorded(
+    database: CoreGattDatabase<Attachment, Identity>,
+    path: CurrentCharacteristicPath<Attachment>,
+    options: RecordedSubscriptionOptions
+  ) {
+    database.assertPath(path)
+    return this.subscriptions.subscribeRecorded(path, options, String(path.connectionId))
   }
 
   async releaseConnection(

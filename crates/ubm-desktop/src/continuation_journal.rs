@@ -488,6 +488,43 @@ pub struct AppendBatch {
     pub rejected: Option<AppendRejection>,
 }
 
+/// Source observations and raw bytes that could not enter a recorded journal.
+/// These are distinct from serialized journal bytes and from unknown historic loss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordedLoss {
+    pub items: u64,
+    /// None means the source did not report a raw-byte count.
+    pub bytes: Option<u64>,
+}
+
+impl Default for RecordedLoss {
+    fn default() -> Self {
+        Self {
+            items: 0,
+            bytes: Some(0),
+        }
+    }
+}
+
+impl RecordedLoss {
+    fn add(self, other: Self) -> Self {
+        Self {
+            items: self.items.saturating_add(other.items),
+            bytes: self
+                .bytes
+                .zip(other.bytes)
+                .map(|(left, right)| left.saturating_add(right)),
+        }
+    }
+    fn value(self) -> Value {
+        let mut result = json!({"items":self.items});
+        if let Some(bytes) = self.bytes {
+            result["bytes"] = json!(bytes);
+        }
+        result
+    }
+}
+
 /// Capacity was reached at the first record after the accepted prefix. That
 /// record carries the committed loss marker; `not_attempted` later records of
 /// the batch were never admitted and are the caller's to account for.
@@ -827,7 +864,7 @@ impl ContinuationJournal {
     ///   caller must account for them.
     pub fn append_batch(&self, items: &[(&Value, &Value)]) -> Result<AppendBatch> {
         let outcome = self
-            .append_batch_inner(items)
+            .append_batch_inner(items, None)
             .map_err(|failure| failure.at("append"));
         let failure = match &outcome {
             Err(failure) => Some(failure),
@@ -844,7 +881,78 @@ impl ContinuationJournal {
         }
         outcome
     }
-    fn append_batch_inner(&self, items: &[(&Value, &Value)]) -> Result<AppendBatch> {
+    /// Admits a bounded recorded group and atomically records the entire refused
+    /// suffix and its raw-byte loss when journal capacity is reached. A storage
+    /// error reports whether subsequent loss accounting itself persisted.
+    pub fn append_recorded_batch(
+        &self,
+        items: &[(&Value, &Value)],
+        impacts: &[RecordedLoss],
+        trailing: RecordedLoss,
+    ) -> Result<AppendBatch> {
+        if items.len() != impacts.len() || items.is_empty() || items.len() > APPEND_BATCH_MAX {
+            return Err(error(
+                "argument.invalid",
+                "recorded batch impacts do not match records",
+            ));
+        }
+        let outcome = self
+            .append_batch_inner(items, Some((impacts, trailing)))
+            .map_err(|failure| failure.at("append"));
+        if let Err(failure) = &outcome {
+            let loss = impacts.iter().copied().fold(trailing, RecordedLoss::add);
+            self.mark_recorded_collection_loss(failure, loss);
+        }
+        outcome
+    }
+
+    /// Records known raw loss even after collection has stopped. If storage
+    /// refuses this update, the same aggregate is retained as unpersisted.
+    pub fn mark_recorded_collection_loss(&self, failure: &JournalError, loss: RecordedLoss) {
+        let connection = self.connection();
+        let mut state = self
+            .collection_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = state.clone();
+        let old_loss = previous
+            .as_ref()
+            .and_then(|entry| entry.get("knownRecordedLoss"));
+        let prior = RecordedLoss {
+            items: old_loss
+                .and_then(|value| value["items"].as_u64())
+                .unwrap_or(0),
+            bytes: old_loss.map_or(Some(0), |value| value["bytes"].as_u64()),
+        };
+        let combined = prior.add(loss);
+        let mut report = previous.unwrap_or_else(|| diagnostic(failure));
+        report["persisted"] = json!(true);
+        if let Some(object) = report.as_object_mut() {
+            object.remove("persistenceFailure");
+        }
+        report["knownRecordedLoss"] = combined.value();
+        let result = connection.and_then(|mut connection| {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let durable_report: Option<String> = tx.query_row("SELECT collection_failure FROM journal WHERE id=1", [], |row| row.get(0))?;
+            let durable_items = durable_report.as_deref().and_then(|value| serde_json::from_str::<Value>(value).ok()).and_then(|value| value["knownRecordedLoss"]["items"].as_u64()).unwrap_or(0);
+            let increment = sql_integer(combined.items.saturating_sub(durable_items))?;
+            tx.execute("UPDATE journal SET phase='stopped',lost=CASE WHEN lost>?1 THEN 9223372036854775807 ELSE lost+?2 END,collection_failure=?3 WHERE id=1",
+                params![i64::MAX - increment, increment, report.to_string()])?;
+            tx.commit()?;
+            Ok(())
+        });
+        if let Err(error) = result {
+            report["persisted"] = json!(false);
+            report["persistenceFailure"] = diagnostic(&error.at("mark-recorded-collection-loss"));
+        }
+        *state = Some(report);
+    }
+
+    fn append_batch_inner(
+        &self,
+        items: &[(&Value, &Value)],
+        accounted: Option<(&[RecordedLoss], RecordedLoss)>,
+    ) -> Result<AppendBatch> {
         if items.is_empty() || items.len() > APPEND_BATCH_MAX {
             return Err(error(
                 "argument.invalid",
@@ -887,8 +995,22 @@ impl ContinuationJournal {
             )
         };
         if phase == "capacity-reached" {
-            tx.execute("UPDATE journal SET lost=CASE WHEN lost<9223372036854775807 THEN lost+1 ELSE lost END WHERE id=1",[])?;
-            tx.commit()?;
+            if let Some((impacts, trailing)) = accounted {
+                let loss = impacts.iter().copied().fold(trailing, RecordedLoss::add);
+                let mut report = diagnostic(&full().at("append"));
+                report["persisted"] = json!(true);
+                report["knownRecordedLoss"] = loss.value();
+                let increment = sql_integer(loss.items)?;
+                tx.execute("UPDATE journal SET phase='stopped',lost=CASE WHEN lost>?1 THEN 9223372036854775807 ELSE lost+?2 END,collection_failure=?3 WHERE id=1",params![i64::MAX-increment,increment,report.to_string()])?;
+                tx.commit()?;
+                *self
+                    .collection_failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(report);
+            } else {
+                tx.execute("UPDATE journal SET lost=CASE WHEN lost<9223372036854775807 THEN lost+1 ELSE lost END WHERE id=1",[])?;
+                tx.commit()?;
+            }
             return Ok(AppendBatch {
                 accepted: 0,
                 first_ordinal: first,
@@ -949,13 +1071,33 @@ impl ContinuationJournal {
         if accepted > 0 {
             tx.execute("UPDATE journal SET next_ordinal=?1,retained_records=retained_records+?2,retained_bytes=retained_bytes+?3 WHERE id=1", params![next,sql_integer(accepted as u64)?,sql_integer(added_bytes)?])?;
         }
-        if rejected.is_some() {
-            tx.execute(
-                "UPDATE journal SET phase='capacity-reached',lost=lost+1 WHERE id=1",
-                [],
-            )?;
+        let mut recorded_failure = None;
+        if let Some(ref rejection) = rejected {
+            if let Some((impacts, trailing)) = accounted {
+                let loss = impacts[accepted..]
+                    .iter()
+                    .copied()
+                    .fold(trailing, RecordedLoss::add);
+                let mut report = diagnostic(&rejection.error);
+                report["persisted"] = json!(true);
+                report["knownRecordedLoss"] = loss.value();
+                let increment = sql_integer(loss.items)?;
+                tx.execute("UPDATE journal SET phase='stopped',lost=CASE WHEN lost>?1 THEN 9223372036854775807 ELSE lost+?2 END,collection_failure=?3 WHERE id=1",params![i64::MAX-increment,increment,report.to_string()])?;
+                recorded_failure = Some(report);
+            } else {
+                tx.execute(
+                    "UPDATE journal SET phase='capacity-reached',lost=lost+1 WHERE id=1",
+                    [],
+                )?;
+            }
         }
         tx.commit()?;
+        if let Some(report) = recorded_failure {
+            *self
+                .collection_failure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(report);
+        }
         Ok(AppendBatch {
             accepted,
             first_ordinal: first,

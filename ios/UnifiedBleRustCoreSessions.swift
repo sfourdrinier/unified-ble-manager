@@ -68,6 +68,7 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
   private let continuationDeclarationGate = NSRecursiveLock()
   private var host: MobileCoreHost?
   private let recordingQueue: DispatchQueue
+  private let invokeQueue = DispatchQueue(label: "com.ubm.rust-core.invoke")
   private let recordingLock = NSLock()
   private var recordingConfigured = false
 
@@ -329,6 +330,24 @@ public final class UnifiedBleRustCoreSessions: NSObject, MobileWakeSink, @unchec
     sessionId: String,
     op: String,
     argsJson: String,
+    completion: @escaping (String?, String?) -> Void
+  ) {
+    // Preserve session admission order while recorded storage is configured.
+    // Cancellation is allowed ahead so a delayed admission can be cancelled.
+    if op == "op.cancel" {
+      invokeConfigured(sessionId: sessionId, op: op, argsJson: argsJson, completion: completion)
+      return
+    }
+    invokeQueue.async {
+      do {
+        if op == "gatt.subscribe-recorded" { try self.configureRecordingStorage() }
+        self.invokeConfigured(sessionId: sessionId, op: op, argsJson: argsJson, completion: completion)
+      } catch { completion(nil, Self.recordingFailureJson(error)) }
+    }
+  }
+
+  private func invokeConfigured(
+    sessionId: String, op: String, argsJson: String,
     completion: @escaping (String?, String?) -> Void
   ) {
     switch entry(sessionId, operation: "rust-core.invoke") {

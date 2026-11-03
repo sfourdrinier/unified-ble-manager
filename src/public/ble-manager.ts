@@ -274,6 +274,8 @@ export type {
   LongWriteOptions,
   DescriptorWriteOptions,
   GattSubscribeOptions,
+  GattRecordedSubscribeOptions,
+  GattRecordedSubscription,
   OccurrenceSelector,
   GattPathSelector,
   UuidInput

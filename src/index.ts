@@ -65,6 +65,8 @@ export type {
   LongWriteOptions,
   DescriptorWriteOptions,
   GattSubscribeOptions,
+  GattRecordedSubscribeOptions,
+  GattRecordedSubscription,
   GattCharacteristicProperties,
   GattAccessRequirements,
   GattServiceReference,
@@ -172,6 +174,11 @@ export type {
   ContinuationRecordingFailure,
   ContinuationRecordingPrepareOptions
 } from './core/continuation-recording'
+
+export {
+  serializeContinuationRecordingRecords,
+  deserializeContinuationRecordingRecords
+} from './core/continuation-recording-codec'
 
 // --- Errors & recovery (public) ---
 export { BleError } from './public/errors'

@@ -65,6 +65,7 @@ class RustCoreSessions(
 
   fun invoke(sessionIdText: String, op: String, argsJson: String, reply: Reply) = perform(reply, op) {
     val sessionId = sessionId(sessionIdText, op)
+    if (op == "gatt.subscribe-recorded") host.configureRecordingStorage()
     core.invoke(sessionId, op, argsJson, MobileCoreBridge.InvokeCallback { envelope ->
       if (op == DISPOSE && disposeReleased(envelope)) released.add(sessionId)
       reply.resolve(envelope)

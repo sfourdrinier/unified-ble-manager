@@ -510,6 +510,12 @@ async function main() {
     ['src/NativeUnifiedBleProtocolControl.ts', codegenOutput()]
   ])
 
+  const recordingBounds = 'src/backend-contract/continuation-recording-bounds.ts'
+  outputs.set(
+    'plugin/src/generated/continuation-recording-bounds.ts',
+    `// Generated from ${recordingBounds}; do not edit.\n` + fs.readFileSync(path.join(root, recordingBounds), 'utf8')
+  )
+
   // The plugin is an isolated TypeScript build and cannot import runtime TS
   // sources. Project the canonical validators instead of maintaining a second
   // validation algorithm. Only error presentation differs at build time.
@@ -518,11 +524,15 @@ async function main() {
     const source = fs.readFileSync(path.join(root, sourcePath), 'utf8')
     const errorImport = "import { contractError } from './errors'"
     if (!source.includes(errorImport)) throw new Error(`Missing error boundary in ${sourcePath}`)
-    outputs.set(`plugin/src/generated/${file}`,
+    outputs.set(
+      `plugin/src/generated/${file}`,
       `// Generated from ${sourcePath}; do not edit.\n` +
-      source.replace(errorImport,
-        "function contractError(code: string, domain: string, detail: string): Error {\n" +
-        "  return new Error(`${code}: ${domain}: ${detail}`)\n}"))
+        source.replace(
+          errorImport,
+          'function contractError(code: string, domain: string, detail: string): Error {\n' +
+            '  return new Error(`${code}: ${domain}: ${detail}`)\n}'
+        )
+    )
   }
 
   let drift = false

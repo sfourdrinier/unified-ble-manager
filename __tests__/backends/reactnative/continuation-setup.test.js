@@ -132,7 +132,7 @@ describe('bounded native continuation setup contract', () => {
     const fs = require('node:fs')
     const path = require('node:path')
     const root = path.resolve(__dirname, '../../..')
-    for (const file of ['continuation-selector.ts', 'continuation-setup.ts']) {
+    for (const file of ['continuation-selector.ts', 'continuation-setup.ts', 'continuation-recording-bounds.ts']) {
       const source = fs.readFileSync(path.join(root, 'src/backend-contract', file), 'utf8')
       const generated = fs.readFileSync(path.join(root, 'plugin/src/generated', file), 'utf8')
       expect(generated).toContain(`Generated from src/backend-contract/${file}`)

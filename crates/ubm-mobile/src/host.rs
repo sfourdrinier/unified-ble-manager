@@ -36,8 +36,8 @@ use crate::foreign::{ForeignRadio, central_adapter_state, lock};
 use crate::identity::MobileIdentity;
 use crate::radio::{
     AdapterPower, AdapterSnapshot, Advertisement, AndroidScanOptions, BondState, IngressClass,
-    IngressStatus, MobilePlatform, PlatformRadio, RadioCompletion, RadioIngress, RequestId,
-    RestoredPeer, ScanRequest, SecurityState, WakeSink,
+    IngressStatus, Instance, MobilePlatform, PlatformRadio, RadioCompletion, RadioIngress,
+    RequestId, RestoredPeer, ScanRequest, SecurityState, WakeSink,
 };
 use crate::session::{MobileSession, SessionState};
 use crate::wire::{self, object, opt_text};
@@ -91,6 +91,23 @@ fn reset_security_for_generation(
     Some(entry.state.clone())
 }
 
+#[derive(Clone)]
+pub(crate) struct RecordedRoute {
+    pub recording_id: String,
+    pub journal: Arc<ubm_desktop::continuation_journal::ContinuationJournal>,
+    pub metadata: Value,
+    pub order: Arc<tokio::sync::Mutex<()>>,
+    pub radio_released: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for RecordedRoute {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RecordedRoute")
+            .finish_non_exhaustive()
+    }
+}
+
 /// One route from a characteristic instance to one session consumer.
 #[derive(Debug, Clone)]
 pub(crate) struct Route {
@@ -100,10 +117,32 @@ pub(crate) struct Route {
     pub peer_id: String,
     pub selector: PathSelector,
     pub delivery: &'static str,
+    pub recorded: Option<RecordedRoute>,
     /// The terminal that ended this consumer's stream, kept until the
     /// session unsubscribes so `session.reconcile` can answer it after its
     /// `stream-end` record was lost.
     pub terminal: Option<StreamEnd>,
+}
+
+pub(crate) struct PendingRecordedRoute<'a> {
+    host: &'a HostInner,
+    session_id: u64,
+    consumer: &'a str,
+}
+impl Drop for PendingRecordedRoute<'_> {
+    fn drop(&mut self) {
+        let routes = lock(&self.host.routes);
+        let mut pending = lock(&self.host.pending_recordings);
+        pending.remove(&(self.session_id, self.consumer.to_owned()));
+        if !routes
+            .values()
+            .flatten()
+            .any(|route| route.session_id == self.session_id && route.consumer == self.consumer)
+            && let Some(session) = self.host.session(self.session_id)
+        {
+            session.outbox.remove_recording_hints(self.consumer);
+        }
+    }
 }
 
 /// The last link end the owner reported for one peer: what its `link`
@@ -162,6 +201,7 @@ enum RouteDrain {
     Ended {
         committed: bool,
         terminal: StreamEnd,
+        loss_accounted: bool,
     },
 }
 
@@ -648,6 +688,9 @@ pub(crate) struct HostInner {
     pub scan: tokio::sync::Mutex<ScanShare>,
     pub scan_members: Mutex<BTreeMap<u64, ScanMember>>,
     pub routes: Mutex<HashMap<InstanceKey, Vec<Route>>>,
+    pending_recordings: Mutex<HashMap<(u64, String), RecordedRoute>>,
+    recorded_drops_settled: AtomicU64,
+    recorded_drops_notify: Notify,
     pub directory: Mutex<BTreeMap<String, PeerInfo>>,
     pub restored: Mutex<BTreeMap<String, RestoredPeer>>,
     /// Restored peers already handed to an adopter, and the session that
@@ -960,7 +1003,7 @@ impl HostInner {
                 for route in entries {
                     if route.terminal.is_none() {
                         owned.mark_ended(&scope, &route, ("closed", 0, 0));
-                        owned.end_route(&route, ("closed", 0, 0));
+                        owned.end_route(&route, ("closed", 0, 0), false);
                     }
                 }
             }
@@ -1155,11 +1198,89 @@ impl HostInner {
                 self.broadcast(&record);
             }
             HostSignal::IngressDrop(class, count) => {
+                self.record_ingress_drop(class, count).await;
                 for session in self.session_list() {
                     session.outbox.push_ingress_drop_count(class, count);
                 }
             }
         }
+    }
+
+    async fn record_ingress_drop(&self, class: IngressClass, count: u64) {
+        if class != IngressClass::Notification || count == 0 {
+            return;
+        }
+        let routes: Vec<(u64, String, RecordedRoute)> = {
+            // Hold both locks while snapshotting so promotion cannot create a
+            // gap between the pre-enable and active loss destinations.
+            let active = lock(&self.routes);
+            let pending = lock(&self.pending_recordings);
+            active
+                .values()
+                .flatten()
+                .filter_map(|route| {
+                    route
+                        .recorded
+                        .clone()
+                        .map(|recorded| (route.session_id, route.consumer.clone(), recorded))
+                })
+                .chain(pending.iter().map(|((session, consumer), recorded)| {
+                    (*session, consumer.clone(), recorded.clone())
+                }))
+                .collect()
+        };
+        let mut seen = HashSet::new();
+        for (session_id, consumer, recorded) in routes {
+            let identity = Arc::as_ptr(&recorded.journal) as usize;
+            if !seen.insert(identity) {
+                self.notify_recorded_change(session_id, &consumer, &recorded);
+                continue;
+            }
+            let _order = recorded.order.lock().await;
+            let metadata =
+                serde_json::json!({"session":recorded.metadata["session"],"consumer":null});
+            let loss = serde_json::json!({"t":"ingress-drop","class":"notification","count":count});
+            let impact = ubm_desktop::continuation_journal::RecordedLoss {
+                items: count,
+                bytes: None,
+            };
+            let _ = recorded.journal.append_recorded_batch(
+                &[(&metadata, &loss)],
+                &[impact],
+                Default::default(),
+            );
+            self.notify_recorded_change(session_id, &consumer, &recorded);
+        }
+        self.recorded_drops_settled
+            .fetch_add(count, Ordering::SeqCst);
+        self.recorded_drops_notify.notify_waiters();
+    }
+
+    /// Before retiring a failed pending subscription, wait for every global
+    /// notification-drop signal already counted at that cutoff to reach its
+    /// registered journal destination. No peer attribution is inferred.
+    pub(crate) async fn settle_recorded_ingress_drops(&self) -> Result<(), DesktopError> {
+        let target = self.radio.counters().notification_drops;
+        let settled = async {
+            loop {
+                let notified = self.recorded_drops_notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.recorded_drops_settled.load(Ordering::SeqCst) >= target {
+                    return;
+                }
+                notified.await;
+            }
+        };
+        tokio::time::timeout(ubm_desktop::LIVENESS_OP, settled)
+            .await
+            .map_err(|_| {
+                DesktopError::new(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Platform,
+                    "gatt.subscribe-recorded.ingress-loss-settlement",
+                )
+            })
     }
 
     fn route_advertisement(&self, snapshot: &PeerSnapshot) {
@@ -1206,7 +1327,28 @@ impl HostInner {
         }
     }
 
-    fn end_route(&self, route: &Route, (reason, dropped_items, dropped_bytes): StreamEnd) {
+    fn end_route(
+        &self,
+        route: &Route,
+        (reason, dropped_items, dropped_bytes): StreamEnd,
+        loss_accounted: bool,
+    ) {
+        if let Some(recorded) = &route.recorded
+            && !loss_accounted
+        {
+            let terminal = serde_json::json!({"t":"stream-end","consumer":route.consumer,
+                "reason":reason,"droppedItems":dropped_items,"droppedBytes":dropped_bytes});
+            let impact = ubm_desktop::continuation_journal::RecordedLoss {
+                items: dropped_items,
+                bytes: Some(dropped_bytes),
+            };
+            let _ = recorded.journal.append_recorded_batch(
+                &[(&recorded.metadata, &terminal)],
+                &[impact],
+                Default::default(),
+            );
+            self.notify_recorded_change(route.session_id, &route.consumer, recorded);
+        }
         if let Some(session) = self.session(route.session_id) {
             session.outbox.push_control(object(vec![
                 ("t", Value::from("stream-end")),
@@ -1226,6 +1368,120 @@ impl HostInner {
                 }
             }
         }
+    }
+
+    pub(crate) fn recorded_route(
+        &self,
+        scope: &InstanceKey,
+        session_id: u64,
+        consumer: &str,
+    ) -> Option<RecordedRoute> {
+        lock(&self.routes).get(scope).and_then(|routes| {
+            routes
+                .iter()
+                .find(|route| route.session_id == session_id && route.consumer == consumer)
+                .and_then(|route| route.recorded.clone())
+        })
+    }
+
+    /// Release a recorded consumer while preserving the central's final FIFO
+    /// under the same per-route order as ordinary journal admission.
+    pub(crate) async fn unsubscribe_recorded(
+        &self,
+        scope: &InstanceKey,
+        session_id: u64,
+        consumer: &str,
+        core_consumer: &str,
+        selector: &PathSelector,
+        ctl: OpControl,
+    ) -> Result<bool, DesktopError> {
+        let recorded = self
+            .recorded_route(scope, session_id, consumer)
+            .ok_or_else(|| {
+                DesktopError::new(
+                    ubm_core::contracts::BleErrorCode::LifecycleInvalidState,
+                    ubm_core::contracts::BleErrorDomain::Gatt,
+                    "gatt.unsubscribe.recorded-route",
+                )
+            })?;
+        let guard = recorded.order.clone().lock_owned().await;
+        if recorded.radio_released.load(Ordering::SeqCst) {
+            drop(guard);
+            self.settle_recorded_ingress_drops().await?;
+            self.remove_route(scope, session_id, consumer);
+            return Ok(false);
+        }
+        let ingress_fence = self.radio.fence_ingress().await?;
+        let central = self.central.clone();
+        let peer = scope.0.clone();
+        let selector = selector.clone();
+        let core_consumer = core_consumer.to_owned();
+        let consumer = consumer.to_owned();
+        let route_consumer = consumer.clone();
+        let delivery = lock(&self.routes)
+            .get(scope)
+            .and_then(|routes| {
+                routes
+                    .iter()
+                    .find(|route| route.session_id == session_id && route.consumer == consumer)
+                    .map(|route| route.delivery)
+            })
+            .unwrap_or("unknown");
+        let runtime = self.runtime.clone();
+        let _disable_guard = self.radio.stage_recorded_disable(
+            Instance {
+                peer_id: scope.0.clone(),
+                service_uuid: scope.1.clone(),
+                service_occurrence: scope.2,
+                characteristic_uuid: scope.3.clone(),
+                characteristic_occurrence: scope.4,
+            },
+            ingress_fence,
+        )?;
+        let wake_session = self.session(session_id);
+        let released_state = Arc::clone(&recorded.radio_released);
+        let (result, guard) = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            let _disable_guard = _disable_guard;
+            let drain = |poll| {
+                use ubm_desktop::continuation_journal::RecordedLoss;
+                let entry = match poll {
+                    NotificationPoll::Value(bytes) => {
+                        let impact = RecordedLoss { items: 1, bytes: Some(bytes.len() as u64) };
+                        Some((serde_json::json!({"t":"value", "consumer":consumer,
+                            "valueB64":wire::encode_base64(&bytes), "delivery":delivery}), impact))
+                    }
+                    NotificationPoll::ValueWithReceipt { value, receipt } => {
+                        let impact = RecordedLoss { items: 1, bytes: Some(value.len() as u64) };
+                        Some((serde_json::json!({"t":"value", "consumer":consumer,
+                            "valueB64":wire::encode_base64(&value), "delivery":delivery, "receipt":receipt_value(receipt)}), impact))
+                    }
+                    NotificationPoll::Terminal(terminal) => {
+                        let impact = RecordedLoss { items: terminal.dropped_items(), bytes: Some(terminal.dropped_bytes()) };
+                        Some((serde_json::json!({"t":"stream-end", "consumer":consumer,
+                            "reason":"overflow", "droppedItems":terminal.dropped_items(), "droppedBytes":terminal.dropped_bytes()}), impact))
+                    }
+                    _ => None,
+                };
+                if let Some((record, impact)) = entry {
+                    let _ = recorded.journal.append_recorded_batch(&[(&recorded.metadata, &record)], &[impact], RecordedLoss::default());
+                    if let Some(session) = &wake_session { session.outbox.recording_changed(&consumer, &recorded.recording_id); }
+                }
+            };
+            let result = runtime.block_on(central.unsubscribe_draining(&peer, &selector, &core_consumer, ctl, Some(&drain)));
+            (result, _guard)
+        }).await.map_err(|_| DesktopError::new(ubm_core::contracts::BleErrorCode::PlatformFailure,
+            ubm_core::contracts::BleErrorDomain::Platform, "gatt.unsubscribe.recorded-worker"))?;
+        if result.is_ok() {
+            released_state.store(true, Ordering::SeqCst);
+        }
+        // The signal pump needs this same route-order lock to persist a queued
+        // global drop. Retain the route, but release the lock before waiting.
+        drop(guard);
+        let released = result?;
+        self.settle_recorded_ingress_drops().await?;
+        self.remove_route(scope, session_id, &route_consumer);
+        Ok(released)
     }
 
     /// One consumer's stream state: `Some(None)` live, `Some(Some(end))`
@@ -1287,9 +1543,13 @@ impl HostInner {
                     self.rotate_route_to_end(scope, route);
                     return pending || unvisited;
                 }
-                RouteDrain::Ended { terminal, .. } => {
+                RouteDrain::Ended {
+                    terminal,
+                    loss_accounted,
+                    ..
+                } => {
                     self.mark_ended(scope, route, terminal);
-                    self.end_route(route, terminal);
+                    self.end_route(route, terminal, loss_accounted);
                     if committed {
                         return unvisited;
                     }
@@ -1303,12 +1563,17 @@ impl HostInner {
     /// bounded commit groups, and return the routes that reached a terminal
     /// answer. The streams are marked ended and not emitted: the caller
     /// orders their terminals against lifecycle records.
-    async fn drain_scope(&self, scope: &InstanceKey) -> Vec<(Route, StreamEnd)> {
+    async fn drain_scope(&self, scope: &InstanceKey) -> Vec<(Route, StreamEnd, bool)> {
         let mut ended = Vec::new();
         for route in self.live_routes(scope) {
-            if let RouteDrain::Ended { terminal, .. } = self.drain_route(&route, usize::MAX).await {
+            if let RouteDrain::Ended {
+                terminal,
+                loss_accounted,
+                ..
+            } = self.drain_route(&route, usize::MAX).await
+            {
                 self.mark_ended(scope, &route, terminal);
-                ended.push((route, terminal));
+                ended.push((route, terminal, loss_accounted));
             }
         }
         ended
@@ -1356,6 +1621,34 @@ impl HostInner {
     /// committed first, in order. A refused group's values are counted once in
     /// the returned terminal: a rolled-back group is never reported accepted.
     async fn drain_route(&self, route: &Route, limit: usize) -> RouteDrain {
+        let _recorded_order = match &route.recorded {
+            Some(recorded) => Some(recorded.order.lock().await),
+            None => None,
+        };
+        if route.recorded.is_some()
+            && self
+                .recorded_route(
+                    &(
+                        route.peer_id.clone(),
+                        route.selector.service_uuid.clone(),
+                        route.selector.service_occurrence.unwrap_or(0),
+                        route
+                            .selector
+                            .characteristic_uuid
+                            .clone()
+                            .unwrap_or_default(),
+                        route.selector.characteristic_occurrence.unwrap_or(0),
+                    ),
+                    route.session_id,
+                    &route.consumer,
+                )
+                .is_none()
+        {
+            return RouteDrain::Live {
+                committed: false,
+                pending: false,
+            };
+        }
         #[cfg(debug_assertions)]
         {
             let mut turns = lock(&self.route_turns);
@@ -1374,6 +1667,7 @@ impl HostInner {
             }
             let group = (limit - taken).min(VALUE_RECORD_BATCH);
             let mut records = Vec::with_capacity(group);
+            let mut lengths = Vec::with_capacity(group);
             let mut session = None;
             let mut ending = PollEnd::Full;
             while records.len() < group {
@@ -1387,6 +1681,7 @@ impl HostInner {
                             continue;
                         };
                         session = Some(owner);
+                        lengths.push(bytes.len());
                         records.push(object(vec![
                             ("t", Value::from("value")),
                             ("consumer", Value::from(route.consumer.as_str())),
@@ -1402,6 +1697,7 @@ impl HostInner {
                             continue;
                         };
                         session = Some(owner);
+                        lengths.push(bytes.len());
                         records.push(object(vec![
                             ("t", Value::from("value")),
                             ("consumer", Value::from(route.consumer.as_str())),
@@ -1434,30 +1730,93 @@ impl HostInner {
             }
             if let Some(session) = session {
                 committed = true;
-                let outcome = session.outbox.push_data_batch(records);
-                taken += outcome.accepted;
-                if let Some(rejected) = outcome.rejected {
-                    let core = match ending {
-                        PollEnd::Ended(terminal) => Some(terminal),
-                        PollEnd::Full | PollEnd::Empty => None,
+                if let Some(recorded) = &route.recorded {
+                    let entries: Vec<(&Value, &Value)> = records
+                        .iter()
+                        .map(|record| (&recorded.metadata, record))
+                        .collect();
+                    let impacts: Vec<_> = lengths
+                        .iter()
+                        .map(|length| ubm_desktop::continuation_journal::RecordedLoss {
+                            items: 1,
+                            bytes: Some(*length as u64),
+                        })
+                        .collect();
+                    let trailing = match ending {
+                        PollEnd::Ended((_, items, bytes)) => {
+                            ubm_desktop::continuation_journal::RecordedLoss {
+                                items,
+                                bytes: Some(bytes),
+                            }
+                        }
+                        PollEnd::Full | PollEnd::Empty => Default::default(),
                     };
-                    match refusal_terminal(&rejected, core) {
-                        Some(terminal) => {
-                            return RouteDrain::Ended {
-                                committed,
-                                terminal,
-                            };
+                    let result = recorded
+                        .journal
+                        .append_recorded_batch(&entries, &impacts, trailing);
+                    if !entries.is_empty()
+                        || trailing.items > 0
+                        || trailing.bytes.unwrap_or(0) > 0
+                        || result.is_err()
+                        || result.as_ref().is_ok_and(|batch| batch.rejected.is_some())
+                    {
+                        session
+                            .outbox
+                            .recording_changed(&route.consumer, &recorded.recording_id);
+                    }
+                    let (accepted, failure) = match result {
+                        Ok(batch) => (batch.accepted, batch.rejected.map(|item| item.error)),
+                        Err(failure) => (0, Some(failure)),
+                    };
+                    taken += accepted;
+                    if failure.is_some() {
+                        let refused = records.len().saturating_sub(accepted) as u64;
+                        let refused_bytes = lengths
+                            .iter()
+                            .skip(accepted)
+                            .map(|length| *length as u64)
+                            .sum::<u64>();
+                        let (core_items, core_bytes) = match ending {
+                            PollEnd::Ended((_, items, bytes)) => (items, bytes),
+                            PollEnd::Full | PollEnd::Empty => (0, 0),
+                        };
+                        return RouteDrain::Ended {
+                            committed,
+                            terminal: (
+                                "closed",
+                                refused.saturating_add(core_items),
+                                refused_bytes.saturating_add(core_bytes),
+                            ),
+                            loss_accounted: true,
+                        };
+                    }
+                } else {
+                    let outcome = session.outbox.push_data_batch(records);
+                    taken += outcome.accepted;
+                    if let Some(rejected) = outcome.rejected {
+                        let core = match ending {
+                            PollEnd::Ended(terminal) => Some(terminal),
+                            PollEnd::Full | PollEnd::Empty => None,
+                        };
+                        match refusal_terminal(&rejected, core) {
+                            Some(terminal) => {
+                                return RouteDrain::Ended {
+                                    committed,
+                                    terminal,
+                                    loss_accounted: false,
+                                };
+                            }
+                            // The stopped journal counted the refused group in its
+                            // cutoff; nothing more is polled this turn unless the
+                            // core already answered.
+                            None if matches!(ending, PollEnd::Full) => {
+                                return RouteDrain::Live {
+                                    committed,
+                                    pending: false,
+                                };
+                            }
+                            None => {}
                         }
-                        // The stopped journal counted the refused group in its
-                        // cutoff; nothing more is polled this turn unless the
-                        // core already answered.
-                        None if matches!(ending, PollEnd::Full) => {
-                            return RouteDrain::Live {
-                                committed,
-                                pending: false,
-                            };
-                        }
-                        None => {}
                     }
                 }
             }
@@ -1473,6 +1832,7 @@ impl HostInner {
                     return RouteDrain::Ended {
                         committed,
                         terminal,
+                        loss_accounted: false,
                     };
                 }
             }
@@ -1557,13 +1917,13 @@ impl HostInner {
                 }
             }
         }
-        for (route, terminal) in ended {
-            self.end_route(&route, terminal);
+        for (route, terminal, loss_accounted) in ended {
+            self.end_route(&route, terminal, loss_accounted);
         }
         // Hubs the core invalidated after the first pass end here.
         for scope in &scopes {
-            for (route, terminal) in self.drain_scope(scope).await {
-                self.end_route(&route, terminal);
+            for (route, terminal, loss_accounted) in self.drain_scope(scope).await {
+                self.end_route(&route, terminal, loss_accounted);
             }
         }
     }
@@ -2122,13 +2482,52 @@ impl HostInner {
         Ok(())
     }
 
+    pub(crate) fn register_pending_recording<'a>(
+        &'a self,
+        session_id: u64,
+        consumer: &'a str,
+        route: RecordedRoute,
+    ) -> PendingRecordedRoute<'a> {
+        lock(&self.pending_recordings).insert((session_id, consumer.to_owned()), route);
+        PendingRecordedRoute {
+            host: self,
+            session_id,
+            consumer,
+        }
+    }
+
     pub(crate) fn add_route(&self, scope: InstanceKey, route: Route) {
         let mut routes = lock(&self.routes);
+        let mut pending = lock(&self.pending_recordings);
+        pending.remove(&(route.session_id, route.consumer.clone()));
         let entries = routes.entry(scope).or_default();
         entries.retain(|entry| {
             !(entry.session_id == route.session_id && entry.consumer == route.consumer)
         });
         entries.push(route);
+    }
+
+    fn notify_recorded_change(&self, session_id: u64, consumer: &str, recorded: &RecordedRoute) {
+        let routes = lock(&self.routes);
+        let pending = lock(&self.pending_recordings);
+        let active = routes.values().flatten().any(|route| {
+            route.session_id == session_id
+                && route.consumer == consumer
+                && route
+                    .recorded
+                    .as_ref()
+                    .is_some_and(|item| Arc::ptr_eq(&item.journal, &recorded.journal))
+        });
+        let waiting = pending
+            .get(&(session_id, consumer.to_owned()))
+            .is_some_and(|item| Arc::ptr_eq(&item.journal, &recorded.journal));
+        if (active || waiting)
+            && let Some(session) = self.session(session_id)
+        {
+            session
+                .outbox
+                .recording_changed(consumer, &recorded.recording_id);
+        }
     }
 
     pub(crate) fn remove_route(&self, scope: &InstanceKey, session_id: u64, consumer: &str) {
@@ -2138,6 +2537,9 @@ impl HostInner {
             if entries.is_empty() {
                 routes.remove(scope);
             }
+        }
+        if let Some(session) = self.session(session_id) {
+            session.outbox.remove_recording_hints(consumer);
         }
     }
 
@@ -2319,7 +2721,14 @@ async fn pump(host: Weak<HostInner>, signals: Arc<Signals>) {
                 return;
             };
             let sessions = host.session_list();
+            let report_host = host.clone();
+            let runtime = host.runtime.clone();
             let report = move || {
+                for (index, class) in INGRESS_CLASSES.iter().enumerate() {
+                    if drops[index] > 0 {
+                        runtime.block_on(report_host.record_ingress_drop(*class, drops[index]));
+                    }
+                }
                 if lost > 0 {
                     for session in &sessions {
                         session.outbox.push_ingress_drop(IngressClass::Control);
@@ -2455,6 +2864,9 @@ impl MobileHost {
             scan: tokio::sync::Mutex::new(ScanShare::default()),
             scan_members: Mutex::new(BTreeMap::new()),
             routes: Mutex::new(HashMap::new()),
+            pending_recordings: Mutex::new(HashMap::new()),
+            recorded_drops_settled: AtomicU64::new(0),
+            recorded_drops_notify: Notify::new(),
             directory: Mutex::new(BTreeMap::new()),
             restored: Mutex::new(BTreeMap::new()),
             restoration_claims: Mutex::new(BTreeMap::new()),
@@ -2682,6 +3094,12 @@ impl MobileHost {
             Ok(()) => IngressStatus::Accepted,
             Err(class) => IngressStatus::Dropped(class),
         }
+    }
+
+    /// Whether the debug-only observation sees an ingress fence held.
+    #[cfg(debug_assertions)]
+    pub fn recorded_ingress_paused(&self) -> bool {
+        self.inner.radio.ingress_paused()
     }
 
     /// Consumers polled by the pump, in order. Debug tests use it.

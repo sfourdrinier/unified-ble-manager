@@ -56,6 +56,8 @@ export type {
   LongWriteOptions,
   DescriptorWriteOptions,
   GattSubscribeOptions,
+  GattRecordedSubscribeOptions,
+  GattRecordedSubscription,
   GattCharacteristicProperties,
   GattAccessRequirements,
   GattServiceReference,

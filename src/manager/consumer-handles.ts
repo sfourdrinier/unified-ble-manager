@@ -1,5 +1,7 @@
 // src/manager/consumer-handles.ts
 
+import type { ContinuationRecordingConfiguration } from '../backend-contract/continuation-recording-bounds'
+
 import type { BleErrorCode, BleErrorDomain } from '../backend-contract/errors'
 import type { ConnectionLifecycleCause } from '../backend-contract/connection-lifecycle'
 import type { OverflowPolicy } from '../backend-contract/streams'
@@ -74,6 +76,10 @@ export interface PortableSubscriptionOptions extends PortableOperationOptions {
     readonly overflowPolicy: OverflowPolicy
   }
   readonly deliveryMode?: 'prefer-notification' | 'prefer-indication' | 'require-notification' | 'require-indication'
+}
+
+export interface PortableRecordedSubscriptionOptions extends PortableSubscriptionOptions {
+  readonly recording: ContinuationRecordingConfiguration
 }
 
 export interface PortableAttachmentState {
@@ -404,6 +410,10 @@ export interface DiscoveredGattDatabaseHandle {
     options: PortableWritePolicy
   ): Promise<PortableWriteReceipt>
   subscribe(path: PortableCurrentCharacteristicPath, options: PortableSubscriptionOptions): Promise<SubscriptionHandle>
+  subscribeRecorded?(
+    path: PortableCurrentCharacteristicPath,
+    options: PortableRecordedSubscriptionOptions
+  ): Promise<RecordedSubscriptionHandle>
 }
 
 export interface AcquiredGattWriteHandle {
@@ -415,6 +425,15 @@ export interface AcquiredGattNotificationHandle {
   readonly mtuBytes: number
   readonly values: PortableBoundedAsyncStream<PortableNotificationValue>
   close(): Promise<PortableCleanupRecord>
+}
+
+export interface RecordedSubscriptionHandle {
+  readonly subscriptionId: string
+  readonly path: PortableCurrentCharacteristicPath
+  readonly recordingId: string
+  readonly changed: PortableBoundedAsyncStream<{ readonly recordingId: string }>
+  readonly observedDelivery?: 'notification' | 'indication' | 'unknown'
+  remove(): Promise<PortableCleanupRecord>
 }
 
 /** Public, unbranded notification subscription contract for domain consumers. */

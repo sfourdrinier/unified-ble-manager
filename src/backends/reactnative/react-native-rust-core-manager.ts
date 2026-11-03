@@ -131,6 +131,7 @@ import type {
   PortableCurrentDescriptorPath,
   PortableOperationOptions,
   PortableSubscriptionOptions,
+  PortableRecordedSubscriptionOptions,
   PortableWritePolicy
 } from '../../manager/consumer-handles'
 import type {
@@ -1491,7 +1492,7 @@ class NativeGattDatabase {
     },
     'drop-oldest'
   )
-  private readonly subscriptions = new Set<NativeSubscription>()
+  private readonly subscriptions = new Set<NativeSubscription | NativeRecordedSubscription>()
 
   constructor(
     private readonly manager: ReactNativeRustCoreManager,
@@ -1684,15 +1685,27 @@ class NativeGattDatabase {
     return this.backendDatabase.subscribe(path, options)
   }
 
-  trackSubscription(subscription: NativeSubscription): void {
+  async subscribeRecorded(
+    path: CurrentCharacteristicPath,
+    options: import('../../backend-contract/operations').RecordedSubscriptionOptions
+  ) {
+    this.assertPath(path)
+    this.assertOperationAdmission(options, 'subscribe-recorded')
+    const subscribe = this.backendDatabase.subscribeRecorded
+    if (subscribe === undefined)
+      throw contractError('capability.unsupported', 'gatt', 'rust-core-manager.subscribe-recorded')
+    return subscribe.call(this.backendDatabase, path, options)
+  }
+
+  trackSubscription(subscription: NativeSubscription | NativeRecordedSubscription): void {
     this.subscriptions.add(subscription)
   }
 
-  untrackSubscription(subscription: NativeSubscription): void {
+  untrackSubscription(subscription: NativeSubscription | NativeRecordedSubscription): void {
     this.subscriptions.delete(subscription)
   }
 
-  pendingSubscriptions(): NativeSubscription[] {
+  pendingSubscriptions(): (NativeSubscription | NativeRecordedSubscription)[] {
     // remove() untracks only after a successful receipt; snapshotting must
     // not discard failed ownership or bypass its coalesced removal.
     return [...this.subscriptions]
@@ -1912,6 +1925,16 @@ class NativeDiscoveredGattDatabase {
     return subscription
   }
 
+  async subscribeRecorded(path: PortableCurrentCharacteristicPath, options: PortableRecordedSubscriptionOptions) {
+    const backend = await this.database.subscribeRecorded(this.resolveCharacteristicPath(path), {
+      ...toPublicSubscriptionOptions(options),
+      recording: options.recording
+    })
+    const subscription = new NativeRecordedSubscription(this.database, backend)
+    this.database.trackSubscription(subscription)
+    return subscription
+  }
+
   private resolveCharacteristicPath(path: PortableCurrentCharacteristicPath): CurrentCharacteristicPath {
     const characteristic = this.discoverySnapshot.characteristics.find(candidate =>
       characteristicAddressMatches(candidate.path, path)
@@ -1936,6 +1959,46 @@ class NativeDiscoveredGattDatabase {
       throw contractError('gatt.stale-handle', 'gatt', 'rust-core-discovered-gatt.resolve-descriptor-path')
     }
     return descriptor.path
+  }
+}
+
+class NativeRecordedSubscription {
+  private removal: Promise<CleanupRecord> | null = null
+  constructor(
+    private readonly database: NativeGattDatabase,
+    private readonly backend: import('../../backend-contract/gatt').RecordedSubscription<string>
+  ) {}
+  get subscriptionId() {
+    return this.backend.subscriptionId
+  }
+  get path() {
+    return this.backend.path
+  }
+  get recordingId() {
+    return this.backend.recordingId
+  }
+  get observedDelivery() {
+    return this.backend.observedDelivery
+  }
+  get changed() {
+    return this.backend.changed
+  }
+  remove(): Promise<CleanupRecord> {
+    if (this.removal === null) {
+      const removal = this.backend.remove().then(
+        result => {
+          if (result.state === 'released') this.database.untrackSubscription(this)
+          else this.removal = null
+          return result
+        },
+        error => {
+          this.removal = null
+          throw error
+        }
+      )
+      this.removal = removal
+    }
+    return this.removal
   }
 }
 

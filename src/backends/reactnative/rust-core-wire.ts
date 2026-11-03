@@ -91,6 +91,7 @@ export const WIRE_OPS = Object.freeze([
   'gatt.write-when-ready',
   'gatt.write-descriptor',
   'gatt.subscribe',
+  'gatt.subscribe-recorded',
   'gatt.unsubscribe',
   'op.cancel',
   'session.reconcile',
@@ -455,6 +456,7 @@ export interface WireOpResults {
   readonly 'gatt.write-when-ready': { readonly commitState: WireWriteCommitState }
   readonly 'gatt.write-descriptor': { readonly commitState: WireWriteCommitState }
   readonly 'gatt.subscribe': { readonly consumer: string; readonly delivery: WireDelivery }
+  readonly 'gatt.subscribe-recorded': { readonly consumer: string; readonly delivery: WireDelivery }
   readonly 'gatt.unsubscribe': { readonly state: 'released'; readonly physicalDisabled: boolean }
   readonly 'op.cancel': { readonly state: CancellationAcknowledgement<string>['state'] }
   readonly 'session.reconcile': WireReconcile
@@ -505,6 +507,12 @@ export type WireDrainRecord =
       readonly value: Uint8Array
       readonly delivery: WireDelivery
       readonly receipt?: NotificationReceipt
+    }
+  | {
+      readonly t: 'recording-changed'
+      readonly ordinal: number
+      readonly consumer: string
+      readonly recordingId: string
     }
   | {
       readonly t: 'stream-end'
@@ -1694,6 +1702,13 @@ const OP_PARSERS: OpParsers = Object.freeze({
       delivery: enumOrThrow(fields.get('delivery'), DELIVERY_KINDS, `${path}.delivery`)
     })
   },
+  'gatt.subscribe-recorded': (value: unknown, path: string) => {
+    const fields = exactObject(value, ['consumer', 'delivery'], path)
+    return Object.freeze({
+      consumer: stringOrThrow(fields.get('consumer'), `${path}.consumer`),
+      delivery: enumOrThrow(fields.get('delivery'), DELIVERY_KINDS, `${path}.delivery`)
+    })
+  },
   'gatt.unsubscribe': (value: unknown, path: string) => {
     const fields = exactObject(value, ['state', 'physicalDisabled'], path)
     return Object.freeze({
@@ -1741,6 +1756,7 @@ const DRAIN_RECORD_TYPES = Object.freeze([
   'scan-end',
   'value',
   'stream-end',
+  'recording-changed',
   'adapter',
   'link',
   'db-changed',
@@ -1869,6 +1885,15 @@ function drainRecordOrThrow(value: unknown, path: string): WireDrainRecord {
         ...(fields.get('receipt') === undefined
           ? {}
           : { receipt: notificationReceiptOrThrow(fields.get('receipt'), `${recordPath}.receipt`) })
+      })
+    }
+    case 'recording-changed': {
+      const { fields, ordinal } = read(['consumer', 'recordingId'])
+      return Object.freeze({
+        t: type,
+        ordinal,
+        consumer: stringOrThrow(fields.get('consumer'), `${recordPath}.consumer`),
+        recordingId: stringOrThrow(fields.get('recordingId'), `${recordPath}.recordingId`)
       })
     }
     case 'stream-end': {

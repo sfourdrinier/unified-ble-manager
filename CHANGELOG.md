@@ -4,6 +4,13 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.2.0] - 2026-11-03
+
+- Add opt-in journaled React Native characteristic subscriptions with independent
+  consumer routing and existing recording prepare/acknowledge controls. Native
+  ingress queue admission is not a durable commit; physical collection and
+  power-loss behavior remain unqualified.
+
 ## [5.1.3] - 2026-10-26
 
 - Desktop Linux (BlueZ): when BlueZ withholds `GattCharacteristic1.MTU`

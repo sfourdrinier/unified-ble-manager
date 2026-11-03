@@ -128,6 +128,7 @@ import {
   type CharacteristicReadResult,
   type ReadResult,
   type SubscribeRequest,
+  type RecordedSubscribeRequest,
   type SubscriptionOptions,
   type WritePolicy,
   type WriteReceipt,
@@ -170,6 +171,7 @@ import type { NormalizedScanQuery } from '../../backend-contract/scan-query'
 import type { BoundedAsyncStream } from '../../backend-contract/streams'
 import type { CoreStreamTerminalReason } from '../../core/bounded-stream'
 import { OwnedCoreBoundedStream } from '../../core/owned-bounded-stream'
+import { resolveStreamPolicy } from '../../public/stream-presets'
 import { UNIFIED_BLE_IMPLEMENTATION_VERSION } from '../../implementation-version'
 import { trustedServiceUuidFilter } from '../scan-planning/service-uuid-scan-planner'
 import {
@@ -853,6 +855,9 @@ interface DatabaseEntry {
 
 interface SubscriptionEntry {
   readonly consumer: string
+  readonly recorded: boolean
+  readonly recordingId: string | null
+  readonly changed: OwnedCoreBoundedStream<{ readonly recordingId: string }> | null
   readonly subscriptionId: ReturnType<AttachmentBoundIdFactory<string>['subscriptionId']>
   readonly nativePeerId: string
   readonly connectionKey: string
@@ -1088,6 +1093,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         path: CharacteristicPath<string, string, string, string, string, 'current'>,
         request: SubscribeRequest<string, Operation>
       ) => this.subscribe(path, request),
+      subscribeRecorded: <Operation extends string>(
+        path: CharacteristicPath<string, string, string, string, string, 'current'>,
+        request: RecordedSubscribeRequest<string, Operation>
+      ) => this.subscribe(path, request, request.options.recording),
       unsubscribe: <Operation extends string>(
         subscription: BackendSubscription<string, string, string, string, string>,
         operation: OperationOptions<string, Operation>
@@ -1355,6 +1364,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     for (const entry of this.subscriptions.values()) {
       entry.state = 'ended'
       entry.stream.closeWithReason(reason, error)
+      entry.changed?.closeWithReason(reason, error)
     }
     this.subscriptions.clear()
     for (const watch of [...this.adapterWatches]) watch.closeWithReason(reason, error)
@@ -1389,7 +1399,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     for (const consumer of this.pendingScanStart?.delivery.consumers.values() ?? []) {
       consumer.stream.closeWithReason('source-failed', normalized)
     }
-    for (const entry of this.subscriptions.values()) entry.stream.closeWithReason('source-failed', normalized)
+    for (const entry of this.subscriptions.values()) {
+      entry.stream.closeWithReason('source-failed', normalized)
+      entry.changed?.closeWithReason('source-failed', normalized)
+    }
     for (const watch of [...this.adapterWatches]) watch.closeWithReason('source-failed', normalized)
     for (const watch of [...this.readinessWatches]) this.closeReadinessWatch(watch, 'source-failed', normalized)
     for (const stream of [...this.eventStreams]) stream.closeWithReason('source-failed', normalized)
@@ -2757,9 +2770,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.invalidations.set(entry.nativePeerId, invalidation)
     this.markLost(entry)
     const path = this.connectionPath(entry, this.leaseIdFor(entry))
-    if (reason === null) {
-      for (const [consumer, stored] of [...this.subscriptions]) {
-        if (stored.connectionKey !== entry.key || stored.state === 'ended') continue
+    for (const [consumer, stored] of [...this.subscriptions]) {
+      if (stored.connectionKey !== entry.key || stored.state === 'ended') continue
+      if (stored.recorded) {
+        this.finishRecordedWake(stored, invalidation)
+      } else if (reason === null) {
         this.subscriptions.delete(consumer)
         stored.state = 'ended'
         stored.stream.finishWithReason(invalidation)
@@ -3280,6 +3295,23 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.databases.set(key, stored)
     entry.databases.add(key)
     await this.refreshCounters()
+    const removeSubscription = async (
+      subscription: BackendSubscription<string, string, string, string, string>
+    ): Promise<CleanupRecord> => {
+      try {
+        await this.unsubscribe(subscription, {
+          signal: null,
+          deadline: null,
+          correlation: this.identifiers.operationCorrelation(this.mintOperationId('unsubscribe'))
+        }).completion
+        return RELEASED
+      } catch (error) {
+        return {
+          state: 'release-failed',
+          failures: [cleanupFailure('subscription', error, `${SCOPE}.gatt.unsubscribe`)]
+        }
+      }
+    }
     return Object.freeze({
       path,
       snapshot: async () => this.snapshot(stored),
@@ -3326,6 +3358,29 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
           bytes: value,
           mode: writeOptions.mode
         }).completion,
+      subscribeRecorded: async (
+        characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
+        subscribeOptions: RecordedSubscribeRequest<string, string>['options']
+      ) => {
+        const subscription = await this.subscribe(
+          characteristic,
+          {
+            operation: this.operationFor(subscribeOptions),
+            options: subscribeOptions
+          },
+          subscribeOptions.recording
+        ).completion
+        if (subscription.changed === undefined)
+          throw contractError('protocol.violation', 'gatt', `${SCOPE}.recorded-changed`)
+        return Object.freeze({
+          subscriptionId: subscription.subscriptionId,
+          path: subscription.path,
+          recordingId: subscribeOptions.recording.id,
+          observedDelivery: subscription.observedDelivery,
+          changed: subscription.changed,
+          remove: () => removeSubscription(subscription)
+        })
+      },
       subscribe: async (
         characteristic: CharacteristicPath<string, string, string, string, string, 'current'>,
         subscribeOptions: SubscriptionOptions
@@ -3338,23 +3393,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
           subscriptionId: subscription.subscriptionId,
           path: subscription.path,
           values: subscription.notifications,
-          remove: async (): Promise<CleanupRecord> => {
-            try {
-              await this.unsubscribe(subscription, {
-                signal: null,
-                deadline: null,
-                // Legacy ran no unsubscribe through the core's counter; its
-                // terminal is never public.
-                correlation: this.identifiers.operationCorrelation(this.mintOperationId('unsubscribe'))
-              }).completion
-              return RELEASED
-            } catch (error) {
-              return {
-                state: 'release-failed',
-                failures: [cleanupFailure('subscription', error, `${SCOPE}.gatt.unsubscribe`)]
-              }
-            }
-          }
+          remove: () => removeSubscription(subscription)
         })
       }
     })
@@ -3626,9 +3665,11 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
 
   private subscribe<Operation extends string>(
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
-    request: SubscribeRequest<string, Operation>
+    request: SubscribeRequest<string, Operation>,
+    recording: RecordedSubscribeRequest<string, Operation>['options']['recording'] | null = null
   ): BackendOperationDispatch<string, BackendSubscription<string, string, string, string, string>> {
-    const operation = `${SCOPE}.gatt.subscribe`
+    const wireOperation = recording === null ? 'gatt.subscribe' : 'gatt.subscribe-recorded'
+    const operation = `${SCOPE}.${wireOperation}`
     const { entry, selector } = this.resolveCharacteristic(path, operation)
     const operationId = this.mintOperationId('subscribe')
     const budget = this.budget(request.operation, operation)
@@ -3644,8 +3685,19 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       request.options.delivery.overflowPolicy,
       () => undefined
     )
+    const changed =
+      recording === null
+        ? null
+        : new OwnedCoreBoundedStream<{ readonly recordingId: string }>(
+            resolveStreamPolicy('latest'),
+            'latest',
+            () => undefined
+          )
     const stored: SubscriptionEntry = {
       consumer,
+      recorded: recording !== null,
+      recordingId: recording?.id ?? null,
+      changed,
       subscriptionId,
       nativePeerId: entry.nativePeerId,
       connectionKey: entry.key,
@@ -3656,17 +3708,20 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       ingressDropped: 0
     }
     this.subscriptions.set(consumer, stored)
+    if (recording !== null) changed?.emit({ recordingId: recording.id }, 0, recording.id)
     return this.dispatch(operationId, request.operation.signal, operation, async () => {
-      const enabled = await this.invoke('gatt.subscribe', {
+      const enabled = await this.invoke(wireOperation, {
         peerId: entry.nativePeerId,
         selector,
         consumer,
         operationId,
+        ...(recording === null ? {} : { recording: { ...recording } }),
         ...(request.options.deliveryMode === undefined ? {} : { deliveryMode: request.options.deliveryMode }),
         ...budget
       }).catch(error => {
         this.subscriptions.delete(consumer)
         stream.closeWithReason('source-failed', normalizedFrom(error, operation))
+        changed?.closeWithReason('source-failed', normalizedFrom(error, operation))
         throw error
       })
       if (stored.state === 'subscribing') stored.state = 'active'
@@ -3676,7 +3731,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         path,
         terminal: this.terminal(request.operation.correlation),
         observedDelivery: enabled.delivery,
-        notifications: stream
+        notifications: stream,
+        ...(changed === null ? {} : { changed })
       })
     })
   }
@@ -3719,6 +3775,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       this.subscriptions.delete(stored.consumer)
       stored.state = 'ended'
       stored.stream.closeWithReason('owner-released')
+      this.finishRecordedWake(stored, 'owner-released')
       await this.refreshCounters()
       return this.terminal(operationOptions.correlation)
     })
@@ -3737,6 +3794,12 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       })
       return
     }
+    if (stored.recorded) {
+      const error = contractError('protocol.violation', 'gatt', `${SCOPE}.recorded-value`).normalized
+      stored.stream.closeWithReason('source-failed', error)
+      stored.changed?.closeWithReason('source-failed', error)
+      return
+    }
     const value: NotificationValue = Object.freeze({
       value: ownedCopy(record.value),
       delivery: record.delivery,
@@ -3750,8 +3813,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   ): void {
     const stored = this.subscriptions.get(record.consumer)
     if (stored === undefined) return
-    this.subscriptions.delete(record.consumer)
-    stored.state = 'ended'
+    if (!stored.recorded) {
+      this.subscriptions.delete(record.consumer)
+      stored.state = 'ended'
+    }
     if (record.droppedItems > 0 || record.droppedBytes > 0) {
       stored.stream.observeSourceOverflow({
         kind: 'overflow',
@@ -3762,12 +3827,22 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       })
     }
     const reason: CoreStreamTerminalReason =
-      record.reason === 'overflow'
-        ? 'overflow'
-        : record.reason === 'closed'
-          ? 'closed'
-          : (this.invalidations.get(stored.nativePeerId) ?? 'connection-lost')
+      stored.recorded && record.reason === 'closed'
+        ? 'source-failed'
+        : record.reason === 'overflow'
+          ? 'overflow'
+          : record.reason === 'closed'
+            ? 'closed'
+            : (this.invalidations.get(stored.nativePeerId) ?? 'connection-lost')
     stored.stream.finishWithReason(reason)
+    this.finishRecordedWake(stored, reason)
+  }
+
+  private finishRecordedWake(stored: SubscriptionEntry, reason: CoreStreamTerminalReason): void {
+    if (stored.recordingId !== null) {
+      stored.changed?.emit({ recordingId: stored.recordingId }, 0, stored.recordingId)
+      stored.changed?.finishWithReason(reason)
+    }
   }
 
   // -- drain ------------------------------------------------------------------------------------------
@@ -3783,6 +3858,12 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       case 'value':
         this.onValue(record)
         break
+      case 'recording-changed': {
+        const entry = this.subscriptions.get(record.consumer)
+        if (entry?.recordingId === record.recordingId && entry.state !== 'ended')
+          entry.changed?.emit({ recordingId: record.recordingId }, 0, record.recordingId)
+        break
+      }
       case 'stream-end':
         this.onStreamEnd(record)
         break
@@ -3891,6 +3972,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
    * One re-read runs at a time; drops during it schedule one more.
    */
   private reconcileControlLoss(): void {
+    for (const entry of this.subscriptions.values()) {
+      if (entry.state !== 'ended' && entry.recordingId !== null)
+        entry.changed?.emit({ recordingId: entry.recordingId }, 0, entry.recordingId)
+    }
     if (this.controlReconcile !== null) {
       this.controlReconcileAgain = true
       return

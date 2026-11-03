@@ -1,5 +1,7 @@
 // src/backend-contract/operations.ts
 
+import type { ContinuationRecordingConfiguration } from './continuation-recording-bounds'
+
 import type { BleErrorCode } from './errors'
 import type {
   BackendOperationHandle,
@@ -156,6 +158,14 @@ export interface SubscriptionOptions extends PublicOperationOptions {
     readonly overflowPolicy: OverflowPolicy
   }
   readonly deliveryMode?: 'prefer-notification' | 'prefer-indication' | 'require-notification' | 'require-indication'
+}
+/** Resource admission for one durable ordinary subscription. */
+export interface RecordedSubscriptionOptions extends SubscriptionOptions {
+  readonly recording: ContinuationRecordingConfiguration
+}
+export interface RecordedSubscribeRequest<Attachment extends string, Operation extends string> {
+  readonly operation: OperationOptions<Attachment, Operation>
+  readonly options: RecordedSubscriptionOptions
 }
 export interface SubscribeRequest<Attachment extends string, Operation extends string> {
   readonly operation: OperationOptions<Attachment, Operation>

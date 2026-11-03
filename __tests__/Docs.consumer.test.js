@@ -117,7 +117,8 @@ describe('consumer documentation matches the published package', () => {
   test('recording guidance separates peer scope, capture timing and physical retention', () => {
     const background = read('docs/BACKGROUND.md')
     expect(background).toContain('A recording is scoped to its declared peer')
-    expect(background).toContain('no per-notification host receive timestamp')
+    expect(background).toContain('Receipt evidence can be')
+    expect(background).toContain('absent and is never reconstructed at prepare time')
     expect(background).toContain('Logical clear does not reclaim physical allocation')
     expect(background).toContain('### Retained rc.13 journals with foreign-peer controls')
     expect(background).toContain('Do not skip, relabel or automatically acknowledge')
