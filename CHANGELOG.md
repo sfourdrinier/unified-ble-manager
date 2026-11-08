@@ -4,6 +4,12 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [5.2.1] - 2026-11-08
+
+- Report unknown desktop characteristic security requirements as `unknown`
+  when permission flags are unavailable, rather than inferring `none` from a
+  readable or writable property. Deterministic discovery evidence only.
+
 ## [5.2.0] - 2026-11-03
 
 - Add opt-in journaled React Native characteristic subscriptions with independent
