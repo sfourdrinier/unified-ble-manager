@@ -436,7 +436,7 @@ export class WebBluetoothBackend
       databaseSnapshots: resourceCount(
         [...this.connectionsById.values()].filter(record => record.database !== null).length
       ),
-      physicalCccdEnablements: resourceCount(this.gattRuntime.subscriptionCount()),
+      physicalCccdEnablements: resourceCount(this.gattRuntime.physicalNotificationCount()),
       subscriptionConsumers: resourceCount(this.gattRuntime.subscriptionCount()),
       queuedOperations: resourceCount(this.pendingConnectionsByPeer.size),
       dispatchedOperations: resourceCount(0),

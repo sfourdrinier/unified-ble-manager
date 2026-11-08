@@ -74,6 +74,15 @@ export interface WebGattHost extends WebGattDatabaseHost {
   staleGattError(operation: string): import('../backend-contract/errors').BackendContractError
 }
 
+interface WebPhysicalNotifications {
+  readonly characteristic: WebBluetoothCharacteristicBoundary
+  readonly members: Set<WebManagedSubscription>
+  readonly listener: (value: Uint8Array) => void
+  readonly start: Promise<void>
+  listening: boolean
+  stop: Promise<CleanupRecord> | null
+}
+
 const RELEASED: CleanupRecord = { state: 'released', failures: [] }
 const MAXIMUM_VALUE_BYTES: ByteLimit = byteLimit(512 * 1024)
 /**
@@ -90,6 +99,8 @@ export class WebBluetoothGattRuntime {
   private nextSubscription = 1
   private nextOperation = 1
   private readonly subscriptions = new Map<string, WebManagedSubscription>()
+  private readonly physicalNotifications = new Map<WebBluetoothCharacteristicBoundary, WebPhysicalNotifications>()
+  private readonly physicalBySubscription = new Map<WebManagedSubscription, WebPhysicalNotifications>()
 
   constructor(private readonly host: WebGattHost) {
     this.gatt = this.createGattBackend()
@@ -97,6 +108,10 @@ export class WebBluetoothGattRuntime {
 
   subscriptionCount(): number {
     return this.subscriptions.size
+  }
+
+  physicalNotificationCount(): number {
+    return this.physicalNotifications.size
   }
 
   retainedSubscriptionCount(): number {
@@ -574,6 +589,26 @@ export class WebBluetoothGattRuntime {
     if (mode === 'require-indication' && notify) {
       throw contractError('capability.limited', 'gatt', 'web-gatt.subscribe')
     }
+    let physical = this.physicalNotifications.get(characteristic)
+    if (physical !== undefined && physical.stop !== null) {
+      const pendingStop = physical.stop
+      const cleanup = await this.host.runAbortable(
+        database.record,
+        options,
+        () => pendingStop,
+        'gatt.subscribe-failed',
+        'gatt',
+        'web-gatt.subscribe-pending-stop'
+      )
+      if (cleanup.state !== 'released') {
+        throw contractError('gatt.subscribe-failed', 'gatt', 'web-gatt.subscribe-pending-cleanup')
+      }
+      database.assertCurrent('web-gatt.subscribe')
+      physical = this.physicalNotifications.get(characteristic)
+    }
+    if (physical !== undefined && [...physical.members].some(member => member.state === 'cleanup-failed')) {
+      throw contractError('gatt.subscribe-failed', 'gatt', 'web-gatt.subscribe-pending-cleanup')
+    }
     const stream = new CoreBoundedStream<NotificationValue>(options.delivery, options.delivery.overflowPolicy)
     const subscriptionId = this.host.identifiers().subscriptionId(`web-subscription-${this.nextSubscription}`)
     this.nextSubscription += 1
@@ -621,8 +656,29 @@ export class WebBluetoothGattRuntime {
     }
     managedState.current = managed
     this.subscriptions.set(String(subscriptionId), managed)
-    characteristic.addNotificationListener(listener)
-    const nativeStart = Promise.resolve().then(() => characteristic.startNotifications())
+    if (physical === undefined) {
+      const members = new Set<WebManagedSubscription>()
+      const sourceListener = (value: Uint8Array): void => {
+        for (const member of [...members]) member.listener(value)
+      }
+      characteristic.addNotificationListener(sourceListener)
+      physical = {
+        characteristic,
+        members,
+        listener: sourceListener,
+        start: Promise.resolve().then(() => characteristic.startNotifications()),
+        listening: true,
+        stop: null
+      }
+      this.physicalNotifications.set(characteristic, physical)
+    }
+    if (!physical.listening) {
+      characteristic.addNotificationListener(physical.listener)
+      physical.listening = true
+    }
+    physical.members.add(managed)
+    this.physicalBySubscription.set(managed, physical)
+    const nativeStart = physical.start
     nativeStart.then(
       () => {
         managed.startupSettled = true
@@ -655,6 +711,9 @@ export class WebBluetoothGattRuntime {
       )
     } catch (error) {
       this.beginLogicalSubscriptionStop(managed, 'owner-released')
+      if (managed.startupSettled && managed.state !== 'stopped') {
+        managed.terminationCleanup = this.removeManagedSubscription(managed)
+      }
       throw error
     }
     managed.startupSettled = true
@@ -693,20 +752,43 @@ export class WebBluetoothGattRuntime {
       return RELEASED
     }
     this.beginLogicalSubscriptionStop(managed, 'owner-released')
+    const physical = this.physicalBySubscription.get(managed)
+    if (physical === undefined) {
+      this.finishStoppedSubscription(managed)
+      return RELEASED
+    }
+    const otherActive = [...physical.members].some(
+      member => member !== managed && (member.state === 'enabling' || member.state === 'ready')
+    )
+    if (otherActive) {
+      this.finishStoppedSubscription(managed)
+      return RELEASED
+    }
+    this.detachPhysicalListener(physical)
     if (!managed.startupSettled) {
       return webCleanupFailure('subscription', 'web-gatt.notification-start-pending')
     }
     managed.state = 'stopping'
-    try {
-      await managed.characteristic.stopNotifications()
-      this.finishStoppedSubscription(managed)
-      return RELEASED
-    } catch (error) {
+    if (physical.stop === null) {
+      physical.stop = Promise.resolve()
+        .then(() => physical.characteristic.stopNotifications())
+        .then(
+          () => RELEASED,
+          error => {
+            console.error('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', error)
+            return webCleanupFailure('subscription', 'web-gatt.unsubscribe')
+          }
+        )
+    }
+    const cleanup = await physical.stop
+    if (cleanup.state === 'released') {
+      for (const member of [...physical.members]) this.finishStoppedSubscription(member)
+    } else {
       managed.state = 'cleanup-failed'
       managed.cleanupFailureReported = false
-      console.error('[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:', error)
-      return webCleanupFailure('subscription', 'web-gatt.unsubscribe')
+      physical.stop = null
     }
+    return cleanup
   }
 
   private beginLogicalSubscriptionStop(
@@ -717,13 +799,35 @@ export class WebBluetoothGattRuntime {
       return
     }
     managed.state = 'stopping'
-    managed.characteristic.removeNotificationListener(managed.listener)
+    const physical = this.physicalBySubscription.get(managed)
+    if (
+      physical !== undefined &&
+      ![...physical.members].some(member => member.state === 'enabling' || member.state === 'ready')
+    )
+      this.detachPhysicalListener(physical)
     managed.stream.closeWithReason(reason)
   }
 
   private finishStoppedSubscription(managed: WebManagedSubscription): void {
     managed.state = 'stopped'
     this.subscriptions.delete(String(managed.subscriptionId))
+    const physical = this.physicalBySubscription.get(managed)
+    this.physicalBySubscription.delete(managed)
+    if (physical !== undefined) {
+      physical.members.delete(managed)
+      if (physical.members.size === 0) {
+        this.detachPhysicalListener(physical)
+        if (this.physicalNotifications.get(physical.characteristic) === physical) {
+          this.physicalNotifications.delete(physical.characteristic)
+        }
+      }
+    }
+  }
+
+  private detachPhysicalListener(physical: WebPhysicalNotifications): void {
+    if (!physical.listening) return
+    physical.listening = false
+    physical.characteristic.removeNotificationListener(physical.listener)
   }
 
   private async stopDatabaseSubscriptions(database: WebGattDatabase): Promise<CleanupRecord> {
