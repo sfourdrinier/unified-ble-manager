@@ -396,6 +396,49 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
     await backend.destroy()
   })
 
+  test('adapter loss fences browser characteristic identity even without a disconnect event', async () => {
+    let available = true
+    const characteristic = {
+      uuid: HEART_RATE_MEASUREMENT, properties: {}, getDescriptors: async () => []
+    }
+    const service = { uuid: HEART_RATE_SERVICE, getCharacteristics: async () => [characteristic] }
+    const server = {
+      connected: false,
+      connect: async () => { server.connected = true; return server },
+      disconnect: jest.fn(() => { server.connected = false }),
+      getPrimaryServices: async () => [service]
+    }
+    const device = { id: 'adapter-loss-device', gatt: server, addEventListener: () => {}, removeEventListener: () => {} }
+    const bluetooth = { requestDevice: async () => device, getAvailability: async () => available }
+    const boundary = new NavigatorWebBluetoothBoundary(navigatorEnvironment(bluetooth))
+    const provider = createWebBluetoothProvider(boundary)
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    await backend.attach({ coreCompatibility: provider.descriptor.compatibility })
+    const selection = await backend.choose(chooserRequest(), noDeadline())
+    const first = await backend.connections.connect(selection.peerId, 'first', noDeadline())
+    const second = await backend.connections.connect(selection.peerId, 'second', noDeadline())
+    const firstDatabase = await backend.gatt.discover(first.connection, noDeadline())
+    const secondDatabase = await backend.gatt.discover(second.connection, noDeadline())
+    const original = firstDatabase.characteristicBoundaries.values().next().value
+    expect(secondDatabase.characteristicBoundaries.values().next().value).toBe(original)
+    await first.release()
+    const stillShared = await backend.gatt.discover(second.connection, noDeadline())
+    expect(stillShared.characteristicBoundaries.values().next().value).toBe(original)
+    server.connected = false
+    available = false
+    await backend.adapter.currentState()
+    expect(server.disconnect).not.toHaveBeenCalled()
+    available = true
+    await backend.attach({ coreCompatibility: provider.descriptor.compatibility })
+    const nextSelection = await backend.choose(chooserRequest(), noDeadline())
+    const next = await backend.connections.connect(nextSelection.peerId, 'next', noDeadline())
+    const nextDatabase = await backend.gatt.discover(next.connection, noDeadline())
+    expect(nextDatabase.characteristicBoundaries.values().next().value).not.toBe(original)
+    await next.release()
+    await backend.destroy()
+  })
+
   test('retries retained disconnect cleanup before a new attachment can own the browser device', async () => {
     let available = true
     const mock = createBoundary()

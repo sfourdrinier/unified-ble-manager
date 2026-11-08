@@ -187,6 +187,7 @@ export interface NavigatorWebBluetoothEnvironment {
 
 /** Concrete Web Bluetooth adapter over explicitly supplied browser APIs. */
 export class NavigatorWebBluetoothBoundary implements WebBluetoothBoundary {
+  private readonly devices = new WeakMap<BrowserBluetoothDevice, NavigatorDeviceBoundary>()
   readonly implementationVersion: string
   readonly browserEngine: string
   readonly getAuthorizedDevices: (() => Promise<readonly WebBluetoothDeviceBoundary[]>) | undefined
@@ -204,7 +205,7 @@ export class NavigatorWebBluetoothBoundary implements WebBluetoothBoundary {
               throw new Error('Web Bluetooth authorized-device enumeration is no longer available')
             }
             const devices = await bluetooth.getDevices()
-            return devices.map(device => new NavigatorDeviceBoundary(device))
+            return devices.map(device => this.wrapDevice(device))
           }
     if (browserBluetoothSupportsAvailabilityEvents(bluetooth)) {
       this.addAvailabilityChangeListener = listener => subscribeBrowserAvailabilityChanged(bluetooth, listener)
@@ -243,9 +244,17 @@ export class NavigatorWebBluetoothBoundary implements WebBluetoothBoundary {
         }
     const device = await bluetooth.requestDevice(request)
     return {
-      device: new NavigatorDeviceBoundary(device),
+      device: this.wrapDevice(device),
       grantedServices
     }
+  }
+
+  private wrapDevice(device: BrowserBluetoothDevice): NavigatorDeviceBoundary {
+    const existing = this.devices.get(device)
+    if (existing !== undefined) return existing
+    const boundary = new NavigatorDeviceBoundary(device)
+    this.devices.set(device, boundary)
+    return boundary
   }
 
   now(): number {
@@ -278,7 +287,12 @@ class NavigatorDeviceBoundary implements WebBluetoothDeviceBoundary {
   readonly id: string
   readonly name: string | null
   readonly gatt: WebBluetoothGattServerBoundary
-  private readonly disconnectListeners = new Map<WebBluetoothDisconnectListener, () => void>()
+  private readonly disconnectListeners = new Set<WebBluetoothDisconnectListener>()
+  private readonly onDisconnect = (): void => {
+    this.gattBoundary.invalidateConnectionGeneration()
+    for (const listener of [...this.disconnectListeners]) listener()
+  }
+  private readonly gattBoundary: NavigatorGattServerBoundary
 
   constructor(private readonly device: BrowserBluetoothDevice) {
     this.id = device.id
@@ -288,26 +302,24 @@ class NavigatorDeviceBoundary implements WebBluetoothDeviceBoundary {
       error.name = 'NotSupportedError'
       throw error
     }
-    this.gatt = new NavigatorGattServerBoundary(device.gatt)
+    this.gattBoundary = new NavigatorGattServerBoundary(device.gatt)
+    this.gatt = this.gattBoundary
   }
 
   addDisconnectListener(listener: WebBluetoothDisconnectListener): void {
-    const browserListener = () => listener()
-    this.disconnectListeners.set(listener, browserListener)
-    this.device.addEventListener('gattserverdisconnected', browserListener)
+    if (this.disconnectListeners.size === 0) this.device.addEventListener('gattserverdisconnected', this.onDisconnect)
+    this.disconnectListeners.add(listener)
   }
 
   removeDisconnectListener(listener: WebBluetoothDisconnectListener): void {
-    const browserListener = this.disconnectListeners.get(listener)
-    if (browserListener === undefined) {
-      return
-    }
-    this.disconnectListeners.delete(listener)
-    this.device.removeEventListener('gattserverdisconnected', browserListener)
+    if (!this.disconnectListeners.delete(listener)) return
+    if (this.disconnectListeners.size === 0)
+      this.device.removeEventListener('gattserverdisconnected', this.onDisconnect)
   }
 }
 
 class NavigatorGattServerBoundary implements WebBluetoothGattServerBoundary {
+  private characteristics = new WeakMap<BrowserBluetoothCharacteristic, NavigatorCharacteristicBoundary>()
   constructor(private readonly server: BrowserBluetoothGattServer) {}
 
   get connected(): boolean {
@@ -320,15 +332,21 @@ class NavigatorGattServerBoundary implements WebBluetoothGattServerBoundary {
 
   disconnect(): void {
     this.server.disconnect()
+    this.invalidateConnectionGeneration()
+  }
+
+  invalidateConnectionGeneration(): void {
+    this.characteristics = new WeakMap()
   }
 
   async getPrimaryServices(): Promise<readonly WebBluetoothServiceBoundary[]> {
+    const characteristics = this.characteristics
     const services = await this.server.getPrimaryServices()
     const cache = new Map<BrowserBluetoothService, NavigatorServiceBoundary>()
     const wrap = (service: BrowserBluetoothService, root = false): NavigatorServiceBoundary => {
       const existing = cache.get(service)
       if (existing !== undefined) return existing
-      const boundary = new NavigatorServiceBoundary(service, wrap, root)
+      const boundary = new NavigatorServiceBoundary(service, wrap, characteristics, root)
       cache.set(service, boundary)
       return boundary
     }
@@ -343,6 +361,7 @@ class NavigatorServiceBoundary implements WebBluetoothServiceBoundary {
   constructor(
     private readonly service: BrowserBluetoothService,
     private readonly wrap: (service: BrowserBluetoothService) => NavigatorServiceBoundary,
+    private readonly characteristics: WeakMap<BrowserBluetoothCharacteristic, NavigatorCharacteristicBoundary>,
     root: boolean
   ) {
     this.uuid = service.uuid
@@ -357,7 +376,13 @@ class NavigatorServiceBoundary implements WebBluetoothServiceBoundary {
 
   async getCharacteristics(): Promise<readonly WebBluetoothCharacteristicBoundary[]> {
     const characteristics = await this.service.getCharacteristics()
-    return characteristics.map(characteristic => new NavigatorCharacteristicBoundary(characteristic))
+    return characteristics.map(characteristic => {
+      const existing = this.characteristics.get(characteristic)
+      if (existing !== undefined) return existing
+      const boundary = new NavigatorCharacteristicBoundary(characteristic)
+      this.characteristics.set(characteristic, boundary)
+      return boundary
+    })
   }
 }
 

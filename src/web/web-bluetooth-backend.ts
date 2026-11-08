@@ -537,6 +537,7 @@ export class WebBluetoothBackend
       }
       return merged
     }
+    if (record.valid) record.device.gatt.invalidateConnectionGeneration?.()
     this.invalidateConnectionGenerations(record, reason)
     const phases: CleanupRecord[] = []
     if (!record.subscriptionReleased) {
