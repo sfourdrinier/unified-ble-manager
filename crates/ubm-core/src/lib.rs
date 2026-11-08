@@ -14,6 +14,7 @@
 pub mod central;
 pub mod codec;
 pub mod contracts;
+pub mod ordered_notifications;
 pub mod ownership;
 pub mod profiles;
 pub mod streams;
