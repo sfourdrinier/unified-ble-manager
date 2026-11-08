@@ -24,7 +24,8 @@ const PAGE: u64 = 4096;
 const OVERHEAD: u64 = 65536;
 const RESERVED_PAGES: u64 = 16;
 const APPLICATION_ID: i64 = 0x55424d4a;
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+const ORDERED_IDENTITIES_SCHEMA: &str = "CREATE TABLE ordered_identities(producer_id TEXT NOT NULL, collection_id TEXT NOT NULL, generation_kind TEXT NOT NULL, generation_value TEXT NOT NULL, delivery_id TEXT NOT NULL, payload TEXT NOT NULL, ordinal INTEGER NOT NULL, PRIMARY KEY(producer_id,collection_id,generation_kind,generation_value,delivery_id)) WITHOUT ROWID;";
 /// Most records one synced commit may carry. The pump never waits to fill a
 /// batch: it groups only values it already holds, so this bounds how long one
 /// commit can delay queued control work, not latency.
@@ -710,7 +711,10 @@ impl ContinuationJournal {
                 connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
             let page_size =
                 connection.pragma_query_value(None, "page_size", |row| unsigned(row, 0))?;
-            if schema != SCHEMA_VERSION || application != APPLICATION_ID || page_size != PAGE {
+            if !(1..=SCHEMA_VERSION).contains(&schema)
+                || application != APPLICATION_ID
+                || page_size != PAGE
+            {
                 return Err(error(
                     "storage.schema",
                     "unknown journal schema or page format; file retained",
@@ -773,9 +777,20 @@ impl ContinuationJournal {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute_batch("CREATE TABLE journal(id INTEGER PRIMARY KEY CHECK(id=1), recording_id TEXT NOT NULL, declaration TEXT NOT NULL, max_bytes INTEGER NOT NULL, max_records INTEGER NOT NULL, phase TEXT NOT NULL, next_ordinal INTEGER NOT NULL, next_token INTEGER NOT NULL, lost INTEGER NOT NULL, pending_token TEXT, pending_last INTEGER, pending_more INTEGER, last_ack_token TEXT, last_ack_receipt TEXT, retained_records INTEGER NOT NULL, retained_bytes INTEGER NOT NULL, collection_failure TEXT); CREATE TABLE records(ordinal INTEGER PRIMARY KEY, body TEXT NOT NULL, bytes INTEGER NOT NULL);")?;
             tx.execute("INSERT INTO journal VALUES(1,?1,?2,?3,?4,'recording',1,1,0,NULL,NULL,NULL,NULL,NULL,0,0,NULL)", params![recording_id,declaration,sql_integer(quota.max_bytes)?,sql_integer(quota.max_records)?])?;
+            tx.execute_batch(ORDERED_IDENTITIES_SCHEMA)?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
             tx.commit()?;
+        }
+        if existing {
+            let version: i64 =
+                connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            if version == 1 {
+                let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                tx.execute_batch(ORDERED_IDENTITIES_SCHEMA)?;
+                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                tx.commit()?;
+            }
         }
         let retained_failure: Option<String> = connection.query_row(
             "SELECT collection_failure FROM journal WHERE id=1",
@@ -848,6 +863,171 @@ impl ContinuationJournal {
             Some(rejected) => Err(rejected.error),
             None => Ok(json!({"accepted":true,"ordinal":batch.first_ordinal})),
         }
+    }
+
+    /// Atomically commits one ordered delivery and its retry identity. Identities
+    /// remain after reader acknowledgement and are removed only by `clear`, so
+    /// a retry can return its original ordinal even after its record was read.
+    /// Identity storage consumes the same bounded SQLite page quota as records.
+    /// The native owner supplies a collision-resistant producer incarnation and
+    /// retains it for retries, including after reopening the journal.
+    pub fn append_ordered(
+        &self,
+        producer_id: &str,
+        collection_id: &str,
+        generation_kind: &str,
+        generation_value: &str,
+        delivery_id: &str,
+        metadata: &Value,
+        record: &Value,
+    ) -> Result<Value> {
+        let outcome = self
+            .append_ordered_inner(
+                producer_id,
+                collection_id,
+                generation_kind,
+                generation_value,
+                delivery_id,
+                metadata,
+                record,
+            )
+            .map_err(|failure| failure.at("append-ordered"));
+        if let Err(failure) = &outcome
+            && failure.kind.starts_with("storage.")
+            && failure.kind != "storage.stopped"
+            && failure.kind != "storage.identity-conflict"
+            && let Ok(mut stored) = self.runtime_failure.lock()
+        {
+            *stored = Some(failure.clone());
+        }
+        outcome
+    }
+
+    fn append_ordered_inner(
+        &self,
+        producer_id: &str,
+        collection_id: &str,
+        generation_kind: &str,
+        generation_value: &str,
+        delivery_id: &str,
+        metadata: &Value,
+        record: &Value,
+    ) -> Result<Value> {
+        if [
+            producer_id,
+            collection_id,
+            generation_kind,
+            generation_value,
+            delivery_id,
+        ]
+        .iter()
+        .any(|part| part.is_empty() || part.len() > 256)
+            || !metadata.is_object()
+            || !record.is_object()
+        {
+            return Err(error(
+                "argument.invalid",
+                "invalid ordered delivery identity or payload",
+            ));
+        }
+        encoded(metadata, 16384)?;
+        encoded(record, 65536)?;
+        let payload = encoded(&json!({"metadata":metadata,"record":record}), 82944)?;
+        let mut connection = self.connection()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing = tx.query_row(
+            "SELECT payload,ordinal FROM ordered_identities WHERE producer_id=?1 AND collection_id=?2 AND generation_kind=?3 AND generation_value=?4 AND delivery_id=?5",
+            params![producer_id,collection_id,generation_kind,generation_value,delivery_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        );
+        match existing {
+            Ok((previous, ordinal)) if previous == payload => {
+                tx.commit()?;
+                return Ok(json!({"accepted":true,"ordinal":ordinal}));
+            }
+            Ok(_) => {
+                return Err(error(
+                    "storage.identity-conflict",
+                    "ordered delivery identity has a different payload",
+                ));
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {}
+            Err(failure) => return Err(failure.into()),
+        }
+        if self
+            .collection_failure
+            .lock()
+            .map_err(|_| error("storage.io", "collection failure state interrupted"))?
+            .is_some()
+        {
+            return Err(error(
+                "storage.collection-failed",
+                "collection terminated; retained records remain readable",
+            ));
+        }
+        let (phase, ordinal, count): (String, i64, u64) = tx.query_row(
+            "SELECT phase,next_ordinal,retained_records FROM journal WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, unsigned(row, 2)?)),
+        )?;
+        if phase != "recording" {
+            return Err(if phase == "capacity-reached" {
+                error(
+                    "storage.full",
+                    "recording capacity reached; unacknowledged records retained",
+                )
+            } else {
+                error("storage.stopped", "journal is not accepting records")
+            });
+        }
+        let body = encoded(
+            &json!({"ordinal":ordinal,"metadata":metadata,"record":record}),
+            82944,
+        )?;
+        let pages = tx.pragma_query_value(None, "page_count", |row| unsigned(row, 0))?;
+        let free = tx.pragma_query_value(None, "freelist_count", |row| unsigned(row, 0))?;
+        let identity_bytes = payload.len()
+            + producer_id.len()
+            + collection_id.len()
+            + generation_kind.len()
+            + generation_value.len()
+            + delivery_id.len();
+        let needed =
+            (body.len() as u64).div_ceil(PAGE) + (identity_bytes as u64).div_ceil(PAGE) + 24;
+        if count >= self.quota.max_records
+            || pages.saturating_sub(free) + needed + RESERVED_PAGES > self.page_limit
+        {
+            // The source still owns this delivery, so refusal is not evidence
+            // of loss. Seal admission durably without incrementing lostRecords.
+            tx.execute("UPDATE journal SET phase='capacity-reached' WHERE id=1", [])?;
+            tx.commit()?;
+            return Err(error(
+                "storage.full",
+                "recording capacity reached; unacknowledged records retained",
+            ));
+        }
+        let next = ordinal
+            .checked_add(1)
+            .ok_or_else(|| error("storage.full", "journal ordinal exhausted"))?;
+        tx.execute(
+            "INSERT INTO records VALUES(?1,?2,?3)",
+            params![ordinal, body, sql_integer(body.len() as u64)?],
+        )?;
+        tx.execute(
+            "INSERT INTO ordered_identities VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                producer_id,
+                collection_id,
+                generation_kind,
+                generation_value,
+                delivery_id,
+                payload,
+                ordinal
+            ],
+        )?;
+        tx.execute("UPDATE journal SET next_ordinal=?1,retained_records=retained_records+1,retained_bytes=retained_bytes+?2 WHERE id=1", params![next,sql_integer(body.len() as u64)?])?;
+        tx.commit()?;
+        Ok(json!({"accepted":true,"ordinal":ordinal}))
     }
 
     /// Persists up to [`APPEND_BATCH_MAX`] already-held records in ONE immediate
@@ -1248,6 +1428,7 @@ impl ContinuationJournal {
             ));
         }
         let removed = tx.execute("DELETE FROM records", [])?;
+        tx.execute("DELETE FROM ordered_identities", [])?;
         tx.execute("UPDATE journal SET pending_token=NULL,pending_last=NULL,pending_more=NULL,last_ack_token=NULL,last_ack_receipt=NULL,lost=0,retained_records=0,retained_bytes=0 WHERE id=1",[])?;
         tx.commit()?;
         Ok(json!({"cleared":true,"records":removed}))
@@ -1319,6 +1500,159 @@ fn prepared(connection: &Connection, token: &str, last: i64, more: bool) -> Resu
 #[cfg(test)]
 mod authority_tests {
     use super::*;
+
+    #[test]
+    fn ordered_retry_conflict_reopen_and_quota_are_atomic() {
+        let directory =
+            std::env::temp_dir().join(format!("ubm-ordered-journal-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("ordered.sqlite");
+        let _ = std::fs::remove_file(&path);
+        let quota = JournalQuota {
+            max_bytes: 1 << 20,
+            max_records: 1,
+        };
+        let journal = ContinuationJournal::open(&path, "ordered", &json!({}), quota).unwrap();
+        let append =
+            |journal: &ContinuationJournal, delivery: &str, metadata: Value, record: Value| {
+                journal.append_ordered(
+                    "producer-a",
+                    "collection",
+                    "counter",
+                    "1",
+                    delivery,
+                    &metadata,
+                    &record,
+                )
+            };
+        let first = append(&journal, "1", json!({"peer":"a"}), json!({"value":1})).unwrap();
+        assert_eq!(first["ordinal"], 1);
+        assert_eq!(
+            append(&journal, "1", json!({"peer":"a"}), json!({"value":1})).unwrap(),
+            first
+        );
+        assert_eq!(
+            append(&journal, "1", json!({"peer":"b"}), json!({"value":1}))
+                .unwrap_err()
+                .kind,
+            "storage.identity-conflict"
+        );
+        assert_eq!(
+            append(&journal, "1", json!({"peer":"a"}), json!({"value":2}))
+                .unwrap_err()
+                .kind,
+            "storage.identity-conflict"
+        );
+        assert_eq!(
+            append(&journal, "2", json!({}), json!({"value":2}))
+                .unwrap_err()
+                .kind,
+            "storage.full"
+        );
+        let prepared = journal.prepare(10, 4096).unwrap();
+        assert_eq!(prepared["records"].as_array().unwrap().len(), 1);
+        journal
+            .acknowledge(prepared["token"].as_str().unwrap())
+            .unwrap();
+        drop(journal);
+        let journal = ContinuationJournal::open(&path, "ordered", &json!({}), quota).unwrap();
+        assert_eq!(
+            append(&journal, "1", json!({"peer":"a"}), json!({"value":1})).unwrap(),
+            first
+        );
+        assert_eq!(journal.status().unwrap()["phase"], "capacity-reached");
+        assert_eq!(journal.status().unwrap()["accepting"], false);
+        assert_eq!(journal.status().unwrap()["lostRecords"], 0);
+        assert_eq!(
+            append(&journal, "2", json!({}), json!({"value":2}))
+                .unwrap_err()
+                .kind,
+            "storage.full"
+        );
+        assert_eq!(journal.status().unwrap()["records"], 0);
+        let connection = journal.connection().unwrap();
+        let (next, identities): (i64, i64) = connection.query_row(
+            "SELECT next_ordinal,(SELECT count(*) FROM ordered_identities) FROM journal WHERE id=1",
+            [], |row| Ok((row.get(0)?,row.get(1)?)),
+        ).unwrap();
+        assert_eq!((next, identities), (2, 1));
+        drop(connection);
+        drop(journal);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn ordered_producer_incarnation_distinguishes_new_observations() {
+        let directory =
+            std::env::temp_dir().join(format!("ubm-ordered-producer-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("producer.sqlite");
+        let _ = std::fs::remove_file(&path);
+        let quota = JournalQuota {
+            max_bytes: 1 << 20,
+            max_records: 10,
+        };
+        let journal = ContinuationJournal::open(&path, "producer", &json!({}), quota).unwrap();
+        let append = |journal: &ContinuationJournal, producer: &str, value: i32| {
+            journal.append_ordered(
+                producer,
+                "collection",
+                "counter",
+                "1",
+                "1",
+                &json!({}),
+                &json!({"value":value}),
+            )
+        };
+        assert_eq!(append(&journal, "producer-a", 1).unwrap()["ordinal"], 1);
+        drop(journal);
+        let journal = ContinuationJournal::open(&path, "producer", &json!({}), quota).unwrap();
+        assert_eq!(append(&journal, "producer-a", 1).unwrap()["ordinal"], 1);
+        assert_eq!(append(&journal, "producer-b", 1).unwrap()["ordinal"], 2);
+        assert_eq!(append(&journal, "producer-c", 2).unwrap()["ordinal"], 3);
+        assert_eq!(
+            append(&journal, "producer-a", 2).unwrap_err().kind,
+            "storage.identity-conflict"
+        );
+        assert_eq!(journal.status().unwrap()["records"], 3);
+        drop(journal);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn existing_v1_journal_upgrades_without_losing_records() {
+        let directory =
+            std::env::temp_dir().join(format!("ubm-ordered-upgrade-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("upgrade.sqlite");
+        let _ = std::fs::remove_file(&path);
+        let quota = JournalQuota {
+            max_bytes: 1 << 20,
+            max_records: 10,
+        };
+        let journal = ContinuationJournal::open(&path, "upgrade", &json!({}), quota).unwrap();
+        journal.append(&json!({}), &json!({"legacy":true})).unwrap();
+        {
+            let connection = journal.connection().unwrap();
+            connection
+                .execute_batch("DROP TABLE ordered_identities; PRAGMA user_version=1;")
+                .unwrap();
+        }
+        drop(journal);
+        let journal = ContinuationJournal::open(&path, "upgrade", &json!({}), quota).unwrap();
+        assert_eq!(
+            journal.prepare(10, 4096).unwrap()["records"][0]["record"]["legacy"],
+            true
+        );
+        assert_eq!(
+            journal
+                .append_ordered("producer", "c", "opaque", "1", "d", &json!({}), &json!({}))
+                .unwrap()["ordinal"],
+            2
+        );
+        drop(journal);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn receipt_timestamp_storage_round_trip_preserves_float_bits() {
