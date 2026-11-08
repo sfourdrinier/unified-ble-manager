@@ -5919,7 +5919,8 @@ function characteristicPropertiesFromBits(
  * Access requirements from the radio's characteristic facts (the legacy
  * BlueZ `Flags` mapping): secure/encrypt → `encrypted`,
  * encrypt-authenticated → `authenticated`, authorize → `authorized`, a
- * plain read/write property → `none`; nothing reported → `unknown`.
+ * plain read/write property with explicitly absent security flags → `none`;
+ * incomplete facts → `unknown`.
  */
 function accessRequirements(
   bits: number,
@@ -5935,7 +5936,9 @@ function accessRequirements(
     if (secure === true || encrypt === true) return 'encrypted'
     if (authenticated === true) return 'authenticated'
     if (access.authorize === true) return 'authorized'
-    return permitted ? 'none' : 'unknown'
+    return permitted && secure === false && encrypt === false && authenticated === false && access.authorize === false
+      ? 'none'
+      : 'unknown'
   }
   return Object.freeze({
     read: requirement(access.secureRead, access.encryptRead, access.encryptAuthenticatedRead, (bits & 0x01) !== 0),

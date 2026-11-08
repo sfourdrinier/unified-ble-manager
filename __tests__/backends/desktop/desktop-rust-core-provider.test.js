@@ -1912,6 +1912,67 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
     })
   })
 
+  test.each([
+    ['corebluetooth', {}, { read: 'unknown', write: 'unknown' }],
+    ['winrt', {}, { read: 'unknown', write: 'unknown' }],
+    [
+      'bluez',
+      {
+        secureRead: false,
+        encryptRead: false,
+        encryptAuthenticatedRead: false,
+        secureWrite: false,
+        encryptWrite: false,
+        encryptAuthenticatedWrite: false,
+        authorize: false
+      },
+      { read: 'unknown', write: 'unknown' },
+      false
+    ],
+    ['bluez', { secureRead: false, encryptRead: false, authorize: false }, { read: 'unknown', write: 'unknown' }],
+    [
+      'bluez',
+      {
+        secureRead: false,
+        encryptRead: false,
+        encryptAuthenticatedRead: false,
+        secureWrite: false,
+        encryptWrite: false,
+        encryptAuthenticatedWrite: false,
+        authorize: false
+      },
+      { read: 'none', write: 'none' }
+    ],
+    [
+      'bluez',
+      { secureRead: true, encryptAuthenticatedRead: true, authorize: true },
+      { read: 'encrypted', write: 'authorized' }
+    ]
+  ])('%s discovery preserves reported access knowledge', async (platform, access, expected, permitted = true) => {
+    await withBackend(platform, async ({ backend, stage }) => {
+      const peerId = await observePeer(backend, stage)
+      const services = hrmServices()
+      if (!permitted) {
+        services[0].characteristics[0].properties.read = false
+        services[0].characteristics[0].properties.write = false
+        services[0].characteristics[0].properties.writeWithoutResponse = false
+      }
+      await stage.stageServices('peer-1', services)
+      await stage.stageCharacteristicAccess(
+        { peerId: 'peer-1', serviceUuid: HRM_SERVICE, characteristicUuid: HRM_MEASUREMENT },
+        access
+      )
+      const lease = await backend.connections.connect(peerId, 'client-1', { signal: null, deadline: null })
+      const snapshot = await (
+        await backend.gatt.discover(lease.connection, { signal: null, deadline: null })
+      ).snapshot()
+      expect(snapshot.characteristics.find(entry => entry.path.characteristicUuid === HRM_MEASUREMENT).access).toEqual(
+        expected
+      )
+      await lease.release()
+    })
+  })
+
   test('characteristic flags and access requirements come from the radio; unreported stays unknown', async () => {
     await withBackend('bluez', async ({ backend, stage }) => {
       const peerId = await observePeer(backend, stage)
@@ -1919,7 +1980,16 @@ describe('parity rows closed by the core OS adapters (PARITY-INVENTORY §1–3)'
       await stage.stageServices('peer-1', hrmServices())
       await stage.stageCharacteristicAccess(
         { peerId: 'peer-1', serviceUuid: HRM_SERVICE, characteristicUuid: HRM_MEASUREMENT },
-        { broadcast: true, authenticatedSignedWrites: false, reliableWrite: true, encryptRead: true }
+        {
+          broadcast: true,
+          authenticatedSignedWrites: false,
+          reliableWrite: true,
+          encryptRead: true,
+          secureWrite: false,
+          encryptWrite: false,
+          encryptAuthenticatedWrite: false,
+          authorize: false
+        }
       )
       const lease = await backend.connections.connect(peerId, 'client-1', { signal: null, deadline: null })
       const snapshot = await (
