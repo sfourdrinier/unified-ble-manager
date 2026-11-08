@@ -10,8 +10,43 @@
 
 The [design](../specs/2026-11-07-ordered-notification-ingress.md) defines the acceptance contract. Workstream status below is evidence-based; no physical-device behavior or release is implied.
 
+## Integration in progress
+
+Snapshot 2026-11-08: this work remains an **unreleased integration**. The
+published UBM 5.2.1 does not provide this ordered group API. Native, bridge and
+public paths below are changing concurrently, so focused results describe the
+specific snapshots tested and are not final release qualification.
+
+- A bounded source owner and group FIFO now route source-assigned ordinals,
+  membership epochs, explicit loss and terminal evidence. Source sealing,
+  retryable cleanup, retained batches and acknowledgement are being integrated
+  across desktop and mobile; the final tree still needs review and gates.
+- A deterministic public Node/N-API synthetic group run and a public
+  Tauri/Rust-dispatcher synthetic run exercised alternating members, retained
+  delivery and cleanup. Neither is a physical-radio receipt. Electron's IPC
+  group path and Web's callback owner also have focused synthetic tests.
+- Android and Apple source/bridge paths have focused native and synthetic
+  bridge tests. Android review found bounded admission overflow defects; fixes
+  and regression tests are in progress. Their latest integration, native
+  artifacts and full public mobile flow require requalification.
+- An isolated Linux guest passed the most recent five targeted desktop tests
+  on a 13:45 UTC snapshot and earlier BlueZ/private-bus suites on earlier
+  snapshots. Central has changed since those runs. Repeat the applicable Linux
+  tests on the final source; Windows runtime and device-radio behavior remain
+  unverified.
+- The WHOOP applications still consume published UBM 5.2.1 and separate
+  per-characteristic streams. Durable ordered-group recording, WHOOP migration
+  and the proposed native ingress/write marker remain unfinished. No history
+  acknowledgement is authorized merely by observing a terminal or a lossless
+  host stream. No new WHOOP pairing or device operation was performed.
+
 ## Workstream tracker
 
+- [x] Represent host-global source loss separately from exact per-stream overflow in the shared TypeScript stream, React Native owner and IPC/Electron paths; preserve loss and known counters through cleanup. Focused tests and independent review passed; this is not ordered-group support.
+- [x] Preserve Web Bluetooth native characteristic object identity across shared leases and retire that cache on link loss, including adapter loss without a browser disconnect event. Share each exact characteristic's physical listener/start across ordinary Web subscribers and stop it on final release. This ownership prerequisite was reviewed; current ordered-group integration still needs final qualification.
+- [x] Build and review a bounded Android per-physical-owner FIFO with same-generation fences, explicit loss and fail-stop signaling. The owner is now connected to the radio; final integrated artifacts and public mobile flow still need qualification.
+- [x] Build and review an Apple source-owner component with a connection-wide ordinal, bounded group queues, claim-scoped cleanup and explicit platform-tail uncertainty. The standalone harness and synthetic bridge passed on earlier snapshots; final integrated mobile qualification remains outstanding.
+- [x] Build and review an additive desktop source event and bounded peer-group owner, including retained route failures and generation-fenced handles. Desktop group routing has synthetic public tests; final integration and actual Windows execution remain outstanding.
 - [ ] Define and review `GattDatabase` collection entry point, immutable member identity, stream events, termination/loss semantics, cancellation, physical-subscription sharing, versioned transport and capability declarations in `src/public/gatt.ts`, `src/backend-contract/`, `src/core/` and `src/manager/`.
 - [ ] Fix Android's independently identified activation/staging loss and overflow handling in `android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt`, with deterministic interleaving and overflow regression tests in `android/src/test/`.
 - [ ] Implement and qualify a connection-owned Android callback ingress and carry group values, generation and controls through `OwnedRadioPort.kt`, `RustRadioHostAdapter.kt`, mobile Rust host/wire and React Native bindings.
