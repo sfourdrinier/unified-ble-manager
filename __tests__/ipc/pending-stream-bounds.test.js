@@ -123,6 +123,22 @@ async function firstStreamItem(ipc, streamId) {
 }
 
 describe('IPC pre-registration stream buffering', () => {
+  test('retains host-global loss across pending value saturation and terminal', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    const notice = { kind: 'source-loss', scope: 'host-global', source: 'notification-ingress', lostRecords: 2 }
+    emit('global-loss', notice, 'loss-1')
+    emit('global-loss', notice, 'loss-2')
+    for (let index = 0; index < 130; index += 1) {
+      emit('global-loss', { kind: 'value', value: { index } }, `global-value-${index}`)
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    emit('global-loss', { kind: 'terminal', reason: 'closed' }, 'global-terminal')
+    await flushPump()
+    const iterator = ipc.registerStream('global-loss', isRecord)[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toEqual({ ...notice, lostRecords: 4 })
+    await ipc.destroy()
+  })
+
   test('establishes ownership before early terminal replay', async () => {
     const { ipc, emit } = await createIpcHarness()
     emit('owned-early', { kind: 'terminal', reason: 'service-changed' })
@@ -761,6 +777,35 @@ describe('IPC pre-registration stream buffering', () => {
       tombstoneCount: 0,
       activeStreamHandles: []
     })
+  })
+
+  test('error-policy tombstone retains host-global notice and exact lost counts', async () => {
+    let now = 0
+    const { ipc, emit } = await createIpcHarness({ now: () => now })
+    emit(
+      'tomb-loss',
+      { kind: 'source-loss', scope: 'host-global', source: 'notification-ingress', lostRecords: 3 },
+      'tomb-source'
+    )
+    emit(
+      'tomb-loss',
+      { kind: 'overflow', policy: 'drop-oldest', droppedItems: 2, droppedBytes: 7, replacedItems: 0 },
+      'tomb-overflow'
+    )
+    await flushPump()
+    now = 5_001
+    const onTerminal = jest.fn()
+    const iterator = ipc.registerStream('tomb-loss', isRecord, undefined, 'error', onTerminal)[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({ kind: 'source-loss', lostRecords: 3 })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'overflow', droppedItems: 2, droppedBytes: 7 })
+    expect((await iterator.next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'overflow',
+      droppedItems: 2,
+      droppedBytes: 7
+    })
+    expect(onTerminal).toHaveBeenCalledWith('overflow')
+    await ipc.destroy()
   })
 
   test('tombstone registration does not retain the sink in the active map', async () => {

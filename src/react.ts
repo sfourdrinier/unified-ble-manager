@@ -493,7 +493,7 @@ class ManagerStore {
           }
           break
         }
-        if (item.kind === 'overflow') {
+        if (item.kind === 'overflow' || item.kind === 'source-loss') {
           this.applyError(streamOverflowError('react.adapterStateWatch'))
           continue
         }
@@ -795,7 +795,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
           consumeError = overflowError ?? mapScanTerminal(item)
           return
         }
-        if (item.kind === 'overflow') {
+        if (item.kind === 'overflow' || item.kind === 'source-loss') {
           overflowError = streamOverflowError('react.useDiscoveredPeers.observations')
           publish('active', overflowError)
           continue
@@ -1074,7 +1074,7 @@ export function useCharacteristicValue(
             await removeSubscription()
             return
           }
-          if (item.kind === 'overflow') {
+          if (item.kind === 'overflow' || item.kind === 'source-loss') {
             overflowError = streamOverflowError('react.useCharacteristicValue.values')
             publish({ value: latestValue, loading: false, error: overflowError })
             continue

@@ -129,6 +129,7 @@ interface PendingStreamRecord {
   readonly createdAt: number
   upstreamLoss: StreamLossCounters
   upstreamPolicy: SerializableValue | undefined
+  sourceLoss: { 'notification-ingress': number; 'advertisement-ingress': number }
 }
 
 interface StreamLossCounters {
@@ -173,6 +174,7 @@ interface PendingStreamTombstone {
   readonly droppedItems: number
   readonly droppedBytes: number
   readonly replacedItems: number
+  readonly sourceLoss: { 'notification-ingress': number; 'advertisement-ingress': number }
 }
 
 const ipcPendingInspectors = new WeakMap<IpcBleManager, () => IpcPendingStreamAccounting>()
@@ -799,6 +801,15 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         reportKnownLoss(policy)
         return
       }
+      if (item.kind === 'source-loss') {
+        const notice = readSourceLoss(item)
+        source.observeSourceLoss(notice)
+        if (source.isTerminal()) {
+          this.streams.delete(handle)
+          this.captureOwnerCleanup(() => onTerminal?.('overflow'), cleanupScope)
+        }
+        return
+      }
       if (item.kind === 'terminal') {
         const reason = requiredTerminalReason(item.reason, 'ipc-manager.event')
         upstreamLoss = cumulativeStreamLoss(upstreamLoss, item, true)
@@ -856,8 +867,9 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
           replacedItems: resourceCount(tombstone.replacedItems)
         })
       }
+      source.observeSourceLosses(sourceLossNotices(tombstone.sourceLoss))
       source.closeWithReason(tombstone.reason)
-      this.captureOwnerCleanup(() => onTerminal?.(tombstone.reason), cleanupScope)
+      this.captureOwnerCleanup(() => onTerminal?.(source.terminalReason() ?? tombstone.reason), cleanupScope)
       return source
     }
     const pending = this.takePendingStream(handle)
@@ -872,6 +884,11 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
           : requiredOverflowPolicy(pendingRecord.upstreamPolicy, 'ipc-manager.event')
       )
       if (pending !== undefined) {
+        source.observeSourceLosses(sourceLossNotices(pending.sourceLoss))
+        if (source.isTerminal()) {
+          this.streams.delete(handle)
+          this.captureOwnerCleanup(() => onTerminal?.('overflow'), cleanupScope)
+        }
         for (const item of pending.items) {
           // A terminal (including local error-policy overflow) retires this
           // exact sink. Remaining records must not notify its owner again or
@@ -1020,6 +1037,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     try {
       for await (const event of this.client.events) {
         if (this.pumpDead) break
+        if (event.kind === 'source-loss') {
+          cause = 'overflow'
+          break
+        }
         if (event.kind === 'overflow') {
           // This is aggregate ingress loss. Its dropped counts cannot be
           // attributed to individual child streams, so fail all children with
@@ -1217,10 +1238,17 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       terminal: false,
       createdAt: this.now(),
       upstreamLoss: NO_STREAM_LOSS,
-      upstreamPolicy: undefined
+      upstreamPolicy: undefined,
+      sourceLoss: { 'notification-ingress': 0, 'advertisement-ingress': 0 }
     }
     if (existing === undefined) this.pendingStreams.set(streamId, pending)
     if (pending.terminal) return
+    if (item.kind === 'source-loss') {
+      const notice = readSourceLoss(item)
+      pending.sourceLoss[notice.source] += Number(notice.lostRecords)
+      resourceCount(pending.sourceLoss[notice.source])
+      return
+    }
     if (item.kind === 'overflow' || item.kind === 'terminal') {
       pending.upstreamLoss = cumulativeStreamLoss(pending.upstreamLoss, item)
       if (item.kind === 'overflow') pending.upstreamPolicy = item.policy
@@ -1360,7 +1388,14 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       replacedItems: 0
     })
     this.discardPendingStream(streamId)
-    this.rememberTombstone(streamId, reason, combined.droppedItems, combined.droppedBytes, combined.replacedItems)
+    this.rememberTombstone(
+      streamId,
+      reason,
+      combined.droppedItems,
+      combined.droppedBytes,
+      combined.replacedItems,
+      record?.sourceLoss
+    )
   }
 
   private takePendingStream(streamId: string): PendingStreamRecord | undefined {
@@ -1390,14 +1425,22 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     reason: 'overflow' | 'source-failed',
     droppedItems: number,
     droppedBytes: number,
-    replacedItems: number
+    replacedItems: number,
+    sourceLoss = { 'notification-ingress': 0, 'advertisement-ingress': 0 }
   ): void {
     while (this.pendingTombstones.size >= MAX_PENDING_TOMBSTONES) {
       const oldest = this.pendingTombstones.keys().next()
       if (oldest.done === true) break
       this.pendingTombstones.delete(oldest.value)
     }
-    this.pendingTombstones.set(streamId, { reason, createdAt: this.now(), droppedItems, droppedBytes, replacedItems })
+    this.pendingTombstones.set(streamId, {
+      reason,
+      createdAt: this.now(),
+      droppedItems,
+      droppedBytes,
+      replacedItems,
+      sourceLoss
+    })
   }
 
   private recordPendingOverflow(streamId: string, droppedItems: number, droppedBytes: number): void {
@@ -4251,4 +4294,32 @@ function requiredDescriptorRecords(records: readonly SerializableRecord[]): read
     validated.push(record)
   }
   return Object.freeze(validated)
+}
+
+function readSourceLoss(item: SerializableRecord): import('../backend-contract/streams').StreamSourceLossNotice {
+  if (
+    item.scope !== 'host-global' ||
+    (item.source !== 'notification-ingress' && item.source !== 'advertisement-ingress') ||
+    typeof item.lostRecords !== 'number'
+  ) {
+    throw contractError('protocol.malformed', 'ipc', 'ipc-manager.source-loss')
+  }
+  return {
+    kind: 'source-loss',
+    scope: 'host-global',
+    source: item.source,
+    lostRecords: resourceCount(item.lostRecords)
+  }
+}
+
+function sourceLossNotices(counts: {
+  'notification-ingress': number
+  'advertisement-ingress': number
+}): import('../backend-contract/streams').StreamSourceLossNotice[] {
+  const notices: import('../backend-contract/streams').StreamSourceLossNotice[] = []
+  for (const source of ['notification-ingress', 'advertisement-ingress'] as const) {
+    if (counts[source] > 0)
+      notices.push({ kind: 'source-loss', scope: 'host-global', source, lostRecords: resourceCount(counts[source]) })
+  }
+  return notices
 }

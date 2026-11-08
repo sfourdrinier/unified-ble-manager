@@ -274,6 +274,13 @@ export interface PortableStreamOverflowNotice {
   readonly replacedItems: number
 }
 
+export interface PortableStreamSourceLossNotice {
+  readonly kind: 'source-loss'
+  readonly scope: 'host-global'
+  readonly source: 'notification-ingress' | 'advertisement-ingress'
+  readonly lostRecords: number
+}
+
 export interface PortableStreamTerminalNotice {
   readonly kind: 'terminal'
   readonly reason:
@@ -294,6 +301,7 @@ export interface PortableStreamTerminalNotice {
 export type PortableStreamItem<Value> =
   | { readonly kind: 'value'; readonly value: Value }
   | PortableStreamOverflowNotice
+  | PortableStreamSourceLossNotice
   | PortableStreamTerminalNotice
 
 export interface PortableBoundedAsyncStreamIterator<Value>

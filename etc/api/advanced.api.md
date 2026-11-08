@@ -178,10 +178,11 @@ export type {
 - `ServiceDataPattern :: { readonly service: string | number; readonly dataPrefix?: Readonly<Uint8Array<ArrayBufferLike>> | undefined; readonly mask?: Readonly<Uint8Array<ArrayBufferLike>> | undefined }`
 - `ServicePath :: { readonly serviceUuid: Uuid; readonly serviceOccurrence: GenerationId<"service-occurrence", ServiceScope>; readonly databaseId: GattDatabaseId<Attachment, Connection, Database>; readonly databaseGeneration: GenerationId<"database-generation", Database>; readonly connectionId: ConnectionId<Attachment, Connection>; readonly ownerLeaseId: LeaseId<Attachment, Connection>; readonly connectionGeneration: GenerationId<"connection-generation", Connection>; readonly attachment: AttachmentRecord<Attachment>; readonly attachmentId: AttachmentId<Attachment>; readonly peerId: PeerId<Attachment> }`
 - `StreamBudget :: { readonly itemCapacity: Capacity; readonly byteCapacity: Capacity; readonly reservedControlCapacity: Capacity; readonly overflowPolicy: OverflowPolicy }`
-- `StreamItem :: StreamValue<T> | StreamOverflowNotice | StreamTerminalNotice`
+- `StreamItem :: StreamValue<T> | StreamOverflowNotice | StreamSourceLossNotice | StreamTerminalNotice`
 - `StreamLimits :: { readonly itemCapacity: Capacity; readonly byteCapacity: Capacity; readonly reservedControlCapacity: Capacity }`
 - `StreamOverflowNotice :: { readonly kind: "overflow"; readonly policy: OverflowPolicy; readonly droppedItems: ResourceCount; readonly droppedBytes: ResourceCount; readonly replacedItems: ResourceCount }`
 - `StreamPreset :: "balanced" | "latest" | "lossless-bounded" | "custom"`
+- `StreamSourceLossNotice :: { readonly kind: "source-loss"; readonly scope: "host-global"; readonly source: "notification-ingress" | "advertisement-ingress"; readonly lostRecords: ResourceCount }`
 - `StreamTerminalNotice :: { readonly kind: "terminal"; readonly reason: "service-changed" | "overflow" | "closed" | "source-failed" | "owner-released" | "connection-lost" | "operation-aborted" | "operation-timed-out"; readonly droppedItems: ResourceCount; readonly droppedBytes: ResourceCount; readonly replacedItems: ResourceCount; readonly error?: NormalizedBleError | null | undefined }`
 - `StreamValue :: { readonly kind: "value"; readonly value: T }`
 - `SubscriptionHandle :: { readonly subscriptionId: string; readonly path: PortableCurrentCharacteristicPath; readonly observedDelivery?: "unknown" | "notification" | "indication" | undefined; readonly values: PortableBoundedAsyncStream<PortableNotificationValue>; remove(): Promise<PortableCleanupRecord> }`

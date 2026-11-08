@@ -271,6 +271,28 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     }
   })
 
+  test('error-policy advertisement ingress loss reports the notice and releases the native scan', async () => {
+    const { native, backend } = await openBackend()
+    const scan = await backend.scanner.start(
+      scanOptions({
+        delivery: { itemCapacity: 8, byteCapacity: 4096, reservedControlCapacity: 1, overflowPolicy: 'error' }
+      }),
+      opaqueId('client', 'client', 'test')
+    )
+    native.push([...native.sessions.values()][0], { t: 'ingress-drop', class: 'advertisement', count: 2 })
+    await settle(80)
+    const iterator = scan.observations[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({ kind: 'source-loss', lostRecords: 2 })
+    expect((await iterator.next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'overflow',
+      droppedItems: 0,
+      droppedBytes: 0
+    })
+    expect(native.opsInvoked('scan.stop')).toHaveLength(1)
+    await backend.destroy()
+  })
+
   test('native ingress loss during provisional admission reaches the same consumer accounting', async () => {
     const { native, backend } = await openBackend()
     const invoke = native.invoke.bind(native)
@@ -289,7 +311,12 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
       const items = Promise.all([iterator.next(), iterator.next()])
       await scan.stop()
       const values = (await items).map(item => item.value)
-      expect(values[0]).toMatchObject({ kind: 'overflow', droppedItems: 3 })
+      expect(values[0]).toEqual({
+        kind: 'source-loss',
+        scope: 'host-global',
+        source: 'advertisement-ingress',
+        lostRecords: 3
+      })
       expect(values[1]).toMatchObject({ kind: 'value', value: { localName: { value: 'kept' } } })
     } finally {
       await backend.destroy()
@@ -427,6 +454,78 @@ describe('React Native Rust core provider (F01 factory routing)', () => {
     expect([...native.sessions.values()][0].scans.size).toBe(1)
     expect(await backend.destroy()).toEqual({ state: 'released', failures: [] })
     expect([...native.sessions.values()][0].scans.size).toBe(0)
+  })
+
+  test('native notification loss remains host-global across active and provisional subscribers', async () => {
+    const { native, backend } = await openBackend()
+    const { lease, path } = await connected(backend)
+    const first = await backend.gatt.subscribe(path, { operation: operation(backend), options: subscribeOptions() })
+      .completion
+    const invoke = native.invoke.bind(native)
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      const result = await invoke(...args)
+      if (args[1] === 'gatt.subscribe') {
+        native.push([...native.sessions.values()][0], { t: 'ingress-drop', class: 'notification', count: 3 })
+        await settle(80)
+      }
+      return result
+    })
+    const second = await backend.gatt.subscribe(path, { operation: operation(backend), options: subscribeOptions() })
+      .completion
+    const notice = { kind: 'source-loss', scope: 'host-global', source: 'notification-ingress', lostRecords: 3 }
+    expect((await first.notifications[Symbol.asyncIterator]().next()).value).toEqual(notice)
+    expect((await second.notifications[Symbol.asyncIterator]().next()).value).toEqual(notice)
+    await backend.gatt.unsubscribe(first, operation(backend)).completion
+    await backend.gatt.unsubscribe(second, operation(backend)).completion
+    await lease.release()
+    await backend.destroy()
+  })
+
+  test('provisional error-policy ingress loss releases the subscription after admission', async () => {
+    const { native, backend } = await openBackend()
+    const { lease, path } = await connected(backend)
+    const invoke = native.invoke.bind(native)
+    jest.spyOn(native, 'invoke').mockImplementation(async (...args) => {
+      const result = await invoke(...args)
+      if (args[1] === 'gatt.subscribe') {
+        native.push([...native.sessions.values()][0], { t: 'ingress-drop', class: 'notification', count: 2 })
+        await settle(80)
+      }
+      return result
+    })
+    const options = subscribeOptions({
+      delivery: { itemCapacity: 8, byteCapacity: 4096, reservedControlCapacity: 1, overflowPolicy: 'error' }
+    })
+    const subscription = await backend.gatt.subscribe(path, { operation: operation(backend), options }).completion
+    await settle(80)
+    const iterator = subscription.notifications[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({ kind: 'source-loss', lostRecords: 2 })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow', droppedItems: 0 })
+    expect(native.opsInvoked('gatt.unsubscribe')).toHaveLength(1)
+    await lease.release()
+    await backend.destroy()
+  })
+
+  test('error-policy ingress loss preserves notice and releases the native subscription', async () => {
+    const { native, backend } = await openBackend()
+    const { lease, path } = await connected(backend)
+    const options = subscribeOptions({
+      delivery: { itemCapacity: 8, byteCapacity: 4096, reservedControlCapacity: 1, overflowPolicy: 'error' }
+    })
+    const subscription = await backend.gatt.subscribe(path, { operation: operation(backend), options }).completion
+    native.push([...native.sessions.values()][0], { t: 'ingress-drop', class: 'notification', count: 2 })
+    await settle(80)
+    const iterator = subscription.notifications[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({ kind: 'source-loss', lostRecords: 2 })
+    expect((await iterator.next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'overflow',
+      droppedItems: 0,
+      droppedBytes: 0
+    })
+    expect(native.opsInvoked('gatt.unsubscribe')).toHaveLength(1)
+    await lease.release()
+    await backend.destroy()
   })
 
   test('connect/discover/read/write/subscribe/unsubscribe/dispose execute the owner with one lease', async () => {

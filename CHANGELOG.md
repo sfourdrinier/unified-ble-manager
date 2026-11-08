@@ -2,6 +2,8 @@
 
 # Changelog
 
+- Report host-global native ingress loss separately from exact per-stream overflow counters.
+
 All notable changes to `unified-ble-manager` are documented here.
 
 ## [5.2.1] - 2026-11-08

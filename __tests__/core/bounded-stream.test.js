@@ -13,6 +13,62 @@ function limits(itemCapacity, byteCapacity, reservedControlCapacity) {
 }
 
 describe('CoreBoundedStream', () => {
+  test('retains coalesced host-global uncertainty alongside exact overflow through finish', async () => {
+    const stream = new CoreBoundedStream(limits(1, 8, 1), 'drop-newest')
+    stream.emit('kept', 2)
+    stream.emit('lost', 3)
+    const notice = {
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: 'notification-ingress',
+      lostRecords: resourceCount(2)
+    }
+    stream.observeSourceLoss(notice)
+    stream.observeSourceLoss(notice)
+    stream.finishWithReason('closed')
+    const iterator = stream[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toEqual({ ...notice, lostRecords: 4 })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'overflow', droppedItems: 1, droppedBytes: 3 })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'value', value: 'kept' })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', droppedItems: 1, droppedBytes: 3 })
+  })
+
+  test('explicit close after source loss releases queued payload while preserving loss and terminal', async () => {
+    const stream = new CoreBoundedStream(limits(2, 10, 1), 'error')
+    stream.emit('queued', 4)
+    stream.observeSourceLoss({
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: 'notification-ingress',
+      lostRecords: resourceCount(1)
+    })
+    await stream.close()
+    expect(stream.retainedPayloadBytes()).toBe(0)
+    const iterator = stream[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({ kind: 'source-loss', lostRecords: 1 })
+    expect((await iterator.next()).value).toMatchObject({ kind: 'terminal', reason: 'overflow' })
+    expect((await iterator.next()).done).toBe(true)
+  })
+
+  test('error policy exposes global uncertainty before its terminal without inventing counters', async () => {
+    const stream = new CoreBoundedStream(limits(1, 8, 1), 'error')
+    stream.observeSourceLoss({
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: 'advertisement-ingress',
+      lostRecords: resourceCount(3)
+    })
+    stream.closeWithReason('owner-released')
+    const iterator = stream[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toMatchObject({ kind: 'source-loss', lostRecords: 3 })
+    expect((await iterator.next()).value).toMatchObject({
+      kind: 'terminal',
+      reason: 'overflow',
+      droppedItems: 0,
+      droppedBytes: 0
+    })
+  })
+
   test('emits an overflow notice before the retained item after drop-oldest overflow', async () => {
     const stream = new CoreBoundedStream(limits(2, 5, 1), 'drop-oldest')
     stream.emit('first', 2)

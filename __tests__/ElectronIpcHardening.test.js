@@ -757,6 +757,33 @@ describe('Electron IPC hardening', () => {
     })
   })
 
+  test('forwards host-global source loss without attributing it to the renderer stream', async () => {
+    const lease = rendererLease('host-global-loss')
+    const stream = createControlledStream()
+    const resources = { scans: new Map(), subscriptions: new Map(), releasedHandles: new Set() }
+    const events = []
+    const registry = new ElectronRendererStreamRegistry({
+      maximumMessageBytes: 4096,
+      publish: async (_lease, event) => {
+        events.push(event)
+        return 'delivered'
+      },
+      createEvent: (rendererLease, streamId, item) => ({ rendererLease, streamId, item, eventId: 'loss-event' })
+    })
+    const resource = registry.registerSubscription(resources, lease, 'loss-stream', 'database', {
+      values: stream,
+      remove: async () => {
+        stream.close()
+        return released()
+      }
+    })
+    const notice = { kind: 'source-loss', scope: 'host-global', source: 'notification-ingress', lostRecords: 3 }
+    stream.push(notice)
+    await flushAsyncWork()
+    expect(events[0].item).toEqual(notice)
+    await registry.removeSubscription(resources, 'loss-stream', resource, true)
+  })
+
   test('preserves native receipt clocks in renderer notification snapshots', async () => {
     const lease = rendererLease('native-receipt-stream')
     const stream = createControlledStream()

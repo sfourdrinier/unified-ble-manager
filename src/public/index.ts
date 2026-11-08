@@ -18,6 +18,7 @@ export type {
   PublicStreamItem,
   PublicStreamLimits,
   PublicStreamOverflowNotice,
+  PublicStreamSourceLossNotice,
   PublicStreamOverflowPolicy,
   PublicStreamTerminalNotice,
   PublicStreamTerminalReason,

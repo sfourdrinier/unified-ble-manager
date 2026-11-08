@@ -1,6 +1,6 @@
 // __tests__/public-stream-runtime.test.js
 
-const { capacity } = require('../src/backend-contract/primitives')
+const { capacity, resourceCount } = require('../src/backend-contract/primitives')
 const { contractError } = require('../src/backend-contract/errors')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { mapPublicBoundedAsyncStream } = require('../src/public/streams')
@@ -17,6 +17,24 @@ function limits(itemCapacity, byteCapacity, reservedControlCapacity) {
 }
 
 describe('public stream runtime projection', () => {
+  test('projects a host-global source-loss notice without attributing it to the stream', async () => {
+    const source = new CoreBoundedStream(limits(1, 8, 1), 'drop-oldest')
+    source.observeSourceLoss({
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: 'notification-ingress',
+      lostRecords: resourceCount(3)
+    })
+    const iterator = mapPublicBoundedAsyncStream(source, value => value)[Symbol.asyncIterator]()
+    expect((await iterator.next()).value).toEqual({
+      kind: 'source-loss',
+      scope: 'host-global',
+      source: 'notification-ingress',
+      lostRecords: 3
+    })
+    await iterator.return()
+  })
+
   function sourceWithIterator(iterator, close = async () => ({ state: 'released', failures: [] })) {
     return {
       limits: limits(1, 4, 1),

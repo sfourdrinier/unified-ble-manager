@@ -555,7 +555,7 @@ function mapSecurityEvents(
               await teardown()
               return { done: true, value: undefined }
             }
-            if (item.value.kind === 'overflow') {
+            if (item.value.kind === 'overflow' || item.value.kind === 'source-loss') {
               throw contractError('stream.overflow', 'stream', 'public-security.watch')
             }
             const event = item.value.value

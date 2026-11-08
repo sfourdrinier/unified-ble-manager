@@ -88,6 +88,8 @@ that plan to 5.0 or treat its historical "authority" wording as live precedence.
 
 | Document                                                                                                     | What it is                                                                                                                   | Status     |
 | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| [`superpowers/specs/2026-11-07-ordered-notification-ingress.md`](superpowers/specs/2026-11-07-ordered-notification-ingress.md) | Ordered multi-characteristic ingress contract and evidence boundaries | Current |
+| [`superpowers/plans/2026-11-07-ordered-notification-ingress.md`](superpowers/plans/2026-11-07-ordered-notification-ingress.md) | Cross-platform implementation and verification tracker | Current |
 | [`../CGM_DURABLE_INGRESS_BRIEF.md`](../CGM_DURABLE_INGRESS_BRIEF.md) | Active recorded-subscription implementation contract, CGM replay boundary and outstanding qualification; not release evidence | Current |
 | [`UNIFIED_SEMANTICS.md`](UNIFIED_SEMANTICS.md)                                                               | Normative behavior contract (MUST/MUST NOT) for any conforming unified BLE implementation                                    | Current    |
 | [`NATIVE_CAPABILITY_AUDIT.md`](NATIVE_CAPABILITY_AUDIT.md)                                                   | Active native operation boundaries, chooser mechanisms and durable intake evidence limits                                    | Current    |

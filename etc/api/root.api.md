@@ -388,10 +388,11 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `PublicSerializableRecord :: { }`
 - `PublicSerializableValue :: string | number | boolean | PublicSerializableRecord | Uint8Array<ArrayBufferLike> | readonly PublicSerializableValue[] | null`
 - `PublicSourceTimestamp :: { readonly monotonicMs: number; readonly origin: "backend" | "platform"; readonly clockScope?: string | undefined }`
-- `PublicStreamItem :: PublicStreamValue<Value> | PublicStreamOverflowNotice | PublicStreamTerminalNotice`
+- `PublicStreamItem :: PublicStreamValue<Value> | PublicStreamOverflowNotice | PublicStreamSourceLossNotice | PublicStreamTerminalNotice`
 - `PublicStreamLimits :: { readonly itemCapacity: number; readonly byteCapacity: number; readonly reservedControlCapacity: number }`
 - `PublicStreamOverflowNotice :: { readonly kind: "overflow"; readonly policy: PublicStreamOverflowPolicy; readonly droppedItems: number; readonly droppedBytes: number; readonly replacedItems: number }`
 - `PublicStreamOverflowPolicy :: "latest" | "drop-oldest" | "drop-newest" | "error"`
+- `PublicStreamSourceLossNotice :: { readonly kind: "source-loss"; readonly scope: "host-global"; readonly source: "notification-ingress" | "advertisement-ingress"; readonly lostRecords: number }`
 - `PublicStreamTerminalNotice :: { readonly kind: "terminal"; readonly reason: PublicStreamTerminalReason; readonly droppedItems: number; readonly droppedBytes: number; readonly replacedItems: number; readonly error?: NormalizedBleError | null | undefined }`
 - `PublicStreamTerminalReason :: "service-changed" | "overflow" | "closed" | "source-failed" | "owner-released" | "connection-lost" | "operation-aborted" | "operation-timed-out"`
 - `PublicStreamValue :: { readonly kind: "value"; readonly value: Value }`

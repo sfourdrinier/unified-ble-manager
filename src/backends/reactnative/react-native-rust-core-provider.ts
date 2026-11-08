@@ -800,8 +800,6 @@ interface ScanConsumer {
   readonly filter: ScanFilter
   readonly stream: OwnedCoreBoundedStream<AdvertisementObservation<string>>
   readonly seenPeers: Set<string>
-  /** Advertisements the owner dropped at native ingress while this consumer was live (cumulative). */
-  ingressDropped: number
 }
 
 interface PendingScanStart {
@@ -866,14 +864,7 @@ interface SubscriptionEntry {
   /** `ended`: the owner retired the consumer itself (`stream-end`); nothing remains to release. */
   state: 'subscribing' | 'active' | 'ended'
   removal: Promise<OperationTerminalRecord<string, string>> | null
-  /** Notifications the owner dropped at native ingress while this consumer was live (cumulative). */
-  ingressDropped: number
-}
-
-/** A stream that accounts for records its source lost before routing them. */
-interface IngressLossAccount {
-  readonly stream: Pick<OwnedCoreBoundedStream<unknown>, 'observeSourceOverflow'>
-  ingressDropped: number
+  lossCleanup: (() => void) | null
 }
 
 /** Why the owner invalidated a peer's streams, as the next `stream-end` should say. */
@@ -2202,6 +2193,10 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         group.removeAbort = () => signal.removeEventListener('abort', end)
       }
     }
+    if (owner.stream.isTerminal() && owner.stream.terminalReason() === 'overflow') {
+      const cleanup = await this.stopScanGroup(group)
+      if (cleanup.state !== 'released') this.reportScanCleanup(group, cleanup)
+    }
     await this.refreshCounters()
     return this.scanLease(group, owner)
   }
@@ -2258,8 +2253,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       options,
       filter: options.filter,
       stream,
-      seenPeers: new Set(),
-      ingressDropped: 0
+      seenPeers: new Set()
     }
     group.consumers.set(String(leaseId), consumer)
     return consumer
@@ -3705,7 +3699,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       stream,
       state: 'subscribing',
       removal: null,
-      ingressDropped: 0
+      lossCleanup: null
     }
     this.subscriptions.set(consumer, stored)
     if (recording !== null) changed?.emit({ recordingId: recording.id }, 0, recording.id)
@@ -3726,7 +3720,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       })
       if (stored.state === 'subscribing') stored.state = 'active'
       await this.refreshCounters()
-      return Object.freeze({
+      const subscription = Object.freeze({
         subscriptionId,
         path,
         terminal: this.terminal(request.operation.correlation),
@@ -3734,6 +3728,22 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         notifications: stream,
         ...(changed === null ? {} : { changed })
       })
+      stored.lossCleanup = () => {
+        this.unsubscribe(subscription, {
+          signal: null,
+          deadline: null,
+          correlation: this.identifiers.operationCorrelation(this.mintOperationId('unsubscribe'))
+        }).completion.catch((error: unknown) => {
+          this.emitEvent({
+            kind: 'diagnostic-warning',
+            code: 'subscription-cleanup-failed',
+            message: 'Native subscription cleanup after ingress loss failed; removal can be retried',
+            detail: Object.freeze({ code: normalizedFrom(error, `${SCOPE}.gatt.unsubscribe`).code })
+          })
+        })
+      }
+      if (stream.isTerminal() && stream.terminalReason() === 'overflow') stored.lossCleanup()
+      return subscription
     })
   }
 
@@ -3821,7 +3831,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       stored.stream.observeSourceOverflow({
         kind: 'overflow',
         policy: 'error',
-        droppedItems: resourceCount(record.droppedItems + stored.ingressDropped),
+        droppedItems: resourceCount(record.droppedItems),
         droppedBytes: resourceCount(record.droppedBytes),
         replacedItems: resourceCount(0)
       })
@@ -3895,10 +3905,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   }
 
   /**
-   * The owner dropped records at a full native queue. A dropped advertisement
-   * or notification is lost before routing, so the owner cannot say which
-   * consumer it was for: every stream that could have received it counts it
-   * in its drop accounting (an upper bound, never silence). A dropped control
+   * Native ingress lost records before routing, so candidate streams receive
+   * a host-global notice rather than per-stream counts. A dropped control
    * record is re-read from the owner.
    */
   /** The last control-loss total acted on (X-R5; monotonic per session). */
@@ -3920,7 +3928,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     this.emitEvent({
       kind: 'diagnostic-warning',
       code: 'native-ingress-drop',
-      message: `The Rust owner dropped ${count} control record(s) at a full queue`,
+      message: `Native ingress dropped ${count} control record(s)`,
       detail: Object.freeze({ class: 'control', count })
     })
   }
@@ -3928,31 +3936,56 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private onIngressDrop(record: Extract<WireDrainRecord, { t: 'ingress-drop' }>): void {
     if (record.class === 'advertisement') {
       for (const group of this.scanDeliveries()) {
-        for (const consumer of group.consumers.values()) this.noteIngressLoss(consumer, record.count)
+        for (const consumer of group.consumers.values())
+          consumer.stream.observeSourceLoss({
+            kind: 'source-loss',
+            scope: 'host-global',
+            source: 'advertisement-ingress',
+            lostRecords: resourceCount(record.count)
+          })
       }
     } else if (record.class === 'notification') {
       for (const stored of this.subscriptions.values()) {
-        if (stored.state !== 'ended') this.noteIngressLoss(stored, record.count)
+        if (stored.state !== 'ended')
+          stored.stream.observeSourceLoss({
+            kind: 'source-loss',
+            scope: 'host-global',
+            source: 'notification-ingress',
+            lostRecords: resourceCount(record.count)
+          })
       }
     } else {
       this.reconcileControlLoss()
     }
+    if (record.class === 'notification') {
+      for (const stored of this.subscriptions.values()) {
+        if (stored.stream.isTerminal() && stored.stream.terminalReason() === 'overflow') stored.lossCleanup?.()
+      }
+    } else if (record.class === 'advertisement') {
+      for (const group of this.scanGroups.values()) {
+        if (
+          [...group.consumers.values()].some(
+            consumer => consumer.stream.isTerminal() && consumer.stream.terminalReason() === 'overflow'
+          )
+        ) {
+          this.stopScanGroup(group)
+            .then(cleanup => {
+              if (cleanup.state !== 'released') this.reportScanCleanup(group, cleanup)
+            })
+            .catch((error: unknown) =>
+              this.reportScanCleanup(group, {
+                state: 'release-failed',
+                failures: [cleanupFailure('scan', error, `${SCOPE}.scan.stop`)]
+              })
+            )
+        }
+      }
+    }
     this.emitEvent({
       kind: 'diagnostic-warning',
       code: 'native-ingress-drop',
-      message: `The Rust owner dropped ${record.count} ${record.class} record(s) at a full queue`,
+      message: `Native ingress dropped ${record.count} ${record.class} record(s)`,
       detail: Object.freeze({ class: record.class, count: record.count })
-    })
-  }
-
-  private noteIngressLoss(account: IngressLossAccount, count: number): void {
-    account.ingressDropped += count
-    account.stream.observeSourceOverflow({
-      kind: 'overflow',
-      policy: 'drop-newest',
-      droppedItems: resourceCount(account.ingressDropped),
-      droppedBytes: resourceCount(0),
-      replacedItems: resourceCount(0)
     })
   }
 

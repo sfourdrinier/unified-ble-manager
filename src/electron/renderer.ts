@@ -581,6 +581,10 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
         })
         return
       }
+      if (item.kind === 'source-loss') {
+        subscription.stream.observeSourceLoss({ ...item, lostRecords: resourceCount(item.lostRecords) })
+        return
+      }
       subscription.stream.finishWithReason(item.reason)
       subscription.lifecycle = 'terminal'
       subscription.releaseResult = null

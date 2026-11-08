@@ -707,7 +707,8 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     physical: PhysicalSubscription<Attachment, Identity>,
     item: StreamItem<NotificationValue>
   ): Promise<boolean> {
-    if (item.kind === 'overflow') {
+    if (item.kind === 'overflow' || item.kind === 'source-loss') {
+      const terminated: typeof physical.consumers extends Set<infer S> ? S[] : never = []
       for (const subscription of [...physical.consumers]) {
         if (!subscription.isReady()) {
           continue
@@ -716,8 +717,13 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
         if (!(stream instanceof CoreBoundedStream)) {
           throw contractError('lifecycle.invariant-violation', 'gatt', 'subscription-registry.stream')
         }
-        stream.observeSourceOverflow(item)
+        if (item.kind === 'overflow') stream.observeSourceOverflow(item)
+        else {
+          stream.observeSourceLoss(item)
+          if (stream.isTerminal()) terminated.push(subscription)
+        }
       }
+      for (const subscription of terminated) await subscription.remove()
       return false
     }
     if (item.kind !== 'value') {

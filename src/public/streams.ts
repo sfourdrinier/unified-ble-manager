@@ -35,6 +35,14 @@ export interface PublicStreamOverflowNotice {
   readonly replacedItems: number
 }
 
+/** Host-global loss may have affected this stream; counts are per-notice deltas. */
+export interface PublicStreamSourceLossNotice {
+  readonly kind: 'source-loss'
+  readonly scope: 'host-global'
+  readonly source: 'notification-ingress' | 'advertisement-ingress'
+  readonly lostRecords: number
+}
+
 export interface PublicStreamTerminalNotice {
   readonly kind: 'terminal'
   readonly reason: PublicStreamTerminalReason
@@ -49,7 +57,11 @@ export interface PublicStreamValue<Value> {
   readonly value: Value
 }
 
-export type PublicStreamItem<Value> = PublicStreamValue<Value> | PublicStreamOverflowNotice | PublicStreamTerminalNotice
+export type PublicStreamItem<Value> =
+  | PublicStreamValue<Value>
+  | PublicStreamOverflowNotice
+  | PublicStreamSourceLossNotice
+  | PublicStreamTerminalNotice
 
 export interface PublicBoundedAsyncStreamIterator<Value>
   extends AsyncIterator<PublicStreamItem<Value>, undefined, undefined> {
@@ -242,6 +254,23 @@ function mapPublicIteratorResult<InternalValue, PublicValue>(
           droppedItems: requireStreamCounter(result.value.droppedItems, 'dropped-items'),
           droppedBytes: requireStreamCounter(result.value.droppedBytes, 'dropped-bytes'),
           replacedItems: requireStreamCounter(result.value.replacedItems, 'replaced-items')
+        })
+      }
+    }
+    if (result.value.kind === 'source-loss') {
+      if (
+        result.value.scope !== 'host-global' ||
+        (result.value.source !== 'notification-ingress' && result.value.source !== 'advertisement-ingress')
+      ) {
+        throw contractError('protocol.malformed', 'stream', 'public-stream.source-loss')
+      }
+      return {
+        done: false,
+        value: Object.freeze({
+          kind: 'source-loss',
+          scope: 'host-global',
+          source: result.value.source,
+          lostRecords: requireStreamCounter(result.value.lostRecords, 'lost-records')
         })
       }
     }

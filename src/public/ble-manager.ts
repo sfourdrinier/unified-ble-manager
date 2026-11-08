@@ -671,6 +671,8 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
             if (item.value.policy !== 'error') continue
             throw rehydratePublicError(scanStreamOverflowError('public-scan.events', item.value, delivery))
           }
+          if (item.value.kind === 'source-loss')
+            throw rehydratePublicError(contractError('stream.overflow', 'scan', 'public-scan.events'))
           if (item.value.reason === 'overflow') {
             throw rehydratePublicError(
               scanStreamOverflowError(
@@ -793,6 +795,13 @@ class PublicScanObservationBroadcast {
     return terminated
   }
 
+  observeSourceLoss(notice: import('../backend-contract/streams').StreamSourceLossNotice): void {
+    for (const subscriber of [...this.subscribers]) {
+      subscriber.observeSourceLoss(notice)
+      if (subscriber.isTerminal()) this.subscribers.delete(subscriber)
+    }
+  }
+
   observeSourceOverflow(notice: StreamOverflowNotice): void {
     for (const subscriber of this.subscribers) {
       subscriber.observeSourceOverflow(notice)
@@ -901,6 +910,10 @@ class PublicScanSessionController<Attachment extends string> {
         }
         if (item.value.kind === 'overflow') {
           this.observationBroadcast.observeSourceOverflow(item.value)
+          continue
+        }
+        if (item.value.kind === 'source-loss') {
+          this.observationBroadcast.observeSourceLoss(item.value)
           continue
         }
         if (item.value.kind === 'terminal') {
@@ -1363,7 +1376,8 @@ function publicParameterStream<Attachment extends string, Identity extends Backe
                 )
               }
             }
-            if (streamItem.kind === 'overflow') throw contractError('stream.overflow', 'connection', operation)
+            if (streamItem.kind === 'overflow' || streamItem.kind === 'source-loss')
+              throw contractError('stream.overflow', 'connection', operation)
             if (streamItem.reason === 'source-failed') {
               throw streamItem.error == null
                 ? contractError('platform.failure', 'stream', operation)
@@ -1525,7 +1539,7 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
                 })
               }
             }
-            if (streamItem.kind === 'overflow') {
+            if (streamItem.kind === 'overflow' || streamItem.kind === 'source-loss') {
               throw contractError('stream.overflow', 'connection', 'public-connection.controls.write-readiness')
             }
             if (streamItem.reason === 'source-failed') {
@@ -2775,7 +2789,7 @@ async function waitForPublicAdapter<Attachment extends string, Identity extends 
           if (item.done) throw contractError('stream.closed', 'adapter', 'public-adapter.wait-until-ready')
           if (item.value.kind === 'terminal')
             throw contractError('stream.closed', 'adapter', 'public-adapter.wait-until-ready')
-          if (item.value.kind === 'overflow') continue
+          if (item.value.kind === 'overflow' || item.value.kind === 'source-loss') continue
           current = item.value.value
         }
       },
@@ -2922,7 +2936,7 @@ export function filterScanObservations(
               evidence.clear()
               return item
             }
-            if (item.value.kind === 'overflow' || item.value.kind === 'terminal') {
+            if (item.value.kind !== 'value') {
               return { done: false, value: item.value }
             }
             const raw = item.value.value
@@ -3061,7 +3075,7 @@ function mapPublicConnectionEvents(
             if (item.done) {
               throw contractError('stream.closed', 'connection', 'public-connection.events')
             }
-            if (item.value.kind === 'overflow') {
+            if (item.value.kind === 'overflow' || item.value.kind === 'source-loss') {
               throw contractError('stream.overflow', 'connection', 'public-connection.events')
             }
             if (item.value.kind === 'terminal') {
@@ -3133,7 +3147,7 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
         const item = await iterator.next()
         if (item.done) return { done: true, value: undefined }
         if (item.value.kind === 'value') return { done: false, value: item.value.value }
-        if (item.value.kind === 'overflow' || item.value.reason === 'overflow') {
+        if (item.value.kind === 'overflow' || item.value.kind === 'source-loss' || item.value.reason === 'overflow') {
           winningError = contractError('stream.overflow', 'connection', 'public-connection.events')
         } else if (this.retainedError !== null) {
           winningError = this.retainedError
@@ -3598,6 +3612,8 @@ export async function findPeerInScan(
         scanStreamOverflowError('public-ble-manager.find', item.value, scan.observations.limits)
       )
     }
+    if (item.value.kind === 'source-loss')
+      throw rehydratePublicError(contractError('stream.overflow', 'scan', 'public-ble-manager.find'))
     const peer = peerFromPublicObservation(item.value.value)
     if (select === undefined || select === 'first' || select(peer)) {
       // A queued value is not a timely result merely because the JS deadline

@@ -99,6 +99,10 @@ class ElectronClientTransport implements IpcClientTransport<string, string> {
 
   private async pump(): Promise<void> {
     for await (const item of this.client.events) {
+      if (item.kind === 'source-loss') {
+        this.failTransport('source-failed', transportError(null, 'source-loss'))
+        return
+      }
       if (item.kind === 'overflow') {
         this.failTransport(
           'overflow',

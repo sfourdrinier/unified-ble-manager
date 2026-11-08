@@ -1122,6 +1122,13 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         if (item.kind === 'overflow') {
           scan.stream.observeSourceOverflow(item)
         }
+        if (item.kind === 'source-loss') {
+          scan.stream.observeSourceLoss(item)
+          if (scan.stream.isTerminal()) {
+            await this.stopScan(scan)
+            return
+          }
+        }
         if (item.kind === 'terminal') {
           scan.stream.closeWithReason(item.reason, item.error ?? null)
           await this.stopScan(scan)

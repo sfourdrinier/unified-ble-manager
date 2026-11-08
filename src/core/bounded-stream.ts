@@ -11,6 +11,7 @@ import type {
   StreamItem,
   StreamLimits,
   StreamOverflowNotice,
+  StreamSourceLossNotice,
   StreamTerminalNotice,
   StreamValue
 } from '../backend-contract/streams'
@@ -48,8 +49,10 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
   private readonly values: RetainedValue<Value>[] = []
   private readonly consumers: PendingConsumer<Value>[] = []
   private overflowNotice: StreamOverflowNotice | null = null
+  private readonly sourceLoss = new Map<StreamSourceLossNotice['source'], number>()
   private terminalNotice: StreamTerminalNotice | null = null
   private terminalDelivered = false
+  private sourceLossTerminated = false
   private ownerClosed = false
   private retainedValueBytes = 0
   private retainedPayloadByteCount = 0
@@ -84,7 +87,12 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
     if (this.isTerminal()) {
       return this.pushResult(false, true)
     }
-    if (this.consumers.length > 0 && this.overflowNotice === null && this.values.length === 0) {
+    if (
+      this.consumers.length > 0 &&
+      this.overflowNotice === null &&
+      this.sourceLoss.size === 0 &&
+      this.values.length === 0
+    ) {
       const consumer = this.consumers.shift()
       if (consumer === undefined) {
         throw contractError('lifecycle.invariant-violation', 'stream', 'bounded-stream.consumer')
@@ -109,6 +117,24 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
     this.sourceReplacedItems = Math.max(this.sourceReplacedItems, Number(notice.replacedItems))
     this.noteOverflow(notice.policy)
     this.flushPendingConsumers()
+  }
+
+  /** Retains host-global loss separately from exact stream counters. */
+  observeSourceLoss(notice: StreamSourceLossNotice): void {
+    this.observeSourceLosses([notice])
+  }
+
+  /** Applies a batch before error-policy termination, preserving every source. */
+  observeSourceLosses(notices: readonly StreamSourceLossNotice[]): void {
+    if (this.isTerminal() || notices.length === 0) return
+    for (const notice of notices) {
+      const previous = this.sourceLoss.get(notice.source) ?? 0
+      this.sourceLoss.set(notice.source, previous + Number(notice.lostRecords))
+    }
+    if (this.overflowPolicy === 'error') {
+      this.sourceLossTerminated = true
+      this.finishWithReason('overflow')
+    } else this.flushPendingConsumers()
   }
 
   /**
@@ -149,6 +175,14 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
     error: NormalizedBleError | null
   ): void {
     if (this.ownerClosed || this.terminalDelivered) {
+      return
+    }
+    if (this.sourceLossTerminated) {
+      this.values.length = 0
+      this.retainedValueBytes = 0
+      this.retainedPayloadByteCount = 0
+      this.ownerClosed = true
+      this.flushPendingConsumers()
       return
     }
     this.values.length = 0
@@ -414,6 +448,10 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
   }
 
   private takeNextItem(): StreamItem<Value> | null {
+    for (const [source, count] of this.sourceLoss) {
+      this.sourceLoss.delete(source)
+      return { kind: 'source-loss', scope: 'host-global', source, lostRecords: resourceCount(count) }
+    }
     if (this.overflowNotice !== null) {
       const notice = this.overflowNotice
       this.overflowNotice = null

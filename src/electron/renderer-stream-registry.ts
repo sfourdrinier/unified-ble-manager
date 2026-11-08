@@ -445,6 +445,7 @@ function streamItemRecord<Value>(
   if (item.kind === 'value') {
     return Object.freeze({ kind: 'value', value: snapshotStreamValue(item.value, now, nextSequence) })
   }
+  if (item.kind === 'source-loss') return Object.freeze({ ...item, lostRecords: Number(item.lostRecords) })
   if (item.kind === 'overflow') {
     return Object.freeze({
       kind: 'overflow',

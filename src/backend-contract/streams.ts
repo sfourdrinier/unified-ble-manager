@@ -16,6 +16,14 @@ export interface StreamOverflowNotice {
   readonly droppedBytes: ResourceCount
   readonly replacedItems: ResourceCount
 }
+/** A host-wide ingress loss; a candidate stream may or may not have lost records. */
+export interface StreamSourceLossNotice {
+  readonly kind: 'source-loss'
+  readonly scope: 'host-global'
+  readonly source: 'notification-ingress' | 'advertisement-ingress'
+  /** Delta since the previous notice for this source, not a per-stream count. */
+  readonly lostRecords: ResourceCount
+}
 export interface StreamValue<T> {
   readonly kind: 'value'
   readonly value: T
@@ -37,7 +45,7 @@ export interface StreamTerminalNotice {
   /** Structured cause when the source failed while delivering this stream. */
   readonly error?: NormalizedBleError | null
 }
-export type StreamItem<T> = StreamValue<T> | StreamOverflowNotice | StreamTerminalNotice
+export type StreamItem<T> = StreamValue<T> | StreamOverflowNotice | StreamSourceLossNotice | StreamTerminalNotice
 export interface BoundedAsyncStreamIterator<T> extends AsyncIterator<StreamItem<T>, undefined, undefined> {
   readonly return: () => Promise<IteratorResult<StreamItem<T>, undefined>>
   [Symbol.asyncIterator](): BoundedAsyncStreamIterator<T>
