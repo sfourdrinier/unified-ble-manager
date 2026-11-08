@@ -4,7 +4,7 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## [5.2.1] - 2026-11-07
+## [5.2.1] - 2026-11-08
 
 - Report unknown desktop characteristic security requirements as `unknown`
   when permission flags are unavailable, rather than inferring `none` from a
