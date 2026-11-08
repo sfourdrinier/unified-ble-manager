@@ -1103,6 +1103,7 @@ export class WebBluetoothBackend
     if (!record.valid) {
       return
     }
+    this.gattRuntime.fenceConnection(record, reason)
     record.valid = false
     record.end = reason
     record.connection.transition(reason === 'owner-released' ? 'disconnected' : 'lost')

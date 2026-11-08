@@ -243,6 +243,23 @@ function subscriptionOptions(signal = null, deadline = null, itemCapacity = 2) {
   }
 }
 
+const orderedIterators = new WeakMap()
+async function orderedRecords(owner, count) {
+  let iterator = orderedIterators.get(owner)
+  if (iterator === undefined) {
+    iterator = owner.stream[Symbol.asyncIterator]()
+    orderedIterators.set(owner, iterator)
+  }
+  const result = []
+  for (let index = 0; index < count; index += 1) {
+    const item = (await iterator.next()).value
+    if (item.kind === 'value') result.push({ kind: item.kind, memberId: item.memberId, ordinal: item.ordinal, value: item.value })
+    else if (item.kind === 'loss') result.push({ kind: item.kind, lostValues: item.lostValues, lostBytes: item.lostBytes })
+    else result.push(item)
+  }
+  return result
+}
+
 describe('Web Bluetooth lifecycle hardening', () => {
   test('reserves same-peer pending connection ownership before browser connect settles', async () => {
     const testFixture = fixture()
@@ -584,11 +601,255 @@ describe('Web Bluetooth lifecycle hardening', () => {
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
+  test('ordered owner shares physical notifications and holds the final listener', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, snapshot } = await connectedDatabase(backend)
+    const path = snapshot.characteristics[0].path
+    const start = jest.spyOn(testFixture.characteristic, 'startNotifications')
+    const stop = jest.spyOn(testFixture.characteristic, 'stopNotifications')
+    const ordinary = await database.subscribe(path, subscriptionOptions())
+    const setup = await backend.gattRuntime.acquireOrdered(database, [
+      { memberId: 'a', path, deliveryMode: 'prefer-notification' }
+    ], subscriptionOptions())
+    expect(setup.state).toBe('ready')
+    expect(start).toHaveBeenCalledTimes(1)
+    await ordinary.remove()
+    expect(stop).not.toHaveBeenCalled()
+    for (const listener of testFixture.notificationListeners) listener(new Uint8Array([9]))
+    expect(await orderedRecords(setup.owner, 1)).toEqual([
+      { kind: 'value', memberId: 'a', ordinal: '1', value: new Uint8Array([9]) }
+    ])
+    expect(await setup.owner.close()).toMatchObject([{ memberId: 'a', cleanup: { state: 'released' } }])
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(testFixture.notificationListeners.size).toBe(0)
+  })
+
+  test('ordered stream awaits real DOM callbacks and close reports cleanup', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, snapshot } = await connectedDatabase(backend)
+    const path = snapshot.characteristics[0].path
+    const setup = await backend.gattRuntime.acquireOrdered(database, [
+      { memberId: 'a', path, deliveryMode: 'prefer-notification' }
+    ], subscriptionOptions())
+    expect(setup.owner.members).toEqual([{ memberId: 'a', path, deliveryMode: 'prefer-notification', effectiveDelivery: 'notification' }])
+    const iterator = setup.owner.stream[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    const value = new Uint8Array([42])
+    for (const listener of testFixture.notificationListeners) listener(value)
+    value[0] = 99
+    expect(await pending).toMatchObject({ done: false, value: {
+      kind: 'value', memberId: 'a', ordinal: '1', value: new Uint8Array([42]),
+      connectionGeneration: String(database.path.connectionGeneration),
+      databaseGeneration: String(database.path.databaseGeneration), delivery: 'notification', provenance: 'read-or-notification'
+    } })
+    testFixture.setStopFailures(1)
+    expect(await setup.owner.stream.close()).toMatchObject({ members: [{ cleanup: { state: 'release-failed' } }] })
+    expectConsoleErrorMatching(
+      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
+      expect.objectContaining({ message: 'stop failed' })
+    )
+    expect(await iterator.next()).toMatchObject({ value: { kind: 'terminal', reason: 'closed' } })
+    expect(await setup.owner.stream.close()).toMatchObject({ members: [{ cleanup: { state: 'released' } }] })
+  })
+
+  test('ordered overflow automatically cleans up and close retries failed cleanup', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, snapshot } = await connectedDatabase(backend)
+    const setup = await backend.gattRuntime.acquireOrdered(database, [
+      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }
+    ], subscriptionOptions(null, null, 1))
+    testFixture.setStopFailures(1)
+    for (const listener of testFixture.notificationListeners) {
+      listener(new Uint8Array([1]))
+      listener(new Uint8Array([2]))
+    }
+    await flushMicrotasks()
+    expectConsoleErrorMatching(
+      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
+      expect.objectContaining({ message: 'stop failed' })
+    )
+    expect(await orderedRecords(setup.owner, 3)).toEqual([
+      { kind: 'value', memberId: 'a', ordinal: '1', value: new Uint8Array([1]) },
+      { kind: 'loss', lostValues: 1, lostBytes: 1 },
+      { kind: 'terminal', reason: 'overflow', uncertainTail: true }
+    ])
+    expect(testFixture.notificationListeners.size).toBe(0)
+    expect(await setup.owner.close()).toMatchObject([{ cleanup: { state: 'released' } }])
+    expect(backend.resourceCounters().subscriptionConsumers).toBe(0)
+  })
+
+  test.each([
+    ['owner-released', 'owner-released'],
+    ['connection-lost', 'connection-lost'],
+    ['adapter-loss', 'source-failed']
+  ])('ordered owner reports %s connection end', async (end, expected) => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, lease, snapshot } = await connectedDatabase(backend)
+    const setup = await backend.gattRuntime.acquireOrdered(database, [
+      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }
+    ], subscriptionOptions())
+    await backend.disconnectRecord(lease.record, end)
+    expect(await orderedRecords(setup.owner, 1)).toEqual([{ kind: 'terminal', reason: expected, uncertainTail: true }])
+  })
+
+  test('ordered explicit close reports closed', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, snapshot } = await connectedDatabase(backend)
+    const setup = await backend.gattRuntime.acquireOrdered(database, [
+      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }
+    ], subscriptionOptions())
+    await setup.owner.close()
+    expect(await orderedRecords(setup.owner, 1)).toEqual([{ kind: 'terminal', reason: 'closed', uncertainTail: true }])
+  })
+
+  test('ordered acquisition stages alternating DOM callbacks while the second enable is pending', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, snapshot } = await connectedDatabase(backend)
+    const secondBoundary = [...database.characteristicBoundaries.values()][1]
+    const secondStart = deferred()
+    jest.spyOn(secondBoundary, 'startNotifications').mockImplementationOnce(() => secondStart.promise)
+    const opening = backend.gattRuntime.acquireOrdered(database, [
+      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' },
+      { memberId: 'b', path: snapshot.characteristics[1].path, deliveryMode: 'prefer-notification' }
+    ], subscriptionOptions(null, null, 4))
+    await flushMicrotasks()
+    const [a, b] = [...testFixture.notificationListeners]
+    a(new Uint8Array([1]))
+    b(new Uint8Array([2]))
+    a(new Uint8Array([3]))
+    secondStart.resolve()
+    const setup = await opening
+    expect(setup.state).toBe('ready')
+    expect(await orderedRecords(setup.owner, 3)).toEqual([
+      { kind: 'value', memberId: 'a', ordinal: '1', value: new Uint8Array([1]) },
+      { kind: 'value', memberId: 'b', ordinal: '2', value: new Uint8Array([2]) },
+      { kind: 'value', memberId: 'a', ordinal: '3', value: new Uint8Array([3]) }
+    ])
+    await setup.owner.close()
+  })
+
+  test('disconnect during ordered setup reports connection loss, not overflow', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, lease, snapshot } = await connectedDatabase(backend)
+    const secondBoundary = [...database.characteristicBoundaries.values()][1]
+    const secondStart = deferred()
+    jest.spyOn(secondBoundary, 'startNotifications').mockImplementationOnce(() => secondStart.promise)
+    const opening = backend.gattRuntime.acquireOrdered(database, [
+      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' },
+      { memberId: 'b', path: snapshot.characteristics[1].path, deliveryMode: 'prefer-notification' }
+    ], subscriptionOptions())
+    await flushMicrotasks()
+    const disconnect = backend.disconnectRecord(lease.record, 'connection-lost')
+    const setup = await opening
+    expect(setup).toMatchObject({ state: 'failed', error: { code: 'connection.lost' } })
+    expect(await orderedRecords(setup.owner, 1)).toEqual([{ kind: 'terminal', reason: 'connection-lost', uncertainTail: true }])
+    await disconnect
+    secondStart.resolve()
+    await flushMicrotasks()
+    await setup.owner.close()
+  })
+
+  test('rediscovery during ordered setup reports service change, not overflow', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, lease, snapshot } = await connectedDatabase(backend)
+    const secondBoundary = [...database.characteristicBoundaries.values()][1]
+    const secondStart = deferred()
+    jest.spyOn(secondBoundary, 'startNotifications').mockImplementationOnce(() => secondStart.promise)
+    const opening = backend.gattRuntime.acquireOrdered(database, [
+      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' },
+      { memberId: 'b', path: snapshot.characteristics[1].path, deliveryMode: 'prefer-notification' }
+    ], subscriptionOptions())
+    await flushMicrotasks()
+    await expect(backend.gatt.discover(lease.connection, noDeadline())).rejects.toMatchObject({
+      normalized: { code: 'gatt.subscribe-failed' }
+    })
+    secondStart.resolve()
+    const setup = await opening
+    expect(setup).toMatchObject({ state: 'failed', error: { code: 'gatt.stale-handle' } })
+    expect(await orderedRecords(setup.owner, 1)).toEqual([{ kind: 'terminal', reason: 'service-changed', uncertainTail: true }])
+    await setup.owner.close()
+  })
+
+  test('ordered owner fences its group before a pending final physical stop', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, lease, snapshot } = await connectedDatabase(backend)
+    const setup = await backend.gattRuntime.acquireOrdered(database, [
+      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }
+    ], subscriptionOptions())
+    const capturedListener = [...testFixture.notificationListeners][0]
+    const pendingStop = deferred()
+    jest.spyOn(testFixture.characteristic, 'stopNotifications').mockImplementationOnce(() => pendingStop.promise)
+    const rediscovery = backend.gatt.discover(lease.connection, noDeadline())
+    await flushMicrotasks()
+    capturedListener(new Uint8Array([8]))
+    pendingStop.reject(new Error('stop failed'))
+    await expect(rediscovery).rejects.toMatchObject({ normalized: { code: 'gatt.subscribe-failed' } })
+    expectConsoleErrorMatching(
+      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
+      expect.objectContaining({ message: 'stop failed' })
+    )
+    expect(await orderedRecords(setup.owner, 1)).toEqual([{ kind: 'terminal', reason: 'service-changed', uncertainTail: true }])
+    expect(await setup.owner.close()).toMatchObject([{ cleanup: { state: 'released' } }])
+  })
+
+  test('ordered setup captures callback overflow and returns cleanup owner', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, snapshot } = await connectedDatabase(backend)
+    testFixture.setStartMode('overflow')
+    const setup = await backend.gattRuntime.acquireOrdered(database, [
+      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }
+    ], subscriptionOptions(null, null, 1))
+    expect(setup).toMatchObject({ state: 'failed', error: { code: 'stream.overflow' }, acquisitions: [{ state: 'acquired' }] })
+    expect(await orderedRecords(setup.owner, 3)).toEqual([
+      { kind: 'value', memberId: 'a', ordinal: '1', value: new Uint8Array([1]) },
+      { kind: 'loss', lostValues: 1, lostBytes: 1 },
+      { kind: 'terminal', reason: 'overflow', uncertainTail: true }
+    ])
+    expect(testFixture.notificationListeners.size).toBe(0)
+  })
+
+  test('aborted ordered setup retains retryable late-start cleanup', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, snapshot } = await connectedDatabase(backend)
+    testFixture.setStartMode('pending')
+    testFixture.setStopFailures(1)
+    const controller = new AbortController()
+    const opening = backend.gattRuntime.acquireOrdered(database, [
+      { memberId: 'a', path: snapshot.characteristics[0].path, deliveryMode: 'prefer-notification' }
+    ], subscriptionOptions(controller.signal))
+    await flushMicrotasks()
+    controller.abort()
+    const setup = await opening
+    expect(setup).toMatchObject({ state: 'failed', error: { code: 'operation.aborted' }, acquisitions: [{ state: 'indeterminate' }] })
+    testFixture.startDeferred.resolve()
+    await flushMicrotasks()
+    expectConsoleErrorMatching(
+      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
+      expect.objectContaining({ message: 'stop failed' })
+    )
+    expect(await setup.owner.close()).toMatchObject([{ cleanup: { state: 'released' } }])
+    expect(backend.resourceCounters().subscriptionConsumers).toBe(0)
+  })
+
   test('rediscovery settles old database subscriptions before replacing its generation', async () => {
     const testFixture = fixture()
     const backend = await backendFixture(testFixture)
     const { database, lease, snapshot } = await connectedDatabase(backend)
     const subscription = await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
+    const ingress = backend.gattRuntime.notificationIngress(database)
+    const group = ingress.register(new Map([[testFixture.characteristic, 'member']]), 4, 16)
+    for (const listener of testFixture.notificationListeners) listener(new Uint8Array([1]))
     testFixture.setStopFailures(1)
 
     await expect(backend.gatt.discover(lease.connection, noDeadline())).rejects.toMatchObject({
@@ -599,9 +860,46 @@ describe('Web Bluetooth lifecycle hardening', () => {
       expect.objectContaining({ message: 'stop failed' })
     )
     await expect(database.snapshot()).resolves.toBeDefined()
+    expect(group.drain()).toEqual([
+      { kind: 'value', memberId: 'member', ordinal: '1', value: new Uint8Array([1]) }
+    ])
     await subscription.remove()
+    const resumed = await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
+    for (const listener of testFixture.notificationListeners) listener(new Uint8Array([2]))
+    expect(group.drain()).toEqual([
+      { kind: 'value', memberId: 'member', ordinal: '2', value: new Uint8Array([2]) }
+    ])
+    await resumed.remove()
     const replacement = await backend.gatt.discover(lease.connection, noDeadline())
+    expect(group.drain()).toEqual([{ kind: 'terminal', reason: 'service-changed', uncertainTail: true }])
     expect(replacement.path.databaseGeneration).not.toBe(database.path.databaseGeneration)
+  })
+
+  test('keeps admitting remaining member callbacks during failed rediscovery cleanup', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, lease, snapshot } = await connectedDatabase(backend)
+    const first = await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
+    const second = await database.subscribe(snapshot.characteristics[1].path, subscriptionOptions())
+    const secondBoundary = [...database.characteristicBoundaries.values()][1]
+    const group = backend.gattRuntime.notificationIngress(database).register(new Map([[secondBoundary, 'second']]), 2, 8)
+    const pendingStop = deferred()
+    jest.spyOn(testFixture.characteristic, 'stopNotifications').mockImplementationOnce(() => pendingStop.promise)
+    const discovery = backend.gatt.discover(lease.connection, noDeadline())
+    await Promise.resolve()
+    await Promise.resolve()
+    for (const listener of testFixture.notificationListeners) listener(new Uint8Array([7]))
+    pendingStop.reject(new Error('stop failed'))
+    await expect(discovery).rejects.toMatchObject({ normalized: { code: 'gatt.subscribe-failed' } })
+    expectConsoleErrorMatching(
+      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
+      expect.objectContaining({ message: 'stop failed' })
+    )
+    expect(group.drain()).toEqual([
+      { kind: 'value', memberId: 'second', ordinal: '1', value: new Uint8Array([7]) }
+    ])
+    await first.remove()
+    await second.remove()
   })
 
   test('destroy quarantines a late chooser completion without retaining a peer, connection, database, or subscription', async () => {

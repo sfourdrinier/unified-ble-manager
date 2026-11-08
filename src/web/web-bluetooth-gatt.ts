@@ -2,7 +2,7 @@
 
 import type { BackendConnection, BackendSubscription, GattBackend } from '../backend-contract/backend'
 import { BackendContractError, contractError } from '../backend-contract/errors'
-import type { CleanupFailure, CleanupRecord } from '../backend-contract/errors'
+import type { CleanupFailure, CleanupRecord, NormalizedBleError } from '../backend-contract/errors'
 import type { AttachmentRecord } from '../backend-contract/identity'
 import {
   createGattCharacteristicProperties,
@@ -38,12 +38,16 @@ import { canonicalUuid, opaqueId, ownBytes } from '../backend-contract/primitive
 import type { AttachmentBoundIdFactory, ByteLimit, Deadline, OwnedBytes } from '../backend-contract/primitives'
 import { byteLimit } from '../backend-contract/primitives'
 import { CoreBoundedStream } from '../core/bounded-stream'
+import { CoreOrderedNotificationStream } from '../core/ordered-notification-stream'
+import type { OrderedNotificationStream } from '../core/ordered-notification-contract'
 import type {
   WebBluetoothCharacteristicBoundary,
   WebBluetoothDescriptorBoundary,
   WebBluetoothServiceBoundary
 } from './web-bluetooth-boundary'
 import { webCleanupFailure } from './web-bluetooth-errors'
+import { WebNotificationIngress } from './web-notification-ingress'
+import type { WebIngressGroup, WebIngressTerminalReason } from './web-notification-ingress'
 import { characteristicKey, descriptorKey, WebBackendSubscription, WebGattDatabase } from './web-bluetooth-handles'
 import type {
   WebConnectionRecord,
@@ -74,6 +78,34 @@ export interface WebGattHost extends WebGattDatabaseHost {
   staleGattError(operation: string): import('../backend-contract/errors').BackendContractError
 }
 
+export interface WebOrderedMember {
+  readonly memberId: string
+  readonly path: CharacteristicPath<string, string, string, string, string, 'current'>
+  readonly deliveryMode: NonNullable<SubscriptionOptions['deliveryMode']>
+}
+
+export interface WebOrderedOwner {
+  readonly ingress: WebIngressGroup
+  readonly stream: OrderedNotificationStream
+  readonly members: readonly (WebOrderedMember & {
+    readonly effectiveDelivery: 'notification' | 'indication' | 'unknown'
+  })[]
+  close(): Promise<readonly { readonly memberId: string; readonly cleanup: CleanupRecord }[]>
+}
+
+export type WebOrderedSetup =
+  | { readonly state: 'ready'; readonly owner: WebOrderedOwner }
+  | {
+      readonly state: 'failed'
+      readonly error: NormalizedBleError
+      readonly owner: WebOrderedOwner
+      readonly cleanup: readonly { readonly memberId: string; readonly cleanup: CleanupRecord }[]
+      readonly acquisitions: readonly {
+        readonly memberId: string
+        readonly state: 'not-started' | 'acquired' | 'indeterminate'
+      }[]
+    }
+
 interface WebPhysicalNotifications {
   readonly characteristic: WebBluetoothCharacteristicBoundary
   readonly members: Set<WebManagedSubscription>
@@ -97,13 +129,26 @@ export class WebBluetoothGattRuntime {
   readonly gatt: GattBackend<string>
   private nextDatabase = 1
   private nextSubscription = 1
+  private nextOrderedCollection = 1
   private nextOperation = 1
+  private readonly ingressByDatabase = new WeakMap<WebGattDatabase, WebNotificationIngress>()
   private readonly subscriptions = new Map<string, WebManagedSubscription>()
   private readonly physicalNotifications = new Map<WebBluetoothCharacteristicBoundary, WebPhysicalNotifications>()
   private readonly physicalBySubscription = new Map<WebManagedSubscription, WebPhysicalNotifications>()
+  private readonly orderedBySubscription = new Map<WebManagedSubscription, WebIngressGroup>()
 
   constructor(private readonly host: WebGattHost) {
     this.gatt = this.createGattBackend()
+  }
+
+  notificationIngress(database: WebGattDatabase): WebNotificationIngress {
+    database.assertCurrent('web-gatt.notification-ingress')
+    let ingress = this.ingressByDatabase.get(database)
+    if (ingress === undefined) {
+      ingress = new WebNotificationIngress()
+      this.ingressByDatabase.set(database, ingress)
+    }
+    return ingress
   }
 
   subscriptionCount(): number {
@@ -134,6 +179,7 @@ export class WebBluetoothGattRuntime {
   }
 
   invalidateConnection(record: WebConnectionRecord, end: WebLinkEnd): void {
+    this.fenceConnection(record, end)
     // An adapter loss failed the streams at their source, as on every host.
     const reason = end === 'adapter-loss' ? 'source-failed' : end
     for (const subscription of [...this.subscriptions.values()]) {
@@ -141,6 +187,12 @@ export class WebBluetoothGattRuntime {
         this.beginLogicalSubscriptionStop(subscription, reason)
         this.finishStoppedSubscription(subscription)
       }
+    }
+  }
+
+  fenceConnection(record: WebConnectionRecord, end: WebLinkEnd): void {
+    if (record.database !== null) {
+      this.ingressByDatabase.get(record.database)?.retire(end === 'adapter-loss' ? 'source-failed' : end)
     }
   }
 
@@ -210,6 +262,138 @@ export class WebBluetoothGattRuntime {
     }
   }
 
+  /** Internal acquisition boundary; callers must retain the owner even after failed setup. */
+  async acquireOrdered(
+    database: WebGattDatabase,
+    members: readonly WebOrderedMember[],
+    options: SubscriptionOptions
+  ): Promise<WebOrderedSetup> {
+    const boundaries = new Map<WebBluetoothCharacteristicBoundary, string>()
+    const deliveries = new Map<string, 'notification' | 'indication' | 'unknown'>()
+    for (const member of members) {
+      const characteristic = this.requireCharacteristic(database, member.path, 'web-gatt.ordered-subscribe')
+      if (boundaries.has(characteristic) || [...boundaries.values()].includes(member.memberId)) {
+        throw contractError('argument.invalid', 'gatt', 'web-gatt.ordered-duplicate-member')
+      }
+      boundaries.set(characteristic, member.memberId)
+      deliveries.set(
+        member.memberId,
+        characteristic.properties.notify
+          ? 'notification'
+          : characteristic.properties.indicate
+            ? 'indication'
+            : 'unknown'
+      )
+    }
+    if (boundaries.size === 0) throw contractError('argument.invalid', 'gatt', 'web-gatt.ordered-empty')
+    const collectionId = `web-ordered-${this.nextOrderedCollection}`
+    this.nextOrderedCollection += 1
+    const stream = new CoreOrderedNotificationStream(
+      options.delivery,
+      reason => ingress.retire(reason),
+      async () => ({ group: RELEASED, members: await owner.close() })
+    )
+    const ingress = this.notificationIngress(database).register(
+      boundaries,
+      options.delivery.itemCapacity,
+      options.delivery.byteCapacity,
+      (memberId, ordinal, value) =>
+        stream.emit({
+          kind: 'value',
+          collectionId,
+          connectionGeneration: String(database.path.connectionGeneration),
+          databaseGeneration: String(database.path.databaseGeneration),
+          memberId,
+          ordinal,
+          value: ownBytes(value, byteLimit(Number.MAX_SAFE_INTEGER)),
+          delivery: deliveries.get(memberId) ?? 'unknown',
+          provenance: 'read-or-notification'
+        })
+    )
+    const owned: { readonly memberId: string; readonly managed: WebManagedSubscription }[] = []
+    const acquisitions: { readonly memberId: string; state: 'not-started' | 'acquired' | 'indeterminate' }[] =
+      members.map(member => ({ memberId: member.memberId, state: 'not-started' }))
+    let closing: Promise<readonly { readonly memberId: string; readonly cleanup: CleanupRecord }[]> | null = null
+    let ready = false
+    const owner: WebOrderedOwner = {
+      ingress,
+      stream,
+      members: members.map(member => ({ ...member, effectiveDelivery: deliveries.get(member.memberId) ?? 'unknown' })),
+      close: () => {
+        ingress.retire('closed')
+        if (closing === null) {
+          const cleanup = async () => {
+            const results: { memberId: string; cleanup: CleanupRecord }[] = []
+            for (const entry of owned) {
+              results.push({ memberId: entry.memberId, cleanup: await this.removeManagedSubscription(entry.managed) })
+            }
+            return results
+          }
+          closing = cleanup().then(
+            results => {
+              if (results.some(result => result.cleanup.state === 'release-failed')) closing = null
+              return results
+            },
+            error => {
+              closing = null
+              throw error
+            }
+          )
+        }
+        return closing
+      }
+    }
+    ingress.onTerminal(() => {
+      const reason = ingress.terminalReason
+      if (reason !== null) stream.finish({ kind: 'terminal', reason, uncertainTail: true })
+      if (ready) {
+        owner.close().catch(error => {
+          console.error('[WebBluetoothGattRuntime.acquireOrdered] Automatic cleanup rejected:', error)
+        })
+      }
+    })
+    try {
+      for (const [index, member] of members.entries()) {
+        const acquisition = acquisitions[index]
+        if (acquisition === undefined)
+          throw contractError('lifecycle.invariant-violation', 'gatt', 'web-gatt.ordered-member')
+        await this.enableSubscription(
+          database,
+          member.path,
+          { ...options, deliveryMode: member.deliveryMode },
+          this.operationCorrelation('ordered-subscribe'),
+          managed => {
+            acquisition.state = 'indeterminate'
+            owned.push({ memberId: member.memberId, managed })
+            this.orderedBySubscription.set(managed, ingress)
+          },
+          true
+        )
+        acquisition.state = 'acquired'
+        if (ingress.terminalReason !== null) throw orderedSetupTerminalError(ingress.terminalReason)
+      }
+      ready = true
+      return { state: 'ready', owner }
+    } catch (error) {
+      const terminalReason = ingress.terminalReason
+      ingress.retire(
+        error instanceof BackendContractError && error.normalized.code === 'operation.aborted'
+          ? 'operation-aborted'
+          : error instanceof BackendContractError && error.normalized.code === 'operation.timed-out'
+            ? 'operation-timed-out'
+            : 'source-failed'
+      )
+      const cleanup = await owner.close()
+      const normalized =
+        terminalReason !== null
+          ? orderedSetupTerminalError(terminalReason).normalized
+          : error instanceof BackendContractError
+            ? error.normalized
+            : contractError('gatt.subscribe-failed', 'gatt', 'web-gatt.ordered-subscribe').normalized
+      return { state: 'failed', error: normalized, owner, acquisitions, cleanup }
+    }
+  }
+
   private createGattBackend(): GattBackend<string> {
     return {
       discover: async (connection, options) => this.discover(connection, options),
@@ -237,6 +421,7 @@ export class WebBluetoothGattRuntime {
       if (cleanup.state === 'release-failed') {
         throw contractError('gatt.subscribe-failed', 'gatt', 'web-gatt.rediscovery-subscription-cleanup')
       }
+      this.ingressByDatabase.get(record.database)?.retire('service-changed')
       record.database.invalidate()
       record.database = null
     }
@@ -572,7 +757,9 @@ export class WebBluetoothGattRuntime {
     database: WebGattDatabase,
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     options: SubscriptionOptions,
-    correlation: OperationOptions<string, string>['correlation']
+    correlation: OperationOptions<string, string>['correlation'],
+    onCreated?: (managed: WebManagedSubscription) => void,
+    orderedOnly = false
   ): Promise<WebManagedSubscription> {
     const characteristic = this.requireCharacteristic(database, path, 'web-gatt.subscribe')
     const notify = characteristic.properties.notify
@@ -621,6 +808,7 @@ export class WebBluetoothGattRuntime {
       if ((current.state !== 'enabling' && current.state !== 'ready') || !database.record.valid) {
         return
       }
+      if (orderedOnly) return
       const copied = ownBytes(value, MAXIMUM_VALUE_BYTES)
       const result = stream.emit(
         // Web Bluetooth's startNotifications() writes the notification CCCD
@@ -656,9 +844,13 @@ export class WebBluetoothGattRuntime {
     }
     managedState.current = managed
     this.subscriptions.set(String(subscriptionId), managed)
+    onCreated?.(managed)
     if (physical === undefined) {
       const members = new Set<WebManagedSubscription>()
       const sourceListener = (value: Uint8Array): void => {
+        if (database.record.valid && database.record.database === database) {
+          this.ingressByDatabase.get(database)?.admit(characteristic, value)
+        }
         for (const member of [...members]) member.listener(value)
       }
       characteristic.addNotificationListener(sourceListener)
@@ -751,6 +943,7 @@ export class WebBluetoothGattRuntime {
     if (managed.state === 'stopped') {
       return RELEASED
     }
+    this.orderedBySubscription.get(managed)?.retire('service-changed')
     this.beginLogicalSubscriptionStop(managed, 'owner-released')
     const physical = this.physicalBySubscription.get(managed)
     if (physical === undefined) {
@@ -811,6 +1004,7 @@ export class WebBluetoothGattRuntime {
   private finishStoppedSubscription(managed: WebManagedSubscription): void {
     managed.state = 'stopped'
     this.subscriptions.delete(String(managed.subscriptionId))
+    this.orderedBySubscription.delete(managed)
     const physical = this.physicalBySubscription.get(managed)
     this.physicalBySubscription.delete(managed)
     if (physical !== undefined) {
@@ -998,6 +1192,28 @@ export class WebBluetoothGattRuntime {
     const correlation = this.host.identifiers().operationCorrelation(`${label}-${this.nextOperation}`)
     this.nextOperation += 1
     return correlation
+  }
+}
+
+function orderedSetupTerminalError(reason: WebIngressTerminalReason): BackendContractError {
+  switch (reason) {
+    case 'overflow':
+      return contractError('stream.overflow', 'stream', 'web-gatt.ordered-setup')
+    case 'service-changed':
+      return contractError('gatt.stale-handle', 'gatt', 'web-gatt.ordered-setup')
+    case 'connection-lost':
+      return contractError('connection.lost', 'connection', 'web-gatt.ordered-setup')
+    case 'owner-released':
+      return contractError('operation.disconnected', 'connection', 'web-gatt.ordered-setup')
+    case 'source-failed':
+      return contractError('operation.reset', 'connection', 'web-gatt.ordered-setup')
+    case 'operation-aborted':
+    case 'closed':
+      return contractError('operation.aborted', 'gatt', 'web-gatt.ordered-setup')
+    case 'operation-timed-out':
+      return contractError('operation.timed-out', 'gatt', 'web-gatt.ordered-setup')
+    case 'ordinal-exhausted':
+      return contractError('stream.closed', 'stream', 'web-gatt.ordered-ordinal-exhausted')
   }
 }
 
