@@ -5824,8 +5824,8 @@ mod reclaim_callback_fifo_tests {
     fn authority_replay_rejects_foreign_source_and_keeps_original_receipt() {
         use crate::ubm_reclaim_authority::{AuthorityError, GraphTarget, PermitStatus};
         let authorities = Arc::new(std::sync::Mutex::new(crate::ubm_reclaim_authority::ReclaimAuthorities::default()));
-        let owner = PeerSourceOwner::with_authorities(authorities.clone(), Arc::default(), Arc::default());
-        let foreign = PeerSourceOwner::with_authorities(authorities.clone(), Arc::default(), Arc::default());
+        let owner = PeerSourceOwner::with_authorities(authorities.clone(), Arc::default(), Arc::default(), None);
+        let foreign = PeerSourceOwner::with_authorities(authorities.clone(), Arc::default(), Arc::default(), None);
         let graph = ("corebluetooth".to_owned(), owner.graph_attachment.unwrap(), 1);
         let key = GraphKey { graph: graph.clone(), ..key() };
         let target = GraphTarget { peer_id: key.peer_id.clone(), connection_generation: key.connection_generation.clone(), graph: graph.clone() };
