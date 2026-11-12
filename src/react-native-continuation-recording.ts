@@ -6,6 +6,7 @@ import { decodeNativeContinuationEnvelope } from './core/native-continuation-env
 import { decodeBase64OrThrow } from './core/recording-wire'
 import { MAX_RECORDING_BATCH_BYTES, MAX_RECORDING_BATCH_ITEMS } from './backend-contract/continuation-recording-bounds'
 import { createReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core-binding'
+import { terminalEvidenceScopeFromNative } from './backends/reactnative/terminal-evidence-scope-utf16'
 import type { ReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core'
 import {
   createNativeContinuationRecordingController,
@@ -236,7 +237,14 @@ function createTerminalEvidenceRecovery(
       'list.item'
     )
     const scope = record(source.scope, 'list.item.scope')
-    exact(scope, ['managerId', 'operationId', 'incarnation'], 'list.item.scope')
+    const hasRawScope = Object.hasOwn(scope, 'scopeUtf16leBase64')
+    exact(
+      scope,
+      hasRawScope
+        ? ['managerId', 'operationId', 'incarnation', 'scopeUtf16leBase64']
+        : ['managerId', 'operationId', 'incarnation'],
+      'list.item.scope'
+    )
     const state = source.state
     if (state !== 'staged' && state !== 'committed') return malformed('list.item.state')
     const reference = source.reference === undefined ? undefined : text(source.reference, 'list.item.reference')
@@ -254,14 +262,22 @@ function createTerminalEvidenceRecovery(
       (reference === undefined || byteLength === undefined || digest === undefined || formatVersion === undefined)
     )
       return malformed('list.item.committed')
-    return Object.freeze({
-      handle: text(source.handle, 'list.item.handle'),
-      producer: text(source.producer, 'list.item.producer'),
-      scope: Object.freeze({
+    const producer = text(source.producer, 'list.item.producer')
+    if (producer !== 'scan' && producer !== 'subscription') return malformed('list.item.producer')
+    const recoveredScope = terminalEvidenceScopeFromNative(
+      producer,
+      Object.freeze({
         managerId: text(scope.managerId, 'list.item.scope.manager-id'),
         operationId: text(scope.operationId, 'list.item.scope.operation-id'),
-        incarnation: text(scope.incarnation, 'list.item.scope.incarnation')
+        incarnation: text(scope.incarnation, 'list.item.scope.incarnation'),
+        ...(hasRawScope ? { scopeUtf16leBase64: text(scope.scopeUtf16leBase64, 'list.item.scope.scope-utf16le') } : {})
       }),
+      `${operation}.list.item`
+    )
+    return Object.freeze({
+      handle: text(source.handle, 'list.item.handle'),
+      producer,
+      scope: recoveredScope,
       state,
       ...(reference === undefined ? {} : { reference }),
       ...(byteLength === undefined ? {} : { byteLength }),

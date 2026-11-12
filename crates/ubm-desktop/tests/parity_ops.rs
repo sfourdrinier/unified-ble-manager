@@ -1199,6 +1199,55 @@ async fn an_os_ended_scan_is_released_and_reported() {
         .expect("a new scan can start");
 }
 
+/// An OS terminal is authoritative immediately, even while the callback
+/// ingress fence retains the exact scan owner for cleanup retry. Consumers
+/// reconciling a lost terminal event must not treat that retained debt as a
+/// still-operational radio scan.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_os_ended_scan_is_not_operational_while_its_ingress_fence_is_held() {
+    let central = open().await;
+    let session = central
+        .start_scan("scanner", &[], OpControl::budget_ms(1000))
+        .await
+        .expect("scan");
+    central.boundary().block_op(FaultOp::ScanIngressFence);
+    central
+        .boundary()
+        .push_event(RadioEvent::ScanTerminated {
+            aborted: true,
+            detail: "the watcher stopped".to_owned(),
+        })
+        .expect("synthetic event admission failed");
+    central
+        .boundary()
+        .wait_for_calls("fence_scan_ingress", 1)
+        .await;
+
+    assert_eq!(
+        central.active_scan_id().as_ref(),
+        Some(session.operation_id()),
+        "the unfinished ingress cleanup keeps its exact owner"
+    );
+    assert_eq!(
+        central.operational_scan_id(),
+        None,
+        "the OS-ended scan is no longer operational before its fence returns"
+    );
+    assert!(
+        central.has_active_scan().await,
+        "cleanup debt remains retained"
+    );
+
+    central.boundary().unblock_op(FaultOp::ScanIngressFence);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while central.has_active_scan().await {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the released ingress fence settles the retained owner");
+}
+
 /// Finding 98: on a radio whose OS answers an unflagged subscribe (BlueZ
 /// `StartNotify`, called unchecked by the legacy BlueZ backend) the
 /// subscribe reaches the radio and its answer is the result; elsewhere the

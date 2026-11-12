@@ -1488,7 +1488,10 @@ impl MobileSession {
         };
         let (body, operation_id, budget) = match op {
             "terminal-evidence.reserve" => {
-                args.exact(&["producer", "maximumBytes", "formatVersion", "scope"], &[])?;
+                args.exact(
+                    &["producer", "maximumBytes", "formatVersion", "scope"],
+                    &["scopeUtf16leBase64"],
+                )?;
                 let producer = args.one_of("producer", &["scan", "subscription"])?;
                 if args.integer("formatVersion", 1)? != 1 {
                     return Err(wire::invalid("args.formatVersion"));
@@ -1502,6 +1505,10 @@ impl MobileSession {
                             manager_id: scope.string("managerId")?,
                             operation_id: scope.string("operationId")?,
                             incarnation: scope.string("incarnation")?,
+                            scope_utf16le: args
+                                .opt_string("scopeUtf16leBase64")?
+                                .map(|text| wire::decode_base64(&text, "args.scopeUtf16leBase64"))
+                                .transpose()?,
                         },
                         maximum_bytes: args.integer("maximumBytes", wire::MAX_SAFE_INTEGER)?,
                     },
@@ -1758,12 +1765,24 @@ impl MobileSession {
                         terminal_evidence_scope: args
                             .opt_object("terminalEvidenceScope")?
                             .map(|scope| {
-                                scope.exact(&["managerId", "operationId", "incarnation"], &[])?;
+                                scope.exact(
+                                    &["managerId", "operationId", "incarnation"],
+                                    &["scopeUtf16leBase64"],
+                                )?;
                                 Ok::<ScanTerminalEvidenceScope, DesktopError>(
                                     ScanTerminalEvidenceScope {
                                         manager_id: scope.string("managerId")?,
                                         operation_id: scope.string("operationId")?,
                                         incarnation: scope.string("incarnation")?,
+                                        scope_utf16le: scope
+                                            .opt_string("scopeUtf16leBase64")?
+                                            .map(|text| {
+                                                wire::decode_base64(
+                                                    &text,
+                                                    "args.terminalEvidenceScope.scopeUtf16leBase64",
+                                                )
+                                            })
+                                            .transpose()?,
                                     },
                                 )
                             })
@@ -2486,12 +2505,24 @@ impl MobileSession {
                         terminal_evidence_scope: args
                             .opt_object("terminalEvidenceScope")?
                             .map(|scope| {
-                                scope.exact(&["managerId", "operationId", "incarnation"], &[])?;
+                                scope.exact(
+                                    &["managerId", "operationId", "incarnation"],
+                                    &["scopeUtf16leBase64"],
+                                )?;
                                 Ok::<ScanTerminalEvidenceScope, DesktopError>(
                                     ScanTerminalEvidenceScope {
                                         manager_id: scope.string("managerId")?,
                                         operation_id: scope.string("operationId")?,
                                         incarnation: scope.string("incarnation")?,
+                                        scope_utf16le: scope
+                                            .opt_string("scopeUtf16leBase64")?
+                                            .map(|text| {
+                                                wire::decode_base64(
+                                                    &text,
+                                                    "args.terminalEvidenceScope.scopeUtf16leBase64",
+                                                )
+                                            })
+                                            .transpose()?,
                                     },
                                 )
                             })
@@ -6944,7 +6975,9 @@ pub(crate) fn terminal_evidence_error(
             "terminal-evidence",
         )
         .with_detail("terminal evidence storage is busy"),
-        TerminalEvidenceError::Missing | TerminalEvidenceError::Unresolved => error(
+        TerminalEvidenceError::Missing
+        | TerminalEvidenceError::Unresolved
+        | TerminalEvidenceError::NotStaged => error(
             BleErrorCode::LifecycleInvalidState,
             BleErrorDomain::Stream,
             "terminal-evidence",

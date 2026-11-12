@@ -43,6 +43,10 @@ All notable changes to `unified-ble-manager` are documented here.
 - Preserve scan callback ownership across stop and restart, including callbacks
   already queued by UBM and interrupted cleanup, so those observations are not
   assigned to a later scan when the queue is drained.
+- Retain and stage an evidence-bound scan terminal before delivering it to the
+  desktop consumer, and preserve the original staging failure and cleanup
+  ownership if durable storage refuses it. Recover scans whose terminal event
+  was missed while their native cleanup is still finishing.
 
 ## [5.2.1] - 2026-11-08
 

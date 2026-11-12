@@ -2,6 +2,8 @@
 import { isCanonicalIngressOrdinal } from '../../core/ordered-notification-contract'
 import { createHash } from 'node:crypto'
 import { encodeTerminalEvidence } from '../../core/terminal-evidence-codec'
+import { markTerminalEvidenceStageFailure } from '../../core/terminal-evidence-stage-failure'
+import { terminalEvidenceScopeUtf16le } from '../../core/terminal-evidence-scope-utf16'
 //
 // The one desktop provider over the shared Rust core (PR210-02): BlueZ,
 // CoreBluetooth and WinRT hosts all execute `DesktopCentral` (btleplug plus
@@ -2268,7 +2270,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         if (this.destroyed || this.coreEventsClosed) return
         const terminal = await this.central.takeScanTerminalEvent()
         if (terminal === null || terminal === undefined) break
-        if (terminal.kind === 'lagged') this.reconcileScan(terminal.missed ?? null)
+        if (terminal.kind === 'stage-failed') this.failScanTerminalEvidenceStage(terminal)
+        else if (terminal.kind === 'lagged') this.reconcileScan(terminal.missed ?? null)
         else await this.applyScanTerminal(terminal)
       }
       for (;;) {
@@ -2845,6 +2848,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   private hasTerminalEvidenceSurface(): boolean {
     return (
       this.central.reserveTerminalEvidence !== undefined &&
+      this.central.bindTerminalEvidenceRecipient !== undefined &&
       this.central.commitTerminalEvidence !== undefined &&
       this.central.readTerminalEvidence !== undefined &&
       this.central.releaseTerminalEvidence !== undefined &&
@@ -2870,7 +2874,14 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const commit = this.central.commitTerminalEvidence
     const release = this.central.releaseTerminalEvidence
     const stage = this.central.stageTerminalEvidence
-    if (reserve === undefined || commit === undefined || release === undefined || stage === undefined) {
+    const bind = this.central.bindTerminalEvidenceRecipient
+    if (
+      reserve === undefined ||
+      commit === undefined ||
+      release === undefined ||
+      stage === undefined ||
+      bind === undefined
+    ) {
       throw contractError('capability.unsupported', 'stream', this.op('terminal-evidence.reserve'))
     }
     let reserved
@@ -2879,7 +2890,8 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         producer: request.producer,
         maximumBytes: String(request.maximumBytes),
         formatVersion: request.formatVersion,
-        scope: request.scope
+        scope: request.scope,
+        scopeUtf16le: terminalEvidenceScopeUtf16le(request.producer, request.scope)
       })
     } catch (error) {
       throwDesktopRustCoreError(error, this.op('terminal-evidence.reserve'))
@@ -2893,6 +2905,26 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     const reservationKey = `${request.producer}\u0000${request.scope.managerId}\u0000${request.scope.operationId}\u0000${request.scope.incarnation}`
     this.terminalReservationIds.set(reservationKey, reserved.reservationId)
+    if (this.hostKind !== 'desktop-native') {
+      try {
+        await bind.call(this.central, reserved.reservationId, this.terminalEvidenceRecipient)
+      } catch (error) {
+        this.terminalReservationIds.delete(reservationKey)
+        try {
+          await release.call(this.central, reserved.reservationId)
+        } catch (releaseError) {
+          throw new AggregateError(
+            [error, releaseError],
+            'terminal-evidence recipient binding and reservation release both failed'
+          )
+        }
+        throwDesktopRustCoreError(error, this.op('terminal-evidence.bind-recipient'))
+      }
+      this.terminalEvidenceAcknowledgements.set(
+        reserved.reservationId,
+        Object.freeze({ producer: request.producer, recipient: this.terminalEvidenceRecipient })
+      )
+    }
     let committed = false
     let released = false
     return Object.freeze({
@@ -2905,12 +2937,12 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         // point. Direct Node callers have no renderer bridge, so bind their
         // durable record to this trusted host owner before committing it;
         // otherwise a committed row could never satisfy recovery ACK claims.
-        let recoveryClaims = this.terminalEvidenceAcknowledgements.get(reserved.reservationId)
-        if (recoveryClaims === undefined) {
-          recoveryClaims = Object.freeze({ producer: request.producer, recipient: this.terminalEvidenceRecipient })
-          await stage.call(this.central, reserved.reservationId, recoveryClaims.recipient, record.canonicalBytes)
-          this.terminalEvidenceAcknowledgements.set(reserved.reservationId, recoveryClaims)
-        }
+        const recoveryClaims = this.terminalEvidenceAcknowledgements.get(reserved.reservationId)
+        if (recoveryClaims === undefined)
+          throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.commit'))
+        // Binding is distinct from durable bytes: commit still stages its
+        // canonical record, and native rejects divergent re-staging.
+        await stage.call(this.central, reserved.reservationId, recoveryClaims.recipient, record.canonicalBytes)
         const result = await commit.call(this.central, {
           reservationId: reserved.reservationId,
           canonicalBytes: Uint8Array.from(record.canonicalBytes),
@@ -2975,6 +3007,25 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     if (reservationId === undefined)
       throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.stage'))
     await stage.call(this.central, reservationId, recipient, canonicalBytes)
+    this.terminalEvidenceAcknowledgements.set(reservationId, Object.freeze({ producer, recipient }))
+  }
+
+  /** Trusted Electron-main bridge; the renderer never supplies `recipient`. */
+  async bindTerminalEvidenceRecipientForRecovery(
+    producer: 'scan' | 'subscription',
+    scope: TerminalEvidenceReservationRequest['scope'] | null,
+    recipient: string
+  ): Promise<void> {
+    const bind = this.central.bindTerminalEvidenceRecipient
+    if (bind === undefined)
+      throw contractError('capability.unsupported', 'restoration', this.op('terminal-evidence.bind-recipient'))
+    if (scope === null)
+      throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.bind-recipient'))
+    const key = `${producer}\u0000${scope.managerId}\u0000${scope.operationId}\u0000${scope.incarnation}`
+    const reservationId = this.terminalReservationIds.get(key)
+    if (reservationId === undefined)
+      throw contractError('lifecycle.invalid-state', 'restoration', this.op('terminal-evidence.bind-recipient'))
+    await bind.call(this.central, reservationId, recipient)
     this.terminalEvidenceAcknowledgements.set(reservationId, Object.freeze({ producer, recipient }))
   }
 
@@ -3287,6 +3338,10 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     }
     const ordinal = this.nextOrdinal()
     const correlation = String(this.mintedCorrelation())
+    const terminalEvidenceScopeBytes =
+      options.terminalEvidenceScope === undefined
+        ? undefined
+        : terminalEvidenceScopeUtf16le('scan', options.terminalEvidenceScope)
     const started = await this.withTicket(correlation, options.signal, operation, ticket =>
       this.central.startScan({
         owner: `${this.owner}/scan-${ordinal}`,
@@ -3294,7 +3349,13 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
         duplicatePolicy: options.duplicatePolicy,
         ...(options.terminalEvidenceScope === undefined
           ? {}
-          : { terminalEvidenceScope: options.terminalEvidenceScope }),
+          : {
+              terminalEvidenceScope: options.terminalEvidenceScope,
+              ...(terminalEvidenceScopeBytes === undefined
+                ? {}
+                : { terminalEvidenceScopeUtf16le: terminalEvidenceScopeBytes }),
+              terminalEvidenceOperation: this.op('scan.terminated')
+            }),
         ...(options.platform?.kind === 'winrt'
           ? {
               winrtScanningMode: options.platform.mode,
@@ -4432,6 +4493,37 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
   }
 
   /**
+   * A source terminal reached native dispatch, but its required durable stage
+   * failed. This is a scan-local source failure: do not turn it into the
+   * generic lag reconciliation path, which would erase the actual storage
+   * refusal and report a fabricated missed-terminal cause.
+   */
+  private failScanTerminalEvidenceStage(event: DesktopRustCoreScanTerminalEvent): void {
+    const group = this.scanGroup
+    if (group === null || group.state !== 'active') {
+      this.noteDiagnostic(
+        'scan-terminal-evidence-stage-without-group',
+        'the core reported a terminal evidence stage failure without its scan group'
+      )
+      return
+    }
+    if (typeof event.stageFailure !== 'string' || event.stageFailure.length === 0) {
+      this.failCoreEventSource('scan-terminal-evidence-stage-malformed')
+      return
+    }
+    const normalized = markTerminalEvidenceStageFailure(
+      desktopRustCoreError(new Error(event.stageFailure), this.op('scan.terminal-evidence-stage')).normalized
+    )
+    this.scanGroup = null
+    group.state = 'stopped'
+    for (const consumer of group.consumers.values()) {
+      consumer.removeAbort()
+      consumer.stream.closeWithReason('source-failed', normalized)
+    }
+    group.consumers.clear()
+  }
+
+  /**
    * Scan-terminal reports were missed (N5): re-read which scan the core
    * owns. A scan it no longer owns ended without this backend being told,
    * so every consumer ends `source-failed` (why it ended was in the missed
@@ -4443,7 +4535,7 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     })
     const group = this.scanGroup
     if (group === null || group.state !== 'active' || this.destroyed) return
-    if (this.central.activeScanId() === group.coreOperationId) return
+    if (this.central.operationalScanId() === group.coreOperationId) return
     this.scanGroup = null
     group.state = 'stopped'
     const error = contractError('scan.start-failed', 'scan', this.op('scan.terminated'), {
@@ -7065,6 +7157,10 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
     const consumer = `${this.profile.platform}-core-consumer-${consumerOrdinal}`
     const subscriptionOrdinal = this.nextSubscription
     this.nextSubscription += 1
+    const terminalEvidenceScopeBytes =
+      request.terminalEvidenceScope === undefined
+        ? undefined
+        : terminalEvidenceScopeUtf16le('subscription', request.terminalEvidenceScope)
     const completion = (async (): Promise<BackendSubscription<string, string, string, string, string>> => {
       const requirement = this.coreRequirement(request.options.deliveryMode)
       const preference =
@@ -7089,7 +7185,12 @@ export class DesktopRustCoreBackend implements BleCentralBackend<string, HostNeu
             overflowPolicy: request.options.delivery.overflowPolicy,
             ...(request.terminalEvidenceScope === undefined
               ? {}
-              : { terminalEvidenceScope: request.terminalEvidenceScope }),
+              : {
+                  terminalEvidenceScope: request.terminalEvidenceScope,
+                  ...(terminalEvidenceScopeBytes === undefined
+                    ? {}
+                    : { terminalEvidenceScopeUtf16le: terminalEvidenceScopeBytes })
+                }),
             ...this.budget(request.operation)
           }),
         record.nativePeerId

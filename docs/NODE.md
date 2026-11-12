@@ -78,6 +78,12 @@ Reading never retires a record. Call `acknowledge` only after the exact bytes
 and digest have been durably consumed; an interrupted application may list and
 read the record again on its next start.
 
+For an evidence-bound desktop scan, the host stages the canonical terminal
+record before delivering the terminal to JavaScript. A staged record can be
+recovered after a restart even if the normal commit has not completed. If
+staging fails, the scan reports the source failure and retains any unfinished
+cleanup; it does not claim that an unstaged record is recoverable.
+
 `list()` remains strict: if another live recovery controller holds a producer
 lane, it reports that contention instead of pretending the lane is empty. For
 an additive, non-blocking refresh use `listWithStatus()`. It returns the cold

@@ -8,6 +8,7 @@ const { monotonicTimestamp, opaqueId, version, versionRange } = require('../src/
 const { snapshotSerializableRecord } = require('../src/backend-contract/serializable')
 const { normalizeScanQuery } = require('../src/public/scan-query')
 const { snapshotScanPlan } = require('../src/backend-contract/scan-planning')
+const { markTerminalEvidenceStageFailure } = require('../src/core/terminal-evidence-stage-failure')
 
 function negotiated(axis) {
   const selected = version(axis, axis === 'ipc-protocol' ? 10 : 1)
@@ -804,6 +805,56 @@ describe('Electron IPC hardening', () => {
     await flushAsyncWork()
     expect(events[0].item).toEqual(terminal)
     await registry.removeSubscription(resources, 'loss-stream', resource, true)
+  })
+
+  test('serializes a source-native terminal evidence staging refusal exactly', async () => {
+    const lease = rendererLease('terminal-evidence-stage-failed')
+    const stream = createControlledStream()
+    const resources = { scans: new Map(), subscriptions: new Map(), releasedHandles: new Set() }
+    const events = []
+    const registry = new ElectronRendererStreamRegistry({
+      maximumMessageBytes: 4096,
+      publish: async (_lease, event) => {
+        events.push(event)
+        return 'delivered'
+      },
+      createEvent: (rendererLease, streamId, item) => ({ rendererLease, streamId, item, eventId: 'stage-failed-event' })
+    })
+    const resource = registry.registerSubscription(resources, lease, 'stage-failed-stream', 'database', {
+      values: stream,
+      remove: async () => {
+        stream.close()
+        return released()
+      }
+    })
+    const error = markTerminalEvidenceStageFailure({
+      code: 'platform.failure',
+      domain: 'restoration',
+      operation: 'native.scan.terminal-evidence.stage',
+      platform: null,
+      retryability: 'caller-decides'
+    })
+
+    stream.push({
+      kind: 'terminal',
+      reason: 'source-failed',
+      droppedItems: 0,
+      droppedBytes: 0,
+      replacedItems: 0,
+      error
+    })
+    await flushAsyncWork()
+
+    expect(events).toHaveLength(1)
+    expect(events[0].item).toEqual(
+      expect.objectContaining({
+        kind: 'terminal',
+        reason: 'source-failed',
+        error,
+        terminalEvidenceStageFailed: true
+      })
+    )
+    await registry.removeSubscription(resources, 'stage-failed-stream', resource, true)
   })
 
   test('preserves native receipt clocks in renderer notification snapshots', async () => {
@@ -2001,13 +2052,15 @@ describe('Electron IPC protocol version 6', () => {
     ]
 
     for (const [index, command] of orderedCommands.entries()) {
-      await expect(current.router.dispatch(sender, route(current, boot, index + 1, command, {}))).rejects.toMatchObject({
-        normalized: {
-          code: 'capability.unsupported',
-          domain: 'gatt',
-          operation: 'electron.ordered.ipc-v9-required'
+      await expect(current.router.dispatch(sender, route(current, boot, index + 1, command, {}))).rejects.toMatchObject(
+        {
+          normalized: {
+            code: 'capability.unsupported',
+            domain: 'gatt',
+            operation: 'electron.ordered.ipc-v9-required'
+          }
         }
-      })
+      )
     }
 
     expect(connect).not.toHaveBeenCalled()
@@ -2020,14 +2073,24 @@ describe('Electron IPC protocol version 6', () => {
     const sender = trusted('legacy-v10-terminal-evidence')
     const v10Offer = { ...IPC_CLIENT_COMPATIBILITY_OFFER, ipcProtocol: protocolRange(10) }
     const boot = (await current.router.dispatch(sender, { kind: 'bootstrap', offer: v10Offer })).bootstrap
-    for (const [index, command] of ['terminalEvidence.reserve', 'terminalEvidence.commit', 'terminalEvidence.read', 'terminalEvidence.release', 'terminalEvidence.recovery.list', 'terminalEvidence.recovery.read', 'terminalEvidence.recovery.ack'].entries()) {
-      await expect(current.router.dispatch(sender, route(current, boot, index + 1, command, {}))).rejects.toMatchObject({
-        normalized: {
-          code: 'capability.unsupported',
-          domain: 'restoration',
-          operation: 'electron.terminal-evidence.ipc-v11-required'
+    for (const [index, command] of [
+      'terminalEvidence.reserve',
+      'terminalEvidence.commit',
+      'terminalEvidence.read',
+      'terminalEvidence.release',
+      'terminalEvidence.recovery.list',
+      'terminalEvidence.recovery.read',
+      'terminalEvidence.recovery.ack'
+    ].entries()) {
+      await expect(current.router.dispatch(sender, route(current, boot, index + 1, command, {}))).rejects.toMatchObject(
+        {
+          normalized: {
+            code: 'capability.unsupported',
+            domain: 'restoration',
+            operation: 'electron.terminal-evidence.ipc-v11-required'
+          }
         }
-      })
+      )
     }
     await current.router.destroy()
   })
@@ -2038,7 +2101,9 @@ describe('Electron IPC protocol version 6', () => {
     const offer = { ...IPC_CLIENT_COMPATIBILITY_OFFER, ipcProtocol: protocolRange(ipcProtocol) }
     const boot = (await current.router.dispatch(sender, { kind: 'bootstrap', offer })).bootstrap
 
-    await expect(current.router.dispatch(sender, route(current, boot, 1, 'gatt.ordered.orphans', {}))).resolves.toMatchObject({
+    await expect(
+      current.router.dispatch(sender, route(current, boot, 1, 'gatt.ordered.orphans', {}))
+    ).resolves.toMatchObject({
       kind: 'route',
       payload: { receipts: [], truncated: false }
     })

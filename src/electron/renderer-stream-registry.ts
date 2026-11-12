@@ -1,6 +1,7 @@
 // src/electron/renderer-stream-registry.ts
 
 import { isCanonicalIngressOrdinal } from '../core/ordered-notification-contract'
+import { isTrustedTerminalEvidenceStageFailure } from '../core/terminal-evidence-stage-failure'
 
 import {
   BackendContractError,
@@ -462,7 +463,8 @@ function streamItemRecord<Value>(
     droppedItems: Number(item.droppedItems),
     droppedBytes: Number(item.droppedBytes),
     replacedItems: Number(item.replacedItems),
-    ...(item.error === undefined || item.error === null ? {} : { error: serializeNormalizedError(item.error) })
+    ...(item.error === undefined || item.error === null ? {} : { error: serializeNormalizedError(item.error) }),
+    ...(isTrustedTerminalEvidenceStageFailure(item) ? { terminalEvidenceStageFailed: true } : {})
   })
 }
 

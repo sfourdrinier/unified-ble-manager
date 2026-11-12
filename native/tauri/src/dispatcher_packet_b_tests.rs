@@ -1043,6 +1043,7 @@ async fn terminal_evidence_recipient_recovery_survives_a_real_process_restart() 
             manager_id: "manager".to_owned(),
             operation_id: "operation".to_owned(),
             incarnation: "incarnation".to_owned(),
+            scope_utf16le: None,
         };
         if std::env::var(PHASE).as_deref() == Ok("produce") {
             let reservation = ledger.reserve(&scope, 512).expect("reserve");
@@ -6316,6 +6317,7 @@ async fn fresh_dispatcher_reopens_terminal_evidence_releases_failed_reservations
         manager_id: "manager".to_owned(),
         operation_id: "must-wait-for-recovery-ack".to_owned(),
         incarnation: "incarnation".to_owned(),
+        scope_utf16le: None,
     };
     assert!(
         matches!(
@@ -6406,6 +6408,7 @@ async fn fresh_dispatcher_reopens_terminal_evidence_releases_failed_reservations
         manager_id: "manager".to_owned(),
         operation_id: "post-rebootstrap".to_owned(),
         incarnation: "incarnation".to_owned(),
+        scope_utf16le: None,
     };
     ledger
         .reserve(&post_rebootstrap, 512)
@@ -6443,6 +6446,7 @@ async fn terminal_evidence_recovery_refresh_and_release_share_the_caller_lease_f
         manager_id: "manager".to_owned(),
         operation_id: "refresh-release".to_owned(),
         incarnation: "incarnation".to_owned(),
+        scope_utf16le: None,
     };
     let reservation = ledger.reserve(&scope, 64).expect("reserve");
     let bytes = b"terminal";
@@ -6566,6 +6570,7 @@ async fn terminal_evidence_recovery_refresh_refuses_a_lease_retired_before_claim
         manager_id: "manager".to_owned(),
         operation_id: "retired-before-claim".to_owned(),
         incarnation: "incarnation".to_owned(),
+        scope_utf16le: None,
     };
     let reservation = ledger.reserve(&scope, 64).expect("reserve");
     let bytes = b"terminal";
@@ -7753,6 +7758,643 @@ async fn finding_57_an_adapter_loss_ends_every_stream_in_the_legacy_vocabulary()
             .await,
         "the database of the lost link is stale"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scan_terminal_evidence_stage_failure_is_authenticated_and_keeps_the_scan_binding() {
+    let harness = Harness::new().await;
+    let directory = scan_recovery_test_directory("scan-terminal-stage-failure");
+    std::fs::create_dir(&directory).expect("fixture directory");
+    let ledger = Arc::new(
+        ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
+            &directory.join("terminal-evidence.sqlite"),
+            1024,
+        )
+        .expect("ledger"),
+    );
+    let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+        producer: "scan".into(),
+        manager_id: "manager".into(),
+        operation_id: "stage-failure".into(),
+        incarnation: "incarnation".into(),
+        scope_utf16le: None,
+    };
+    let reservation = ledger
+        .reserve(&scope, 1)
+        .expect("reserve tiny evidence budget");
+    *harness
+        .dispatcher
+        .terminal_evidence_ledger
+        .lock()
+        .expect("terminal evidence ledger mutex poisoned") = Some(Arc::clone(&ledger));
+    let scan = harness
+        .execute(
+            "scan.start",
+            vec![("query", empty_scan_query())],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("scan starts");
+    let handle = text(&scan, "handle");
+    let operation_id = {
+        let mut state = harness.dispatcher.inner.lock().await;
+        let resource = state
+            .callers
+            .get_mut(&harness.key())
+            .expect("caller")
+            .scan
+            .as_mut()
+            .expect("scan");
+        resource.terminal_evidence = Some(super::TerminalEvidenceBinding {
+            reservation_id: reservation.reservation_id.clone(),
+            scope,
+        });
+        resource.core_operation_id.clone()
+    };
+    harness
+        .dispatcher
+        .apply_scan_terminal(&ubm_desktop::ScanTerminalEvent {
+            sequence: 1,
+            operation_id: operation_id.clone(),
+            aborted: true,
+            detail: "test scan end".into(),
+        })
+        .await;
+    let terminal = harness.wait_terminal(&handle).await;
+    assert_eq!(terminal["reason"], "source-failed");
+    assert_eq!(terminal["terminalEvidenceStageFailed"], true);
+    assert!(
+        terminal.get("evidence").is_none(),
+        "stage failure must not forge a receipt"
+    );
+    assert_eq!(
+        terminal["error"]["operation"],
+        "tauri.terminal-evidence.stage-before-emit"
+    );
+    assert!(
+        harness.with_caller(|caller| caller.scan.is_some()).await,
+        "binding survives failed stage for retry/recovery"
+    );
+    harness
+        .dispatcher
+        .apply_scan_terminal(&ubm_desktop::ScanTerminalEvent {
+            sequence: 2,
+            operation_id: operation_id.clone(),
+            aborted: true,
+            detail: "duplicate scan end".into(),
+        })
+        .await;
+    assert_eq!(
+        harness
+            .events
+            .lock()
+            .expect("events")
+            .iter()
+            .filter(|event| event["streamId"] == handle && event["item"]["kind"] == "terminal")
+            .count(),
+        1,
+        "a duplicate core end cannot resend the delivered stage-failure terminal"
+    );
+    let late_forwarder_error = super::DispatchError::new(
+        BleErrorCode::PlatformFailure,
+        "scan",
+        "tauri.test.late-forwarder-error",
+    );
+    harness
+        .dispatcher
+        .terminal(
+            &harness.key(),
+            (LEASE_ID, LEASE_GENERATION),
+            &handle,
+            "source-failed",
+            Some(&late_forwarder_error),
+        )
+        .await
+        .expect("terminalized scan ignores late forwarder terminal");
+    assert_eq!(
+        harness
+            .events
+            .lock()
+            .expect("events")
+            .iter()
+            .filter(|event| event["streamId"] == handle && event["item"]["kind"] == "terminal")
+            .count(),
+        1,
+        "a post-terminal forwarder error cannot stage or emit a second terminal"
+    );
+    harness
+        .execute(
+            "scan.stop",
+            vec![("scanHandle", string(handle.clone()))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("terminalized scan stop cleans up physical mapping");
+    assert_eq!(
+        harness
+            .events
+            .lock()
+            .expect("events")
+            .iter()
+            .filter(|event| event["streamId"] == handle && event["item"]["kind"] == "terminal")
+            .count(),
+        1,
+        "scan.stop after terminal delivery cannot emit owner-released"
+    );
+    std::fs::remove_dir_all(directory).expect("fixture cleanup");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scan_terminal_stage_failure_delivery_quota_is_retained_as_retryable_cleanup_debt() {
+    let harness = Harness::new().await;
+    let directory = scan_recovery_test_directory("scan-terminal-stage-delivery-debt");
+    std::fs::create_dir(&directory).expect("fixture directory");
+    let ledger = Arc::new(
+        ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
+            &directory.join("terminal-evidence.sqlite"),
+            1024,
+        )
+        .expect("ledger"),
+    );
+    let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+        producer: "scan".into(),
+        manager_id: "manager".into(),
+        operation_id: "stage-delivery-debt".into(),
+        incarnation: "incarnation".into(),
+        scope_utf16le: None,
+    };
+    let reservation = ledger
+        .reserve(&scope, 1)
+        .expect("reserve tiny evidence budget");
+    *harness
+        .dispatcher
+        .terminal_evidence_ledger
+        .lock()
+        .expect("terminal evidence ledger mutex poisoned") = Some(Arc::clone(&ledger));
+    let scan = harness
+        .execute(
+            "scan.start",
+            vec![("query", empty_scan_query())],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("scan starts");
+    let handle = text(&scan, "handle");
+    let operation_id = {
+        let mut state = harness.dispatcher.inner.lock().await;
+        let caller = state.callers.get_mut(&harness.key()).expect("caller");
+        caller
+            .pending_events
+            .extend((0..super::MAX_PENDING_EVENTS).map(|index| format!("queued-{index}")));
+        let resource = caller.scan.as_mut().expect("scan");
+        resource.terminal_evidence = Some(super::TerminalEvidenceBinding {
+            reservation_id: reservation.reservation_id.clone(),
+            scope,
+        });
+        resource.core_operation_id.clone()
+    };
+    harness
+        .dispatcher
+        .apply_scan_terminal(&ubm_desktop::ScanTerminalEvent {
+            sequence: 1,
+            operation_id,
+            aborted: true,
+            detail: "test scan end".into(),
+        })
+        .await;
+    assert!(
+        harness
+            .with_caller(|caller| {
+                caller.scan.as_ref().is_some_and(|scan| {
+                    scan.terminal_stage_failure.is_some()
+                        && scan
+                            .terminal_delivery_failure
+                            .as_ref()
+                            .is_some_and(|error| {
+                                error.operation == "tauri.scan-terminal-stage-event"
+                            })
+                })
+            })
+            .await,
+        "the exact queue refusal remains attached to the live scan mapping"
+    );
+    let stop = harness
+        .execute(
+            "scan.stop",
+            vec![("scanHandle", string(handle.clone()))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect_err("scan.stop must not discard an undelivered terminal debt");
+    assert_eq!(stop.operation, "tauri.scan-terminal-stage-event");
+    harness
+        .dispatcher
+        .acknowledge(
+            harness.caller.clone(),
+            BTreeMap::from([
+                ("eventId".to_owned(), string("queued-0")),
+                (
+                    "rendererLease".to_owned(),
+                    object([
+                        ("leaseId", string(LEASE_ID)),
+                        ("generation", string(LEASE_GENERATION)),
+                    ]),
+                ),
+            ]),
+        )
+        .await
+        .expect("one acknowledged event drains capacity");
+    // No user stop/release follows this acknowledgement. The drain itself
+    // retries the retained terminal delivery and gives a terminal-only
+    // consumer a deterministic source-failed outcome.
+    let terminal = harness.wait_terminal(&handle).await;
+    assert_eq!(terminal["terminalEvidenceStageFailed"], true);
+    assert_eq!(
+        terminal["error"]["operation"],
+        "tauri.terminal-evidence.stage-before-emit"
+    );
+    assert!(
+        harness
+            .with_caller(|caller| {
+                caller.scan.as_ref().is_some_and(|scan| {
+                    scan.terminal_stage_failure.is_none()
+                        && scan.terminal_delivery_failure.is_none()
+                })
+            })
+            .await,
+        "a successful retry retires only the delivery debt, not the scan binding"
+    );
+    std::fs::remove_dir_all(directory).expect("fixture cleanup");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_release_joins_a_held_scan_terminal_delivery_retry() {
+    let harness = Harness::new().await;
+    let scan = harness
+        .execute(
+            "scan.start",
+            vec![("query", empty_scan_query())],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("scan starts");
+    let handle = text(&scan, "handle");
+    let held_error = super::DispatchError::new(
+        BleErrorCode::PlatformTransport,
+        "stream",
+        "tauri.scan-terminal-stage-event",
+    );
+    let (sender, receiver) = tokio::sync::watch::channel(None);
+    {
+        let mut state = harness.dispatcher.inner.lock().await;
+        let resource = state
+            .callers
+            .get_mut(&harness.key())
+            .expect("caller")
+            .scan
+            .as_mut()
+            .expect("scan");
+        resource.terminal_stage_failure = Some(held_error.clone());
+        resource.terminal_delivery_failure = Some(held_error.clone());
+        resource.terminal_delivery_retry = Some(receiver);
+    }
+    let dispatcher = harness.dispatcher.clone();
+    let key = harness.key();
+    let mut release = tokio::spawn(async move { dispatcher.release(&key).await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut release)
+            .await
+            .is_err(),
+        "release must join the in-flight retry rather than emit owner-released or abandon evidence"
+    );
+    sender
+        .send(Some(Err(held_error)))
+        .expect("wake the retained release joiner");
+    let cleanup = release.await.expect("joined release task").into_wire();
+    assert_eq!(cleanup["state"], "release-failed");
+    assert!(cleanup
+        .to_string()
+        .contains("tauri.scan-terminal-stage-event"));
+    // The scan still exists and no terminal was sent while the retry was held.
+    assert!(harness.with_caller(|caller| caller.scan.is_some()).await);
+    assert!(
+        harness
+            .events
+            .lock()
+            .expect("events")
+            .iter()
+            .all(|event| event["streamId"] != handle),
+        "a joined release never emits a competing owner-release terminal"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_release_after_successful_held_terminal_retry_emits_no_owner_terminal() {
+    let harness = Harness::new().await;
+    let scan = harness
+        .execute(
+            "scan.start",
+            vec![("query", empty_scan_query())],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("scan starts");
+    let handle = text(&scan, "handle");
+    let stage_failure = super::DispatchError::new(
+        BleErrorCode::PlatformFailure,
+        "stream",
+        "tauri.terminal-evidence.stage-before-emit",
+    );
+    let (sender, receiver) = tokio::sync::watch::channel(None);
+    {
+        let mut state = harness.dispatcher.inner.lock().await;
+        let resource = state
+            .callers
+            .get_mut(&harness.key())
+            .expect("caller")
+            .scan
+            .as_mut()
+            .expect("scan");
+        resource.terminal_stage_failure = Some(stage_failure);
+        resource.terminal_delivery_retry = Some(receiver);
+    }
+    let dispatcher = harness.dispatcher.clone();
+    let key = harness.key();
+    let mut release = tokio::spawn(async move { dispatcher.release(&key).await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut release)
+            .await
+            .is_err(),
+        "release joins the held terminal retry"
+    );
+    sender.send(Some(Ok(()))).expect("complete held retry");
+    assert_eq!(
+        release.await.expect("release task").into_wire()["state"],
+        "released"
+    );
+    assert!(
+        !harness
+            .dispatcher
+            .inner
+            .lock()
+            .await
+            .callers
+            .contains_key(&harness.key()),
+        "the joined successful cleanup retires the caller without a second terminal"
+    );
+    assert!(
+        harness
+            .events
+            .lock()
+            .expect("events")
+            .iter()
+            .all(|event| event["streamId"] != handle),
+        "a joined successful terminal retry suppresses a contradictory owner-released terminal"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stale_scan_stop_does_not_retry_another_scans_terminal_delivery_debt() {
+    let harness = Harness::new().await;
+    harness
+        .execute(
+            "scan.start",
+            vec![("query", empty_scan_query())],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("scan starts");
+    {
+        let mut state = harness.dispatcher.inner.lock().await;
+        let resource = state
+            .callers
+            .get_mut(&harness.key())
+            .expect("caller")
+            .scan
+            .as_mut()
+            .expect("scan");
+        resource.terminal_stage_failure = Some(super::DispatchError::new(
+            BleErrorCode::PlatformFailure,
+            "stream",
+            "tauri.terminal-evidence.stage-before-emit",
+        ));
+        resource.terminal_delivery_failure = Some(super::DispatchError::new(
+            BleErrorCode::StreamQuota,
+            "stream",
+            "tauri.scan-terminal-stage-event",
+        ));
+    }
+    harness
+        .execute(
+            "scan.stop",
+            vec![("scanHandle", string("already-released"))],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("unknown scan handle stays idempotently released");
+    assert!(
+        harness
+            .with_caller(|caller| {
+                caller
+                    .scan
+                    .as_ref()
+                    .is_some_and(|scan| scan.terminal_stage_failure.is_some())
+            })
+            .await,
+        "the stale stop must not advance a different scan's terminal debt"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lifecycle_terminal_claim_fences_a_forwarder_terminal_before_staging() {
+    let harness = Harness::new().await;
+    let scan = harness
+        .execute(
+            "scan.start",
+            vec![("query", empty_scan_query())],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("scan starts");
+    let handle = text(&scan, "handle");
+    {
+        let mut state = harness.dispatcher.inner.lock().await;
+        state
+            .callers
+            .get_mut(&harness.key())
+            .expect("caller")
+            .scan
+            .as_mut()
+            .expect("scan")
+            .terminal_failure_claimed = true;
+    }
+    let late = super::DispatchError::new(
+        BleErrorCode::PlatformFailure,
+        "scan",
+        "tauri.test.forwarder-raced-lifecycle-stage",
+    );
+    harness
+        .dispatcher
+        .terminal(
+            &harness.key(),
+            (LEASE_ID, LEASE_GENERATION),
+            &handle,
+            "source-failed",
+            Some(&late),
+        )
+        .await
+        .expect("claimed scan suppresses the racing forwarder terminal");
+    assert!(
+        harness.events.lock().expect("events").is_empty(),
+        "no terminal can overtake the lifecycle claim while its stage is fallible"
+    );
+    assert!(
+        matches!(
+            harness
+                .dispatcher
+                .scan_delivery(&harness.key(), &handle)
+                .await,
+            super::Delivery::Paused
+        ),
+        "the forwarder is fenced before the lifecycle sends its marker"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lifecycle_terminal_send_failure_is_retained_and_retried_without_stage_failure_branding() {
+    let harness = Harness::new().await;
+    let directory = scan_recovery_test_directory("scan-terminal-send-retry");
+    create_private_fixture_directory(&directory);
+    let ledger = Arc::new(
+        ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
+            &directory.join("terminal-evidence.sqlite"),
+            4096,
+        )
+        .expect("ledger"),
+    );
+    let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+        producer: "scan".into(),
+        manager_id: "manager".into(),
+        operation_id: "terminal-send-retry".into(),
+        incarnation: "incarnation".into(),
+        scope_utf16le: None,
+    };
+    let reservation = ledger.reserve(&scope, 4096).expect("reserve evidence");
+    *harness
+        .dispatcher
+        .terminal_evidence_ledger
+        .lock()
+        .expect("terminal evidence ledger mutex poisoned") = Some(Arc::clone(&ledger));
+    let scan = harness
+        .execute(
+            "scan.start",
+            vec![("query", empty_scan_query())],
+            None,
+            OpControl::unbounded(),
+        )
+        .await
+        .expect("scan starts");
+    let handle = text(&scan, "handle");
+    let operation_id = {
+        let mut state = harness.dispatcher.inner.lock().await;
+        let caller = state.callers.get_mut(&harness.key()).expect("caller");
+        let accepted = caller.event_sink.clone();
+        caller.event_sink = IpcEventSink::new(Channel::new(|_| {
+            Err(tauri::Error::Io(std::io::Error::other(
+                "scripted terminal transport refusal",
+            )))
+        }));
+        let resource = caller.scan.as_mut().expect("scan");
+        resource.terminal_evidence = Some(super::TerminalEvidenceBinding {
+            reservation_id: reservation.reservation_id.clone(),
+            scope,
+        });
+        let operation_id = resource.core_operation_id.clone();
+        (accepted, operation_id)
+    };
+    harness
+        .dispatcher
+        .apply_scan_terminal(&ubm_desktop::ScanTerminalEvent {
+            sequence: 1,
+            operation_id: operation_id.1.clone(),
+            aborted: true,
+            detail: "test terminal send failure".into(),
+        })
+        .await;
+    let committed = ledger
+        .recoverable("scan", &harness.key())
+        .expect("committed evidence remains recoverable after channel refusal");
+    assert_eq!(committed.len(), 1);
+    let committed_reference = committed[0].reference.clone().expect("committed reference");
+    let committed_digest = committed[0].digest.expect("committed digest");
+    assert!(
+        harness
+            .with_caller(|caller| {
+                caller.scan.as_ref().is_some_and(|scan| {
+                    scan.terminal_failure_claimed
+                        && scan.terminal_stage_failure.is_none()
+                        && scan
+                            .terminal_delivery_failure
+                            .as_ref()
+                            .is_some_and(|error| error.operation == "tauri.terminal-send")
+                        && matches!(
+                            scan.terminal_delivery_retry_item,
+                            Some(super::ScanTerminalRetry::Terminal { .. })
+                        )
+                })
+            })
+            .await,
+        "the exact normal terminal is retained; it is not mislabeled as a stage failure"
+    );
+    {
+        let mut state = harness.dispatcher.inner.lock().await;
+        state
+            .callers
+            .get_mut(&harness.key())
+            .expect("caller")
+            .event_sink = operation_id.0;
+    }
+    harness
+        .dispatcher
+        .retry_scan_terminal_delivery_failure(&harness.key())
+        .await
+        .expect("the exact retained terminal retries after transport recovery");
+    let terminal = harness.wait_terminal(&handle).await;
+    assert_eq!(terminal["reason"], "source-failed");
+    assert_eq!(terminal["evidence"]["ref"], committed_reference);
+    assert_eq!(
+        terminal["evidence"]["digest"],
+        committed_digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    assert!(
+        terminal.get("terminalEvidenceStageFailed").is_none(),
+        "a transport failure must not use the authenticated evidence-stage marker"
+    );
+    assert!(
+        harness
+            .with_caller(|caller| {
+                caller.scan.as_ref().is_some_and(|scan| {
+                    scan.terminal_failure_sent
+                        && scan.terminal_delivery_failure.is_none()
+                        && scan.terminal_delivery_retry_item.is_none()
+                })
+            })
+            .await,
+        "successful retry terminalizes the retained scan and prevents an owner-release duplicate"
+    );
+    std::fs::remove_dir_all(directory).expect("fixture cleanup");
 }
 
 // Finding 57 — the new attachment generation reaches the renderer the way

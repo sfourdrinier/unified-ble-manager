@@ -10,8 +10,9 @@ import type {
 } from '../backend-contract/errors'
 import type { IpcClientLeaseIdentity } from '../backend-contract/ipc'
 import type { IpcClientBootstrap } from '../ipc/protocol'
+import { markAuthenticatedElectronTerminalEvidenceStageFailure } from '../ipc/electron-terminal-evidence-wire'
 import { relativeBudgetPayload } from '../ipc/relative-budget'
-import type { SerializableRecord, SerializableValue } from '../backend-contract/primitives'
+import { byteLimit, ownBytes, type SerializableRecord, type SerializableValue } from '../backend-contract/primitives'
 import {
   assertSafeSerializablePrototype,
   createOwnedSerializableRecord,
@@ -164,9 +165,19 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
       throw contractError('protocol.malformed', 'ipc', 'tauri.transport.bootstrap-request')
     }
     const trustedRequest = this.bindTrustedScanQuery(request)
+    const projectedPayload =
+      trustedRequest.kind === 'route' && trustedRequest.envelope.payload !== undefined
+        ? projectTerminalEvidenceScopePayload(trustedRequest.envelope.command, trustedRequest.envelope.payload)
+        : undefined
     const wireRequest =
       trustedRequest.kind === 'route'
-        ? { kind: trustedRequest.kind, envelope: withRelativeBudget(trustedRequest.envelope) }
+        ? {
+            kind: trustedRequest.kind,
+            envelope: withRelativeBudget({
+              ...trustedRequest.envelope,
+              ...(projectedPayload === undefined ? {} : { payload: projectedPayload })
+            })
+          }
         : trustedRequest
     const response = await this.invokeCore<unknown>(this.command, {
       request: encodeTauriWireValue(wireRequest),
@@ -248,6 +259,117 @@ function withRelativeBudget<Envelope extends { readonly payload?: SerializableRe
   const payload = envelope.payload
   if (payload === undefined) return envelope
   return { ...envelope, payload: relativeBudgetPayload(payload, 'tauri.transport') }
+}
+
+function projectTerminalEvidenceScopePayload(command: string, payload: SerializableRecord): SerializableRecord {
+  const field = command === 'terminalEvidence.reserve' ? 'scope' : 'terminalEvidenceScope'
+  const producer =
+    command === 'terminalEvidence.reserve'
+      ? payload.producer
+      : command === 'scan.start'
+        ? 'scan'
+        : command === 'gatt.subscribe'
+          ? 'subscription'
+          : null
+  if ((producer !== 'scan' && producer !== 'subscription') || !isRecord(payload[field])) return payload
+  const scope = payload[field]
+  const managerId = scope.managerId
+  const operationId = scope.operationId
+  const incarnation = scope.incarnation
+  if (typeof managerId !== 'string' || typeof operationId !== 'string' || typeof incarnation !== 'string')
+    return payload
+  if (!hasUnpairedSurrogate(managerId) && !hasUnpairedSurrogate(operationId) && !hasUnpairedSurrogate(incarnation))
+    return payload
+  const projectedScope = createOwnedSerializableRecord<SerializableValue>()
+  setOwnedSerializableEntry(projectedScope, 'managerId', scalarProjection(managerId), 'ipc', 'tauri.transport.scope')
+  setOwnedSerializableEntry(
+    projectedScope,
+    'operationId',
+    scalarProjection(operationId),
+    'ipc',
+    'tauri.transport.scope'
+  )
+  setOwnedSerializableEntry(
+    projectedScope,
+    'incarnation',
+    scalarProjection(incarnation),
+    'ipc',
+    'tauri.transport.scope'
+  )
+  setOwnedSerializableEntry(
+    projectedScope,
+    'scopeUtf16le',
+    ownBytes(
+      packTerminalEvidenceScopeUtf16le(producer, managerId, operationId, incarnation),
+      byteLimit(16 + (producer.length + managerId.length + operationId.length + incarnation.length) * 2)
+    ),
+    'ipc',
+    'tauri.transport.scope'
+  )
+  const projected = createOwnedSerializableRecord<SerializableValue>()
+  for (const [key, value] of Object.entries(payload))
+    setOwnedSerializableEntry(projected, key, value, 'ipc', 'tauri.transport.scope')
+  setOwnedSerializableEntry(projected, field, projectedScope, 'ipc', 'tauri.transport.scope')
+  return projected
+}
+
+function isRecord(value: unknown): value is SerializableRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Uint8Array)
+}
+
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index)
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true
+      index += 1
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      return true
+    }
+  }
+  return false
+}
+
+function scalarProjection(value: string): string {
+  let projected = ''
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index)
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        projected += (value[index] ?? '') + (value[index + 1] ?? '')
+        index += 1
+      } else projected += '\ufffd'
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) projected += '\ufffd'
+    else projected += value[index] ?? ''
+  }
+  return projected
+}
+
+function packTerminalEvidenceScopeUtf16le(
+  producer: 'scan' | 'subscription',
+  managerId: string,
+  operationId: string,
+  incarnation: string
+): Uint8Array {
+  const fields = [producer, managerId, operationId, incarnation]
+  const units = fields.map(field => Array.from({ length: field.length }, (_, index) => field.charCodeAt(index)))
+  const totalUnits = units.reduce((total, field) => total + field.length, 0)
+  const bytes = new Uint8Array(16 + totalUnits * 2)
+  const view = new DataView(bytes.buffer)
+  let offset = 0
+  for (const field of units) {
+    view.setUint32(offset, field.length, true)
+    offset += 4
+  }
+  for (const field of units) {
+    for (const unit of field) {
+      view.setUint16(offset, unit, true)
+      offset += 2
+    }
+  }
+  return bytes
 }
 
 /** Encodes bytes explicitly before Tauri serializes nested command arguments as JSON. */
@@ -395,6 +517,17 @@ function isByte(value: unknown): value is number {
 function decodeIpcBleEvent(value: unknown): IpcBleEvent {
   const decoded = decodeTauriWireValue(value)
   if (!isIpcBleEvent(decoded)) throw contractError('protocol.malformed', 'ipc', 'tauri.transport.event')
+  if (decoded.item.terminalEvidenceStageFailed !== undefined) {
+    if (
+      decoded.item.terminalEvidenceStageFailed !== true ||
+      decoded.item.kind !== 'terminal' ||
+      decoded.item.reason !== 'source-failed' ||
+      decoded.item.evidence !== undefined
+    ) {
+      throw contractError('protocol.malformed', 'ipc', 'tauri.transport.terminal-evidence-stage-failure-wire')
+    }
+    markAuthenticatedElectronTerminalEvidenceStageFailure(decoded.item)
+  }
   return decoded
 }
 

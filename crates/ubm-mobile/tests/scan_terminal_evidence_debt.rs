@@ -32,6 +32,34 @@ async fn records(session: &ubm_mobile::MobileSession) -> Vec<Value> {
         .clone()
 }
 
+fn restart_scope_utf16le() -> String {
+    let fields = [
+        "scan".encode_utf16().collect::<Vec<_>>(),
+        {
+            let mut units = "manager-".encode_utf16().collect::<Vec<_>>();
+            units.push(0xd83d);
+            units
+        },
+        "terminal-restart".encode_utf16().collect::<Vec<_>>(),
+        "1".encode_utf16().collect::<Vec<_>>(),
+    ];
+    let mut bytes =
+        Vec::with_capacity(16 + fields.iter().map(|field| field.len() * 2).sum::<usize>());
+    for field in &fields {
+        bytes.extend_from_slice(
+            &u32::try_from(field.len())
+                .expect("test scope fits u32")
+                .to_le_bytes(),
+        );
+    }
+    for field in &fields {
+        for unit in field {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+    }
+    ubm_mobile::wire::encode_base64(&bytes)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scan_terminal_commit_failure_withholds_outbox_ack_until_reconcile_retries() {
     let _ = ubm_mobile::continuation::configure_terminal_evidence_maximum_bytes(65_536);
@@ -306,19 +334,21 @@ async fn staged_scan_terminal_reopens_through_explicit_recovery_controller() {
     );
     radio.bind_host(&host);
     let session = host.open_session("manager").expect("open session");
+    let raw_scope = restart_scope_utf16le();
     ok(&call(
         &session,
         "terminal-evidence.reserve",
         &json!({
             "producer":"scan", "maximumBytes":65_536, "formatVersion":1,
-            "scope":{"managerId":"manager", "operationId":"terminal-restart", "incarnation":"1"}
+            "scopeUtf16leBase64":raw_scope,
+            "scope":{"managerId":"manager-\u{fffd}", "operationId":"terminal-restart", "incarnation":"1"}
         })
         .to_string(),
     )
     .await);
     ok(&call(&session, "scan.start", &json!({
         "serviceUuids":[], "duplicatePolicy":"all", "operationId":"scan",
-        "terminalEvidenceScope":{"managerId":"manager", "operationId":"terminal-restart", "incarnation":"1"}
+        "terminalEvidenceScope":{"managerId":"manager-\u{fffd}", "operationId":"terminal-restart", "incarnation":"1", "scopeUtf16leBase64":raw_scope}
     }).to_string()).await);
     let _ = records(&session).await;
     host.fail_next_scan_terminal_evidence_commit_for_test();
@@ -333,7 +363,7 @@ async fn staged_scan_terminal_reopens_through_explicit_recovery_controller() {
     .await
     .expect("failed commit leaves staged terminal");
     drop(session);
-    drop(host);
+    assert_eq!(parse(&host.shutdown().await)["state"], "released");
 
     let reopened_radio = Scripted::polar();
     let reopened_wake = Arc::new(Wakes::default());
@@ -362,12 +392,22 @@ async fn staged_scan_terminal_reopens_through_explicit_recovery_controller() {
         page.entries[0].state,
         ubm_mobile::TerminalEvidenceRecoveryState::Staged
     );
-    assert!(
-        !recovery
-            .read(&page.entries[0], 0, 65_536)
-            .expect("read staged bytes")
-            .bytes
-            .is_empty()
+    let expected_scope =
+        ubm_mobile::wire::decode_base64(&raw_scope, "test raw scope").expect("decode raw scope");
+    assert_eq!(
+        page.entries[0].scope.scope_utf16le.as_deref(),
+        Some(expected_scope.as_slice())
+    );
+    let recovered = recovery
+        .read(&page.entries[0], 0, 65_536)
+        .expect("read exact staged bytes");
+    let expected_terminal = serde_json::json!({
+        "t":"scan-end", "operationId":"s1-scan-1", "reason":"source-failed"
+    });
+    assert_eq!(
+        recovered.bytes,
+        serde_json::to_vec(&expected_terminal)
+            .expect("serialize established mobile terminal wire record")
     );
     recovery
         .acknowledge(&page.entries[0])
@@ -382,6 +422,10 @@ async fn staged_scan_terminal_reopens_through_explicit_recovery_controller() {
         "the explicit acknowledgement retires the promoted staged evidence"
     );
     assert_eq!(parse(&reopened.shutdown().await)["state"], "released");
+    // The successor recovered while the former host allocation remained
+    // alive: shutdown itself, rather than Drop, transferred authority.
+    drop(reopened);
+    drop(host);
     std::fs::remove_dir_all(&directory).expect("remove private test registry");
 }
 

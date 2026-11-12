@@ -19,10 +19,10 @@
 //! beacons), not test probes: on the production radio they reject loudly
 //! with `capability.unsupported`, never silently.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex as StdMutex;
+use std::sync::{Mutex as StdMutex, PoisonError};
 
 use std::sync::Arc;
 
@@ -45,7 +45,7 @@ use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CommitState, CoreError, 
 use ubm_core::ownership::CleanupState;
 use ubm_core::streams::OverflowPolicy;
 use ubm_desktop::boundary::{AdapterLossCause, AdmissionPolicy};
-use ubm_desktop::central::AdapterResetEvent;
+use ubm_desktop::central::{AdapterResetEvent, CentralSignal};
 use ubm_desktop::executor::desktop_runtime;
 use ubm_desktop::{
     desktop_capability_states, AdapterAuthorization, AdapterEvent, AdapterPowerState, AddressType,
@@ -2129,6 +2129,11 @@ pub struct TerminalEvidenceReserveOptions {
     #[napi(js_name = "formatVersion")]
     pub format_version: u32,
     pub scope: TerminalEvidenceScopeInput,
+    /// Lossless JavaScript UTF-16 scope sidecar. It is present only when a
+    /// scope contains an unpaired surrogate; ordinary scalar scopes retain
+    /// their established ledger identity.
+    #[napi(js_name = "scopeUtf16le")]
+    pub scope_utf16le: Option<Buffer>,
 }
 
 #[napi(object)]
@@ -2177,6 +2182,11 @@ pub struct TerminalEvidenceReceiptInfo {
     pub format_version: u32,
     pub durability: String,
     pub scope: TerminalEvidenceScopeInput,
+    /// Exact JavaScript scope units when this row used the exceptional raw
+    /// identity. Consumers reconstruct these before comparing/replaying the
+    /// scope; omitted legacy scalar rows keep their original representation.
+    #[napi(js_name = "scopeUtf16le")]
+    pub scope_utf16le: Option<Buffer>,
 }
 
 #[napi(object)]
@@ -2226,6 +2236,8 @@ pub struct TerminalEvidenceRecoverableInfo {
     #[napi(js_name = "reservationId")]
     pub reservation_id: String,
     pub producer: String,
+    #[napi(js_name = "scopeUtf16le")]
+    pub scope_utf16le: Option<Buffer>,
     #[napi(js_name = "byteLength")]
     pub byte_length: Option<String>,
     pub digest: Option<String>,
@@ -2250,6 +2262,7 @@ fn terminal_evidence_recoverable_info(
     TerminalEvidenceRecoverableInfo {
         reservation_id: entry.reservation_id,
         producer: entry.scope.producer,
+        scope_utf16le: entry.scope.scope_utf16le.map(Buffer::from),
         byte_length: entry.byte_length.map(|value| value.to_string()),
         digest: Some(terminal_digest_hex(entry.digest.unwrap_or_else(|| {
             sha2::Sha256::digest(&entry.canonical_bytes).into()
@@ -2348,6 +2361,12 @@ fn terminal_evidence_error(
             BleErrorDomain::Stream.as_str(),
             operation,
             "terminal evidence reservation is unavailable",
+        ),
+        TerminalEvidenceError::NotStaged => DispatchError::new(
+            BleErrorCode::LifecycleInvalidState.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            operation,
+            "terminal evidence is not staged; retain source authority and retry staging",
         ),
         TerminalEvidenceError::Invalid(_) | TerminalEvidenceError::Conflict => DispatchError::new(
             BleErrorCode::ArgumentInvalid.as_str(),
@@ -2480,6 +2499,15 @@ pub struct ScanOptions {
     /// this entrypoint; JavaScript never supplies a reservation id.
     #[napi(js_name = "terminalEvidenceScope")]
     pub terminal_evidence_scope: Option<TerminalEvidenceScopeInput>,
+    /// Exact UTF-16 sidecar for `terminalEvidenceScope`; see the reservation
+    /// counterpart. This must match the already-reserved scope exactly.
+    #[napi(js_name = "terminalEvidenceScopeUtf16le")]
+    pub terminal_evidence_scope_utf16le: Option<Buffer>,
+    /// The trusted provider's public terminal operation identity. Native
+    /// source publication uses it to stage exactly the same canonical bytes
+    /// that the provider will expose after an OS-ended scan.
+    #[napi(js_name = "terminalEvidenceOperation")]
+    pub terminal_evidence_operation: Option<String>,
 }
 
 /// `scan.stop` / cleanup arguments: an optional budget and ticket.
@@ -3314,6 +3342,8 @@ pub struct SubscribeOptions {
     /// enablement.  The producer is inferred as `subscription`.
     #[napi(js_name = "terminalEvidenceScope")]
     pub terminal_evidence_scope: Option<TerminalEvidenceScopeInput>,
+    #[napi(js_name = "terminalEvidenceScopeUtf16le")]
+    pub terminal_evidence_scope_utf16le: Option<Buffer>,
     #[napi(js_name = "timeoutMs")]
     pub timeout_ms: Option<u32>,
     pub ticket: Option<String>,
@@ -4118,6 +4148,11 @@ pub struct ScanTerminalEventInfo {
     /// A retained source terminal awaiting JavaScript's canonical commit.
     #[napi(js_name = "terminalEvidence")]
     pub terminal_evidence: Option<TerminalEvidencePendingInfo>,
+    /// Private, authenticated source-stage failure wire. A normal dispatch
+    /// failure still rejects; only an already-observed scan terminal may use
+    /// this explicit discriminator.
+    #[napi(js_name = "stageFailure")]
+    pub stage_failure: Option<String>,
     pub missed: Option<i64>,
 }
 
@@ -4125,6 +4160,263 @@ pub struct ScanTerminalEventInfo {
 struct TerminalEvidenceBinding {
     scope: ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope,
     reservation_id: String,
+    recipient: Option<String>,
+    scan_terminal_operation: Option<String>,
+}
+
+/// Synchronously retains an exact evidence-bound scan terminal before a
+/// bounded broadcast receiver can report it as lagged. The desktop central
+/// admits one scan, so this contains at most its still-unacknowledged terminal.
+#[derive(Default)]
+struct ScanTerminalRetention {
+    ledger: Option<Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>>,
+    bindings: Arc<StdMutex<HashMap<String, TerminalEvidenceBinding>>>,
+    pending: Arc<StdMutex<VecDeque<ScanTerminalEvent>>>,
+    retained: Arc<StdMutex<HashSet<(String, u64)>>>,
+    failures: Arc<StdMutex<HashMap<(String, u64), DispatchError>>>,
+}
+
+impl ScanTerminalRetention {
+    fn new(
+        ledger: Option<Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>>,
+    ) -> Self {
+        Self {
+            ledger,
+            bindings: Arc::new(StdMutex::new(HashMap::new())),
+            pending: Arc::new(StdMutex::new(VecDeque::new())),
+            retained: Arc::new(StdMutex::new(HashSet::new())),
+            failures: Arc::new(StdMutex::new(HashMap::new())),
+        }
+    }
+
+    fn retain(&self, event: ScanTerminalEvent) {
+        // Retention is the last pre-JavaScript durable handoff. The project
+        // policy for internal poison is to recover the protected state, not
+        // turn an already-admitted terminal into an invisible loss.
+        let bindings = self.bindings.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(binding) = bindings.get(event.operation_id.as_str()).cloned() else {
+            return;
+        };
+        drop(bindings);
+        let key = (event.operation_id.as_str().to_owned(), event.sequence);
+        let stage = match (
+            self.ledger.as_ref(),
+            binding.recipient.as_deref(),
+            binding.scan_terminal_operation.as_deref(),
+        ) {
+            (Some(ledger), Some(recipient), Some(operation)) => {
+                let canonical = canonical_scan_terminal_bytes(&binding, &event, operation);
+                ledger
+                    .stage(&binding.reservation_id, recipient, &canonical)
+                    .map_err(|error| terminal_evidence_error(error, "dispatch.scan-terminal-stage"))
+            }
+            _ => Err(DispatchError::new(
+                BleErrorCode::LifecycleInvalidState.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                "dispatch.scan-terminal-stage",
+                "scan terminal evidence was not bound to an authenticated recipient and operation",
+            )),
+        };
+        if let Err(error) = stage {
+            self.failures
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(key, error);
+            return;
+        }
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut retained = self.retained.lock().unwrap_or_else(PoisonError::into_inner);
+        if !retained.insert(key) {
+            return;
+        }
+        pending.push_back(event);
+    }
+
+    fn consume_retained(&self, event: &ScanTerminalEvent) -> bool {
+        let mut retained = self.retained.lock().unwrap_or_else(PoisonError::into_inner);
+        retained.remove(&(event.operation_id.as_str().to_owned(), event.sequence))
+    }
+
+    fn take_failure(&self, event: &ScanTerminalEvent) -> Option<DispatchError> {
+        self.failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&(event.operation_id.as_str().to_owned(), event.sequence))
+    }
+}
+
+/// The exact `terminal-evidence-codec.ts` stable JSON shape for a desktop
+/// scan terminal.  Source publication happens before JavaScript can observe
+/// the terminal, so the native half must produce the same bytes that the
+/// public provider will later commit and hydrate.
+fn canonical_scan_terminal_bytes(
+    binding: &TerminalEvidenceBinding,
+    event: &ScanTerminalEvent,
+    operation: &str,
+) -> Vec<u8> {
+    let mut json = String::from("{\"formatVersion\":1,\"scope\":{");
+    json.push_str("\"incarnation\":");
+    json.push_str(&canonical_scope_json_string(
+        binding,
+        3,
+        &binding.scope.incarnation,
+    ));
+    json.push_str(",\"managerId\":");
+    json.push_str(&canonical_scope_json_string(
+        binding,
+        1,
+        &binding.scope.manager_id,
+    ));
+    json.push_str(",\"operationId\":");
+    json.push_str(&canonical_scope_json_string(
+        binding,
+        2,
+        &binding.scope.operation_id,
+    ));
+    json.push_str("},\"terminal\":{\"droppedBytes\":0,\"droppedItems\":0");
+    if event.aborted {
+        json.push_str(
+            ",\"error\":{\"code\":\"scan.start-failed\",\"domain\":\"scan\",\"operation\":",
+        );
+        json.push_str(&canonical_json_string(operation));
+        json.push_str(",\"platform\":{\"code\":\"scan-terminated\",\"domain\":\"desktop-rust-core\",\"metadata\":{},\"safeMessage\":");
+        json.push_str(&json_string_utf16_prefix(&event.detail, 512));
+        json.push_str("},\"retryability\":\"never\"}");
+    }
+    json.push_str(",\"kind\":\"terminal\",\"reason\":");
+    json.push_str(if event.aborted {
+        "\"source-failed\""
+    } else {
+        "\"closed\""
+    });
+    json.push_str(",\"replacedItems\":0}}");
+    json.into_bytes()
+}
+
+fn canonical_scope_json_string(
+    binding: &TerminalEvidenceBinding,
+    index: usize,
+    fallback: &str,
+) -> String {
+    ubm_desktop::terminal_evidence_ledger::canonical_scope_json_string(
+        binding.scope.scope_utf16le.as_deref(),
+        index,
+        fallback,
+    )
+}
+
+/// Validate the private N-API UTF-16 sidecar before it becomes a durable
+/// identity. N-API has already exposed the replacement-character projection
+/// as strings; checking that projection prevents a trusted host from binding
+/// one visible scope to unrelated raw bytes. A scalar-only sidecar is refused
+/// so established scalar rows keep their original IDs.
+fn validate_terminal_evidence_scope_utf16le(
+    bytes: &[u8],
+    producer: &str,
+    scope: &TerminalEvidenceScopeInput,
+    operation: &'static str,
+) -> std::result::Result<Vec<u8>, DispatchError> {
+    if bytes.len() < 16 {
+        return Err(DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            operation,
+            "terminal evidence UTF-16 scope is truncated",
+        ));
+    }
+    let mut offset = 16_usize;
+    let mut fields = Vec::with_capacity(4);
+    let mut contains_unpaired = false;
+    for length_bytes in bytes[..16].chunks_exact(4) {
+        let length = u32::from_le_bytes(length_bytes.try_into().expect("u32 framing"));
+        let length = usize::try_from(length).map_err(|_| {
+            DispatchError::new(
+                BleErrorCode::ArgumentInvalid.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                operation,
+                "terminal evidence UTF-16 scope length exceeds this platform",
+            )
+        })?;
+        if length == 0 {
+            return Err(DispatchError::new(
+                BleErrorCode::ArgumentInvalid.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                operation,
+                "terminal evidence UTF-16 scope field is empty",
+            ));
+        }
+        let byte_length = length.checked_mul(2).ok_or_else(|| {
+            DispatchError::new(
+                BleErrorCode::ArgumentInvalid.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                operation,
+                "terminal evidence UTF-16 scope length overflows",
+            )
+        })?;
+        let end = offset
+            .checked_add(byte_length)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::ArgumentInvalid.as_str(),
+                    BleErrorDomain::Stream.as_str(),
+                    operation,
+                    "terminal evidence UTF-16 scope payload is truncated",
+                )
+            })?;
+        let units: Vec<u16> = bytes[offset..end]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes(pair.try_into().expect("u16 framing")))
+            .collect();
+        for (index, unit) in units.iter().copied().enumerate() {
+            if (0xd800..=0xdbff).contains(&unit) {
+                if !matches!(units.get(index + 1), Some(next) if (0xdc00..=0xdfff).contains(next)) {
+                    contains_unpaired = true;
+                }
+            } else if (0xdc00..=0xdfff).contains(&unit)
+                && !matches!(units.get(index.wrapping_sub(1)), Some(previous) if (0xd800..=0xdbff).contains(previous))
+            {
+                contains_unpaired = true;
+            }
+        }
+        fields.push(String::from_utf16_lossy(&units));
+        offset = end;
+    }
+    if offset != bytes.len() || !contains_unpaired {
+        return Err(DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            operation,
+            "terminal evidence UTF-16 scope must exactly encode an exceptional JavaScript scope",
+        ));
+    }
+    let expected = [
+        producer,
+        &scope.manager_id,
+        &scope.operation_id,
+        &scope.incarnation,
+    ];
+    if fields.iter().map(String::as_str).ne(expected) {
+        return Err(DispatchError::new(
+            BleErrorCode::ArgumentInvalid.as_str(),
+            BleErrorDomain::Stream.as_str(),
+            operation,
+            "terminal evidence UTF-16 scope disagrees with its visible scope",
+        ));
+    }
+    Ok(bytes.to_vec())
+}
+
+fn canonical_json_string(value: &str) -> String {
+    serde_json::to_string(value).expect("serializing a Rust string cannot fail")
+}
+
+/// JavaScript's `String.prototype.slice(0, 512)` counts UTF-16 code units,
+/// including a possible final unpaired high surrogate. `serde_json` can only
+/// serialize valid Rust UTF-8, so write that one boundary form explicitly.
+fn json_string_utf16_prefix(value: &str, maximum_units: usize) -> String {
+    let units: Vec<u16> = value.encode_utf16().take(maximum_units).collect();
+    ubm_desktop::terminal_evidence_ledger::canonical_json_string_utf16_units(&units)
 }
 
 #[derive(Clone)]
@@ -4766,8 +5058,10 @@ pub struct UbmCentral {
     terminal_evidence: Option<Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>>,
     /// Source bindings are established only after the preactivation attach
     /// succeeds. They remain until their terminal is durably committed.
-    scan_terminal_evidence: StdMutex<HashMap<String, TerminalEvidenceBinding>>,
-    pending_scan_terminals: StdMutex<VecDeque<ScanTerminalEvent>>,
+    scan_terminal_evidence: Arc<StdMutex<HashMap<String, TerminalEvidenceBinding>>>,
+    pending_scan_terminals: Arc<StdMutex<VecDeque<ScanTerminalEvent>>>,
+    retained_scan_terminal_sequences: Arc<StdMutex<HashSet<(String, u64)>>>,
+    scan_terminal_failures: Arc<StdMutex<HashMap<(String, u64), DispatchError>>>,
     subscription_terminal_evidence: StdMutex<HashMap<String, TerminalEvidenceBinding>>,
     pending_subscription_terminals: StdMutex<HashMap<String, PendingSubscriptionTerminal>>,
     continuation: ubm_desktop::continuation_adapter::DesktopContinuation,
@@ -4970,6 +5264,26 @@ impl EventWaker {
         let waker = Arc::clone(waker);
         Arc::new(move |_signal| waker.wake())
     }
+
+    fn observer_with_scan_terminal_retention(
+        waker: &Arc<Self>,
+        retention: &ScanTerminalRetention,
+    ) -> ubm_desktop::central::CentralObserver {
+        let waker = Arc::clone(waker);
+        let retention = ScanTerminalRetention {
+            ledger: retention.ledger.clone(),
+            bindings: Arc::clone(&retention.bindings),
+            pending: Arc::clone(&retention.pending),
+            retained: Arc::clone(&retention.retained),
+            failures: Arc::clone(&retention.failures),
+        };
+        Arc::new(move |signal| {
+            if let CentralSignal::ScanTerminal(event) = signal {
+                retention.retain(event);
+            }
+            waker.wake();
+        })
+    }
 }
 
 impl UbmCentral {
@@ -5069,6 +5383,7 @@ impl UbmCentral {
                 operation_id: binding.scope.operation_id,
                 incarnation: binding.scope.incarnation,
             },
+            scope_utf16le: binding.scope.scope_utf16le.map(Buffer::from),
         }))
     }
 
@@ -5076,10 +5391,36 @@ impl UbmCentral {
     /// created before it called the source entrypoint.  In particular this is
     /// deliberately an `attach`, never `reserve`: accepting a scope here must
     /// not allocate a second slot or let a caller choose an arbitrary id.
+    fn terminal_evidence_scope_from_input(
+        producer: &str,
+        scope: &TerminalEvidenceScopeInput,
+        scope_utf16le: Option<&Buffer>,
+        operation: &'static str,
+    ) -> std::result::Result<
+        ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope,
+        DispatchError,
+    > {
+        let raw = scope_utf16le
+            .map(|bytes| {
+                validate_terminal_evidence_scope_utf16le(bytes.as_ref(), producer, scope, operation)
+            })
+            .transpose()?;
+        Ok(
+            ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                producer: producer.to_owned(),
+                manager_id: scope.manager_id.clone(),
+                operation_id: scope.operation_id.clone(),
+                incarnation: scope.incarnation.clone(),
+                scope_utf16le: raw,
+            },
+        )
+    }
+
     fn attach_terminal_evidence_scope(
         &self,
         producer: &str,
         scope: Option<&TerminalEvidenceScopeInput>,
+        scope_utf16le: Option<&Buffer>,
         operation: &'static str,
     ) -> std::result::Result<Option<TerminalEvidenceBinding>, DispatchError> {
         let Some(scope) = scope else {
@@ -5093,32 +5434,58 @@ impl UbmCentral {
                 "trusted terminal evidence storage was not configured",
             )
         })?;
+        let exact_scope =
+            Self::terminal_evidence_scope_from_input(producer, scope, scope_utf16le, operation)?;
         ledger
-            .attach(
-                &ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
-                    producer: producer.to_owned(),
-                    manager_id: scope.manager_id.clone(),
-                    operation_id: scope.operation_id.clone(),
-                    incarnation: scope.incarnation.clone(),
-                },
-            )
+            .attach(&exact_scope)
             .map(|reservation| {
                 Some(TerminalEvidenceBinding {
                     reservation_id: reservation.reservation_id,
-                    scope: ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
-                        producer: producer.to_owned(),
-                        manager_id: scope.manager_id.clone(),
-                        operation_id: scope.operation_id.clone(),
-                        incarnation: scope.incarnation.clone(),
-                    },
+                    scope: exact_scope,
+                    recipient: None,
+                    scan_terminal_operation: None,
                 })
             })
             .map_err(|error| terminal_evidence_error(error, operation))
     }
 
+    fn configure_scan_terminal_evidence(
+        &self,
+        binding: Option<TerminalEvidenceBinding>,
+        operation: Option<&str>,
+        dispatch_operation: &'static str,
+    ) -> std::result::Result<Option<TerminalEvidenceBinding>, DispatchError> {
+        let Some(mut binding) = binding else {
+            return Ok(None);
+        };
+        let operation = operation.filter(|value| !value.is_empty()).ok_or_else(|| {
+            DispatchError::new(
+                BleErrorCode::ArgumentInvalid.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                dispatch_operation,
+                "scan terminal evidence requires a trusted terminal operation",
+            )
+        })?;
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            DispatchError::new(
+                BleErrorCode::LifecycleInvalidState.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                dispatch_operation,
+                "scan terminal evidence binding outlived its ledger",
+            )
+        })?;
+        let recipient = ledger
+            .bound_recipient(&binding.reservation_id)
+            .map_err(|error| terminal_evidence_error(error, dispatch_operation))?;
+        binding.recipient = Some(recipient.recipient);
+        binding.scan_terminal_operation = Some(operation.to_owned());
+        Ok(Some(binding))
+    }
+
     fn from_central(
         central: DesktopCentral<DispatchRadio>,
         waker: Arc<EventWaker>,
+        retention: ScanTerminalRetention,
         terminal_evidence: Option<
             Arc<ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger>,
         >,
@@ -5136,8 +5503,10 @@ impl UbmCentral {
         let adapter_resets = AsyncMutex::new(central.adapter_reset_events());
         Self {
             terminal_evidence,
-            scan_terminal_evidence: StdMutex::new(HashMap::new()),
-            pending_scan_terminals: StdMutex::new(VecDeque::new()),
+            scan_terminal_evidence: retention.bindings,
+            pending_scan_terminals: retention.pending,
+            retained_scan_terminal_sequences: retention.retained,
+            scan_terminal_failures: retention.failures,
             subscription_terminal_evidence: StdMutex::new(HashMap::new()),
             pending_subscription_terminals: StdMutex::new(HashMap::new()),
             continuation: ubm_desktop::continuation_adapter::DesktopContinuation::new(
@@ -5361,7 +5730,11 @@ impl UbmCentral {
         };
         let mut profile = CentralProfile::desktop(&options.owner);
         let waker = Arc::new(EventWaker::default());
-        profile.observer = Some(EventWaker::observer(&waker));
+        let scan_terminal_retention = ScanTerminalRetention::new(terminal_evidence.clone());
+        profile.observer = Some(EventWaker::observer_with_scan_terminal_retention(
+            &waker,
+            &scan_terminal_retention,
+        ));
         profile.adapter_id = options.adapter_id;
         profile.bluez_bus = bus;
         if options.pairing_generation.unwrap_or(false) {
@@ -5385,7 +5758,12 @@ impl UbmCentral {
             DesktopCentral::open_with(DispatchRadio::Radio(Box::new(radio)), profile).await
         })
         .await?;
-        Ok(Self::from_central(central, waker, terminal_evidence))
+        Ok(Self::from_central(
+            central,
+            waker,
+            scan_terminal_retention,
+            terminal_evidence,
+        ))
     }
 
     /// Open on the deterministic synthetic radio (hardware-free CI leg).
@@ -5403,7 +5781,6 @@ impl UbmCentral {
         }
         let mut profile = CentralProfile::desktop(&owner);
         let waker = Arc::new(EventWaker::default());
-        profile.observer = Some(EventWaker::observer(&waker));
         profile.identity = Arc::new(ubm_desktop::DesktopIdentity::new("synthetic", &owner));
         let (
             platform,
@@ -5424,6 +5801,11 @@ impl UbmCentral {
             "dispatch.open-synthetic.terminal-evidence-store",
         )
         .map_err(to_napi)?;
+        let scan_terminal_retention = ScanTerminalRetention::new(terminal_evidence.clone());
+        profile.observer = Some(EventWaker::observer_with_scan_terminal_retention(
+            &waker,
+            &scan_terminal_retention,
+        ));
         profile.register_capabilities =
             synthetic_registration(platform.as_deref(), pairing_generation).map_err(to_napi)?;
         // The synthetic radio models the named platform's legacy admission
@@ -5441,7 +5823,12 @@ impl UbmCentral {
             DesktopCentral::open_with(DispatchRadio::Synthetic(Box::new(radio)), profile).await
         })
         .await?;
-        Ok(Self::from_central(central, waker, terminal_evidence))
+        Ok(Self::from_central(
+            central,
+            waker,
+            scan_terminal_retention,
+            terminal_evidence,
+        ))
     }
 
     /// Reserve host-owned durable capacity before shared core activates a
@@ -5465,12 +5852,13 @@ impl UbmCentral {
         }
         let maximum_bytes =
             parse_terminal_evidence_maximum(&options.maximum_bytes, OP).map_err(to_napi)?;
-        let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
-            producer: options.producer,
-            manager_id: options.scope.manager_id,
-            operation_id: options.scope.operation_id,
-            incarnation: options.scope.incarnation,
-        };
+        let scope = Self::terminal_evidence_scope_from_input(
+            &options.producer,
+            &options.scope,
+            options.scope_utf16le.as_ref(),
+            OP,
+        )
+        .map_err(to_napi)?;
         let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
             to_napi(DispatchError::new(
                 BleErrorCode::CapabilityUnsupported.as_str(),
@@ -5486,6 +5874,31 @@ impl UbmCentral {
             reservation_id: reservation.reservation_id,
             maximum_bytes: reservation.maximum_bytes.to_string(),
         })
+    }
+
+    /// Bind the authenticated host recovery identity before the source can
+    /// observe a terminal. This is an ownership operation, not a staging
+    /// shortcut: source publication later persists canonical bytes for only
+    /// this recipient.
+    #[napi(catch_unwind)]
+    pub async fn bind_terminal_evidence_recipient(
+        &self,
+        reservation_id: String,
+        recipient: String,
+    ) -> Result<()> {
+        const OP: &str = "dispatch.terminal-evidence.bind-recipient";
+        let ledger = self.terminal_evidence.as_ref().ok_or_else(|| {
+            to_napi(DispatchError::new(
+                BleErrorCode::CapabilityUnsupported.as_str(),
+                BleErrorDomain::Stream.as_str(),
+                OP,
+                "trusted terminal evidence storage was not configured",
+            ))
+        })?;
+        ledger
+            .bind_recipient(&reservation_id, &recipient)
+            .map(|_| ())
+            .map_err(|error| to_napi(terminal_evidence_error(error, OP)))
     }
 
     /// Commit exactly the bytes supplied by the terminal source. Quota and
@@ -6677,46 +7090,76 @@ impl UbmCentral {
             aborted: None,
             detail: None,
             terminal_evidence: None,
+            stage_failure: None,
             missed,
         };
         let event = if let Some(event) = self
             .pending_scan_terminals
             .lock()
-            .map_err(|_| {
-                to_napi(DispatchError::new(
-                    BleErrorCode::LifecycleInvalidState.as_str(),
-                    BleErrorDomain::Stream.as_str(),
-                    OP,
-                    "terminal retry queue lock failed",
-                ))
-            })?
+            .unwrap_or_else(PoisonError::into_inner)
             .pop_front()
         {
             event
         } else {
-            match receiver.try_recv() {
-                Ok(event) => event,
-                Err(TryRecvError::Empty) => return Ok(None),
-                Err(TryRecvError::Lagged(missed)) => {
-                    return Ok(Some(gap(
-                        "lagged",
-                        Some(number_wire(missed, OP).map_err(to_napi)?),
-                    )))
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => {
+                        let mut retained = self
+                            .retained_scan_terminal_sequences
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        // Broadcast delivery is ordered. Receiving sequence N
+                        // proves only retained copies below N were lost; N
+                        // and later copies remain capable of being delivered.
+                        retained.retain(|(_, sequence)| *sequence >= event.sequence);
+                        if retained
+                            .remove(&(event.operation_id.as_str().to_owned(), event.sequence))
+                        {
+                            continue;
+                        }
+                        break event;
+                    }
+                    Err(TryRecvError::Empty) => return Ok(None),
+                    Err(TryRecvError::Lagged(missed)) => {
+                        return Ok(Some(gap(
+                            "lagged",
+                            Some(number_wire(missed, OP).map_err(to_napi)?),
+                        )));
+                    }
+                    Err(TryRecvError::Closed) => {
+                        self.retained_scan_terminal_sequences
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .clear();
+                        return Ok(Some(gap("closed", None)));
+                    }
                 }
-                Err(TryRecvError::Closed) => return Ok(Some(gap("closed", None))),
             }
         };
+        if let Some(error) = (ScanTerminalRetention {
+            ledger: self.terminal_evidence.clone(),
+            bindings: Arc::clone(&self.scan_terminal_evidence),
+            pending: Arc::clone(&self.pending_scan_terminals),
+            retained: Arc::clone(&self.retained_scan_terminal_sequences),
+            failures: Arc::clone(&self.scan_terminal_failures),
+        })
+        .take_failure(&event)
+        {
+            return Ok(Some(ScanTerminalEventInfo {
+                kind: "stage-failed".to_owned(),
+                sequence: Some(number_wire(event.sequence, OP).map_err(to_napi)?),
+                operation_id: Some(event.operation_id.as_str().to_owned()),
+                aborted: Some(event.aborted),
+                detail: Some(event.detail),
+                terminal_evidence: None,
+                stage_failure: Some(error.wire_message()),
+                missed: None,
+            }));
+        }
         let binding = self
             .scan_terminal_evidence
             .lock()
-            .map_err(|_| {
-                to_napi(DispatchError::new(
-                    BleErrorCode::LifecycleInvalidState.as_str(),
-                    BleErrorDomain::Stream.as_str(),
-                    OP,
-                    "terminal evidence binding lock failed",
-                ))
-            })?
+            .unwrap_or_else(PoisonError::into_inner)
             .get(event.operation_id.as_str())
             .cloned();
         // A destructive broadcast receive must not become an acknowledgement:
@@ -6725,14 +7168,7 @@ impl UbmCentral {
         if binding.is_some() {
             self.pending_scan_terminals
                 .lock()
-                .map_err(|_| {
-                    to_napi(DispatchError::new(
-                        BleErrorCode::LifecycleInvalidState.as_str(),
-                        BleErrorDomain::Stream.as_str(),
-                        OP,
-                        "terminal retry queue lock failed",
-                    ))
-                })?
+                .unwrap_or_else(PoisonError::into_inner)
                 .push_front(event.clone());
         }
         Ok(Some(ScanTerminalEventInfo {
@@ -6745,6 +7181,7 @@ impl UbmCentral {
                 reservation_id: binding.reservation_id,
                 pending_token: format!("scan:{}:{}", event.operation_id.as_str(), event.sequence),
             }),
+            stage_failure: None,
             missed: None,
         }))
     }
@@ -6757,14 +7194,10 @@ impl UbmCentral {
         options: TerminalEvidenceAcknowledgeOptions,
     ) -> Result<()> {
         const OP: &str = "dispatch.terminal-evidence.acknowledge";
-        let mut pending = self.pending_scan_terminals.lock().map_err(|_| {
-            to_napi(DispatchError::new(
-                BleErrorCode::LifecycleInvalidState.as_str(),
-                BleErrorDomain::Stream.as_str(),
-                OP,
-                "terminal retry queue lock failed",
-            ))
-        })?;
+        let mut pending = self
+            .pending_scan_terminals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let Some(event) = pending.front() else {
             drop(pending);
             let mut subscriptions = self.pending_subscription_terminals.lock().map_err(|_| {
@@ -6811,18 +7244,16 @@ impl UbmCentral {
             )));
         }
         let operation_id = event.operation_id.as_str().to_owned();
+        let sequence = event.sequence;
         pending.pop_front();
         drop(pending);
+        self.scan_terminal_failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&(operation_id.clone(), sequence));
         self.scan_terminal_evidence
             .lock()
-            .map_err(|_| {
-                to_napi(DispatchError::new(
-                    BleErrorCode::LifecycleInvalidState.as_str(),
-                    BleErrorDomain::Stream.as_str(),
-                    OP,
-                    "terminal evidence binding lock failed",
-                ))
-            })?
+            .unwrap_or_else(PoisonError::into_inner)
             .remove(&operation_id);
         Ok(())
     }
@@ -6921,12 +7352,23 @@ impl UbmCentral {
     }
 
     /// The core operation id of the scan this central owns, or `null` when
-    /// none is owned (the scan-terminal re-read after a lag, N5).
+    /// none is owned. This includes retained cleanup debt.
     #[napi(catch_unwind)]
     pub fn active_scan_id(&self) -> Result<Option<String>> {
         Ok(self
             .central
             .active_scan_id()
+            .map(|id| id.as_str().to_owned()))
+    }
+
+    /// The core operation id of the scan the radio can still be producing
+    /// for, or `null` when none is operational. An OS-ended scan can retain
+    /// callback-fence cleanup debt without remaining an operational scan.
+    #[napi(catch_unwind)]
+    pub fn operational_scan_id(&self) -> Result<Option<String>> {
+        Ok(self
+            .central
+            .operational_scan_id()
             .map(|id| id.as_str().to_owned()))
     }
 
@@ -6947,6 +7389,14 @@ impl UbmCentral {
             .attach_terminal_evidence_scope(
                 "scan",
                 options.terminal_evidence_scope.as_ref(),
+                options.terminal_evidence_scope_utf16le.as_ref(),
+                "dispatch.scan-start",
+            )
+            .map_err(to_napi)?;
+        let terminal_evidence = self
+            .configure_scan_terminal_evidence(
+                terminal_evidence,
+                options.terminal_evidence_operation.as_deref(),
                 "dispatch.scan-start",
             )
             .map_err(to_napi)?;
@@ -8897,6 +9347,7 @@ impl UbmCentral {
             .attach_terminal_evidence_scope(
                 "subscription",
                 options.terminal_evidence_scope.as_ref(),
+                options.terminal_evidence_scope_utf16le.as_ref(),
                 "dispatch.subscribe",
             )
             .map_err(to_napi)?;
@@ -11145,6 +11596,47 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn terminal_scope_utf16_json_matches_the_shared_mixed_fixture() {
+        let pack = |fields: [&[u16]; 4]| {
+            let mut bytes = Vec::new();
+            for field in fields {
+                bytes.extend_from_slice(&(field.len() as u32).to_le_bytes());
+            }
+            for field in fields {
+                for unit in field {
+                    bytes.extend_from_slice(&unit.to_le_bytes());
+                }
+            }
+            bytes
+        };
+        let binding = TerminalEvidenceBinding {
+            scope: ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+                producer: "scan".into(),
+                manager_id: "\u{fffd}x\u{fffd}".into(),
+                operation_id: "😀".into(),
+                incarnation: "1".into(),
+                scope_utf16le: Some(pack([
+                    &[0x0073, 0x0063, 0x0061, 0x006e],
+                    &[0xd800, 0x0078, 0xdc00],
+                    &[0xd83d, 0xde00],
+                    &[0x0031],
+                ])),
+            },
+            reservation_id: "test-reservation".into(),
+            recipient: None,
+            scan_terminal_operation: None,
+        };
+        assert_eq!(
+            canonical_scope_json_string(&binding, 1, &binding.scope.manager_id),
+            "\"\\ud800x\\udc00\""
+        );
+        assert_eq!(
+            canonical_scope_json_string(&binding, 2, &binding.scope.operation_id),
+            "\"😀\""
+        );
+    }
+
     #[tokio::test]
     async fn runtime_capability_rows_preserve_instance_refusal_not_static_platform_truth() {
         let normal = UbmCentral::open_synthetic("capability-normal".into(), None)
@@ -11196,7 +11688,12 @@ mod tests {
             )
             .await
             .unwrap();
-            let central = UbmCentral::from_central(central, Arc::new(EventWaker::default()), None);
+            let central = UbmCentral::from_central(
+                central,
+                Arc::new(EventWaker::default()),
+                ScanTerminalRetention::default(),
+                None,
+            );
             let rows = central.runtime_capability_states().await;
             let direct = rows
                 .iter()
@@ -12373,6 +12870,7 @@ mod tests {
                 preferred_delivery_mode: None,
                 overflow_policy: None,
                 terminal_evidence_scope: None,
+                terminal_evidence_scope_utf16le: None,
                 timeout_ms: Some(5000),
                 ticket: None,
             })
@@ -12565,6 +13063,8 @@ mod tests {
                 timeout_ms: Some(5000),
                 ticket: None,
                 terminal_evidence_scope: None,
+                terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: None,
             })
             .await
             .expect("scan");
@@ -12680,6 +13180,7 @@ mod tests {
                 preferred_delivery_mode: None,
                 overflow_policy: None,
                 terminal_evidence_scope: None,
+                terminal_evidence_scope_utf16le: None,
                 timeout_ms: Some(5000),
                 ticket: None,
             })
@@ -12759,6 +13260,8 @@ mod tests {
                 }),
                 timeout_ms: Some(5000),
                 ticket: None,
+                terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: None,
             })
             .await
             .expect_err("a scope without the trusted reservation must not activate a radio source");
@@ -12842,6 +13345,8 @@ mod tests {
                 timeout_ms: Some(100),
                 ticket: None,
                 terminal_evidence_scope: None,
+                terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: None,
             })
             .await
         {
@@ -12871,6 +13376,8 @@ mod tests {
                 timeout_ms: Some(5000),
                 ticket: None,
                 terminal_evidence_scope: None,
+                terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: None,
             })
             .await
             .expect("scan");
@@ -12892,6 +13399,8 @@ mod tests {
                 timeout_ms: Some(5000),
                 ticket: None,
                 terminal_evidence_scope: None,
+                terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: None,
             })
             .await
             .expect("restart");
@@ -13028,6 +13537,7 @@ mod tests {
                     preferred_delivery_mode: None,
                     overflow_policy: None,
                     terminal_evidence_scope: None,
+                    terminal_evidence_scope_utf16le: None,
                     timeout_ms: Some(5000),
                     ticket: None,
                 })
@@ -13119,6 +13629,7 @@ mod tests {
                     preferred_delivery_mode: None,
                     overflow_policy: None,
                     terminal_evidence_scope: None,
+                    terminal_evidence_scope_utf16le: None,
                     timeout_ms: Some(5000),
                     ticket: None,
                 })
@@ -13214,6 +13725,7 @@ mod tests {
                 preferred_delivery_mode: None,
                 overflow_policy: None,
                 terminal_evidence_scope: None,
+                terminal_evidence_scope_utf16le: None,
                 timeout_ms: Some(5000),
                 ticket: None,
             })
@@ -13562,6 +14074,7 @@ mod tests {
                 preferred_delivery_mode: None,
                 overflow_policy: None,
                 terminal_evidence_scope: None,
+                terminal_evidence_scope_utf16le: None,
                 timeout_ms: Some(5000),
                 ticket: None,
             })
@@ -13792,6 +14305,18 @@ mod tests {
         assert_eq!(descriptor.occurrence, 0);
     }
 
+    #[test]
+    fn unstaged_terminal_evidence_preserves_retry_authority_in_dispatch_error() {
+        let error = terminal_evidence_error(
+            ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::NotStaged,
+            "dispatch.terminal-evidence.handoff",
+        );
+        assert_eq!(error.code, BleErrorCode::LifecycleInvalidState.as_str());
+        assert_eq!(error.domain, BleErrorDomain::Stream.as_str());
+        assert_eq!(error.operation, "dispatch.terminal-evidence.handoff");
+        assert!(error.detail.contains("retain source authority"));
+    }
+
     #[tokio::test]
     async fn terminal_evidence_round_trip_is_scoped_and_release_is_idempotent() {
         let directory = std::env::temp_dir().join(format!(
@@ -13818,6 +14343,7 @@ mod tests {
                 producer: "scan".to_owned(),
                 maximum_bytes: "128".to_owned(),
                 format_version: 1,
+                scope_utf16le: None,
                 scope: TerminalEvidenceScopeInput {
                     manager_id: "manager".to_owned(),
                     operation_id: "operation".to_owned(),
@@ -13919,6 +14445,367 @@ mod tests {
         central.close().await.expect("close");
         drop(central);
         std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[tokio::test]
+    async fn evidence_bound_scan_terminal_is_retained_before_its_broadcast_copy() {
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-napi-scan-terminal-retention-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).expect("test evidence directory");
+        let central = UbmCentral::open_synthetic(
+            "scan-terminal-retention".to_owned(),
+            Some(SyntheticOptions {
+                pairing_generation: None,
+                platform: Some("bluez".to_owned()),
+                terminal_evidence_directory: Some(directory.display().to_string()),
+                terminal_evidence_max_bytes: Some("1024".to_owned()),
+            }),
+        )
+        .await
+        .expect("synthetic central");
+        let scope = TerminalEvidenceScopeInput {
+            manager_id: "manager".to_owned(),
+            operation_id: "scan-terminal".to_owned(),
+            incarnation: "1".to_owned(),
+        };
+        let reservation = central
+            .reserve_terminal_evidence(TerminalEvidenceReserveOptions {
+                producer: "scan".to_owned(),
+                maximum_bytes: "1024".to_owned(),
+                format_version: 1,
+                scope_utf16le: None,
+                scope: TerminalEvidenceScopeInput {
+                    manager_id: scope.manager_id.clone(),
+                    operation_id: scope.operation_id.clone(),
+                    incarnation: scope.incarnation.clone(),
+                },
+            })
+            .await
+            .expect("reserve");
+        central
+            .bind_terminal_evidence_recipient(
+                reservation.reservation_id.clone(),
+                "trusted-recipient".to_owned(),
+            )
+            .await
+            .expect("bind recipient before activation");
+        let scan = central
+            .start_scan(ScanOptions {
+                owner: "scan-owner".to_owned(),
+                service_uuids: None,
+                duplicate_policy: None,
+                local_name_prefix: None,
+                winrt_scanning_mode: None,
+                winrt_allow_extended_advertisements: None,
+                timeout_ms: None,
+                ticket: None,
+                terminal_evidence_scope: Some(scope),
+                terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: Some("desktop-rust-core.scan.terminated".to_owned()),
+            })
+            .await
+            .expect("scan starts");
+        central
+            .stage_scan_terminated(true, "radio ended".to_owned())
+            .await
+            .expect("terminal staged");
+        let event = loop {
+            if let Some(event) = central
+                .take_scan_terminal_event()
+                .await
+                .expect("take terminal")
+            {
+                break event;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(
+            event.operation_id.as_deref(),
+            Some(scan.operation_id.as_str())
+        );
+        let pending = event.terminal_evidence.expect("retained pending evidence");
+        assert_eq!(pending.reservation_id, reservation.reservation_id);
+        let bytes = central
+            .terminal_evidence
+            .as_ref()
+            .expect("ledger")
+            .staged("scan", "trusted-recipient")
+            .expect("staged before JavaScript receives terminal")
+            .into_iter()
+            .find(|record| record.reservation_id == pending.reservation_id)
+            .expect("the exact reservation was staged")
+            .canonical_bytes;
+        assert_eq!(
+            String::from_utf8(bytes.clone()).expect("canonical UTF-8"),
+            "{\"formatVersion\":1,\"scope\":{\"incarnation\":\"1\",\"managerId\":\"manager\",\"operationId\":\"scan-terminal\"},\"terminal\":{\"droppedBytes\":0,\"droppedItems\":0,\"error\":{\"code\":\"scan.start-failed\",\"domain\":\"scan\",\"operation\":\"desktop-rust-core.scan.terminated\",\"platform\":{\"code\":\"scan-terminated\",\"domain\":\"desktop-rust-core\",\"metadata\":{},\"safeMessage\":\"radio ended\"},\"retryability\":\"never\"},\"kind\":\"terminal\",\"reason\":\"source-failed\",\"replacedItems\":0}}"
+        );
+        let digest = terminal_digest_hex(Sha256::digest(&bytes).into());
+        let committed = central
+            .commit_terminal_evidence(TerminalEvidenceCommitOptions {
+                reservation_id: pending.reservation_id,
+                canonical_bytes: Buffer::from(bytes.clone()),
+                digest,
+            })
+            .await
+            .expect("commit exact bytes");
+        let reference = committed.reference.expect("durable reference");
+        central
+            .acknowledge_terminal_evidence(TerminalEvidenceAcknowledgeOptions {
+                pending_token: pending.pending_token,
+            })
+            .expect("acknowledge exact retained terminal");
+        assert_eq!(
+            central
+                .retained_scan_terminal_sequences
+                .lock()
+                .expect("retained sequence lock")
+                .len(),
+            1,
+            "ACK keeps the marker until the broadcast duplicate is observed or lost"
+        );
+        let read = central
+            .read_terminal_evidence(reference, "1024".to_owned())
+            .await
+            .expect("read committed bytes")
+            .canonical_bytes
+            .expect("committed bytes");
+        assert_eq!(read.to_vec(), bytes);
+        assert!(central
+            .take_scan_terminal_event()
+            .await
+            .expect("the broadcast duplicate is skipped")
+            .is_none());
+        assert!(
+            central
+                .retained_scan_terminal_sequences
+                .lock()
+                .expect("retained sequence lock")
+                .is_empty(),
+            "consuming the duplicate broadcast copy releases its marker"
+        );
+        central.close().await.expect("close");
+        std::fs::remove_dir_all(directory).expect("remove evidence directory");
+    }
+
+    #[tokio::test]
+    async fn staged_scan_terminal_survives_process_reopen_before_js_receives_it() {
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-napi-scan-terminal-reopen-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).expect("test evidence directory");
+        let options = SyntheticOptions {
+            pairing_generation: None,
+            platform: Some("bluez".to_owned()),
+            terminal_evidence_directory: Some(directory.display().to_string()),
+            terminal_evidence_max_bytes: Some("4096".to_owned()),
+        };
+        let scope = TerminalEvidenceScopeInput {
+            manager_id: "manager".to_owned(),
+            operation_id: "scan-reopen".to_owned(),
+            incarnation: "1".to_owned(),
+        };
+        let central = UbmCentral::open_synthetic("scan-reopen-owner".to_owned(), Some(options))
+            .await
+            .expect("open source central");
+        let reservation = central
+            .reserve_terminal_evidence(TerminalEvidenceReserveOptions {
+                producer: "scan".to_owned(),
+                maximum_bytes: "4096".to_owned(),
+                format_version: 1,
+                scope_utf16le: None,
+                scope: TerminalEvidenceScopeInput {
+                    manager_id: scope.manager_id.clone(),
+                    operation_id: scope.operation_id.clone(),
+                    incarnation: scope.incarnation.clone(),
+                },
+            })
+            .await
+            .expect("reserve");
+        central
+            .bind_terminal_evidence_recipient(
+                reservation.reservation_id.clone(),
+                "trusted-recipient".to_owned(),
+            )
+            .await
+            .expect("bind recipient");
+        central
+            .start_scan(ScanOptions {
+                owner: "scan-reopen-owner".to_owned(),
+                service_uuids: None,
+                duplicate_policy: None,
+                local_name_prefix: None,
+                winrt_scanning_mode: None,
+                winrt_allow_extended_advertisements: None,
+                timeout_ms: None,
+                ticket: None,
+                terminal_evidence_scope: Some(scope),
+                terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: Some("desktop-rust-core.scan.terminated".to_owned()),
+            })
+            .await
+            .expect("scan starts");
+        central
+            .stage_scan_terminated(true, "before restart".to_owned())
+            .await
+            .expect("terminal source publishes");
+        // Deliberately do not take the terminal: source publication must
+        // persist it before JS receives any broadcast or pending token.
+        central.close().await.expect("source process closes");
+        drop(central);
+
+        let reopened = UbmCentral::open_synthetic(
+            "scan-reopen-owner".to_owned(),
+            Some(SyntheticOptions {
+                pairing_generation: None,
+                platform: Some("bluez".to_owned()),
+                terminal_evidence_directory: Some(directory.display().to_string()),
+                terminal_evidence_max_bytes: Some("4096".to_owned()),
+            }),
+        )
+        .await
+        .expect("reopen");
+        let recovered = reopened
+            .recover_terminal_evidence(TerminalEvidenceRecoverOptions {
+                producer: "scan".to_owned(),
+                recipient: "trusted-recipient".to_owned(),
+                lease_id: "reopen-recovery-lease".to_owned(),
+            })
+            .await
+            .expect("recover staged terminal");
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].reservation_id, reservation.reservation_id);
+        assert_eq!(recovered[0].state, "staged");
+        assert!(String::from_utf8(recovered[0].canonical_bytes.to_vec())
+            .expect("canonical UTF-8")
+            .contains("before restart"));
+        reopened.close().await.expect("reopened central closes");
+        drop(reopened);
+        std::fs::remove_dir_all(directory).expect("remove evidence directory");
+    }
+
+    #[tokio::test]
+    async fn conflicting_source_terminal_stage_is_reported_and_does_not_overwrite_evidence() {
+        let directory = std::env::temp_dir().join(format!(
+            "ubm-napi-scan-terminal-stage-failure-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).expect("test evidence directory");
+        let central = UbmCentral::open_synthetic(
+            "scan-stage-failure".to_owned(),
+            Some(SyntheticOptions {
+                pairing_generation: None,
+                platform: Some("bluez".to_owned()),
+                terminal_evidence_directory: Some(directory.display().to_string()),
+                terminal_evidence_max_bytes: Some("4096".to_owned()),
+            }),
+        )
+        .await
+        .expect("open");
+        let scope = TerminalEvidenceScopeInput {
+            manager_id: "manager".to_owned(),
+            operation_id: "scan-stage-failure".to_owned(),
+            incarnation: "1".to_owned(),
+        };
+        let reservation = central
+            .reserve_terminal_evidence(TerminalEvidenceReserveOptions {
+                producer: "scan".to_owned(),
+                maximum_bytes: "4096".to_owned(),
+                format_version: 1,
+                scope_utf16le: None,
+                scope: TerminalEvidenceScopeInput {
+                    manager_id: scope.manager_id.clone(),
+                    operation_id: scope.operation_id.clone(),
+                    incarnation: scope.incarnation.clone(),
+                },
+            })
+            .await
+            .expect("reserve");
+        central
+            .bind_terminal_evidence_recipient(
+                reservation.reservation_id.clone(),
+                "trusted-recipient".to_owned(),
+            )
+            .await
+            .expect("bind recipient");
+        let earlier = b"earlier immutable staged bytes".to_vec();
+        central
+            .stage_terminal_evidence(
+                reservation.reservation_id.clone(),
+                "trusted-recipient".to_owned(),
+                Buffer::from(earlier.clone()),
+            )
+            .await
+            .expect("seed conflicting staged bytes");
+        central
+            .start_scan(ScanOptions {
+                owner: "scan-stage-failure".to_owned(),
+                service_uuids: None,
+                duplicate_policy: None,
+                local_name_prefix: None,
+                winrt_scanning_mode: None,
+                winrt_allow_extended_advertisements: None,
+                timeout_ms: None,
+                ticket: None,
+                terminal_evidence_scope: Some(scope),
+                terminal_evidence_scope_utf16le: None,
+                terminal_evidence_operation: Some("desktop-rust-core.scan.terminated".to_owned()),
+            })
+            .await
+            .expect("scan starts");
+        // A source-stage refusal is still an admitted terminal. Poison the
+        // retention failure map at the exact handoff point: recovery must
+        // preserve and surface the truthful failure rather than silently
+        // publish an ordinary terminal or drop it.
+        let failures = Arc::clone(&central.scan_terminal_failures);
+        assert!(std::thread::spawn(move || {
+            let _guard = failures.lock().expect("failure map lock");
+            panic!("intentional retention failure-map poison");
+        })
+        .join()
+        .is_err());
+        central
+            .stage_scan_terminated(true, "must not overwrite".to_owned())
+            .await
+            .expect("terminal source publishes");
+        let failure = loop {
+            match central.take_scan_terminal_event().await {
+                Ok(Some(event)) if event.kind == "stage-failed" => break event,
+                Ok(None) => tokio::task::yield_now().await,
+                Err(error) => panic!("stage failure must be a typed source result: {error}"),
+                Ok(Some(event)) => panic!("unexpected scan terminal result: {}", event.kind),
+            }
+        };
+        assert!(
+            failure
+                .stage_failure
+                .as_deref()
+                .is_some_and(|message| message.contains("terminal evidence")),
+            "{}",
+            failure.stage_failure.unwrap_or_default()
+        );
+        let staged = central
+            .terminal_evidence
+            .as_ref()
+            .expect("ledger")
+            .staged("scan", "trusted-recipient")
+            .expect("staged evidence remains readable");
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].canonical_bytes, earlier);
+        central.close().await.expect("close");
+        drop(central);
+        std::fs::remove_dir_all(directory).expect("remove evidence directory");
     }
 }
 

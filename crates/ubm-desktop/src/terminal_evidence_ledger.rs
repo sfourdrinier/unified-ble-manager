@@ -20,12 +20,25 @@ pub struct TerminalEvidenceScope {
     pub manager_id: String,
     pub operation_id: String,
     pub incarnation: String,
+    /// Optional, exact UTF-16LE scope encoding supplied by a JavaScript
+    /// boundary. Rust `String` cannot carry an unpaired surrogate, so this
+    /// opaque sidecar is the authoritative identity and recovery value when
+    /// present. `None` preserves the legacy scalar-TEXT identity unchanged.
+    pub scope_utf16le: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalEvidenceReservation {
     pub reservation_id: String,
     pub maximum_bytes: u64,
+}
+
+/// A reservation's authenticated recovery recipient.  The recipient is
+/// bound before source activation, so a source-observed terminal can be
+/// durably staged even if the JS process exits before it reads the terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalEvidenceRecipientBinding {
+    pub recipient: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +111,10 @@ pub enum TerminalEvidenceError {
     Conflict,
     Corrupt,
     Busy,
+    /// The source still owns an admitted reservation but has not durably
+    /// staged its terminal bytes. It must retry staging rather than release
+    /// that authority during shutdown.
+    NotStaged,
     Storage(rusqlite::Error),
 }
 
@@ -117,6 +134,9 @@ impl std::fmt::Display for TerminalEvidenceError {
             }
             Self::Busy => formatter
                 .write_str("terminal evidence storage is busy; retry without changing the request"),
+            Self::NotStaged => formatter.write_str(
+                "terminal evidence is not staged; retain source authority and retry staging",
+            ),
             Self::Storage(error) => write!(formatter, "terminal evidence storage failed: {error}"),
         }
     }
@@ -179,7 +199,7 @@ impl TerminalEvidenceLedger {
                id TEXT PRIMARY KEY, producer TEXT NOT NULL, manager_id TEXT NOT NULL, operation_id TEXT NOT NULL,
                incarnation TEXT NOT NULL, maximum_bytes INTEGER NOT NULL CHECK(maximum_bytes>0),
                state TEXT NOT NULL CHECK(state IN ('reserved','committed','released')),
-               reference TEXT UNIQUE, digest BLOB, bytes BLOB, staged_bytes BLOB, staged_recipient TEXT, staged_published INTEGER NOT NULL DEFAULT 0, format_version INTEGER, released_sequence INTEGER
+               reference TEXT UNIQUE, digest BLOB, bytes BLOB, staged_bytes BLOB, staged_recipient TEXT, bound_recipient TEXT, staged_published INTEGER NOT NULL DEFAULT 0, format_version INTEGER, released_sequence INTEGER, scope_utf16le BLOB
              );"
         )?;
         let has_release_sequence: bool = connection.query_row(
@@ -198,6 +218,14 @@ impl TerminalEvidenceLedger {
                 "ALTER TABLE terminal_evidence_reservations ADD COLUMN producer TEXT;",
             )?;
         }
+        let has_scope_utf16le: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('terminal_evidence_reservations') WHERE name='scope_utf16le')", [], |row| row.get(0))?;
+        if !has_scope_utf16le {
+            // Additive only: historical scalar rows remain NULL and retain
+            // both their existing identifiers and TEXT recovery path.
+            connection.execute_batch(
+                "ALTER TABLE terminal_evidence_reservations ADD COLUMN scope_utf16le BLOB;",
+            )?;
+        }
         let has_staged_bytes: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('terminal_evidence_reservations') WHERE name='staged_bytes')",
             [], |row| row.get(0),
@@ -211,6 +239,12 @@ impl TerminalEvidenceLedger {
         if !has_recipient {
             connection.execute_batch(
                 "ALTER TABLE terminal_evidence_reservations ADD COLUMN staged_recipient TEXT;",
+            )?;
+        }
+        let has_bound_recipient: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('terminal_evidence_reservations') WHERE name='bound_recipient')", [], |row| row.get(0))?;
+        if !has_bound_recipient {
+            connection.execute_batch(
+                "ALTER TABLE terminal_evidence_reservations ADD COLUMN bound_recipient TEXT;",
             )?;
         }
         let has_published: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('terminal_evidence_reservations') WHERE name='staged_published')", [], |row| row.get(0))?;
@@ -457,6 +491,10 @@ impl TerminalEvidenceLedger {
             || scope.manager_id.is_empty()
             || scope.operation_id.is_empty()
             || scope.incarnation.is_empty()
+            || scope
+                .scope_utf16le
+                .as_ref()
+                .is_some_and(|bytes| !valid_scope_utf16le(scope, bytes))
         {
             return Err(TerminalEvidenceError::Invalid("reservation"));
         }
@@ -494,8 +532,8 @@ impl TerminalEvidenceLedger {
             return Err(TerminalEvidenceError::Quota);
         }
         tx.execute(
-            "INSERT INTO terminal_evidence_reservations(id,producer,manager_id,operation_id,incarnation,maximum_bytes,state) VALUES(?1,?2,?3,?4,?5,?6,'reserved')",
-            params![id, scope.producer, scope.manager_id, scope.operation_id, scope.incarnation, maximum_bytes as i64],
+            "INSERT INTO terminal_evidence_reservations(id,producer,manager_id,operation_id,incarnation,scope_utf16le,maximum_bytes,state) VALUES(?1,?2,?3,?4,?5,?6,?7,'reserved')",
+            params![id, scope.producer, scope.manager_id, scope.operation_id, scope.incarnation, scope.scope_utf16le, maximum_bytes as i64],
         )?;
         tx.commit()?;
         Ok(TerminalEvidenceReservation {
@@ -528,6 +566,84 @@ impl TerminalEvidenceLedger {
             }
             Some(_) => Err(TerminalEvidenceError::Missing),
             None => Err(TerminalEvidenceError::Unresolved),
+        }
+    }
+
+    /// Bind the one authenticated host recipient that may recover source-time
+    /// evidence for this reservation. Binding is deliberately separate from
+    /// staging: it establishes crash-safe recovery authority before the
+    /// source is activated, while `stage` stores the later terminal bytes.
+    /// Repeating the same binding is safe; changing it is an ownership
+    /// conflict and never retargets already-observed evidence.
+    pub fn bind_recipient(
+        &self,
+        reservation_id: &str,
+        recipient: &str,
+    ) -> Result<TerminalEvidenceRecipientBinding> {
+        if reservation_id.is_empty() || recipient.is_empty() {
+            return Err(TerminalEvidenceError::Invalid("recipient binding"));
+        }
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| TerminalEvidenceError::Unresolved)?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let row: Option<(String, Option<String>)> = tx
+            .query_row(
+                "SELECT state,bound_recipient FROM terminal_evidence_reservations WHERE id=?1",
+                [reservation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((state, bound_recipient)) = row else {
+            return Err(TerminalEvidenceError::Missing);
+        };
+        if state == "released" {
+            return Err(TerminalEvidenceError::Missing);
+        }
+        match bound_recipient {
+            Some(bound) if bound != recipient => return Err(TerminalEvidenceError::Conflict),
+            Some(bound) => {
+                tx.commit()?;
+                Ok(TerminalEvidenceRecipientBinding { recipient: bound })
+            }
+            None => {
+                tx.execute(
+                    "UPDATE terminal_evidence_reservations SET bound_recipient=?2 WHERE id=?1",
+                    params![reservation_id, recipient],
+                )?;
+                tx.commit()?;
+                Ok(TerminalEvidenceRecipientBinding {
+                    recipient: recipient.to_owned(),
+                })
+            }
+        }
+    }
+
+    /// Return only the recipient durably bound before source activation.
+    pub fn bound_recipient(
+        &self,
+        reservation_id: &str,
+    ) -> Result<TerminalEvidenceRecipientBinding> {
+        if reservation_id.is_empty() {
+            return Err(TerminalEvidenceError::Invalid("recipient binding"));
+        }
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| TerminalEvidenceError::Unresolved)?;
+        let row: Option<(String, Option<String>)> = connection
+            .query_row(
+                "SELECT state,bound_recipient FROM terminal_evidence_reservations WHERE id=?1",
+                [reservation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        match row {
+            Some((state, Some(recipient))) if state != "released" => {
+                Ok(TerminalEvidenceRecipientBinding { recipient })
+            }
+            Some(_) | None => Err(TerminalEvidenceError::Missing),
         }
     }
 
@@ -573,14 +689,20 @@ impl TerminalEvidenceLedger {
                 .lock()
                 .map_err(|_| TerminalEvidenceError::Unresolved)?;
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let row: Option<(i64, String, Option<Vec<u8>>, Option<String>)> = tx.query_row(
-                "SELECT maximum_bytes,state,staged_bytes,staged_recipient FROM terminal_evidence_reservations WHERE id=?1", [reservation_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            let row: Option<(i64, String, Option<Vec<u8>>, Option<String>, Option<String>)> = tx.query_row(
+                "SELECT maximum_bytes,state,staged_bytes,staged_recipient,bound_recipient FROM terminal_evidence_reservations WHERE id=?1", [reservation_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             ).optional()?;
-            let Some((maximum, state, staged, staged_recipient)) = row else {
+            let Some((maximum, state, staged, staged_recipient, bound_recipient)) = row else {
                 return Err(TerminalEvidenceError::Missing);
             };
             if state == "released" {
+                return Err(TerminalEvidenceError::Missing);
+            }
+            if bound_recipient
+                .as_deref()
+                .is_some_and(|bound| bound != recipient)
+            {
                 return Err(TerminalEvidenceError::Missing);
             }
             if canonical_bytes.len() as u64 > maximum as u64 {
@@ -608,7 +730,7 @@ impl TerminalEvidenceLedger {
             .lock()
             .map_err(|_| TerminalEvidenceError::Unresolved)?;
         let mut statement = connection.prepare(
-            "SELECT id,manager_id,operation_id,incarnation,staged_bytes FROM terminal_evidence_reservations WHERE producer=?1 AND state!='released' AND staged_bytes IS NOT NULL AND staged_published=0 AND staged_recipient=?2"
+            "SELECT id,manager_id,operation_id,incarnation,scope_utf16le,staged_bytes FROM terminal_evidence_reservations WHERE producer=?1 AND state!='released' AND staged_bytes IS NOT NULL AND staged_published=0 AND staged_recipient=?2"
         )?;
         statement
             .query_map(params![producer, recipient], |row| {
@@ -619,8 +741,9 @@ impl TerminalEvidenceLedger {
                         manager_id: row.get(1)?,
                         operation_id: row.get(2)?,
                         incarnation: row.get(3)?,
+                        scope_utf16le: row.get(4)?,
                     },
-                    canonical_bytes: row.get(4)?,
+                    canonical_bytes: row.get(5)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()
@@ -747,7 +870,7 @@ impl TerminalEvidenceLedger {
                 .lock()
                 .map_err(|_| TerminalEvidenceError::Unresolved)?;
             let mut statement = connection.prepare(
-                "SELECT id,manager_id,operation_id,incarnation,state,reference,digest,format_version,maximum_bytes,length(staged_bytes) \
+                "SELECT id,manager_id,operation_id,incarnation,scope_utf16le,state,reference,digest,format_version,maximum_bytes,length(staged_bytes) \
                  FROM terminal_evidence_reservations \
                  WHERE producer=?1 AND state!='released' AND staged_bytes IS NOT NULL AND staged_recipient=?2 \
                  ORDER BY id"
@@ -759,12 +882,13 @@ impl TerminalEvidenceLedger {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                        row.get::<_, Option<Vec<u8>>>(6)?,
-                        row.get::<_, Option<i64>>(7)?,
-                        row.get::<_, i64>(8)?,
+                        row.get::<_, Option<Vec<u8>>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<Vec<u8>>>(7)?,
+                        row.get::<_, Option<i64>>(8)?,
                         row.get::<_, i64>(9)?,
+                        row.get::<_, i64>(10)?,
                     ))
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()
@@ -784,6 +908,7 @@ impl TerminalEvidenceLedger {
                 manager_id,
                 operation_id,
                 incarnation,
+                scope_utf16le,
                 state,
                 reference,
                 digest,
@@ -889,6 +1014,7 @@ impl TerminalEvidenceLedger {
                         manager_id,
                         operation_id,
                         incarnation,
+                        scope_utf16le,
                     },
                     state: recovery_state,
                     reference,
@@ -1124,6 +1250,56 @@ impl TerminalEvidenceLedger {
         }
     }
 
+    /// Transfer an already-staged reservation from its live source to restart
+    /// recovery. Unlike [`Self::abandon`], this operation never releases an
+    /// unstaged reservation: the staged check and authority release are one
+    /// source-authority-gated database transition.
+    pub fn handoff_staged_to_recovery(&self, reservation_id: &str) -> Result<()> {
+        let acquired = self.acquire_source_authority(reservation_id)?;
+        let outcome = (|| {
+            let mut connection = self
+                .connection
+                .lock()
+                .map_err(|_| TerminalEvidenceError::Unresolved)?;
+            let transaction = connection.transaction()?;
+            let row: Option<(String, Option<Vec<u8>>)> = transaction
+                .query_row(
+                    "SELECT state,staged_bytes FROM terminal_evidence_reservations WHERE id=?1",
+                    [reservation_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            match row {
+                Some((state, Some(_))) if state == "reserved" || state == "committed" => {
+                    transaction.commit()?;
+                    Ok(())
+                }
+                Some((state, None)) if state == "reserved" || state == "committed" => {
+                    Err(TerminalEvidenceError::NotStaged)
+                }
+                Some((state, _)) if state == "released" => Err(TerminalEvidenceError::Missing),
+                Some(_) => Err(TerminalEvidenceError::Corrupt),
+                None => Err(TerminalEvidenceError::Missing),
+            }
+        })();
+        match outcome {
+            Ok(()) => {
+                self.release_reservation_authority(reservation_id);
+                Ok(())
+            }
+            // Any non-missing handoff failure leaves a live source debt that
+            // must retain ownership for retry. In particular, an I/O or
+            // integrity failure must not open a competing-source window.
+            Err(TerminalEvidenceError::Missing) => {
+                if acquired {
+                    self.release_reservation_authority(reservation_id);
+                }
+                Err(TerminalEvidenceError::Missing)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Irreversibly retire committed evidence only after the recovery owner
     /// acknowledges its opaque reference. Retrying after retirement is a
     /// no-op; a foreign owner cannot retire a live record.
@@ -1262,6 +1438,12 @@ impl TerminalEvidenceLedger {
 
 fn terminal_id(scope: &TerminalEvidenceScope) -> String {
     let mut digest = Sha256::new();
+    if let Some(raw) = &scope.scope_utf16le {
+        digest.update(b"ubm-terminal-evidence-scope-utf16le/v1");
+        digest.update((raw.len() as u64).to_be_bytes());
+        digest.update(raw);
+        return format!("{:x}", digest.finalize());
+    }
     for field in [
         &scope.producer,
         &scope.manager_id,
@@ -1272,6 +1454,122 @@ fn terminal_id(scope: &TerminalEvidenceScope) -> String {
         digest.update(field.as_bytes());
     }
     format!("{:x}", digest.finalize())
+}
+
+/// Returns a canonical JSON string for one field of a JavaScript UTF-16 scope.
+///
+/// A present sidecar is authoritative because Rust strings cannot carry an
+/// unpaired JavaScript surrogate. Malformed sidecars deliberately fall back to
+/// the visible scalar: ledger admission rejects those, but this keeps a corrupt
+/// in-memory test double from crashing terminal publication.
+pub fn canonical_scope_json_string(
+    scope_utf16le: Option<&[u8]>,
+    field_index: usize,
+    fallback: &str,
+) -> String {
+    scope_utf16le
+        .and_then(unpack_scope_utf16le)
+        .and_then(|fields| fields.get(field_index).cloned())
+        .map(|units| canonical_json_string_utf16_units(&units))
+        .unwrap_or_else(|| serde_json::to_string(fallback).expect("string serialization"))
+}
+
+/// Decodes the lossless JavaScript scope sidecar without projecting its UTF-16
+/// code units through Rust UTF-8.
+pub fn unpack_scope_utf16le(bytes: &[u8]) -> Option<Vec<Vec<u16>>> {
+    if bytes.len() < 16 {
+        return None;
+    }
+    let mut offset = 16_usize;
+    let mut fields = Vec::with_capacity(4);
+    for length_bytes in bytes[..16].chunks_exact(4) {
+        let length = usize::try_from(u32::from_le_bytes(length_bytes.try_into().ok()?)).ok()?;
+        let end = offset.checked_add(length.checked_mul(2)?)?;
+        if end > bytes.len() {
+            return None;
+        }
+        fields.push(
+            bytes[offset..end]
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes(pair.try_into().expect("u16 framing")))
+                .collect(),
+        );
+        offset = end;
+    }
+    (offset == bytes.len()).then_some(fields)
+}
+
+/// The JSON.stringify-compatible representation of UTF-16 code units.
+/// Valid pairs become their scalar; unpaired surrogate units remain lower-case
+/// `\\uXXXX` escapes, as JavaScript JSON requires.
+pub fn canonical_json_string_utf16_units(units: &[u16]) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::from("\"");
+    let mut index = 0;
+    while index < units.len() {
+        let unit = units[index];
+        if (0xd800..=0xdbff).contains(&unit)
+            && index + 1 < units.len()
+            && (0xdc00..=0xdfff).contains(&units[index + 1])
+        {
+            let scalar = 0x1_0000
+                + ((u32::from(unit) - 0xd800) << 10)
+                + (u32::from(units[index + 1]) - 0xdc00);
+            output.push(char::from_u32(scalar).expect("surrogate-pair scalar"));
+            index += 2;
+            continue;
+        }
+        match unit {
+            0xd800..=0xdfff => write!(output, "\\u{unit:04x}").expect("String write"),
+            0x0008 => output.push_str("\\b"),
+            0x000c => output.push_str("\\f"),
+            0x000a => output.push_str("\\n"),
+            0x000d => output.push_str("\\r"),
+            0x0009 => output.push_str("\\t"),
+            0x0000..=0x001f => write!(output, "\\u{unit:04x}").expect("String write"),
+            0x0022 => output.push_str("\\\""),
+            0x005c => output.push_str("\\\\"),
+            _ => output.push(char::from_u32(u32::from(unit)).expect("non-surrogate unit")),
+        }
+        index += 1;
+    }
+    output.push('\"');
+    output
+}
+
+/// The lossless JavaScript scope sidecar: four little-endian u32 UTF-16 code
+/// unit lengths followed by the producer, manager, operation and incarnation
+/// units in that order, each encoded as little-endian u16. This framing avoids
+/// both separator collisions and any attempt to represent an unpaired
+/// surrogate as Rust UTF-8.
+fn valid_scope_utf16le(scope: &TerminalEvidenceScope, bytes: &[u8]) -> bool {
+    let Some(raw_fields) = unpack_scope_utf16le(bytes) else {
+        return false;
+    };
+    let scalar_fields = [
+        &scope.producer,
+        &scope.manager_id,
+        &scope.operation_id,
+        &scope.incarnation,
+    ];
+    for (index, (raw, scalar)) in raw_fields.iter().zip(scalar_fields).enumerate() {
+        if raw.is_empty() {
+            return false;
+        }
+        if index == 0 {
+            if raw.as_slice() != scalar.encode_utf16().collect::<Vec<_>>() {
+                return false;
+            }
+        } else {
+            let projection =
+                String::from_utf16(raw).unwrap_or_else(|_| String::from_utf16_lossy(raw));
+            if projection != scalar.as_str() {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn opaque_reference() -> Result<String> {
@@ -1333,7 +1631,21 @@ mod tests {
             manager_id: "manager".into(),
             operation_id: "scan".into(),
             incarnation: "1".into(),
+            scope_utf16le: None,
         }
+    }
+
+    fn packed_utf16_scope(fields: [&[u16]; 4]) -> Vec<u8> {
+        let mut packed = Vec::new();
+        for field in fields {
+            packed.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        }
+        for field in fields {
+            for unit in field {
+                packed.extend_from_slice(&unit.to_le_bytes());
+            }
+        }
+        packed
     }
 
     fn authority_child() -> bool {
@@ -1638,12 +1950,14 @@ mod tests {
             manager_id: "a\0b".into(),
             operation_id: "c".into(),
             incarnation: "d".into(),
+            scope_utf16le: None,
         };
         let right = TerminalEvidenceScope {
             producer: "scan".into(),
             manager_id: "a".into(),
             operation_id: "b\0c".into(),
             incarnation: "d".into(),
+            scope_utf16le: None,
         };
         let other_producer = TerminalEvidenceScope {
             producer: "subscription".into(),
@@ -1651,6 +1965,150 @@ mod tests {
         };
         assert_ne!(terminal_id(&left), terminal_id(&right));
         assert_ne!(terminal_id(&left), terminal_id(&other_producer));
+    }
+
+    #[test]
+    fn canonical_utf16_json_fixture_matches_javascript_for_controls_astral_and_lone_surrogates() {
+        // This is the one shared encoder consumed by N-API and Tauri. It
+        // deliberately combines every exceptional JavaScript string form so
+        // their terminal-evidence bytes cannot drift by host.
+        assert_eq!(
+            canonical_json_string_utf16_units(&[
+                0x0022, 0x005c, 0x0000, 0x0008, 0x000c, 0x000a, 0x000d, 0x0009, 0x001f, 0xd83d,
+                0xde00, 0xd800, 0x0078, 0xdc00,
+            ]),
+            "\"\\\"\\\\\\u0000\\b\\f\\n\\r\\t\\u001f😀\\ud800x\\udc00\""
+        );
+        let raw = packed_utf16_scope([
+            &[0x0073, 0x0063, 0x0061, 0x006e],
+            &[0xd800],
+            &[0xd83d, 0xde00],
+            &[0xdc00],
+        ]);
+        assert_eq!(
+            canonical_scope_json_string(Some(&raw), 1, "\u{fffd}"),
+            "\"\\ud800\""
+        );
+        assert_eq!(
+            canonical_scope_json_string(Some(&raw), 2, "wrong fallback"),
+            "\"😀\""
+        );
+        assert_eq!(
+            canonical_scope_json_string(Some(&raw), 3, "\u{fffd}"),
+            "\"\\udc00\""
+        );
+    }
+
+    #[test]
+    fn utf16_scope_sidecar_preserves_unpaired_surrogates_and_distinguishes_identity() {
+        let path = path();
+        let ledger = TerminalEvidenceLedger::open(&path, 64).unwrap();
+        let mut left = scope();
+        left.manager_id = "\u{fffd}".into();
+        left.scope_utf16le = Some(packed_utf16_scope([
+            &[0x0073, 0x0063, 0x0061, 0x006e],
+            &[0xd800],
+            &[0x0073, 0x0063, 0x0061, 0x006e],
+            &[0x0031],
+        ]));
+        let mut right = left.clone();
+        right.scope_utf16le = Some(packed_utf16_scope([
+            &[0x0073, 0x0063, 0x0061, 0x006e],
+            &[0xd801],
+            &[0x0073, 0x0063, 0x0061, 0x006e],
+            &[0x0031],
+        ]));
+        assert_ne!(terminal_id(&left), terminal_id(&right));
+        let reservation = ledger.reserve(&left, 8).unwrap();
+        assert_eq!(ledger.attach(&left).unwrap(), reservation);
+        ledger
+            .stage(&reservation.reservation_id, "recipient", b"raw")
+            .unwrap();
+        let staged = ledger.staged("scan", "recipient").unwrap();
+        assert_eq!(staged[0].scope.scope_utf16le, left.scope_utf16le);
+        let distinct = ledger.reserve(&right, 8).unwrap();
+        assert_ne!(reservation.reservation_id, distinct.reservation_id);
+    }
+
+    #[test]
+    fn rejects_utf16_sidecars_with_forged_producer_or_scalar_projection() {
+        let path = path();
+        let ledger = TerminalEvidenceLedger::open(&path, 64).unwrap();
+        let mut forged_producer = scope();
+        forged_producer.scope_utf16le = Some(packed_utf16_scope([
+            &[0x0073, 0x0075, 0x0062],
+            &"manager".encode_utf16().collect::<Vec<_>>(),
+            &"scan".encode_utf16().collect::<Vec<_>>(),
+            &[0x0031],
+        ]));
+        assert!(matches!(
+            ledger.reserve(&forged_producer, 8),
+            Err(TerminalEvidenceError::Invalid("reservation"))
+        ));
+
+        let mut mismatched_projection = scope();
+        mismatched_projection.scope_utf16le = Some(packed_utf16_scope([
+            &"scan".encode_utf16().collect::<Vec<_>>(),
+            &[0xd800],
+            &"scan".encode_utf16().collect::<Vec<_>>(),
+            &[0x0031],
+        ]));
+        assert!(matches!(
+            ledger.reserve(&mismatched_projection, 8),
+            Err(TerminalEvidenceError::Invalid("reservation"))
+        ));
+    }
+
+    #[test]
+    fn opens_legacy_scalar_rows_without_rewriting_their_identity() {
+        let path = path();
+        let legacy = scope();
+        let id = terminal_id(&legacy);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE terminal_evidence_config(id INTEGER PRIMARY KEY CHECK(id=1), maximum_bytes INTEGER NOT NULL CHECK(maximum_bytes>0));
+                 INSERT INTO terminal_evidence_config(id,maximum_bytes) VALUES(1,64);
+                 CREATE TABLE terminal_evidence_reservations(
+                   id TEXT PRIMARY KEY, producer TEXT NOT NULL, manager_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+                   incarnation TEXT NOT NULL, maximum_bytes INTEGER NOT NULL CHECK(maximum_bytes>0),
+                   state TEXT NOT NULL CHECK(state IN ('reserved','committed','released')),
+                   reference TEXT UNIQUE, digest BLOB, bytes BLOB, staged_bytes BLOB, staged_recipient TEXT, format_version INTEGER
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO terminal_evidence_reservations(id,producer,manager_id,operation_id,incarnation,maximum_bytes,state) VALUES(?1,?2,?3,?4,?5,16,'reserved')",
+                params![id, legacy.producer, legacy.manager_id, legacy.operation_id, legacy.incarnation],
+            )
+            .unwrap();
+        drop(connection);
+
+        let ledger = TerminalEvidenceLedger::open(&path, 64).unwrap();
+        let attached = ledger.attach(&legacy).unwrap();
+        assert_eq!(attached.reservation_id, id);
+        ledger.stage(&id, "recipient", b"legacy-bytes").unwrap();
+        let stored: Option<Vec<u8>> = ledger
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT scope_utf16le FROM terminal_evidence_reservations WHERE id=?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored, None,
+            "legacy rows stay scalar and are never rewritten"
+        );
+        drop(ledger);
+        let reopened = TerminalEvidenceLedger::open(&path, 64).unwrap();
+        let recovered = reopened.recoverable("scan", "recipient").unwrap();
+        assert_eq!(recovered[0].reservation_id, id);
+        assert_eq!(recovered[0].scope, legacy);
+        assert_eq!(recovered[0].canonical_bytes, b"legacy-bytes");
     }
     #[test]
     fn commit_reopens_and_digest_conflicts_fence() {
@@ -1716,6 +2174,47 @@ mod tests {
             .acknowledge(&committed.reference, "scan", "test-owner")
             .unwrap();
         reopened.reserve(&second, 1).unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn staged_handoff_never_releases_an_unstaged_reservation() {
+        let path = path();
+        let ledger = TerminalEvidenceLedger::open(&path, 64).unwrap();
+        let reservation = ledger.reserve(&scope(), 64).unwrap();
+
+        assert!(matches!(
+            ledger.handoff_staged_to_recovery(&reservation.reservation_id),
+            Err(TerminalEvidenceError::NotStaged)
+        ));
+        // The failed handoff retains the source authority, so another ledger
+        // cannot seize the reservation while this source retries staging.
+        let competing = TerminalEvidenceLedger::open(&path, 64).unwrap();
+        assert!(matches!(
+            competing.stage(&reservation.reservation_id, "test-owner", b"terminal"),
+            Err(TerminalEvidenceError::Busy)
+        ));
+        // The original source retains the exact reservation and can retry;
+        // otherwise shutdown would have lost the only terminal retry path.
+        assert_eq!(
+            ledger.attach(&scope()).unwrap().reservation_id,
+            reservation.reservation_id
+        );
+        ledger
+            .stage(&reservation.reservation_id, "test-owner", b"terminal")
+            .unwrap();
+        ledger
+            .handoff_staged_to_recovery(&reservation.reservation_id)
+            .unwrap();
+        drop(ledger);
+
+        let reopened = TerminalEvidenceLedger::open(&path, 64).unwrap();
+        let recoverable = reopened.recoverable("scan", "test-owner").unwrap();
+        assert_eq!(recoverable.len(), 1);
+        assert_eq!(
+            reopened.attach(&scope()).unwrap().reservation_id,
+            reservation.reservation_id
+        );
         std::fs::remove_file(path).unwrap();
     }
     #[test]

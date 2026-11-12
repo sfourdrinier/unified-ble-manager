@@ -1,4 +1,9 @@
 import { parseOrderedRecordingFailure } from '../core/ordered-recording'
+import {
+  isTerminalEvidenceStageFailure,
+  rehydrateTrustedTerminalEvidenceStageFailure
+} from '../core/terminal-evidence-stage-failure'
+import { isAuthenticatedElectronTerminalEvidenceStageFailure } from './electron-terminal-evidence-wire'
 // src/ipc/manager.ts
 import { isCanonicalIngressOrdinal } from '../core/ordered-notification-contract'
 import { accountOrderedDiscard } from '../core/ordered-notification-stream'
@@ -580,6 +585,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       throw error
     }
     let session: IpcScanSession | null = null
+    const scanTerminalEvidenceScope = options.terminalEvidenceScope
     const observations = this.registerStream<IpcScanObservation>(
       handle,
       isIpcScanObservation,
@@ -596,7 +602,18 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         }
         return undefined
       },
-      'lease-owned'
+      'lease-owned',
+      stream => {
+        if (
+          scanTerminalEvidenceScope !== undefined &&
+          'setTerminalEvidenceHydrator' in stream &&
+          typeof stream.setTerminalEvidenceHydrator === 'function'
+        ) {
+          stream.setTerminalEvidenceHydrator((notice: StreamTerminalNotice) =>
+            hydrateIpcTerminalEvidence(this, notice, scanTerminalEvidenceScope)
+          )
+        }
+      }
     )
     session = new IpcScanSession(this, handle, observations, plan)
     return session
@@ -967,7 +984,15 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         upstreamLoss = cumulativeStreamLoss(upstreamLoss, item, true)
         reportKnownLoss('drop-oldest')
         const error = requiredTerminalError(item.error, 'ipc-manager.event')
-        source.finishWithReason(reason, error, requiredTerminalEvidence(item.evidence, 'ipc-manager.event'))
+        const evidence = requiredTerminalEvidence(item.evidence, 'ipc-manager.event')
+        const trustedStageFailure = requiredTrustedElectronTerminalEvidenceStageFailure(
+          item,
+          reason,
+          error,
+          evidence,
+          'ipc-manager.event'
+        )
+        source.finishWithReason(reason, trustedStageFailure ?? error, evidence)
         this.streams.delete(streamId)
         this.discardPendingStream(streamId)
         this.captureOwnerCleanup(
@@ -4716,6 +4741,13 @@ function requiredTerminalEvidence(value: unknown, operation: string): TerminalEv
     typeof value.scope.incarnation !== 'string'
   )
     throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-evidence`)
+  const managerId = value.scope.managerId
+  const operationId = value.scope.operationId
+  const incarnation = value.scope.incarnation
+  // The structural checks above establish these exact scalar types.
+  if (typeof managerId !== 'string' || typeof operationId !== 'string' || typeof incarnation !== 'string')
+    throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-evidence`)
+  const scope = terminalEvidenceScope(value.producer, value.scope, managerId, operationId, incarnation, operation)
   return Object.freeze({
     ref: value.ref,
     byteLength,
@@ -4723,12 +4755,116 @@ function requiredTerminalEvidence(value: unknown, operation: string): TerminalEv
     formatVersion: 1,
     durability: 'committed',
     producer: value.producer,
-    scope: Object.freeze({
-      managerId: value.scope.managerId,
-      operationId: value.scope.operationId,
-      incarnation: value.scope.incarnation
-    })
+    scope
   })
+}
+
+function terminalEvidenceScope(
+  producer: 'scan' | 'subscription',
+  scope: SerializableRecord,
+  managerId: string,
+  operationId: string,
+  incarnation: string,
+  operation: string
+): TerminalEvidenceCommit['scope'] {
+  const scalar = Object.freeze({ managerId, operationId, incarnation })
+  const raw = scope.scopeUtf16le
+  if (raw === undefined) return scalar
+  if (!(raw instanceof Uint8Array))
+    throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-evidence-scope`)
+  const fields = unpackTerminalEvidenceScopeUtf16le(raw, operation)
+  if (fields[0] !== producer) throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-evidence-scope`)
+  const reconstructed = Object.freeze({ managerId: fields[1], operationId: fields[2], incarnation: fields[3] })
+  if (
+    scalar.managerId !== scalarProjection(reconstructed.managerId) ||
+    scalar.operationId !== scalarProjection(reconstructed.operationId) ||
+    scalar.incarnation !== scalarProjection(reconstructed.incarnation)
+  )
+    throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-evidence-scope`)
+  return reconstructed
+}
+
+function unpackTerminalEvidenceScopeUtf16le(
+  raw: Uint8Array,
+  operation: string
+): readonly [string, string, string, string] {
+  if (raw.byteLength < 16) throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-evidence-scope`)
+  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength)
+  const lengths = [view.getUint32(0, true), view.getUint32(4, true), view.getUint32(8, true), view.getUint32(12, true)]
+  const total = lengths.reduce((sum, length) => sum + length, 0)
+  if (lengths.some(length => length === 0) || 16 + total * 2 !== raw.byteLength)
+    throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-evidence-scope`)
+  let offset = 16
+  const fields = lengths.map(length => {
+    const units: number[] = []
+    for (let index = 0; index < length; index += 1) {
+      units.push(view.getUint16(offset, true))
+      offset += 2
+    }
+    return String.fromCharCode(...units)
+  })
+  return Object.freeze([fields[0] ?? '', fields[1] ?? '', fields[2] ?? '', fields[3] ?? ''])
+}
+
+function scalarProjection(value: string): string {
+  let result = ''
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index)
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        result += (value[index] ?? '') + (value[index + 1] ?? '')
+        index += 1
+      } else result += '\ufffd'
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) result += '\ufffd'
+    else result += value[index] ?? ''
+  }
+  return result
+}
+
+async function hydrateIpcTerminalEvidence(
+  source: IpcBleManager,
+  notice: StreamTerminalNotice,
+  expectedScope: { readonly managerId: string; readonly operationId: string; readonly incarnation: string }
+): Promise<StreamTerminalNotice> {
+  if (isTerminalEvidenceStageFailure(notice.error)) return notice
+  const evidence = notice.evidence
+  if (
+    evidence === undefined ||
+    evidence.scope.managerId !== expectedScope.managerId ||
+    evidence.scope.operationId !== expectedScope.operationId ||
+    evidence.scope.incarnation !== expectedScope.incarnation
+  ) {
+    throw contractError('protocol.violation', 'stream', 'ipc-manager.terminal-evidence.scope')
+  }
+  return hydrateTerminalEvidence(source, notice, evidence.byteLength)
+}
+
+function requiredTrustedElectronTerminalEvidenceStageFailure(
+  item: SerializableRecord,
+  reason: StreamTerminalNotice['reason'],
+  error: NormalizedBleError | null,
+  evidence: TerminalEvidenceCommit | undefined,
+  operation: string
+): NormalizedBleError | null {
+  const value = item.terminalEvidenceStageFailed
+  if (value === undefined) return null
+  if (value !== true || !isAuthenticatedElectronTerminalEvidenceStageFailure(item))
+    throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-evidence-stage-failure-wire`)
+  if (reason !== 'source-failed' || error === null || evidence !== undefined)
+    throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-evidence-stage-failure-wire`)
+  return (
+    rehydrateTrustedTerminalEvidenceStageFailure(
+      Object.freeze({
+        kind: 'terminal',
+        reason,
+        droppedItems: resourceCount(Number(item.droppedItems ?? 0)),
+        droppedBytes: resourceCount(Number(item.droppedBytes ?? 0)),
+        replacedItems: resourceCount(Number(item.replacedItems ?? 0)),
+        error
+      })
+    ).error ?? null
+  )
 }
 
 export function decodeReclaimReceipt(value: unknown): OrderedRecordingReclaimReceipt {

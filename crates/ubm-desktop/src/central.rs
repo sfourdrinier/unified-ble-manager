@@ -5369,6 +5369,32 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .map(|active| active.id.clone())
     }
 
+    /// Core operation id of the scan the radio can still be producing for.
+    ///
+    /// Unlike [`Self::active_scan_id`], this deliberately excludes a scan
+    /// whose OS-ended terminal has synchronously retired its ingress but whose
+    /// callback fence is still retained for an exact cleanup retry.  That
+    /// retained slot is ownership debt, not an operational scan: a lagged
+    /// terminal consumer must not mistake it for evidence that its stream is
+    /// still live.
+    #[must_use]
+    pub fn operational_scan_id(&self) -> Option<OperationId> {
+        self.inner.scan_slot().as_ref().and_then(|active| {
+            matches!(
+                active.phase,
+                ScanPhase::Starting
+                    | ScanPhase::StartCancelled
+                    | ScanPhase::Active
+                    | ScanPhase::Stopping {
+                        stage: ScanStopStage::PhysicalStop,
+                        ..
+                    }
+                    | ScanPhase::StopFailed(ScanStopStage::PhysicalStop)
+            )
+            .then(|| active.id.clone())
+        })
+    }
+
     /// Core session peer key for a radio peripheral id, if resolved.
     pub async fn peer_key_for(&self, peer_id: &str) -> Option<String> {
         self.inner.peers.lock().await.get(peer_id).cloned()

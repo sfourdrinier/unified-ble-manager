@@ -24,6 +24,7 @@ function fixture(options = {}) {
   }
   const records = new Map()
   const reservations = new Map()
+  const releases = []
   let serial = 0
   const source = {
     reserveTerminalEvidence: async request => {
@@ -37,7 +38,10 @@ function fixture(options = {}) {
           records.set(ref, { bytes: new Uint8Array(record.canonicalBytes), digest: record.digest })
           return { producer: request.producer, ref, byteLength: record.canonicalBytes.byteLength, digest: record.digest, formatVersion: 1, durability: 'committed', scope: request.scope }
         },
-        release: async () => { reservations.delete(reservationId) }
+        release: async () => {
+          releases.push(reservationId)
+          reservations.delete(reservationId)
+        }
       }
     },
     readTerminalEvidence: async (ref, maximumBytes) => {
@@ -53,7 +57,7 @@ function fixture(options = {}) {
   backend.gatt ??= source
   const manager = { attachedBackend: { attachment: { attachment }, backend }, identity: { versions: { backendContract: axis('backend-contract'), capabilitySchema: axis('capability-schema'), eventSchema: axis('event-schema'), traceFormat: axis('trace-format') } }, capabilities: () => [], onAttachmentAdvanced: () => () => {}, monotonicNow: () => 1 }
   const router = new ElectronMainBleRouter({ manager, maximumMessageBytes: 512, maximumOutstandingOperations: 8, maximumRetainedBytes: 4096, publish: async () => 'delivered' })
-  return { router, records, reservations }
+  return { router, records, reservations, releases }
 }
 
 function offer() {
@@ -68,6 +72,91 @@ async function route(router, sender) {
 }
 
 const sender = client => ({ authenticatedClientId: client, authenticatedWindowScope: 'window', authenticatedSessionScope: 'session' })
+
+test('Electron binds terminal evidence to its authenticated owner before publishing the reservation', async () => {
+  const bindings = []
+  const backend = Object.create(DesktopRustCoreBackend.prototype)
+  backend.observeOrderedRecordingFinished = () => () => undefined
+  backend.hasTerminalEvidenceRecovery = () => false
+  backend.bindTerminalEvidenceRecipientForRecovery = async (...binding) => { bindings.push(binding) }
+  const { router } = fixture({ desktopBackend: backend })
+  const owner = sender('authenticated-client')
+  const client = await route(router, owner)
+  const scope = { managerId: 'manager', operationId: 'operation', incarnation: 'incarnation' }
+
+  await expect(client.route('terminalEvidence.reserve', {
+    version: 1,
+    producer: 'scan',
+    maximumBytes: 32,
+    formatVersion: 1,
+    scope,
+    recipient: 'renderer-supplied-recipient-must-not-reach-native'
+  })).resolves.toMatchObject({ kind: 'reserved' })
+
+  expect(bindings).toEqual([[
+    'scan',
+    scope,
+    JSON.stringify(['authenticated-client', 'window', 'session'])
+  ]])
+})
+
+test('Electron releases an unpublished terminal reservation when trusted recipient binding fails', async () => {
+  const backend = Object.create(DesktopRustCoreBackend.prototype)
+  backend.observeOrderedRecordingFinished = () => () => undefined
+  backend.hasTerminalEvidenceRecovery = () => false
+  backend.bindTerminalEvidenceRecipientForRecovery = async () => {
+    throw new Error('recipient binding unavailable')
+  }
+  const { router, reservations } = fixture({ desktopBackend: backend })
+  const client = await route(router, sender('owner'))
+
+  await expect(client.route('terminalEvidence.reserve', {
+    version: 1,
+    producer: 'scan',
+    maximumBytes: 32,
+    formatVersion: 1,
+    scope: { managerId: 'manager', operationId: 'operation', incarnation: 'incarnation' }
+  })).rejects.toThrow('recipient binding unavailable')
+
+  expect(reservations).toEqual(new Map())
+})
+
+test('Electron releases a provisionally bound reservation when its renderer closes during binding', async () => {
+  let completeBinding
+  let bindingStarted
+  const bindingStartedPromise = new Promise(resolve => { bindingStarted = resolve })
+  const bindingCompletion = new Promise(resolve => { completeBinding = resolve })
+  const backend = Object.create(DesktopRustCoreBackend.prototype)
+  backend.observeOrderedRecordingFinished = () => () => undefined
+  backend.hasTerminalEvidenceRecovery = () => false
+  backend.bindTerminalEvidenceRecipientForRecovery = async () => {
+    bindingStarted()
+    await bindingCompletion
+  }
+  const { router, reservations, releases } = fixture({ desktopBackend: backend })
+  const identity = sender('owner')
+  const client = await route(router, identity)
+  const reserve = client.route('terminalEvidence.reserve', {
+    version: 1,
+    producer: 'scan',
+    maximumBytes: 32,
+    formatVersion: 1,
+    scope: { managerId: 'manager', operationId: 'operation', incarnation: 'incarnation' }
+  })
+
+  await bindingStartedPromise
+  const release = router.releaseRenderer(identity, client.boot.rendererLease)
+  // The arbiter marks the resource lifecycle in its scheduled release turn;
+  // it then waits this in-flight route. Do not await `release` before the
+  // deferred native bind is allowed to settle.
+  await Promise.resolve()
+  completeBinding()
+
+  await expect(reserve).rejects.toMatchObject({ normalized: { code: 'ownership.denied' } })
+  await expect(release).resolves.toEqual({ state: 'released', failures: [] })
+  expect(reservations).toEqual(new Map())
+  expect(releases).toEqual(['reservation-1'])
+})
 
 test('trusted main retains committed terminal evidence across a renderer lease release for same-renderer recovery only', async () => {
   const { router, records, reservations } = fixture()
@@ -110,6 +199,7 @@ test('a stale same-identity renderer cannot acknowledge evidence claimed by a ne
   const backend = Object.create(DesktopRustCoreBackend.prototype)
   backend.observeOrderedRecordingFinished = () => () => undefined
   backend.hasTerminalEvidenceRecovery = () => true
+  backend.bindTerminalEvidenceRecipientForRecovery = async () => undefined
   backend.stageTerminalEvidenceForRecovery = async () => undefined
   const recovered = leaseId =>
     reference === null
@@ -143,6 +233,7 @@ test('a second same-identity renderer cannot acknowledge a busy first controller
   const backend = Object.create(DesktopRustCoreBackend.prototype)
   backend.observeOrderedRecordingFinished = () => () => undefined
   backend.hasTerminalEvidenceRecovery = () => true
+  backend.bindTerminalEvidenceRecipientForRecovery = async () => undefined
   backend.stageTerminalEvidenceForRecovery = async () => undefined
   const page = leaseId => {
     if (reference === null) return { records: [], busyProducers: [] }

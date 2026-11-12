@@ -28,6 +28,36 @@ fn terminal_evidence_producer_operations_are_public_mobile_wire_operations() {
     }
 }
 
+fn terminal_scope_utf16le_with_unpaired_manager(
+    producer: &str,
+    operation_id: &str,
+    incarnation: &str,
+) -> String {
+    let mut manager = "manager-".encode_utf16().collect::<Vec<_>>();
+    manager.push(0xd83d);
+    let fields = [
+        producer.encode_utf16().collect::<Vec<_>>(),
+        manager,
+        operation_id.encode_utf16().collect::<Vec<_>>(),
+        incarnation.encode_utf16().collect::<Vec<_>>(),
+    ];
+    let mut bytes =
+        Vec::with_capacity(16 + fields.iter().map(|field| field.len() * 2).sum::<usize>());
+    for field in &fields {
+        bytes.extend_from_slice(
+            &u32::try_from(field.len())
+                .expect("test scope fits u32")
+                .to_le_bytes(),
+        );
+    }
+    for field in &fields {
+        for unit in field {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+    }
+    ubm_mobile::wire::encode_base64(&bytes)
+}
+
 fn polar_advertisement() -> RadioIngress {
     RadioIngress::Advertisement(Advertisement {
         capture_timestamp_ms: None,
@@ -963,6 +993,7 @@ async fn scan_start_accepts_and_retains_terminal_evidence_scope() {
     );
     radio.bind_host(&host);
     let session = host.open_session("rn-manager").expect("session");
+    let raw_scope = terminal_scope_utf16le_with_unpaired_manager("scan", "terminal-scan-1", "1");
 
     let reservation = ok(&call(
         &session,
@@ -971,8 +1002,9 @@ async fn scan_start_accepts_and_retains_terminal_evidence_scope() {
             "producer": "scan",
             "maximumBytes": 65_536,
             "formatVersion": 1,
+            "scopeUtf16leBase64": raw_scope,
             "scope": {
-                "managerId": "manager-1",
+                "managerId": "manager-\u{fffd}",
                 "operationId": "terminal-scan-1",
                 "incarnation": "1"
             }
@@ -989,9 +1021,10 @@ async fn scan_start_accepts_and_retains_terminal_evidence_scope() {
             "duplicatePolicy": "all",
             "operationId": "scan-1",
             "terminalEvidenceScope": {
-                "managerId": "manager-1",
+                "managerId": "manager-\u{fffd}",
                 "operationId": "terminal-scan-1",
-                "incarnation": "1"
+                "incarnation": "1",
+                "scopeUtf16leBase64": raw_scope
             }
         })
         .to_string(),

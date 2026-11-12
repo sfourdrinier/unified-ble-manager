@@ -3695,6 +3695,31 @@ export class ElectronMainBleRouter {
       const request = terminalEvidenceReservationRequest(payload)
       const source = this.terminalEvidenceSource(request.producer)
       const reservation = await source.reserveTerminalEvidence(request)
+      const releaseRevokedReservation = async (): Promise<never> => {
+        await reservation.release()
+        throw contractError('ownership.denied', 'restoration', 'electron.terminal-evidence.reserve.revoked')
+      }
+      if (resources.lifecycle !== 'active') await releaseRevokedReservation()
+      const backend = this.manager.attachedBackend.backend
+      if (backend instanceof DesktopRustCoreBackend) {
+        try {
+          await backend.bindTerminalEvidenceRecipientForRecovery(request.producer, request.scope, resources.ownerKey)
+        } catch (bindingError) {
+          try {
+            await reservation.release()
+          } catch (releaseError) {
+            throw new AggregateError(
+              [bindingError, releaseError],
+              'Electron terminal-evidence recipient binding and reservation release both failed'
+            )
+          }
+          throw bindingError
+        }
+      }
+      // Binding crosses an asynchronous native boundary. Renderer teardown can
+      // complete while it awaits, before this provisional reservation reaches
+      // the process registry; never publish such an orphaned row.
+      if (resources.lifecycle !== 'active') await releaseRevokedReservation()
       const reservationId = `terminal-evidence-${this.terminalEvidence.nextId++}`
       this.terminalEvidence.entries.set(reservationId, {
         ownerKey: resources.ownerKey,

@@ -305,6 +305,7 @@ const CENTRAL_METHODS: readonly (keyof DesktopRustCoreCentral)[] = Object.freeze
   'setEventWaker',
   'eventWakeFailures',
   'activeScanId',
+  'operationalScanId',
   'takeAdapterResetEvent',
   'adapterStatus',
   'awaitUsableAdapter',

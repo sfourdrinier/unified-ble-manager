@@ -15,6 +15,7 @@ import type { CleanupRecord } from '../backend-contract/errors'
 import type { IpcEnvelope } from '../backend-contract/electron'
 import type { IpcOperationCorrelation, OwnedBytes, SerializableRecord } from '../backend-contract/primitives'
 import { snapshotSerializableRecord } from '../backend-contract/serializable'
+import { markAuthenticatedElectronTerminalEvidenceStageFailure } from '../ipc/electron-terminal-evidence-wire'
 import { validateCapabilitySnapshot } from '../backend-contract/capabilities'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import {
@@ -517,6 +518,23 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
       this.enqueueAcknowledgement(event.eventId)
       this.eventsStream.closeWithReason('source-failed', failure.normalized)
       return
+    }
+    if (event.item.terminalEvidenceStageFailed !== undefined) {
+      if (
+        event.item.terminalEvidenceStageFailed !== true ||
+        event.item.kind !== 'terminal' ||
+        event.item.reason !== 'source-failed' ||
+        event.item.evidence !== undefined
+      ) {
+        this.enqueueAcknowledgement(event.eventId)
+        this.eventsStream.closeWithReason(
+          'source-failed',
+          contractError('protocol.malformed', 'ipc', 'electron-renderer.terminal-evidence-stage-failure-wire')
+            .normalized
+        )
+        return
+      }
+      markAuthenticatedElectronTerminalEvidenceStageFailure(event.item)
     }
     this.eventsStream.emit(payload, bytes)
     this.routeConnectionEvent(event)

@@ -81,31 +81,29 @@ pub(super) fn encode_terminal(
     if let Some(error) = error {
         terminal.insert("error".to_owned(), error.clone());
     }
-    let value = IpcValue::Object(BTreeMap::from([
-        (
-            "formatVersion".to_owned(),
-            IpcValue::Number(FORMAT_VERSION.into()),
+    // `IpcValue::String` is Rust UTF-8 and therefore cannot represent an
+    // unpaired JavaScript surrogate. The ledger retains the validated raw
+    // UTF-16 sidecar precisely for this serialization boundary.
+    format!(
+        "{{\"formatVersion\":{FORMAT_VERSION},\"scope\":{{\"incarnation\":{},\"managerId\":{},\"operationId\":{}}},\"terminal\":{}}}",
+        ubm_desktop::terminal_evidence_ledger::canonical_scope_json_string(
+            scope.scope_utf16le.as_deref(),
+            3,
+            &scope.incarnation,
         ),
-        (
-            "scope".to_owned(),
-            IpcValue::Object(BTreeMap::from([
-                (
-                    "incarnation".to_owned(),
-                    IpcValue::String(scope.incarnation.clone()),
-                ),
-                (
-                    "managerId".to_owned(),
-                    IpcValue::String(scope.manager_id.clone()),
-                ),
-                (
-                    "operationId".to_owned(),
-                    IpcValue::String(scope.operation_id.clone()),
-                ),
-            ])),
+        ubm_desktop::terminal_evidence_ledger::canonical_scope_json_string(
+            scope.scope_utf16le.as_deref(),
+            1,
+            &scope.manager_id,
         ),
-        ("terminal".to_owned(), IpcValue::Object(terminal)),
-    ]));
-    stable_json(&value).into_bytes()
+        ubm_desktop::terminal_evidence_ledger::canonical_scope_json_string(
+            scope.scope_utf16le.as_deref(),
+            2,
+            &scope.operation_id,
+        ),
+        stable_json(&IpcValue::Object(terminal)),
+    )
+    .into_bytes()
 }
 
 fn stable_json(value: &IpcValue) -> String {
@@ -145,6 +143,7 @@ pub(super) struct Scope {
     pub manager_id: String,
     pub operation_id: String,
     pub incarnation: String,
+    pub scope_utf16le: Option<Vec<u8>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -170,17 +169,14 @@ pub(super) fn parse_source_scope(
         return Ok(None);
     };
     let scope = into_object(value.clone(), operation)?;
-    exact_keys(
-        &scope,
-        &["managerId", "operationId", "incarnation"],
-        operation,
-    )?;
+    exact_scope_keys(&scope, operation)?;
     Ok(Some(
         ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
             producer: producer.to_owned(),
             manager_id: required_string(&scope, "managerId", operation)?,
             operation_id: required_string(&scope, "operationId", operation)?,
             incarnation: required_string(&scope, "incarnation", operation)?,
+            scope_utf16le: optional_scope_utf16le(&scope, operation)?,
         },
     ))
 }
@@ -242,11 +238,7 @@ pub(super) fn parse_reserve(
         required_value(payload, "scope", OPERATION)?.clone(),
         OPERATION,
     )?;
-    exact_keys(
-        &scope,
-        &["managerId", "operationId", "incarnation"],
-        OPERATION,
-    )?;
+    exact_scope_keys(&scope, OPERATION)?;
     Ok(Reserve {
         producer,
         maximum_bytes,
@@ -254,8 +246,36 @@ pub(super) fn parse_reserve(
             manager_id: required_string(&scope, "managerId", OPERATION)?,
             operation_id: required_string(&scope, "operationId", OPERATION)?,
             incarnation: required_string(&scope, "incarnation", OPERATION)?,
+            scope_utf16le: optional_scope_utf16le(&scope, OPERATION)?,
         },
     })
+}
+
+/// The Tauri transport's tagged `Uint8Array` representation reaches this
+/// parser as `IpcValue::Bytes`. It is deliberately nested in the scope so an
+/// ordinary JSON numeric array cannot become an identity sidecar.
+fn optional_scope_utf16le(
+    scope: &BTreeMap<String, IpcValue>,
+    operation: &'static str,
+) -> Result<Option<Vec<u8>>, DispatchError> {
+    match scope.get("scopeUtf16le") {
+        None => Ok(None),
+        Some(IpcValue::Bytes(bytes)) if !bytes.is_empty() => Ok(Some(bytes.clone())),
+        _ => Err(malformed(operation)),
+    }
+}
+
+fn exact_scope_keys(
+    scope: &BTreeMap<String, IpcValue>,
+    operation: &'static str,
+) -> Result<(), DispatchError> {
+    let expected = ["managerId", "operationId", "incarnation"];
+    let expected_with_sidecar = ["managerId", "operationId", "incarnation", "scopeUtf16le"];
+    if scope.contains_key("scopeUtf16le") {
+        exact_keys(scope, &expected_with_sidecar, operation)
+    } else {
+        exact_keys(scope, &expected, operation)
+    }
 }
 
 pub(super) fn parse_commit(
@@ -352,6 +372,19 @@ pub(super) fn digest_bytes(digest: &str) -> Result<[u8; 32], DispatchError> {
 mod tests {
     use super::*;
 
+    fn packed_scope(fields: [&[u16]; 4]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for field in fields {
+            bytes.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        }
+        for field in fields {
+            for unit in field {
+                bytes.extend_from_slice(&unit.to_le_bytes());
+            }
+        }
+        bytes
+    }
+
     #[test]
     fn reserve_requires_the_v1_scope_and_a_positive_safe_byte_limit() {
         let request = BTreeMap::from([
@@ -389,6 +422,57 @@ mod tests {
     }
 
     #[test]
+    fn reserve_and_source_scope_preserve_the_tagged_lossless_utf16_sidecar() {
+        // JSON cannot carry the first field's unpaired high surrogate. The
+        // visible scalar is its U+FFFD projection; the tagged byte value is
+        // the authenticated, lossless identity consumed by the ledger.
+        let producer = "scan".encode_utf16().collect::<Vec<_>>();
+        let manager = vec![0x006d, 0xd800];
+        let operation = "operation".encode_utf16().collect::<Vec<_>>();
+        let incarnation = "incarnation".encode_utf16().collect::<Vec<_>>();
+        let raw = packed_scope([
+            producer.as_slice(),
+            manager.as_slice(),
+            operation.as_slice(),
+            incarnation.as_slice(),
+        ]);
+        let scope = IpcValue::Object(BTreeMap::from([
+            (
+                "managerId".to_owned(),
+                IpcValue::String("m\u{fffd}".to_owned()),
+            ),
+            (
+                "operationId".to_owned(),
+                IpcValue::String("operation".to_owned()),
+            ),
+            (
+                "incarnation".to_owned(),
+                IpcValue::String("incarnation".to_owned()),
+            ),
+            ("scopeUtf16le".to_owned(), IpcValue::Bytes(raw.clone())),
+        ]));
+        let reserve = parse_reserve(&BTreeMap::from([
+            ("version".to_owned(), IpcValue::Number(1.into())),
+            ("producer".to_owned(), IpcValue::String("scan".to_owned())),
+            ("maximumBytes".to_owned(), IpcValue::Number(64.into())),
+            ("formatVersion".to_owned(), IpcValue::Number(1.into())),
+            ("scope".to_owned(), scope.clone()),
+        ]))
+        .expect("lossless reserve scope");
+        assert_eq!(reserve.scope.scope_utf16le, Some(raw.clone()));
+
+        let source = parse_source_scope(
+            &BTreeMap::from([("terminalEvidenceScope".to_owned(), scope)]),
+            "scan",
+            "tauri.test.source-scope",
+        )
+        .expect("lossless source scope")
+        .expect("scope");
+        assert_eq!(source.scope_utf16le, Some(raw));
+        assert_eq!(source.manager_id, "m\u{fffd}");
+    }
+
+    #[test]
     fn commit_keeps_bytes_out_of_json_payloads() {
         let payload = BTreeMap::from([
             ("version".to_owned(), IpcValue::Number(1.into())),
@@ -412,6 +496,7 @@ mod tests {
             manager_id: "manager".to_owned(),
             operation_id: "operation".to_owned(),
             incarnation: "incarnation".to_owned(),
+            scope_utf16le: None,
         };
         assert_eq!(
             String::from_utf8(encode_terminal(
@@ -426,12 +511,43 @@ mod tests {
     }
 
     #[test]
+    fn canonical_terminal_bytes_use_raw_utf16_scope_units_when_present() {
+        let producer = "scan".encode_utf16().collect::<Vec<_>>();
+        let manager = vec![0x006d, 0xd800];
+        let operation = "operation".encode_utf16().collect::<Vec<_>>();
+        let incarnation = "incarnation".encode_utf16().collect::<Vec<_>>();
+        let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
+            producer: "scan".to_owned(),
+            manager_id: "m\u{fffd}".to_owned(),
+            operation_id: "operation".to_owned(),
+            incarnation: "incarnation".to_owned(),
+            scope_utf16le: Some(packed_scope([
+                producer.as_slice(),
+                manager.as_slice(),
+                operation.as_slice(),
+                incarnation.as_slice(),
+            ])),
+        };
+        assert_eq!(
+            String::from_utf8(encode_terminal(
+                &scope,
+                "closed",
+                None,
+                TerminalCounters::ZERO
+            ))
+            .expect("UTF-8 JSON"),
+            r#"{"formatVersion":1,"scope":{"incarnation":"incarnation","managerId":"m\ud800","operationId":"operation"},"terminal":{"droppedBytes":0,"droppedItems":0,"kind":"terminal","reason":"closed","replacedItems":0}}"#
+        );
+    }
+
+    #[test]
     fn canonical_terminal_bytes_preserve_nonzero_overflow_counters() {
         let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
             producer: "subscription".to_owned(),
             manager_id: "manager".to_owned(),
             operation_id: "operation".to_owned(),
             incarnation: "incarnation".to_owned(),
+            scope_utf16le: None,
         };
 
         assert_eq!(
@@ -479,6 +595,7 @@ mod tests {
                     manager_id: "manager".to_owned(),
                     operation_id: "operation".to_owned(),
                     incarnation: "incarnation".to_owned(),
+                    scope_utf16le: None,
                 },
                 16,
             )

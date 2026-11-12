@@ -166,11 +166,13 @@ export interface DesktopRustCoreWriteReadinessEvent {
 
 /** A scan the OS ended without a stop request, or a gap marker. */
 export interface DesktopRustCoreScanTerminalEvent {
-  readonly kind: 'terminal' | 'lagged' | 'closed'
+  readonly kind: 'terminal' | 'stage-failed' | 'lagged' | 'closed'
   readonly sequence?: number | null
   readonly operationId?: string | null
   readonly aborted?: boolean | null
   readonly detail?: string | null
+  /** Private N-API stage-failure error wire, valid only with `stage-failed`. */
+  readonly stageFailure?: string | null
   readonly missed?: number | null
   /** Retained native terminal awaiting canonical JS commit and explicit ACK. */
   readonly evidence?: {
@@ -506,6 +508,7 @@ export interface DesktopRustCoreCentral {
     readonly maximumBytes: string
     readonly formatVersion: 1
     readonly scope: { readonly managerId: string; readonly operationId: string; readonly incarnation: string }
+    readonly scopeUtf16le?: Uint8Array
   }): Promise<{ readonly reservationId: string; readonly maximumBytes: string }>
   commitTerminalEvidence?(options: {
     readonly reservationId: string
@@ -554,6 +557,12 @@ export interface DesktopRustCoreCentral {
     readonly producer: 'scan' | 'subscription'
     readonly recipient: string
   }): Promise<void>
+  /**
+   * Binds the durable row to a host-authenticated recovery recipient before
+   * the source is activated. Electron main derives this value from its
+   * authenticated renderer resources; it is never renderer IPC input.
+   */
+  bindTerminalEvidenceRecipient?(reservationId: string, recipient: string): Promise<void>
   stageTerminalEvidence?(reservationId: string, recipient: string, canonicalBytes: Uint8Array): Promise<void>
   recoverTerminalEvidence?(options: {
     readonly producer: 'scan' | 'subscription'
@@ -563,6 +572,7 @@ export interface DesktopRustCoreCentral {
     readonly {
       readonly reservationId: string
       readonly producer: 'scan' | 'subscription'
+      readonly scopeUtf16le?: Uint8Array
       readonly byteLength?: string
       readonly digest?: string
       readonly formatVersion?: number
@@ -579,6 +589,7 @@ export interface DesktopRustCoreCentral {
     readonly entries: readonly {
       readonly reservationId: string
       readonly producer: 'scan' | 'subscription'
+      readonly scopeUtf16le?: Uint8Array
       readonly byteLength?: string
       readonly digest?: string
       readonly formatVersion?: number
@@ -856,6 +867,10 @@ export interface DesktopRustCoreCentral {
         readonly operationId: string
         readonly incarnation: string
       }
+      /** Lossless packed UTF-16LE scope sidecar for native durable identity. */
+      readonly terminalEvidenceScopeUtf16le?: Uint8Array
+      /** Trusted operation identity for source-time terminal evidence. */
+      readonly terminalEvidenceOperation?: string
     } & DesktopRustCoreControl
   ): Promise<{ operationId: string }>
   stopScan(operationId: string, options?: DesktopRustCoreControl): Promise<'stopped' | 'not-active'>
@@ -963,6 +978,7 @@ export interface DesktopRustCoreCentral {
         readonly operationId: string
         readonly incarnation: string
       }
+      readonly terminalEvidenceScopeUtf16le?: Uint8Array
     } & DesktopRustCoreGattTarget
   ): Promise<{ delivery: 'notification' | 'indication' | 'unknown' }>
   /** One consumer's cumulative accounting in the core (`null` when it holds no record). */
@@ -1076,8 +1092,14 @@ export interface DesktopRustCoreCentral {
   resolvePeer(
     options: { readonly peerId: string } & DesktopRustCoreControl
   ): Promise<DesktopRustCoreDirectoryPeer | null>
-  /** The core operation id of the owned scan, `null` when none (the re-read after a scan-terminal lag). */
+  /** The core operation id of the retained scan owner, `null` when none. */
   activeScanId(): string | null
+  /**
+   * The core operation id of the scan still operational at the radio, `null`
+   * when none. Retained callback-fence cleanup after an OS-ended scan is not
+   * operational (the scan-terminal lag re-read).
+   */
+  operationalScanId(): string | null
   takeAdapterResetEvent(): Promise<DesktopRustCoreAdapterResetEvent | null>
   adapterStatus(): DesktopRustCoreAdapterStatus
   /** Resolves once the adapter is usable; `capability.unavailable` / `adapter.initialize` after `withinMs`. */

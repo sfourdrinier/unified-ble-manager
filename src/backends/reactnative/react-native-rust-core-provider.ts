@@ -233,6 +233,7 @@ import {
   planReactNativeAndroidScan,
   planReactNativeAppleScan
 } from './react-native-scan-planner'
+import { terminalEvidenceScopeForNative } from './terminal-evidence-scope-utf16'
 import {
   checkWriteReceipt,
   decodeBase64,
@@ -2347,11 +2348,17 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private async reserveTerminalEvidence(
     request: TerminalEvidenceReservationRequest
   ): Promise<TerminalEvidenceReservation> {
+    const nativeScope = terminalEvidenceScopeForNative(request.producer, request.scope)
     const reserved = await this.invoke('terminal-evidence.reserve', {
       producer: request.producer,
       maximumBytes: request.maximumBytes,
       formatVersion: request.formatVersion,
-      scope: request.scope
+      scope: {
+        managerId: nativeScope.managerId,
+        operationId: nativeScope.operationId,
+        incarnation: nativeScope.incarnation
+      },
+      ...(nativeScope.scopeUtf16leBase64 === undefined ? {} : { scopeUtf16leBase64: nativeScope.scopeUtf16leBase64 })
     })
     const reservationId = reserved.reservationId
     let committed = false
@@ -2440,12 +2447,16 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
     const operationId = this.mintOperationId('scan')
     if (this.pendingScanStart !== null) throw contractError('scan.already-active', 'scan', operation)
     const budget = this.budget(options, operation)
+    const terminalEvidenceScope =
+      options.terminalEvidenceScope === undefined
+        ? undefined
+        : terminalEvidenceScopeForNative('scan', options.terminalEvidenceScope)
     const args: WireJsonObject = {
       serviceUuids: nativeFilter.serviceUuids.map(uuid => String(uuid)),
       duplicatePolicy: 'all',
       operationId,
       ...(deviceAddresses.length === 0 ? {} : { deviceAddresses }),
-      ...(options.terminalEvidenceScope === undefined ? {} : { terminalEvidenceScope: options.terminalEvidenceScope }),
+      ...(terminalEvidenceScope === undefined ? {} : { terminalEvidenceScope }),
       ...this.scanPlatformArgs(options, operation),
       ...budget,
       ...(budget.budgetMs === undefined ? {} : { lifetimeMs: budget.budgetMs })
@@ -4581,7 +4592,9 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
         ...(request.options.deliveryMode === undefined ? {} : { deliveryMode: request.options.deliveryMode }),
         ...(request.terminalEvidenceScope === undefined
           ? {}
-          : { terminalEvidenceScope: request.terminalEvidenceScope }),
+          : {
+              terminalEvidenceScope: terminalEvidenceScopeForNative('subscription', request.terminalEvidenceScope)
+            }),
         ...budget
       }).catch(error => {
         this.subscriptions.delete(consumer)

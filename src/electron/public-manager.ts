@@ -1,6 +1,7 @@
 import { BackendContractError, contractError } from '../backend-contract/errors'
 import type { NormalizedBleError } from '../backend-contract/errors'
 import type { StreamTerminalNotice } from '../backend-contract/streams'
+import { markAuthenticatedElectronTerminalEvidenceStageFailure } from '../ipc/electron-terminal-evidence-wire'
 import type { SerializableRecord } from '../backend-contract/primitives'
 import type { ElectronRendererIpcTransport } from './protocol'
 import type {
@@ -760,6 +761,18 @@ class ElectronClientTransport implements IpcClientTransport<string, string> {
         streamId: item.value.streamId,
         item: item.value.item
       })
+      if (event.item.terminalEvidenceStageFailed !== undefined) {
+        if (
+          event.item.terminalEvidenceStageFailed !== true ||
+          event.item.kind !== 'terminal' ||
+          event.item.reason !== 'source-failed' ||
+          event.item.evidence !== undefined
+        ) {
+          this.failTransport('source-failed', transportError(null, 'terminal-evidence-stage-failure-wire'))
+          return
+        }
+        markAuthenticatedElectronTerminalEvidenceStageFailure(event.item)
+      }
       for (const listener of [...this.listeners]) listener(event)
     }
     this.failTransport('source-failed', transportError(null, 'event-stream-ended'))

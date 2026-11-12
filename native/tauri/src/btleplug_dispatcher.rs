@@ -508,6 +508,33 @@ struct ScanResource {
     task: Option<TauriJoinHandle<()>>,
     phase: ReleasePhase,
     terminal_evidence: Option<TerminalEvidenceBinding>,
+    /// A core-ended scan whose authenticated stage-failure terminal could
+    /// not enter the renderer channel. The mapping is cleanup debt: it keeps
+    /// both the precise stage failure to re-send and the precise delivery
+    /// failure a release retry must report.
+    terminal_stage_failure: Option<DispatchError>,
+    terminal_delivery_failure: Option<DispatchError>,
+    /// The exact terminal that reached durable staging but not the renderer.
+    /// A later ACK or owner cleanup retries this same terminal rather than
+    /// replacing a source failure with an owner-release terminal.
+    terminal_delivery_retry_item: Option<ScanTerminalRetry>,
+    terminal_failure_claimed: bool,
+    /// A source-failed stage-error terminal reached the renderer. The core
+    /// already ended this scan, so owner cleanup must not manufacture a
+    /// contradictory `owner-released` terminal afterward.
+    terminal_failure_sent: bool,
+    /// A concurrent release joins this retry before it can abandon evidence
+    /// or emit a contradictory owner-release terminal.
+    terminal_delivery_retry: Option<watch::Receiver<ReleaseAnswer>>,
+}
+
+#[derive(Clone)]
+enum ScanTerminalRetry {
+    StageFailure(DispatchError),
+    Terminal {
+        reason: String,
+        error: Option<DispatchError>,
+    },
 }
 
 #[derive(Clone)]
@@ -640,6 +667,7 @@ enum StreamEnd {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TerminalAdmission {
     Any,
+    ClaimedScan,
     ActiveSubscription,
     Connection,
     OwnerConnection,
@@ -2133,6 +2161,7 @@ impl BtleplugDispatcher {
                         manager_id: request.scope.manager_id,
                         operation_id: request.scope.operation_id,
                         incarnation: request.scope.incarnation,
+                        scope_utf16le: request.scope.scope_utf16le,
                     },
                     request.maximum_bytes,
                 ) {
@@ -2375,7 +2404,6 @@ impl BtleplugDispatcher {
                         ),
                         ("formatVersion", number(1)),
                     ]));
-                    let _ = mapped;
                 }
                 if command == "terminalEvidence.recovery.listWithStatus" {
                     return Ok(object([
@@ -5080,6 +5108,12 @@ impl BtleplugDispatcher {
                         task: None,
                         phase: ReleasePhase::Active,
                         terminal_evidence,
+                        terminal_stage_failure: None,
+                        terminal_delivery_failure: None,
+                        terminal_delivery_retry_item: None,
+                        terminal_failure_claimed: false,
+                        terminal_failure_sent: false,
+                        terminal_delivery_retry: None,
                     });
                     let task = self.spawn_scan_forwarder(
                         Arc::clone(&authority),
@@ -5219,7 +5253,14 @@ impl BtleplugDispatcher {
             return Delivery::Gone;
         };
         match caller_state.scan.as_ref() {
-            Some(scan) if scan.handle == handle && scan.phase.is_active() => Delivery::Active,
+            Some(scan)
+                if scan.handle == handle
+                    && scan.phase.is_active()
+                    && !scan.terminal_failure_sent
+                    && !scan.terminal_failure_claimed =>
+            {
+                Delivery::Active
+            }
             Some(scan) if scan.handle == handle => Delivery::Paused,
             _ => Delivery::Gone,
         }
@@ -5259,6 +5300,23 @@ impl BtleplugDispatcher {
         handle: &str,
         ctl: OpControl,
     ) -> Result<(), DispatchError> {
+        // A source-ended scan can still owe its authenticated stage-failure
+        // terminal. Do not let the core's already-stopped verdict erase that
+        // delivery debt: join/retry it before removing the mapping.
+        let owns_handle = self
+            .inner
+            .lock()
+            .await
+            .callers
+            .get(key)
+            .and_then(|caller| caller.scan.as_ref())
+            .is_some_and(|scan| scan.handle == handle);
+        if !owns_handle {
+            // An unknown/stale handle is already released and must not make
+            // progress on an unrelated scan's retained terminal debt.
+            return Ok(());
+        }
+        self.retry_scan_terminal_delivery_failure(key).await?;
         let step = {
             let mut state = self.inner.lock().await;
             let Some(scan) = state
@@ -6256,7 +6314,10 @@ impl BtleplugDispatcher {
 
     /// The core ended a scan without a stop request: the OS stopped it, or
     /// an adapter loss took it (finding 57). The core already settled it
-    /// and released its owner, so the mapping goes and the stream ends —
+    /// and released its owner. The mapping remains until its terminal
+    /// evidence has either been durably committed and delivered, or a caller
+    /// receives the exact staging failure; otherwise a stage failure would
+    /// silently discard the reservation needed for recovery.
     /// `source-failed` with the core's own words when the scan was aborted,
     /// `closed` otherwise (the desktop NAPI provider's vocabulary). A scan
     /// whose release is in flight is left to that release.
@@ -6265,22 +6326,26 @@ impl BtleplugDispatcher {
             let mut state = self.inner.lock().await;
             state.callers.iter_mut().find_map(|(key, caller_state)| {
                 let owned = caller_state.scan.as_ref().is_some_and(|scan| {
-                    scan.core_operation_id == ended.operation_id && scan.phase.is_active()
+                    scan.core_operation_id == ended.operation_id
+                        && scan.phase.is_active()
+                        && !scan.terminal_failure_sent
+                        && !scan.terminal_failure_claimed
                 });
                 if !owned {
                     return None;
                 }
-                let scan = caller_state.scan.take()?;
-                if let Some(task) = scan.task {
-                    task.abort();
-                }
+                caller_state
+                    .scan
+                    .as_mut()
+                    .expect("owned scan exists")
+                    .terminal_failure_claimed = true;
                 Some((
                     key.clone(),
                     (
                         caller_state.lease_id.clone(),
                         caller_state.lease_generation.clone(),
                     ),
-                    scan.handle,
+                    caller_state.scan.as_ref()?.handle.clone(),
                 ))
             })
         };
@@ -6302,10 +6367,363 @@ impl BtleplugDispatcher {
         } else {
             ("closed", None)
         };
-        // A retired or re-leased caller has nobody left to tell.
-        let _ = self
-            .terminal(&key, (&lease.0, &lease.1), &handle, reason, error.as_ref())
-            .await;
+        match self
+            .terminal_with_admission(
+                &key,
+                TerminalRequest {
+                    expected_lease: (&lease.0, &lease.1),
+                    stream_id: &handle,
+                    reason,
+                    error: error.as_ref(),
+                    counters: terminal_evidence::TerminalCounters::ZERO,
+                    admission: TerminalAdmission::ClaimedScan,
+                },
+            )
+            .await
+        {
+            Ok(_) => {
+                let mut state = self.inner.lock().await;
+                if let Some(scan) = state
+                    .callers
+                    .get_mut(&key)
+                    .filter(|caller| {
+                        caller.lease_id == lease.0 && caller.lease_generation == lease.1
+                    })
+                    .and_then(|caller| caller.scan.as_ref())
+                    .filter(|scan| {
+                        scan.handle == handle && scan.core_operation_id == ended.operation_id
+                    })
+                {
+                    if let Some(task) = scan.task.as_ref() {
+                        task.abort();
+                    }
+                }
+                if let Some(caller) = state.callers.get_mut(&key) {
+                    if caller.scan.as_ref().is_some_and(|scan| {
+                        scan.handle == handle && scan.core_operation_id == ended.operation_id
+                    }) {
+                        caller.scan.take();
+                    }
+                }
+            }
+            Err(stage_failure) => {
+                // The core has already ended the physical scan. A durable
+                // stage/commit failure has a narrowly authenticated public
+                // representation; retain the resource/binding so a later
+                // owner cleanup can retry the exact reservation instead of
+                // forging a receipt or losing recovery authority. Transport
+                // delivery failures are not evidence-stage failures and must
+                // not be branded as one.
+                if matches!(
+                    stage_failure.operation.as_str(),
+                    "tauri.terminal-evidence.stage-before-emit"
+                        | "tauri.terminal-evidence.commit-before-emit"
+                ) {
+                    match self
+                        .emit_scan_terminal_stage_failure(
+                            &key,
+                            (&lease.0, &lease.1),
+                            &handle,
+                            &stage_failure,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            let mut state = self.inner.lock().await;
+                            if let Some(scan) = state
+                                .callers
+                                .get_mut(&key)
+                                .filter(|caller| {
+                                    caller.lease_id == lease.0 && caller.lease_generation == lease.1
+                                })
+                                .and_then(|caller| caller.scan.as_mut())
+                                .filter(|scan| {
+                                    scan.handle == handle
+                                        && scan.core_operation_id == ended.operation_id
+                                })
+                            {
+                                scan.terminal_failure_sent = true;
+                                if let Some(task) = scan.task.as_ref() {
+                                    task.abort();
+                                }
+                            }
+                        }
+                        Err(delivery_failure) => {
+                            let mut state = self.inner.lock().await;
+                            if let Some(scan) = state
+                                .callers
+                                .get_mut(&key)
+                                .filter(|caller| {
+                                    caller.lease_id == lease.0 && caller.lease_generation == lease.1
+                                })
+                                .and_then(|caller| caller.scan.as_mut())
+                                .filter(|scan| {
+                                    scan.handle == handle
+                                        && scan.core_operation_id == ended.operation_id
+                                })
+                            {
+                                scan.terminal_stage_failure = Some(stage_failure);
+                                scan.terminal_delivery_failure = Some(delivery_failure);
+                                scan.terminal_delivery_retry_item =
+                                    Some(ScanTerminalRetry::StageFailure(
+                                        scan.terminal_stage_failure
+                                            .as_ref()
+                                            .expect("stored stage failure")
+                                            .clone(),
+                                    ));
+                            }
+                        }
+                    }
+                } else {
+                    // A terminal-send failure happens after the terminal has
+                    // been assembled (and may have committed evidence). The
+                    // core will not publish another scan-end event, so retain
+                    // that exact terminal for the same retry path rather
+                    // than leaving the lifecycle claim to suppress all later
+                    // cleanup or substituting an owner-release terminal.
+                    let mut state = self.inner.lock().await;
+                    if let Some(scan) = state
+                        .callers
+                        .get_mut(&key)
+                        .filter(|caller| {
+                            caller.lease_id == lease.0 && caller.lease_generation == lease.1
+                        })
+                        .and_then(|caller| caller.scan.as_mut())
+                        .filter(|scan| {
+                            scan.handle == handle && scan.core_operation_id == ended.operation_id
+                        })
+                    {
+                        scan.terminal_delivery_failure = Some(stage_failure);
+                        scan.terminal_delivery_retry_item = Some(ScanTerminalRetry::Terminal {
+                            reason: reason.to_owned(),
+                            error: error.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Retry the exact native stage-failure terminal before ordinary caller
+    /// cleanup. A full queue or closed channel is observable cleanup debt,
+    /// never a reason to discard a committed-or-recoverable binding.
+    async fn retry_scan_terminal_delivery_failure(&self, key: &str) -> Result<(), DispatchError> {
+        enum RetryStep {
+            Join(watch::Receiver<ReleaseAnswer>),
+            Lead {
+                sender: watch::Sender<ReleaseAnswer>,
+                lease: (String, String),
+                handle: String,
+                operation_id: OperationId,
+                item: ScanTerminalRetry,
+            },
+        }
+        let step = {
+            let mut state = self.inner.lock().await;
+            state.callers.get_mut(key).and_then(|caller| {
+                caller.scan.as_mut().and_then(|scan| {
+                    if let Some(retry) = scan.terminal_delivery_retry.as_ref() {
+                        return Some(RetryStep::Join(retry.clone()));
+                    }
+                    scan.terminal_delivery_retry_item.clone().map(|item| {
+                        let (sender, receiver) = watch::channel(None);
+                        scan.terminal_delivery_retry = Some(receiver);
+                        RetryStep::Lead {
+                            sender,
+                            lease: (caller.lease_id.clone(), caller.lease_generation.clone()),
+                            handle: scan.handle.clone(),
+                            operation_id: scan.core_operation_id.clone(),
+                            item,
+                        }
+                    })
+                })
+            })
+        };
+        let Some(step) = step else {
+            return Ok(());
+        };
+        let RetryStep::Lead {
+            sender,
+            lease,
+            handle,
+            operation_id,
+            item,
+        } = step
+        else {
+            let RetryStep::Join(receiver) = step else {
+                unreachable!("retry step is lead or join")
+            };
+            let result = join_release(receiver).await;
+            if result.is_ok() {
+                // The leading retry owns the actual send, but a joined
+                // release must treat its successful answer as terminal too:
+                // it may run only after the sender has cleared its in-flight
+                // marker, so this closes the last owner-release race.
+                if let Some(scan) = self
+                    .inner
+                    .lock()
+                    .await
+                    .callers
+                    .get_mut(key)
+                    .and_then(|caller| caller.scan.as_mut())
+                {
+                    scan.terminal_stage_failure = None;
+                    scan.terminal_delivery_failure = None;
+                    scan.terminal_delivery_retry_item = None;
+                    scan.terminal_delivery_retry = None;
+                    scan.terminal_failure_sent = true;
+                    if let Some(task) = scan.task.as_ref() {
+                        task.abort();
+                    }
+                }
+            }
+            return result;
+        };
+        let result = match &item {
+            ScanTerminalRetry::StageFailure(stage_failure) => {
+                self.emit_scan_terminal_stage_failure(
+                    key,
+                    (&lease.0, &lease.1),
+                    &handle,
+                    stage_failure,
+                )
+                .await
+            }
+            ScanTerminalRetry::Terminal { reason, error } => self
+                .terminal_with_admission(
+                    key,
+                    TerminalRequest {
+                        expected_lease: (&lease.0, &lease.1),
+                        stream_id: &handle,
+                        reason,
+                        error: error.as_ref(),
+                        counters: terminal_evidence::TerminalCounters::ZERO,
+                        admission: TerminalAdmission::ClaimedScan,
+                    },
+                )
+                .await
+                .map(|_| ()),
+        };
+        match result {
+            Ok(()) => {
+                let mut state = self.inner.lock().await;
+                if let Some(scan) = state
+                    .callers
+                    .get_mut(key)
+                    .filter(|caller| {
+                        caller.lease_id == lease.0 && caller.lease_generation == lease.1
+                    })
+                    .and_then(|caller| caller.scan.as_mut())
+                    .filter(|scan| scan.handle == handle && scan.core_operation_id == operation_id)
+                {
+                    scan.terminal_stage_failure = None;
+                    scan.terminal_delivery_failure = None;
+                    scan.terminal_delivery_retry_item = None;
+                    scan.terminal_delivery_retry = None;
+                    scan.terminal_failure_sent = true;
+                    if let Some(task) = scan.task.as_ref() {
+                        task.abort();
+                    }
+                }
+                let _ = sender.send(Some(Ok(())));
+                Ok(())
+            }
+            Err(delivery_failure) => {
+                let mut state = self.inner.lock().await;
+                if let Some(scan) = state
+                    .callers
+                    .get_mut(key)
+                    .filter(|caller| {
+                        caller.lease_id == lease.0 && caller.lease_generation == lease.1
+                    })
+                    .and_then(|caller| caller.scan.as_mut())
+                    .filter(|scan| scan.handle == handle && scan.core_operation_id == operation_id)
+                {
+                    scan.terminal_delivery_failure = Some(delivery_failure.clone());
+                    scan.terminal_delivery_retry = None;
+                }
+                let _ = sender.send(Some(Err(delivery_failure.clone())));
+                Err(delivery_failure)
+            }
+        }
+    }
+
+    async fn emit_scan_terminal_stage_failure(
+        &self,
+        caller_key: &str,
+        expected_lease: (&str, &str),
+        stream_id: &str,
+        failure: &DispatchError,
+    ) -> Result<(), DispatchError> {
+        let mut state = self.inner.lock().await;
+        let caller = state
+            .callers
+            .get_mut(caller_key)
+            .filter(|caller| {
+                !caller.retired
+                    && caller.lease_id == expected_lease.0
+                    && caller.lease_generation == expected_lease.1
+            })
+            .ok_or_else(|| {
+                DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "stream",
+                    "tauri.scan-terminal-owner",
+                )
+            })?;
+        if !caller
+            .scan
+            .as_ref()
+            .is_some_and(|scan| scan.handle == stream_id && scan.phase.is_active())
+        {
+            return Ok(());
+        }
+        if caller.pending_events.len() >= MAX_PENDING_EVENTS {
+            return Err(DispatchError::new(
+                BleErrorCode::StreamQuota,
+                "stream",
+                "tauri.scan-terminal-stage-event",
+            ));
+        }
+        let event_id = self.id("event-terminal-stage-failure");
+        caller.pending_events.insert(event_id.clone());
+        let result = caller.event_sink.send(object([
+            (
+                "rendererLease",
+                object([
+                    ("leaseId", string(caller.lease_id.clone())),
+                    ("generation", string(caller.lease_generation.clone())),
+                ]),
+            ),
+            ("eventId", string(event_id.clone())),
+            ("streamId", string(stream_id)),
+            (
+                "item",
+                object([
+                    ("kind", string("terminal")),
+                    ("reason", string("source-failed")),
+                    ("droppedItems", number(0)),
+                    ("droppedBytes", number(0)),
+                    ("replacedItems", number(0)),
+                    ("error", failure.normalized_error()),
+                    // The authenticated Tauri transport brands this exact
+                    // native-only marker before the public IPC manager accepts
+                    // a scoped no-receipt terminal as a stage failure.
+                    ("terminalEvidenceStageFailed", IpcValue::Bool(true)),
+                ]),
+            ),
+        ]));
+        if result.is_err() {
+            caller.pending_events.remove(&event_id);
+        }
+        result.map_err(|error| {
+            DispatchError::new(
+                BleErrorCode::PlatformTransport,
+                "stream",
+                "tauri.scan-terminal-stage-send",
+            )
+            .platform(error.to_string())
+        })
     }
 
     /// Scan-end reports were missed (the receiver lagged): which scan ended
@@ -7900,6 +8318,22 @@ impl BtleplugDispatcher {
                 "tauri.event-ack-id",
             ));
         }
+        let retry_terminal = caller_state.scan.as_ref().is_some_and(|scan| {
+            scan.terminal_delivery_retry_item.is_some() && scan.terminal_delivery_retry.is_none()
+        });
+        drop(state);
+        if retry_terminal {
+            let dispatcher = self.clone();
+            let caller_key = caller_key(&caller);
+            tokio::spawn(async move {
+                // The mapping retains the precise failure and every retry
+                // rechecks caller ownership. A closed/again-full channel
+                // remains explicit cleanup debt for the next release.
+                let _ = dispatcher
+                    .retry_scan_terminal_delivery_failure(&caller_key)
+                    .await;
+            });
+        }
         Ok(object([("kind", string("event.ack"))]))
     }
 
@@ -8268,6 +8702,14 @@ impl BtleplugDispatcher {
                 return Ok(false);
             }
         }
+        if caller_state.scan.as_ref().is_some_and(|scan| {
+            scan.handle == stream_id
+                && (scan.terminal_failure_sent
+                    || (scan.terminal_failure_claimed
+                        && admission != TerminalAdmission::ClaimedScan))
+        }) {
+            return Ok(false);
+        }
         let evidence_binding = caller_state
             .scan
             .as_ref()
@@ -8337,6 +8779,14 @@ impl BtleplugDispatcher {
                     recoverable: false,
                 },
             ));
+            let mut receipt_scope = vec![
+                ("managerId", string(binding.scope.manager_id)),
+                ("operationId", string(binding.scope.operation_id)),
+                ("incarnation", string(binding.scope.incarnation)),
+            ];
+            if let Some(scope_utf16le) = binding.scope.scope_utf16le {
+                receipt_scope.push(("scopeUtf16le", IpcValue::Bytes(scope_utf16le)));
+            }
             Some(object([
                 ("ref", string(committed.reference)),
                 (
@@ -8362,14 +8812,7 @@ impl BtleplugDispatcher {
                 ("formatVersion", number(committed.format_version as i64)),
                 ("durability", string("committed")),
                 ("producer", string(binding.scope.producer)),
-                (
-                    "scope",
-                    object([
-                        ("managerId", string(binding.scope.manager_id)),
-                        ("operationId", string(binding.scope.operation_id)),
-                        ("incarnation", string(binding.scope.incarnation)),
-                    ]),
-                ),
+                ("scope", object(receipt_scope)),
             ]))
         } else {
             None
@@ -8421,7 +8864,8 @@ impl BtleplugDispatcher {
         if let (Some(evidence), IpcValue::Object(item)) = (evidence, &mut terminal_item) {
             item.insert("evidence".to_owned(), evidence);
         }
-        let send_result = caller_state.event_sink.send(object([
+        let event_sink = caller_state.event_sink.clone();
+        let terminal_event = object([
             (
                 "rendererLease",
                 object([
@@ -8432,9 +8876,19 @@ impl BtleplugDispatcher {
             ("eventId", string(event_id.clone())),
             ("streamId", string(stream_id)),
             ("item", terminal_item),
-        ]));
+        ]);
+        // A channel refusal occurs after the receipt is durably committed.
+        // Record its authority before attempting delivery so an exact retry
+        // (whose ledger stage/commit is idempotent for these canonical bytes)
+        // cannot lose the committed owner between attempts.
+        if let Some((reference, owner)) = committed_owner.take() {
+            state.terminal_evidence_owners.insert(reference, owner);
+        }
+        let send_result = event_sink.send(terminal_event);
         if send_result.is_err() {
-            caller_state.pending_events.remove(&event_id);
+            if let Some(caller_state) = state.callers.get_mut(caller_key) {
+                caller_state.pending_events.remove(&event_id);
+            }
         }
         send_result.map_err(|error| {
             DispatchError::new(
@@ -8448,15 +8902,16 @@ impl BtleplugDispatcher {
             admission,
             TerminalAdmission::Connection | TerminalAdmission::OwnerConnection
         ) {
-            caller_state.connection_events.remove(stream_id);
-        }
-        if admission == TerminalAdmission::ActiveSubscription {
-            if let Some(subscription) = caller_state.subscriptions.get_mut(stream_id) {
-                subscription.terminal_sent = true;
+            if let Some(caller_state) = state.callers.get_mut(caller_key) {
+                caller_state.connection_events.remove(stream_id);
             }
         }
-        if let Some((reference, owner)) = committed_owner {
-            state.terminal_evidence_owners.insert(reference, owner);
+        if admission == TerminalAdmission::ActiveSubscription {
+            if let Some(caller_state) = state.callers.get_mut(caller_key) {
+                if let Some(subscription) = caller_state.subscriptions.get_mut(stream_id) {
+                    subscription.terminal_sent = true;
+                }
+            }
         }
         Ok(true)
     }
@@ -8485,7 +8940,7 @@ impl BtleplugDispatcher {
                 caller
                     .scan
                     .as_ref()
-                    .filter(|scan| scan.phase.is_active())
+                    .filter(|scan| scan.phase.is_active() && !scan.terminal_failure_sent)
                     .map(|scan| scan.handle.clone()),
                 caller
                     .subscriptions
@@ -8513,6 +8968,13 @@ impl BtleplugDispatcher {
         key: &str,
         _preserve_terminal_evidence: bool,
     ) -> IpcValue {
+        if let Err(error) = self.retry_scan_terminal_delivery_failure(key).await {
+            return cleanup_record(vec![cleanup_failure(
+                "terminal",
+                "tauri.release.scan-terminal-delivery",
+                error.describe(),
+            )]);
+        }
         if let Err(error) = self.emit_owner_release_terminals(key).await {
             return cleanup_record(vec![cleanup_failure(
                 "terminal",

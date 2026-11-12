@@ -1,6 +1,7 @@
 // src/core/unified-ble-core.ts
 
 import { BackendContractError, contractError } from '../backend-contract/errors'
+import { isTerminalEvidenceStageFailure } from './terminal-evidence-stage-failure'
 import {
   assertAttachedBackend,
   type BackendAttachment,
@@ -1244,10 +1245,25 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
           }
           if (item.kind === 'terminal') {
             if (
+              isTerminalEvidenceStageFailure(item.error) &&
+              (item.reason !== 'source-failed' || item.evidence !== undefined)
+            ) {
+              throw contractError(
+                'protocol.violation',
+                'scan',
+                'unified-core.scan.terminal-evidence-stage-failure-shape'
+              )
+            }
+            if (
               scan.terminalEvidence !== null &&
               (item.evidence === undefined ||
                 item.evidence.producer !== 'scan' ||
-                !terminalEvidenceScopeMatches(item.evidence.scope, scan.terminalEvidenceScope))
+                !terminalEvidenceScopeMatches(item.evidence.scope, scan.terminalEvidenceScope)) &&
+              !(
+                item.reason === 'source-failed' &&
+                item.evidence === undefined &&
+                isTerminalEvidenceStageFailure(item.error)
+              )
             ) {
               throw contractError('protocol.violation', 'scan', 'unified-core.scan.terminal-evidence-missing')
             }

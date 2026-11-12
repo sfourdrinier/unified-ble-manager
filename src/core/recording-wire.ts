@@ -18,6 +18,7 @@ import { type AdapterAuthorization, type AdapterAvailability, type AdapterPower 
 import { type StreamTerminalNotice } from '../backend-contract/streams'
 import { isCanonicalIngressOrdinal } from './ordered-notification-contract'
 import { isNotificationReceipt, type NotificationReceipt } from '../backend-contract/gatt'
+import { projectTerminalEvidenceScopeUtf16, unpackTerminalEvidenceScopeUtf16le } from './terminal-evidence-scope-utf16'
 import {
   MAX_RECORDING_PREPARE_TEXT_BYTES,
   type RecordingControlOperation
@@ -767,7 +768,16 @@ export function terminalEvidenceOrThrow(
     ['producer', 'kind', 'ref', 'byteLength', 'digest', 'formatVersion', 'durability', 'scope'],
     path
   )
-  const scope = exactObject(fields.get('scope'), ['managerId', 'operationId', 'incarnation'], `${path}.scope`)
+  const scopeValue = fields.get('scope')
+  const hasRawScope =
+    typeof scopeValue === 'object' && scopeValue !== null && Object.hasOwn(scopeValue, 'scopeUtf16leBase64')
+  const scope = exactObject(
+    scopeValue,
+    hasRawScope
+      ? ['managerId', 'operationId', 'incarnation', 'scopeUtf16leBase64']
+      : ['managerId', 'operationId', 'incarnation'],
+    `${path}.scope`
+  )
   if (
     fields.get('producer') !== producer ||
     fields.get('kind') !== 'committed' ||
@@ -777,6 +787,29 @@ export function terminalEvidenceOrThrow(
     throw malformed(path)
   const digest = stringOrThrow(fields.get('digest'), `${path}.digest`)
   if (!/^[0-9a-f]{64}$/u.test(digest)) throw malformed(`${path}.digest`)
+  const visibleScope = {
+    managerId: stringOrThrow(scope.get('managerId'), `${path}.scope.managerId`),
+    operationId: stringOrThrow(scope.get('operationId'), `${path}.scope.operationId`),
+    incarnation: stringOrThrow(scope.get('incarnation'), `${path}.scope.incarnation`)
+  }
+  const raw = scope.get('scopeUtf16leBase64')
+  const rawFields =
+    raw === undefined
+      ? undefined
+      : unpackTerminalEvidenceScopeUtf16le(decodeBase64OrThrow(raw, `${path}.scope.scopeUtf16leBase64`))
+  if (
+    rawFields !== undefined &&
+    (rawFields[0] !== producer ||
+      projectTerminalEvidenceScopeUtf16(rawFields[1]) !== visibleScope.managerId ||
+      projectTerminalEvidenceScopeUtf16(rawFields[2]) !== visibleScope.operationId ||
+      projectTerminalEvidenceScopeUtf16(rawFields[3]) !== visibleScope.incarnation)
+  )
+    throw malformed(`${path}.scope.scopeUtf16leBase64`)
+  if (raw !== undefined && rawFields === undefined) throw malformed(`${path}.scope.scopeUtf16leBase64`)
+  const terminalScope =
+    rawFields === undefined
+      ? visibleScope
+      : { managerId: rawFields[1], operationId: rawFields[2], incarnation: rawFields[3] }
   return Object.freeze({
     producer,
     kind: 'committed',
@@ -785,11 +818,7 @@ export function terminalEvidenceOrThrow(
     digest,
     formatVersion: 1,
     durability: 'committed',
-    scope: Object.freeze({
-      managerId: stringOrThrow(scope.get('managerId'), `${path}.scope.managerId`),
-      operationId: stringOrThrow(scope.get('operationId'), `${path}.scope.operationId`),
-      incarnation: stringOrThrow(scope.get('incarnation'), `${path}.scope.incarnation`)
-    })
+    scope: Object.freeze(terminalScope)
   })
 }
 

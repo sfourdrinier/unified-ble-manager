@@ -204,9 +204,12 @@ pub(super) fn publish_scan_terminal<B>(
         aborted,
         detail: detail.to_owned(),
     };
-    let _ = inner.scan_terminal.send(event.clone());
-    // Finding 118: wake the host as the legacy scan-terminal callback did.
-    inner.signal(CentralSignal::ScanTerminal(event));
+    // Retain evidence-bound terminals through the synchronous observer before
+    // exposing this bounded broadcast. A receiver can otherwise consume the
+    // event before the NAPI owner records its exact commit/ack obligation and
+    // later see a duplicate retained terminal after a lag.
+    inner.signal(CentralSignal::ScanTerminal(event.clone()));
+    let _ = inner.scan_terminal.send(event);
 }
 
 /// A directed LE pairing generation (`secureConnections` other than

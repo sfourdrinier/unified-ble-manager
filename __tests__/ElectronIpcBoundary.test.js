@@ -9,6 +9,7 @@ const { monotonicTimestamp, opaqueId, version, versionRange } = require('../src/
 const { BUILT_IN_FEATURE_CATALOG } = require('../src/backend-contract/capabilities')
 const { normalizeScanQuery } = require('../src/public/scan-query')
 const { snapshotScanPlan } = require('../src/backend-contract/scan-planning')
+const { markTerminalEvidenceStageFailure } = require('../src/core/terminal-evidence-stage-failure')
 
 function negotiated(axis) {
   const selected = version(axis, axis === 'ipc-protocol' ? 10 : 1)
@@ -675,7 +676,11 @@ describe('Electron v4 IPC boundary', () => {
       throw contractError('protocol.malformed', 'restoration', 'test.terminal-evidence.recover')
     })
     const current = createMainFixture({}, backend)
-    const sender = createSender('malformed-terminal-evidence-client', 'malformed-terminal-evidence-window', 'malformed-terminal-evidence-session')
+    const sender = createSender(
+      'malformed-terminal-evidence-client',
+      'malformed-terminal-evidence-window',
+      'malformed-terminal-evidence-session'
+    )
     await expect(bootstrap(current, sender)).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
     expect(backend.recoverTerminalEvidenceForRecipientWithStatus).toHaveBeenCalledTimes(1)
     await current.binding.destroy()
@@ -692,7 +697,11 @@ describe('Electron v4 IPC boundary', () => {
       throw new Error('legacy recovery must not be called')
     })
     const current = createMainFixture({}, backend)
-    const sender = createSender('legacy-terminal-evidence-client', 'legacy-terminal-evidence-window', 'legacy-terminal-evidence-session')
+    const sender = createSender(
+      'legacy-terminal-evidence-client',
+      'legacy-terminal-evidence-window',
+      'legacy-terminal-evidence-session'
+    )
     await expect(bootstrap(current, sender)).resolves.toMatchObject({ rendererLease: expect.any(Object) })
     expect(backend.recoverTerminalEvidenceForRecipientWithStatus).not.toHaveBeenCalled()
     await current.binding.destroy()
@@ -1763,6 +1772,49 @@ describe('Electron v4 IPC boundary', () => {
     await expect(iterator.next()).resolves.toMatchObject({ done: false, value: { kind: 'value' } })
     await expect(client.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(listeners).toEqual([])
+  })
+
+  test.each([
+    ['wrong flag', { kind: 'terminal', reason: 'source-failed', terminalEvidenceStageFailed: false }],
+    ['wrong kind', { kind: 'value', value: {}, terminalEvidenceStageFailed: true }],
+    ['wrong reason', { kind: 'terminal', reason: 'closed', terminalEvidenceStageFailed: true }],
+    [
+      'receipt evidence',
+      {
+        kind: 'terminal',
+        reason: 'source-failed',
+        terminalEvidenceStageFailed: true,
+        evidence: { ref: 'forged', byteLength: 1, digest: '0'.repeat(64), formatVersion: 1, durability: 'committed' }
+      }
+    ]
+  ])('rejects authenticated terminal-evidence staging wire with %s', async (_label, item) => {
+    const listeners = []
+    const bootstrap = rendererBootstrap(`malformed-stage-failure-${_label}`)
+    const transport = {
+      invoke: async request =>
+        request.kind === 'bootstrap'
+          ? { kind: 'bootstrap', bootstrap }
+          : request.kind === 'release'
+            ? { kind: 'release', cleanup: released() }
+            : { kind: 'route', payload: {} },
+      acknowledge: async () => ({ kind: 'event.ack' }),
+      subscribe(listener) {
+        listeners.push(listener)
+        return () => listeners.splice(listeners.indexOf(listener), 1)
+      }
+    }
+    const client = new ElectronRendererBleClient(transport)
+    await client.initialize()
+    listeners[0]({ rendererLease: bootstrap.rendererLease, eventId: 'malformed-stage', streamId: 'scan', item })
+
+    await expect(client.events[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: {
+        kind: 'terminal',
+        reason: 'source-failed',
+        error: { code: 'protocol.malformed', operation: 'electron-renderer.terminal-evidence-stage-failure-wire' }
+      }
+    })
+    await expect(client.destroy()).resolves.toEqual(released())
   })
 
   test('preserves a complete rich advertisement observation through the renderer IPC boundary', async () => {
@@ -5862,5 +5914,59 @@ test('replacement reconciles an uncertain recording start before accessing its m
     commandRequest(current, next, 18, 'gatt.ordered-recording.reclaim.confirm-forgotten', { reclaimHandle })
   )
   expect(handle.start).toHaveBeenCalledTimes(1)
+  await current.binding.destroy()
+})
+
+test('authenticated Electron public manager preserves a native terminal-evidence staging failure', async () => {
+  const scanStream = createControlledStream()
+  const current = createMainFixture({
+    scan: jest.fn(async () => ({
+      observations: scanStream,
+      stop: async () => {
+        scanStream.close()
+        return released()
+      }
+    }))
+  })
+  const sender = createSender('terminal-stage-client', 'terminal-stage-window', 'terminal-stage-session')
+  const listeners = []
+  const originalSend = sender.send
+  sender.send = (channel, event) => {
+    originalSend.call(sender, channel, event)
+    for (const listener of [...listeners]) listener(event)
+  }
+  const manager = await createElectronRendererBleManager({
+    transport: {
+      invoke: request => current.port.handler({ sender }, request),
+      subscribe(listener) {
+        listeners.push(listener)
+        return () => listeners.splice(listeners.indexOf(listener), 1)
+      },
+      acknowledge: (rendererLease, eventId) =>
+        current.port.handler({ sender }, { kind: 'event.ack', rendererLease, eventId })
+    }
+  })
+  const scan = await manager.scan()
+  const iterator = scan.observations[Symbol.asyncIterator]()
+  const error = markTerminalEvidenceStageFailure({
+    code: 'platform.failure',
+    domain: 'restoration',
+    operation: 'native.scan.terminal-evidence.stage',
+    platform: null,
+    retryability: 'caller-decides'
+  })
+  scanStream.push({
+    kind: 'terminal',
+    reason: 'source-failed',
+    droppedItems: 0,
+    droppedBytes: 0,
+    replacedItems: 0,
+    error
+  })
+
+  await expect(iterator.next()).resolves.toMatchObject({
+    value: { kind: 'terminal', reason: 'source-failed', error }
+  })
+  expect(sender.sent.some(({ event }) => event.item.terminalEvidenceStageFailed === true)).toBe(true)
   await current.binding.destroy()
 })

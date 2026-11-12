@@ -245,7 +245,7 @@ async fn staged_subscription_terminal_survives_restart_for_explicit_native_recov
     .await
     .expect("staged subscription terminal retained before restart");
     drop(session);
-    drop(host);
+    assert_eq!(parse(&host.shutdown().await)["state"], "released");
 
     let (reopened, _radio) = open_durable_registry(registry).await;
     let recovery = reopened
@@ -271,6 +271,10 @@ async fn staged_subscription_terminal_survives_restart_for_explicit_native_recov
         .acknowledge(&page.entries[0])
         .expect("explicitly acknowledge recovered terminal");
     assert_eq!(parse(&reopened.shutdown().await)["state"], "released");
+    // The predecessor remains allocated through recovery: orderly shutdown,
+    // not Drop, released the source authority for this staged terminal.
+    drop(reopened);
+    drop(host);
     std::fs::remove_dir_all(&directory).expect("remove private registry directory");
 }
 

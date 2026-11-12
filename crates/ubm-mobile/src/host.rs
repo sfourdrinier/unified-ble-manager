@@ -477,6 +477,23 @@ pub(crate) struct ScanTerminalEvidenceScope {
     pub manager_id: String,
     pub operation_id: String,
     pub incarnation: String,
+    /// Exact JS UTF-16 scope sidecar for exceptional unpaired surrogate
+    /// identities. Scalar scopes retain the legacy `None` representation.
+    pub scope_utf16le: Option<Vec<u8>>,
+}
+
+/// Receipt scope preserves the raw JavaScript UTF-16 identity when one was
+/// required; scalar scopes keep the established three-string wire shape.
+fn terminal_evidence_scope_value(scope: &ScanTerminalEvidenceScope) -> Value {
+    let mut value = serde_json::json!({
+        "managerId": scope.manager_id,
+        "operationId": scope.operation_id,
+        "incarnation": scope.incarnation,
+    });
+    if let Some(raw) = &scope.scope_utf16le {
+        value["scopeUtf16leBase64"] = Value::String(wire::encode_base64(raw));
+    }
+    value
 }
 
 /// A terminal whose durable reservation has not committed. It remains wholly
@@ -1613,7 +1630,9 @@ fn terminal_recovery_error(
             BleErrorDomain::Platform,
             "terminal-evidence-recovery",
         ),
-        TerminalEvidenceError::Missing | TerminalEvidenceError::Unresolved => DesktopError::new(
+        TerminalEvidenceError::Missing
+        | TerminalEvidenceError::Unresolved
+        | TerminalEvidenceError::NotStaged => DesktopError::new(
             BleErrorCode::LifecycleInvalidState,
             BleErrorDomain::Stream,
             "terminal-evidence-recovery",
@@ -1737,6 +1756,7 @@ impl HostInner {
             manager_id: scope.manager_id.clone(),
             operation_id: scope.operation_id.clone(),
             incarnation: scope.incarnation.clone(),
+            scope_utf16le: scope.scope_utf16le.clone(),
         })?;
         let canonical = serde_json::to_vec(record).map_err(|_| {
             ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Invalid("scan terminal")
@@ -1760,7 +1780,7 @@ impl HostInner {
             "producer":"scan", "kind":"committed", "ref":committed.reference,
             "byteLength":committed.byte_length, "digest":committed.digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
             "formatVersion":committed.format_version, "durability":"committed",
-            "scope":{"managerId":scope.manager_id,"operationId":scope.operation_id,"incarnation":scope.incarnation}
+            "scope":terminal_evidence_scope_value(scope)
         })))
     }
 
@@ -1780,6 +1800,7 @@ impl HostInner {
             manager_id: scope.manager_id.clone(),
             operation_id: scope.operation_id.clone(),
             incarnation: scope.incarnation.clone(),
+            scope_utf16le: scope.scope_utf16le.clone(),
         })?;
         Ok(())
     }
@@ -1800,6 +1821,7 @@ impl HostInner {
             manager_id: scope.manager_id.clone(),
             operation_id: scope.operation_id.clone(),
             incarnation: scope.incarnation.clone(),
+            scope_utf16le: scope.scope_utf16le.clone(),
         })?;
         Ok(())
     }
@@ -1827,6 +1849,7 @@ impl HostInner {
                     manager_id: scope.manager_id.clone(),
                     operation_id: scope.operation_id.clone(),
                     incarnation: scope.incarnation.clone(),
+                    scope_utf16le: scope.scope_utf16le.clone(),
                 })?;
                 let canonical = serde_json::to_vec(&record).map_err(|_| {
                     ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Invalid(
@@ -1874,6 +1897,41 @@ impl HostInner {
         for debt in debts {
             self.publish_scan_terminal_or_retain(debt.session_id, debt.member, debt.record);
         }
+    }
+
+    /// A shutting-down source cannot retain an OS source authority for bytes
+    /// that were already staged. Hand that exact reservation to restart
+    /// recovery; an unsuccessful handoff remains an explicit shutdown debt.
+    fn handoff_scan_terminal_evidence_debts_to_recovery(&self) -> Vec<DesktopError> {
+        let debts = std::mem::take(&mut *lock(&self.scan_terminal_evidence_debts));
+        let mut retained = Vec::new();
+        let mut failures = Vec::new();
+        for debt in debts {
+            let Some(scope) = debt.member.terminal_evidence_scope.as_ref() else {
+                continue;
+            };
+            let outcome = (|| {
+                let ledger = self.terminal_evidence_ledger().ok_or(
+                    ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Unresolved,
+                )?;
+                let reservation = ledger.attach(&TerminalEvidenceScope {
+                    producer: "scan".to_owned(),
+                    manager_id: scope.manager_id.clone(),
+                    operation_id: scope.operation_id.clone(),
+                    incarnation: scope.incarnation.clone(),
+                    scope_utf16le: scope.scope_utf16le.clone(),
+                })?;
+                ledger.handoff_staged_to_recovery(&reservation.reservation_id)
+            })();
+            if let Err(error) = outcome {
+                failures.push(terminal_recovery_error(error));
+                retained.push(debt);
+            }
+        }
+        if !retained.is_empty() {
+            lock(&self.scan_terminal_evidence_debts).extend(retained);
+        }
+        failures
     }
 
     fn forget_retired_scan_session_if_settled(&self, session_id: u64) {
@@ -3777,6 +3835,7 @@ impl HostInner {
                 manager_id: scope.manager_id.clone(),
                 operation_id: scope.operation_id.clone(),
                 incarnation: scope.incarnation.clone(),
+                scope_utf16le: scope.scope_utf16le.clone(),
             })?;
             let canonical = serde_json::to_vec(&record).map_err(|_| {
                 ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Invalid(
@@ -3808,7 +3867,7 @@ impl HostInner {
                     "producer":"subscription", "kind":"committed", "ref":committed.reference,
                     "byteLength":committed.byte_length, "digest":committed.digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
                     "formatVersion":committed.format_version, "durability":"committed",
-                    "scope":{"managerId":scope.manager_id,"operationId":scope.operation_id,"incarnation":scope.incarnation}
+                    "scope":terminal_evidence_scope_value(scope)
                 }),
                 ledger,
                 reservation.reservation_id,
@@ -3888,6 +3947,42 @@ impl HostInner {
         for debt in debts {
             self.publish_subscription_terminal_or_retain(debt.route, debt.record);
         }
+    }
+
+    /// After ingress quiesces, transfer only subscription terminals whose
+    /// exact bytes reached the durable staging row. Failed staging retains its
+    /// source authority and debt for an explicit retry; it is never released
+    /// merely because shutdown was requested.
+    fn handoff_subscription_terminal_evidence_debts_to_recovery(&self) -> Vec<DesktopError> {
+        let debts = std::mem::take(&mut *lock(&self.subscription_terminal_evidence_debts));
+        let mut retained = Vec::new();
+        let mut failures = Vec::new();
+        for debt in debts {
+            let Some(scope) = debt.route.terminal_evidence_scope.as_ref() else {
+                continue;
+            };
+            let outcome = (|| {
+                let ledger = self.terminal_evidence_ledger().ok_or(
+                    ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Unresolved,
+                )?;
+                let reservation = ledger.attach(&TerminalEvidenceScope {
+                    producer: "subscription".to_owned(),
+                    manager_id: scope.manager_id.clone(),
+                    operation_id: scope.operation_id.clone(),
+                    incarnation: scope.incarnation.clone(),
+                    scope_utf16le: scope.scope_utf16le.clone(),
+                })?;
+                ledger.handoff_staged_to_recovery(&reservation.reservation_id)
+            })();
+            if let Err(error) = outcome {
+                failures.push(terminal_recovery_error(error));
+                retained.push(debt);
+            }
+        }
+        if !retained.is_empty() {
+            lock(&self.subscription_terminal_evidence_debts).extend(retained);
+        }
+        failures
     }
 
     fn mark_ended(&self, scope: &InstanceKey, route: &Route, terminal: StreamEnd) {
@@ -6388,6 +6483,7 @@ impl MobileHost {
             manager_id: manager_id.to_owned(),
             operation_id: operation_id.to_owned(),
             incarnation: incarnation.to_owned(),
+            scope_utf16le: None,
         };
         let reservation = ledger
             .reserve(
@@ -8012,6 +8108,19 @@ impl MobileHost {
         if !state.worker_failures.is_empty() {
             failures.extend(state.worker_failures.iter().cloned());
             return crate::session::cleanup_record(failures.values.clone()).to_string();
+        }
+        // Both terminal-producing pumps are now closed and joined. A later
+        // ingress cannot append another staged debt after this exact handoff.
+        for error in inner.handoff_scan_terminal_evidence_debts_to_recovery() {
+            failures.push(crate::session::cleanup_failure("terminal-evidence", &error));
+        }
+        for error in inner.handoff_subscription_terminal_evidence_debts_to_recovery() {
+            failures.push(crate::session::cleanup_failure("terminal-evidence", &error));
+        }
+        if !failures.is_empty() {
+            let mut record = crate::session::cleanup_record(failures.values.clone());
+            record["state"] = Value::from("release-failed");
+            return record.to_string();
         }
         if inner.radio.uses_v2_admission() {
             if !state.local_cleanup_settled {
@@ -11147,6 +11256,7 @@ mod signal_tests {
             manager_id: "terminal-race".into(),
             operation_id: "subscription-terminal".into(),
             incarnation: "1".into(),
+            scope_utf16le: None,
         };
         let ledger = host
             .inner
@@ -11159,6 +11269,7 @@ mod signal_tests {
                     manager_id: scope.manager_id.clone(),
                     operation_id: scope.operation_id.clone(),
                     incarnation: scope.incarnation.clone(),
+                    scope_utf16le: None,
                 },
                 65_536,
             )
