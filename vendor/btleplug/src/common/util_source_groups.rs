@@ -2251,10 +2251,10 @@ mod tests {
             Err(SourceGroupError::Capacity)
         );
         assert!(source.lock_source_state().source_generation.is_none());
-        assert_eq!(
+        assert!(matches!(
             source.open_source_group(1, 1, 1),
             Err(SourceGroupError::StaleGeneration)
-        );
+        ));
     }
 
     #[test]
