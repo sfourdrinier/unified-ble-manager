@@ -52,10 +52,12 @@ impl Manager {
         failure_evidence_store: std::sync::Arc<dyn crate::ubm_peer_notification_ingress::FailureEvidenceStore>,
         session_bus: bool,
     ) -> Result<Self> {
-        let (_, session) = if session_bus {
-            BluetoothSession::new_session_bus().await?
+        let session = if session_bus {
+            let (_, session) = BluetoothSession::new_session_bus().await?;
+            session
         } else {
-            BluetoothSession::new().await?
+            let (_, session) = BluetoothSession::new().await?;
+            session
         };
         Ok(Self {
             session,
