@@ -13,6 +13,10 @@ All notable changes to `unified-ble-manager` are documented here.
   when another live controller still owns retained records. This release adds
   bounded host-private evidence retention and lease fencing; deterministic and
   native synthetic coverage does not establish physical-radio qualification.
+- Preserve connection-supervisor cleanup ownership when desktop adapter loss
+  interrupts its release with `operation.reset`: wait for readiness, retry the
+  same release with bounded backoff, and only reconnect after it actually
+  releases. Other cleanup failures remain surfaced and terminal.
 
 ## [5.2.1] - 2026-11-08
 

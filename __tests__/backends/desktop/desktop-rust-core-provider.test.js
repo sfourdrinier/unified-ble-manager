@@ -257,11 +257,16 @@ test('desktop recovery status rejects a malformed non-boolean native busy marker
 test('public Node manager recovers, reads, and acknowledges source evidence after restart', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-node-public-terminal-recovery-'))
   try {
+    // Exercise the production Node entrypoint against the profile supported
+    // by this process. The synthetic-radio harness can model every desktop
+    // profile, but the public factory correctly refuses foreign OS profiles
+    // before loading their native addon.
+    const platform = process.platform === 'darwin' ? 'corebluetooth' : process.platform === 'win32' ? 'winrt' : 'bluez'
     const owner = 'node-public-recovery-owner'
     const scope = { managerId: 'node-public-manager', operationId: 'node-public-operation', incarnation: '1' }
     const bytes = new Uint8Array([4, 8, 15, 16, 23, 42])
     const digest = crypto.createHash('sha256').update(bytes).digest('hex')
-    const initial = await openBackend('corebluetooth', { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
+    const initial = await openBackend(platform, { owner, terminalEvidenceStore: { directory, maxBytes: '4096' } })
     const reservation = await initial.backend.scanner.reserveTerminalEvidence({
       producer: 'scan', maximumBytes: bytes.byteLength, formatVersion: 1, scope
     })
@@ -269,9 +274,9 @@ test('public Node manager recovers, reads, and acknowledges source evidence afte
     await reservation.release()
     await initial.backend.destroy()
 
-    const first = await createDesktopCoreBleManager('corebluetooth', {
+    const first = await createDesktopCoreBleManager(platform, {
       owner,
-      binding: realBinding('corebluetooth').binding,
+      binding: realBinding(platform).binding,
       terminalEvidenceStore: { directory, maxBytes: '4096' }
     })
     await expect(first.terminalEvidenceRecovery.listWithStatus()).resolves.toMatchObject({
@@ -285,9 +290,9 @@ test('public Node manager recovers, reads, and acknowledges source evidence afte
     await first.destroy()
     await expect(first.terminalEvidenceRecovery.read(staleHandle, bytes.byteLength)).rejects.toThrow('lifecycle.destroyed')
 
-    const second = await createDesktopCoreBleManager('corebluetooth', {
+    const second = await createDesktopCoreBleManager(platform, {
       owner,
-      binding: realBinding('corebluetooth').binding,
+      binding: realBinding(platform).binding,
       terminalEvidenceStore: { directory, maxBytes: '4096' }
     })
     await expect(second.terminalEvidenceRecovery.read(staleHandle, bytes.byteLength)).rejects.toThrow('ownership.denied')

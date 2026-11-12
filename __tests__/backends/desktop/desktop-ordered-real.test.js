@@ -63,7 +63,7 @@ test('desktop public ordered stream preserves repeated failure metadata and clea
 })
 
 test('public GATT database exposes the ordered native stream', async () => {
-  const { backend, stage, provider } = await openBackend('corebluetooth')
+  const { backend, stage, provider, harness } = await openBackend('corebluetooth')
   const { attachBleBackend, createBleManager, createManagerOwnershipAuthority, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
   const { opaqueId } = require('../../../src/backend-contract/primitives')
   const { observePeer } = require('../../helpers/desktop-rust-core-harness')
@@ -79,9 +79,16 @@ test('public GATT database exposes the ordered native stream', async () => {
     const connection = await manager.connect(peer, { signal: null, deadline: null })
     const database = await require('../../../src/public/gatt').createPublicGattDatabase(await connection.discover({ signal: null, deadline: null }))
     const chars = database.service(HRM_SERVICE).characteristicsByUuid(HRM_MEASUREMENT)
-    const beforeRecording = await stage.stagedRadioCalls()
+    const callsStart = harness.calls.length
     expect(() => database.reserveOrderedRecordingStart()).toThrow('capability.unsupported')
-    expect(await stage.stagedRadioCalls()).toEqual(beforeRecording)
+    // Adapter-state/authorization snapshots are independent background
+    // capability polling. The recording owner itself must not be entered when
+    // this manager has no process-owned recording authority.
+    expect(
+      harness.calls
+        .slice(callsStart)
+        .filter(([name]) => ['reserveOrderedRecordingStart', 'startOrderedRecording', 'issueOrderedRecordingRecovery'].includes(name))
+    ).toEqual([])
     const setup = await database.subscribeOrdered(chars.map((characteristic, index) => ({ memberId: String.fromCharCode(97 + index), characteristic })))
     expect(setup.state).toBe('ready')
     for (const [occurrence, byte] of [[0, 1], [1, 2], [0, 3]]) await stage.stageNotification({ peerId: 'peer-1', serviceUuid: HRM_SERVICE, serviceOccurrence: 0, characteristicUuid: HRM_MEASUREMENT, characteristicOccurrence: occurrence, value: Buffer.from([byte]) })

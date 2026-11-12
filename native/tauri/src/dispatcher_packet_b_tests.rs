@@ -87,6 +87,16 @@ fn scan_recovery_test_directory(label: &str) -> std::path::PathBuf {
     ))
 }
 
+fn create_private_fixture_directory(path: &std::path::Path) {
+    std::fs::create_dir(path).expect("private fixture directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("secure private fixture directory");
+    }
+}
+
 fn scan_recovery_test_limits() -> ubm_core::oversized_evidence::ScanFailureLimits {
     ubm_core::oversized_evidence::ScanFailureLimits {
         evidence: ubm_core::oversized_evidence::EvidenceLimits {
@@ -320,7 +330,7 @@ async fn scan_failure_recovery_routes_use_real_v2_sidecar_and_revoke_forged_or_s
             .expect("clock")
             .as_nanos()
     ));
-    std::fs::create_dir(&directory).expect("private fixture directory");
+    create_private_fixture_directory(&directory);
     let recording_id = "tauri-scan-recovery";
     let quota = JournalQuota {
         max_bytes: 1 << 20,
@@ -923,7 +933,7 @@ async fn scan_failure_recovery_routes_use_real_v2_sidecar_and_revoke_forged_or_s
 async fn scan_failure_recovery_reclaims_alias_capacity_after_256_completed_durable_lifecycles() {
     let harness = Harness::new().await;
     let directory = scan_recovery_test_directory("alias-capacity");
-    std::fs::create_dir(&directory).expect("private fixture directory");
+    create_private_fixture_directory(&directory);
     harness
         .dispatcher
         .recordings
@@ -987,7 +997,7 @@ async fn scan_failure_recovery_tauri_routes_survive_fresh_process_restart() {
     }
 
     let directory = scan_recovery_test_directory("fresh-process");
-    std::fs::create_dir(&directory).expect("private fixture directory");
+    create_private_fixture_directory(&directory);
     let executable = std::env::current_exe().expect("test executable");
     let test_name = "btleplug_dispatcher::dispatcher_packet_b_tests::scan_failure_recovery_tauri_routes_survive_fresh_process_restart";
     let produced = std::process::Command::new(&executable)
@@ -4733,7 +4743,6 @@ async fn trusted_continuation_replays_setup_and_retains_recording_without_offlin
 async fn trusted_continuation_recording_scenario(directory: &std::path::Path) {
     let harness = Harness::new().await;
     let peer = "native-recorded-peer";
-    harness.advertise(peer).await;
     harness
         .dispatcher
         .continuation_configure_recording_directory(directory)
@@ -4753,6 +4762,11 @@ async fn trusted_continuation_recording_scenario(directory: &std::path::Path) {
     let dispatcher = harness.dispatcher.clone();
     let first =
         tokio::spawn(async move { dispatcher.continuation_execute(peer, &declaration).await });
+    // Start the continuation before producing its appearance. A fresh Linux
+    // scheduler may otherwise consume the synthetic advertisement before the
+    // continuation has installed its appearance subscription, leaving the
+    // test waiting for a write that can never be admitted.
+    harness.advertise(peer).await;
     harness.wait_calls("write_characteristic", 1).await;
     let notify = |value, epoch| RadioEvent::Notification {
         peer_id: peer.into(),

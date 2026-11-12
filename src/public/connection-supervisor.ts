@@ -147,6 +147,10 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
   private lastCleanup: PublicCleanupRecord | null = null
   private stableTimer: unknown = null
   private waitForAdapter = false
+  // An adapter-loss release returned `operation.reset`. The connection remains
+  // owned until a later release answers `released`; no successor may connect
+  // while this flag is set.
+  private adapterLossCleanupRetryPending = false
   private ownershipReleased = false
   private readonly supervisorAbort = new AbortController()
   private readonly wakeWaiters = new Set<() => void>()
@@ -291,6 +295,33 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
         const gate = await this.awaitGate()
         if (gate === 'stop' || this.stopRequested) break
         if (gate === 'pause') continue
+        if (this.adapterLossCleanupRetryPending) {
+          const cleanup = await this.cleanupCurrentConnection()
+          if (cleanup.state === 'released') {
+            this.adapterLossCleanupRetryPending = false
+            this.lastError = null
+          } else if (isRetryableAdapterLossCleanup(cleanup)) {
+            // The native reset still owns the in-flight disconnect. Keep the
+            // original connection retained. Use the normal retry budget and
+            // backoff before another adapter-ready cycle can try that same
+            // release again; an already-ready adapter must not busy-loop.
+            this.lastError = toBleError(cleanup.failures[0]?.error)
+            this.waitForAdapter = true
+            this.attempt += 1
+            if (this.attemptLimitReached()) {
+              this.stopRequested = true
+              break
+            }
+            const delayMs = Math.max(1, this.nextDelay())
+            this.transition('backoff', null, delayMs, null)
+            if ((await this.waitForDelay(delayMs)) === 'stop') break
+            continue
+          } else {
+            this.lastError = toBleError(cleanup.failures[0]?.error)
+            this.stopRequested = true
+            break
+          }
+        }
         const outcome = await this.connectAttempt()
         if (outcome === 'cleanup-failed') {
           this.stopRequested = true
@@ -597,6 +628,16 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     this.transition('disconnecting', null, null, null)
     const cleanup = await this.cleanupCurrentConnection()
     if (cleanup.state === 'release-failed') {
+      if (next.event.cause === 'adapter-loss' && isRetryableAdapterLossCleanup(cleanup)) {
+        // `operation.reset` means this release did not happen, rather than
+        // that it happened successfully. Retain the connection and make the
+        // next adapter-ready cycle retry its cleanup before reconnecting.
+        this.lastError = toBleError(cleanup.failures[0]?.error)
+        this.adapterLossCleanupRetryPending = true
+        this.attempt -= 1
+        this.waitForAdapter = true
+        return 'retry'
+      }
       this.lastError = toBleError(contractError('connection.failed', 'connection', 'connection-supervisor.cleanup'))
       return 'terminal'
     }
@@ -962,6 +1003,25 @@ function isAdapterReadinessPending(error: BleError): boolean {
 /** The adapter went away while `configure` was running: every host ends in-flight work `operation.reset`. */
 function isAdapterLossDuringSetup(error: BleError): boolean {
   return error.code === 'operation.reset' || isAdapterWaitError(error)
+}
+
+/**
+ * A reset may interrupt the supervisor's own disconnect after an adapter-loss
+ * lifecycle event. It is retriable only when every retained failure is that
+ * precise connection release result; a peer loss, user stop, or any other
+ * cleanup failure retains the normal terminal semantics.
+ */
+function isRetryableAdapterLossCleanup(cleanup: PublicCleanupRecord): boolean {
+  return (
+    cleanup.state === 'release-failed' &&
+    cleanup.failures.length > 0 &&
+    cleanup.failures.every(
+      failure =>
+        failure.resourceKind === 'connection' &&
+        failure.error.code === 'operation.reset' &&
+        failure.error.domain === 'connection'
+    )
+  )
 }
 
 function isRetryableConnectionError(error: BleError): boolean {
