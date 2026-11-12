@@ -166,10 +166,14 @@ export interface RecordedSubscriptionOptions extends SubscriptionOptions {
 export interface RecordedSubscribeRequest<Attachment extends string, Operation extends string> {
   readonly operation: OperationOptions<Attachment, Operation>
   readonly options: RecordedSubscriptionOptions
+  /** Host-private source binding for an already-reserved durable terminal slot. */
+  readonly terminalEvidenceScope?: { readonly managerId: string; readonly operationId: string; readonly incarnation: string }
 }
 export interface SubscribeRequest<Attachment extends string, Operation extends string> {
   readonly operation: OperationOptions<Attachment, Operation>
   readonly options: SubscriptionOptions
+  /** Host-private source binding for an already-reserved durable terminal slot. */
+  readonly terminalEvidenceScope?: { readonly managerId: string; readonly operationId: string; readonly incarnation: string }
 }
 export interface ReadRequest<Attachment extends string, Operation extends string> {
   readonly operation: OperationOptions<Attachment, Operation>
