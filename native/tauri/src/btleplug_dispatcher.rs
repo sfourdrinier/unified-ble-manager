@@ -134,10 +134,11 @@ struct RendererPeerFailureRecoveryHandle {
     selector: CoreSelector,
     consumer: String,
     recipient_lease: String,
-    contiguous_read: u64,
-    acknowledged: bool,
-    producer_ack: &'static str,
 }
+
+type ScanFailureRecoveryHandles =
+    HashMap<String, HashMap<String, (u64, RendererScanFailureRecoveryHandle)>>;
+type OrderedRecordingStarts = HashMap<(String, String), Arc<ordered_recordings::StartSlot>>;
 
 /// Capability-bearing scan recovery values never leave the native dispatcher.
 #[derive(Clone, PartialEq, Eq)]
@@ -324,8 +325,7 @@ pub struct BtleplugDispatcher {
     /// the registry after its last recovery receipt has been retired.
     scan_failure_recovery_lifecycle: Arc<Mutex<()>>,
     scan_failure_recovery_admission: Arc<SyncMutex<HashMap<String, ScanFailureRecoveryAdmission>>>,
-    scan_failure_recovery_handles:
-        Arc<SyncMutex<HashMap<String, HashMap<String, (u64, RendererScanFailureRecoveryHandle)>>>>,
+    scan_failure_recovery_handles: Arc<SyncMutex<ScanFailureRecoveryHandles>>,
     /// Explicit host grants for renderer recovery access. A durable lease is
     /// never sufficient by itself: a trusted Tauri host must grant the exact
     /// authenticated caller after attaching its recording.
@@ -336,8 +336,7 @@ pub struct BtleplugDispatcher {
     peer_failure_recovery_admission: Arc<SyncMutex<HashMap<String, PeerFailureRecoveryAdmission>>>,
     peer_failure_recovery_handles:
         Arc<SyncMutex<HashMap<String, HashMap<String, RendererPeerFailureRecoveryHandle>>>>,
-    ordered_recording_starts:
-        Arc<Mutex<HashMap<(String, String), Arc<ordered_recordings::StartSlot>>>>,
+    ordered_recording_starts: Arc<Mutex<OrderedRecordingStarts>>,
     ordered_recording_reservations: Arc<Mutex<ordered_recordings::Reservations>>,
     reclaim_admission: Arc<Mutex<()>>,
     reclaim_state: Arc<SyncMutex<ordered_reclaims::ReclaimState>>,
@@ -644,6 +643,15 @@ enum TerminalAdmission {
     ActiveSubscription,
     Connection,
     OwnerConnection,
+}
+
+struct TerminalRequest<'a> {
+    expected_lease: (&'a str, &'a str),
+    stream_id: &'a str,
+    reason: &'a str,
+    error: Option<&'a DispatchError>,
+    counters: terminal_evidence::TerminalCounters,
+    admission: TerminalAdmission,
 }
 
 struct ConnectionEventResource {
@@ -1770,7 +1778,7 @@ impl BtleplugDispatcher {
         let owner = handles
             .get(cleanup_id)
             .and_then(|(entry_generation, handle)| {
-                (*entry_generation == generation).then(|| match handle {
+                (*entry_generation == generation).then_some(match handle {
                     RendererScanFailureRecoveryHandle::Cleanup { owner, .. } => *owner,
                     _ => None,
                 })
@@ -1835,11 +1843,11 @@ impl BtleplugDispatcher {
                 .expect("scan recovery admission mutex poisoned");
             let keys = admission
                 .iter()
-                .filter_map(|(candidate, entry)| {
-                    (entry.recording_id.as_deref() == Some(recording_id.as_str())
-                        && entry.owner_generation == Some(entry.generation))
-                    .then(|| candidate.clone())
+                .filter(|&(_candidate, entry)| {
+                    entry.recording_id.as_deref() == Some(recording_id.as_str())
+                        && entry.owner_generation == Some(entry.generation)
                 })
+                .map(|(candidate, _entry)| candidate.clone())
                 .collect::<Vec<_>>();
             for candidate in &keys {
                 let entry = admission
@@ -2169,7 +2177,7 @@ impl BtleplugDispatcher {
                 state
                     .terminal_evidence_owners
                     .insert(reservation.reservation_id.clone(), owner);
-                return Ok(object([
+                Ok(object([
                     ("kind", string("reserved")),
                     ("reservationId", string(reservation.reservation_id)),
                     (
@@ -2182,7 +2190,7 @@ impl BtleplugDispatcher {
                             )
                         })?),
                     ),
-                ]));
+                ]))
             }
             "terminalEvidence.commit" => {
                 let request = terminal_evidence::parse_commit(payload, binary_payload)?;
@@ -2220,14 +2228,14 @@ impl BtleplugDispatcher {
                     .await
                     .terminal_evidence_owners
                     .insert(committed.reference.clone(), reservation_owner);
-                return Ok(object([
+                Ok(object([
                     ("kind", string("committed")),
                     ("ref", string(committed.reference)),
                     ("byteLength", string(committed.byte_length.to_string())),
                     ("digest", string(request.digest)),
                     ("formatVersion", number(i64::from(committed.format_version))),
                     ("durability", string("committed")),
-                ]));
+                ]))
             }
             "terminalEvidence.read" => {
                 if binary_payload.is_some() {
@@ -2250,7 +2258,7 @@ impl BtleplugDispatcher {
                         )
                         .platform(error.to_string())
                     })?;
-                return Ok(object([
+                Ok(object([
                     ("kind", string("committed")),
                     ("canonicalBytes", IpcValue::Bytes(canonical_bytes)),
                     (
@@ -2262,7 +2270,7 @@ impl BtleplugDispatcher {
                                 .collect::<String>(),
                         ),
                     ),
-                ]));
+                ]))
             }
             "terminalEvidence.release" => {
                 if binary_payload.is_some() {
@@ -2297,9 +2305,10 @@ impl BtleplugDispatcher {
                     .await
                     .terminal_evidence_owners
                     .remove(&reservation_owner.reservation_id);
-                return Ok(object([("kind", string("released"))]));
+                Ok(object([("kind", string("released"))]))
             }
-            command @ ("terminalEvidence.recovery.list" | "terminalEvidence.recovery.listWithStatus") => {
+            command @ ("terminalEvidence.recovery.list"
+            | "terminalEvidence.recovery.listWithStatus") => {
                 let busy_producers = if command == "terminalEvidence.recovery.listWithStatus" {
                     terminal_evidence::parse_recovery_list_with_status(payload)?;
                     self.refresh_terminal_evidence_recovery(caller).await?
@@ -2377,7 +2386,7 @@ impl BtleplugDispatcher {
                         ),
                     ]));
                 }
-                return Ok(object([("records", IpcValue::Array(records))]));
+                Ok(object([("records", IpcValue::Array(records))]))
             }
             "terminalEvidence.recovery.read" => {
                 let (handle, maximum_bytes) = terminal_evidence::parse_recovery_read(payload)?;
@@ -2404,7 +2413,7 @@ impl BtleplugDispatcher {
                         )
                         .platform(error.to_string())
                     })?;
-                return Ok(object([
+                Ok(object([
                     ("kind", string("committed")),
                     ("canonicalBytes", IpcValue::Bytes(canonical_bytes)),
                     (
@@ -2416,7 +2425,7 @@ impl BtleplugDispatcher {
                                 .collect::<String>(),
                         ),
                     ),
-                ]));
+                ]))
             }
             "terminalEvidence.recovery.ack" => {
                 let handle = terminal_evidence::parse_recovery_ack(payload)?;
@@ -2460,7 +2469,7 @@ impl BtleplugDispatcher {
                     .await
                     .terminal_evidence_owners
                     .retain(|_, entry| entry.reservation_id != mapped.reservation_id);
-                return Ok(object([("state", string("released"))]));
+                Ok(object([("state", string("released"))]))
             }
             _ => unreachable!("terminal evidence route guard admitted an unknown command"),
         }
@@ -2688,9 +2697,6 @@ impl BtleplugDispatcher {
                         selector: selector.clone(),
                         consumer: recipient.consumer,
                         recipient_lease: recipient.recipient_lease,
-                        contiguous_read: recipient.contiguous_read,
-                        acknowledged: recipient.acknowledged,
-                        producer_ack,
                     },
                 );
                 projected.push(object([
@@ -3548,7 +3554,7 @@ impl BtleplugDispatcher {
         payload: &str,
         transition: &str,
     ) -> Result<serde_json::Value, serde_json::Value> {
-        if payload.as_bytes().len() > DIAGNOSTIC_EXACT_PAYLOAD_LIMIT {
+        if payload.len() > DIAGNOSTIC_EXACT_PAYLOAD_LIMIT {
             return Err(
                 serde_json::json!({"code":"argument.invalid","domain":"restoration","operation":"continuation.recording.diagnostic","detail":"diagnostic payload exceeds exact lifecycle bound","platform":null}),
             );
@@ -3631,7 +3637,7 @@ impl BtleplugDispatcher {
     ) -> Result<serde_json::Value, serde_json::Value> {
         let owner = self.clone();
         let id = id.to_owned();
-        return tokio::spawn(async move {
+        tokio::spawn(async move {
             if let Some(result) = owner.stop_owned_ordered_recording(&id).await {
                 result
             } else {
@@ -3639,7 +3645,7 @@ impl BtleplugDispatcher {
             }
         })
         .await
-        .map_err(|_| serde_json::json!({"kind":"worker-failed"}))?;
+        .map_err(|_| serde_json::json!({"kind":"worker-failed"}))?
     }
 
     /// Read the validated declaration persisted with an ordered recording.
@@ -3863,15 +3869,17 @@ impl BtleplugDispatcher {
         // aliases and releases their runtime authority before removing it.
         let mut state = self.inner.lock().await;
         let (recipient, lease_id, lease_generation) = {
-            let caller_state = state.callers.get(&caller_key(caller)).filter(|caller_state| {
-                !caller_state.retired
-            }).ok_or_else(|| {
-                DispatchError::new(
-                    BleErrorCode::OwnershipDenied,
-                    "restoration",
-                    "tauri.terminal-evidence.recovery-owner",
-                )
-            })?;
+            let caller_state = state
+                .callers
+                .get(&caller_key(caller))
+                .filter(|caller_state| !caller_state.retired)
+                .ok_or_else(|| {
+                    DispatchError::new(
+                        BleErrorCode::OwnershipDenied,
+                        "restoration",
+                        "tauri.terminal-evidence.recovery-owner",
+                    )
+                })?;
             (
                 caller_key(caller),
                 caller_state.lease_id.clone(),
@@ -5691,12 +5699,14 @@ impl BtleplugDispatcher {
                     if let Err(error) = self
                         .terminal_with_admission(
                             key,
-                            (&owner, &generation),
-                            &stream,
-                            "owner-released",
-                            None,
-                            terminal_evidence::TerminalCounters::ZERO,
-                            TerminalAdmission::OwnerConnection,
+                            TerminalRequest {
+                                expected_lease: (&owner, &generation),
+                                stream_id: &stream,
+                                reason: "owner-released",
+                                error: None,
+                                counters: terminal_evidence::TerminalCounters::ZERO,
+                                admission: TerminalAdmission::OwnerConnection,
+                            },
                         )
                         .await
                     {
@@ -6160,9 +6170,8 @@ impl BtleplugDispatcher {
             state
                 .callers
                 .iter()
-                .filter_map(|(key, caller)| {
-                    attachment_diagnostics_supported(&caller.versions).then(|| key.clone())
-                })
+                .filter(|&(_key, caller)| attachment_diagnostics_supported(&caller.versions))
+                .map(|(key, _caller)| key.clone())
                 .collect::<Vec<_>>()
         };
         for caller in callers {
@@ -8108,12 +8117,14 @@ impl BtleplugDispatcher {
             match self
                 .terminal_with_admission(
                     caller_key,
-                    expected_lease,
-                    stream_id,
-                    reason,
-                    None,
-                    terminal_evidence::TerminalCounters::ZERO,
-                    TerminalAdmission::Connection,
+                    TerminalRequest {
+                        expected_lease,
+                        stream_id,
+                        reason,
+                        error: None,
+                        counters: terminal_evidence::TerminalCounters::ZERO,
+                        admission: TerminalAdmission::Connection,
+                    },
                 )
                 .await
             {
@@ -8139,12 +8150,14 @@ impl BtleplugDispatcher {
     ) -> Result<(), DispatchError> {
         self.terminal_with_admission(
             caller_key,
-            expected_lease,
-            stream_id,
-            reason,
-            error,
-            terminal_evidence::TerminalCounters::ZERO,
-            TerminalAdmission::Any,
+            TerminalRequest {
+                expected_lease,
+                stream_id,
+                reason,
+                error,
+                counters: terminal_evidence::TerminalCounters::ZERO,
+                admission: TerminalAdmission::Any,
+            },
         )
         .await
         .map(|_| ())
@@ -8184,12 +8197,14 @@ impl BtleplugDispatcher {
     ) -> Result<bool, DispatchError> {
         self.terminal_with_admission(
             caller_key,
-            expected_lease,
-            stream_id,
-            reason,
-            error,
-            counters,
-            TerminalAdmission::ActiveSubscription,
+            TerminalRequest {
+                expected_lease,
+                stream_id,
+                reason,
+                error,
+                counters,
+                admission: TerminalAdmission::ActiveSubscription,
+            },
         )
         .await
     }
@@ -8197,13 +8212,16 @@ impl BtleplugDispatcher {
     async fn terminal_with_admission(
         &self,
         caller_key: &str,
-        expected_lease: (&str, &str),
-        stream_id: &str,
-        reason: &str,
-        error: Option<&DispatchError>,
-        counters: terminal_evidence::TerminalCounters,
-        admission: TerminalAdmission,
+        request: TerminalRequest<'_>,
     ) -> Result<bool, DispatchError> {
+        let TerminalRequest {
+            expected_lease,
+            stream_id,
+            reason,
+            error,
+            counters,
+            admission,
+        } = request;
         let mut state = self.inner.lock().await;
         let caller_state = state
             .callers

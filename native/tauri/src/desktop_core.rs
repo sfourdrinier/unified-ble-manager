@@ -216,7 +216,15 @@ impl<B: RadioBoundary> MarkerReservation
 }
 
 pub trait OrderedRecordingOwner: Send + Sync {
+    #[expect(
+        clippy::result_large_err,
+        reason = "public trait preserves the established recording error contract for downstream implementers"
+    )]
     fn issue_recovery(&self) -> Result<String, ubm_desktop::ordered_recording::RecordingError>;
+    #[expect(
+        clippy::result_large_err,
+        reason = "public trait preserves the established recording error contract for downstream implementers"
+    )]
     fn validate_recovery(
         &self,
         capability: &str,
@@ -323,6 +331,10 @@ pub trait CoreAuthority: Send + Sync {
     ) -> CoreFuture<'a, ()>;
     fn acknowledge_ordered_batch<'a>(&'a self, peer: &'a str, id: u64) -> CoreFuture<'a, ()>;
     fn forget_ordered_batch<'a>(&'a self, peer: &'a str, id: u64) -> CoreFuture<'a, ()>;
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "public trait preserves the established ordered batch contract for downstream implementers"
+    )]
     fn open_ordered_batch<'a>(
         &'a self,
         peer: &'a str,

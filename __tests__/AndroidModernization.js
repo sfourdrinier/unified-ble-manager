@@ -84,6 +84,9 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     const controlJava = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
     )
+    const rustCoreModule = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/rustcore/UnifiedBleRustCoreModule.java'
+    )
     const codegenConfig = JSON.parse(read('package.json')).codegenConfig
 
     expect(packageJava).toContain('import com.facebook.react.BaseReactPackage;')
@@ -99,6 +102,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(packageJava).toContain('import com.sfourdrinier.unifiedblemanager.rustcore.UnifiedBleRustCoreModule;')
     expect(packageJava).toContain('if (UnifiedBleRustCoreModule.NAME.equals(name))')
     expect(packageJava).toContain('UnifiedBleRustCoreModule.class.getName()')
+    expect(rustCoreModule).toContain('import com.ubm.core.MobileCoreBridge;')
     expect(packageJava).not.toMatch(/\bBlePlxModule\b|\bNativeBlePlxSpec\b/)
     expect(packageJava.match(/moduleInfos\.put\(/g)).toHaveLength(3)
     expect(controlJava).toContain('extends NativeUnifiedBleProtocolControlSpec')

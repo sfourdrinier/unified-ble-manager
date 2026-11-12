@@ -1,5 +1,19 @@
 const { openBackend, observePeer, hrmServices, HRM_SERVICE, HRM_MEASUREMENT } = require('../../helpers/desktop-rust-core-harness')
 
+// Adapter capability snapshots are independently polled by the live desktop
+// backend. They are not recording dispatch. These names are the complete
+// recording-owner boundary whose absence proves no reservation/start escaped
+// the public receipt-version guards.
+const recordingOwnerCalls = calls =>
+  calls.filter(([name]) =>
+    [
+      'reserveOrderedRecordingStart',
+      'startOrderedRecording',
+      'issueOrderedRecordingRecovery',
+      'retireOrderedRecordingStart'
+    ].includes(name)
+  )
+
 async function fixture() {
   const { backend, stage, harness } = await openBackend('corebluetooth')
   const host = await require('../../../src/desktop-process-host').createDesktopProcessHostFromBackend(backend, { now: () => performance.now() })
@@ -13,15 +27,13 @@ async function fixture() {
   return { backend, stage, host, manager, database, characteristic, harness }
 }
 
-test.each([undefined, 0, 1, 3])('public desktop rejects receipt offer %s before reservation or radio', async version => {
+test.each([undefined, 0, 1, 3])('public desktop rejects receipt offer %s before reservation or recording dispatch', async version => {
   const { backend, stage, host, manager, database, harness } = await fixture()
   try {
     backend.central.orderedRecordingReceiptVersion = version === undefined ? undefined : () => version
     const callsStart = harness.calls.length
-    const before = await stage.stagedRadioCalls()
     expect(() => database.reserveOrderedRecordingStart()).toThrow()
-    expect(harness.calls.slice(callsStart).some(([name]) => name === 'reserveOrderedRecordingStart')).toBe(false)
-    expect(await stage.stagedRadioCalls()).toEqual(before)
+    expect(recordingOwnerCalls(harness.calls.slice(callsStart))).toEqual([])
   } finally { await manager.destroy(); await host.destroy() }
 })
 test('desktop rechecks receipt offer after reservation and before native dispatch', async () => {
@@ -31,10 +43,8 @@ test('desktop rechecks receipt offer after reservation and before native dispatc
     const handle = database.reserveOrderedRecordingStart()
     const callsStart = harness.calls.length
     backend.central.orderedRecordingReceiptVersion = () => 1
-    const before = await stage.stagedRadioCalls()
     await expect(handle.start([{ memberId: 'a', characteristic }], { recording: { id: 'skew', maxBytes: 1048576, maxRecords: 8 } })).rejects.toMatchObject({ code: 'protocol.incompatible' })
-    expect(harness.calls.slice(callsStart).some(([name]) => name === 'startOrderedRecording')).toBe(false)
-    expect(await stage.stagedRadioCalls()).toEqual(before)
+    expect(recordingOwnerCalls(harness.calls.slice(callsStart))).toEqual([])
     await handle.retire()
   } finally { await manager.destroy(); await host.destroy() }
 })

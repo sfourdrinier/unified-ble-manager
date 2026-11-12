@@ -297,9 +297,6 @@ fn test_recovery_handle(owner_generation: u64) -> RendererPeerFailureRecoveryHan
         },
         consumer: "consumer".into(),
         recipient_lease: "lease".into(),
-        contiguous_read: 0,
-        acknowledged: false,
-        producer_ack: "not-started",
     }
 }
 
@@ -6225,8 +6222,7 @@ async fn fresh_dispatcher_reopens_terminal_evidence_releases_failed_reservations
     assert_eq!(legacy_busy.code, BleErrorCode::PlatformFailure);
     assert_eq!(legacy_busy.retryability, Retryability::CallerDecides);
     assert_eq!(
-        legacy_busy.operation,
-        "tauri.terminal-evidence.recovery.list",
+        legacy_busy.operation, "tauri.terminal-evidence.recovery.list",
         "legacy callers retain the pre-status retry signal"
     );
     let busy_status = competing_dispatcher
@@ -6411,45 +6407,118 @@ async fn terminal_evidence_recovery_refresh_and_release_share_the_caller_lease_f
     let directory = std::env::temp_dir().join(format!(
         "ubm-tauri-terminal-refresh-release-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock after epoch").as_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
     ));
     std::fs::create_dir(&directory).expect("fixture directory");
-    let ledger = Arc::new(ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
-        &directory.join("terminal-evidence.sqlite"),
-        1024,
-    ).expect("ledger"));
-    *harness.dispatcher.terminal_evidence_ledger.lock().expect("terminal evidence ledger mutex poisoned") = Some(Arc::clone(&ledger));
+    let ledger = Arc::new(
+        ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
+            &directory.join("terminal-evidence.sqlite"),
+            1024,
+        )
+        .expect("ledger"),
+    );
+    *harness
+        .dispatcher
+        .terminal_evidence_ledger
+        .lock()
+        .expect("terminal evidence ledger mutex poisoned") = Some(Arc::clone(&ledger));
     let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
-        producer: "subscription".to_owned(), manager_id: "manager".to_owned(), operation_id: "refresh-release".to_owned(), incarnation: "incarnation".to_owned(),
+        producer: "subscription".to_owned(),
+        manager_id: "manager".to_owned(),
+        operation_id: "refresh-release".to_owned(),
+        incarnation: "incarnation".to_owned(),
     };
     let reservation = ledger.reserve(&scope, 64).expect("reserve");
     let bytes = b"terminal";
-    ledger.stage(&reservation.reservation_id, &harness.key(), bytes).expect("stage");
+    ledger
+        .stage(&reservation.reservation_id, &harness.key(), bytes)
+        .expect("stage");
     use sha2::Digest;
-    ledger.commit(&reservation.reservation_id, bytes, sha2::Sha256::digest(bytes).into()).expect("commit");
-    ledger.abandon(&reservation.reservation_id).expect("release source authority");
+    ledger
+        .commit(
+            &reservation.reservation_id,
+            bytes,
+            sha2::Sha256::digest(bytes).into(),
+        )
+        .expect("commit");
+    ledger
+        .abandon(&reservation.reservation_id)
+        .expect("release source authority");
 
     let (claimed_sender, claimed_receiver) = std::sync::mpsc::sync_channel(1);
     let (resume_sender, resume_receiver) = std::sync::mpsc::sync_channel(1);
-    *harness.dispatcher.terminal_evidence_recovery_pause.lock().expect("terminal evidence recovery pause mutex poisoned") = Some(Arc::new(super::TerminalEvidenceRecoveryPause {
-        claimed: claimed_sender,
-        resume: std::sync::Mutex::new(resume_receiver),
-    }));
+    *harness
+        .dispatcher
+        .terminal_evidence_recovery_pause
+        .lock()
+        .expect("terminal evidence recovery pause mutex poisoned") =
+        Some(Arc::new(super::TerminalEvidenceRecoveryPause {
+            claimed: claimed_sender,
+            resume: std::sync::Mutex::new(resume_receiver),
+        }));
     let refreshing_dispatcher = harness.dispatcher.clone();
     let refreshing_caller = harness.caller.clone();
-    let refresh = tokio::spawn(async move { refreshing_dispatcher.refresh_terminal_evidence_recovery(&refreshing_caller).await });
-    claimed_receiver.recv_timeout(Duration::from_secs(1)).expect("refresh claimed durable evidence before owner insertion");
+    let refresh = tokio::spawn(async move {
+        refreshing_dispatcher
+            .refresh_terminal_evidence_recovery(&refreshing_caller)
+            .await
+    });
+    claimed_receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("refresh claimed durable evidence before owner insertion");
     let releasing_dispatcher = harness.dispatcher.clone();
     let releasing_key = harness.key();
-    let mut release = tokio::spawn(async move { releasing_dispatcher.release(&releasing_key).await });
-    assert!(tokio::time::timeout(Duration::from_millis(20), &mut release).await.is_err(), "release must wait for the refresh lease fence after claim");
+    let mut release =
+        tokio::spawn(async move { releasing_dispatcher.release(&releasing_key).await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut release)
+            .await
+            .is_err(),
+        "release must wait for the refresh lease fence after claim"
+    );
     resume_sender.send(()).expect("resume refresh");
-    refresh.await.expect("refresh task").expect("refresh succeeds before release");
-    assert!(super::is_released(&release.await.expect("release task")), "teardown observes and releases the alias inserted by refresh");
-    *harness.dispatcher.terminal_evidence_recovery_pause.lock().expect("terminal evidence recovery pause mutex poisoned") = None;
-    harness.dispatcher.bootstrap(harness.caller.clone(), IpcEventSink::new(Channel::new(|_| Ok(()))), version_offer()).await.expect("fresh lease bootstraps");
-    let recovered = harness.dispatcher.terminal_evidence_route(&harness.caller, "terminalEvidence.recovery.list", &BTreeMap::from([("version".to_owned(), number(1))]), None).await.expect("fresh lease recovers after release");
-    assert_eq!(recovered.into_wire()["records"].as_array().expect("records").len(), 1);
+    refresh
+        .await
+        .expect("refresh task")
+        .expect("refresh succeeds before release");
+    assert!(
+        super::is_released(&release.await.expect("release task")),
+        "teardown observes and releases the alias inserted by refresh"
+    );
+    *harness
+        .dispatcher
+        .terminal_evidence_recovery_pause
+        .lock()
+        .expect("terminal evidence recovery pause mutex poisoned") = None;
+    harness
+        .dispatcher
+        .bootstrap(
+            harness.caller.clone(),
+            IpcEventSink::new(Channel::new(|_| Ok(()))),
+            version_offer(),
+        )
+        .await
+        .expect("fresh lease bootstraps");
+    let recovered = harness
+        .dispatcher
+        .terminal_evidence_route(
+            &harness.caller,
+            "terminalEvidence.recovery.list",
+            &BTreeMap::from([("version".to_owned(), number(1))]),
+            None,
+        )
+        .await
+        .expect("fresh lease recovers after release");
+    assert_eq!(
+        recovered.into_wire()["records"]
+            .as_array()
+            .expect("records")
+            .len(),
+        1
+    );
     drop(ledger);
     std::fs::remove_dir_all(directory).expect("remove fixture directory");
 }
@@ -6460,29 +6529,81 @@ async fn terminal_evidence_recovery_refresh_refuses_a_lease_retired_before_claim
     let directory = std::env::temp_dir().join(format!(
         "ubm-tauri-terminal-refresh-retired-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock after epoch").as_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
     ));
     std::fs::create_dir(&directory).expect("fixture directory");
-    let ledger = Arc::new(ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
-        &directory.join("terminal-evidence.sqlite"),
-        1024,
-    ).expect("ledger"));
-    *harness.dispatcher.terminal_evidence_ledger.lock().expect("terminal evidence ledger mutex poisoned") = Some(Arc::clone(&ledger));
+    let ledger = Arc::new(
+        ubm_desktop::terminal_evidence_ledger::TerminalEvidenceLedger::open(
+            &directory.join("terminal-evidence.sqlite"),
+            1024,
+        )
+        .expect("ledger"),
+    );
+    *harness
+        .dispatcher
+        .terminal_evidence_ledger
+        .lock()
+        .expect("terminal evidence ledger mutex poisoned") = Some(Arc::clone(&ledger));
     let scope = ubm_desktop::terminal_evidence_ledger::TerminalEvidenceScope {
-        producer: "subscription".to_owned(), manager_id: "manager".to_owned(), operation_id: "retired-before-claim".to_owned(), incarnation: "incarnation".to_owned(),
+        producer: "subscription".to_owned(),
+        manager_id: "manager".to_owned(),
+        operation_id: "retired-before-claim".to_owned(),
+        incarnation: "incarnation".to_owned(),
     };
     let reservation = ledger.reserve(&scope, 64).expect("reserve");
     let bytes = b"terminal";
-    ledger.stage(&reservation.reservation_id, &harness.key(), bytes).expect("stage");
+    ledger
+        .stage(&reservation.reservation_id, &harness.key(), bytes)
+        .expect("stage");
     use sha2::Digest;
-    ledger.commit(&reservation.reservation_id, bytes, sha2::Sha256::digest(bytes).into()).expect("commit");
-    ledger.abandon(&reservation.reservation_id).expect("release source authority");
-    assert!(super::is_released(&harness.dispatcher.release(&harness.key()).await));
-    let denied = harness.dispatcher.refresh_terminal_evidence_recovery(&harness.caller).await.expect_err("retired lease cannot claim recovery evidence");
+    ledger
+        .commit(
+            &reservation.reservation_id,
+            bytes,
+            sha2::Sha256::digest(bytes).into(),
+        )
+        .expect("commit");
+    ledger
+        .abandon(&reservation.reservation_id)
+        .expect("release source authority");
+    assert!(super::is_released(
+        &harness.dispatcher.release(&harness.key()).await
+    ));
+    let denied = harness
+        .dispatcher
+        .refresh_terminal_evidence_recovery(&harness.caller)
+        .await
+        .expect_err("retired lease cannot claim recovery evidence");
     assert_eq!(denied.code, BleErrorCode::OwnershipDenied);
-    harness.dispatcher.bootstrap(harness.caller.clone(), IpcEventSink::new(Channel::new(|_| Ok(()))), version_offer()).await.expect("fresh lease bootstraps");
-    let recovered = harness.dispatcher.terminal_evidence_route(&harness.caller, "terminalEvidence.recovery.list", &BTreeMap::from([("version".to_owned(), number(1))]), None).await.expect("fresh lease recovers retained evidence");
-    assert_eq!(recovered.into_wire()["records"].as_array().expect("records").len(), 1);
+    harness
+        .dispatcher
+        .bootstrap(
+            harness.caller.clone(),
+            IpcEventSink::new(Channel::new(|_| Ok(()))),
+            version_offer(),
+        )
+        .await
+        .expect("fresh lease bootstraps");
+    let recovered = harness
+        .dispatcher
+        .terminal_evidence_route(
+            &harness.caller,
+            "terminalEvidence.recovery.list",
+            &BTreeMap::from([("version".to_owned(), number(1))]),
+            None,
+        )
+        .await
+        .expect("fresh lease recovers retained evidence");
+    assert_eq!(
+        recovered.into_wire()["records"]
+            .as_array()
+            .expect("records")
+            .len(),
+        1
+    );
     drop(ledger);
     std::fs::remove_dir_all(directory).expect("remove fixture directory");
 }

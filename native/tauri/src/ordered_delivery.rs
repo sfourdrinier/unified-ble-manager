@@ -49,6 +49,7 @@ impl OrderedDelivery {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn retain(&mut self, value: IpcValue) -> Result<(), ()> {
         if !self.can_retain() {
             return Err(());

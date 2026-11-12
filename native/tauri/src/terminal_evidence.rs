@@ -20,6 +20,7 @@ impl TerminalCounters {
         replaced_items: 0,
     };
 
+    #[cfg(test)]
     pub(super) const fn new(dropped_items: u64, dropped_bytes: u64, replaced_items: u64) -> Self {
         Self {
             dropped_items,

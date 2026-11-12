@@ -14,6 +14,7 @@ import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.turbomodule.core.CallInvokerHolderImpl;
 import com.facebook.react.module.annotations.ReactModule;
 import com.sfourdrinier.unifiedblemanager.NativeUnifiedBleRustCoreSpec;
+import com.ubm.core.MobileCoreBridge;
 
 import java.security.SecureRandom;
 import java.util.concurrent.ExecutorService;
