@@ -705,51 +705,53 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     expectNoResources(fixture.backend.resourceCounters())
   })
 
-  test('repeated service-change database cleanup retains a refused physical cleanup for explicit retry', async () => {
-    const { fixture, manager } = await createFixture()
-    const { database, characteristic } = await connectedDatabase(fixture, manager)
-    const subscription = await settle(fixture.controller, database.subscribe(characteristic, subscriptionOptions()))
-    let unsubscribeDispatches = 0
-    const unsubscribe = fixture.backend.gatt.unsubscribe.bind(fixture.backend.gatt)
-    fixture.backend.gatt.unsubscribe = (...parameters) => {
-      unsubscribeDispatches += 1
-      return unsubscribe(...parameters)
-    }
-    try {
-      fixture.controller.queueCompletion('unsubscribe', {
-        delayMs: 1,
-        failure: 'platform.failure',
-        cancellable: false,
-        deadlineOrder: 'completion-first'
-      })
-      await expect(
-        settle(
-          fixture.controller,
-          manager.core.invalidateDatabase(database.database, 'connection-lost', 'service-changed', true)
-        )
-      ).resolves.toMatchObject({ state: 'release-failed' })
-      await expect(
-        settle(
-          fixture.controller,
-          manager.core.invalidateDatabase(database.database, 'connection-lost', 'service-changed', true)
-        )
-      ).resolves.toMatchObject({ state: 'release-failed' })
-      await flushVirtual(fixture.controller)
+  test.each(['terminal-first', 'database-first'])(
+    'service-change cleanup shares a refused physical disable across %s lifecycle ordering',
+    async order => {
+      const { fixture, manager } = await createFixture()
+      const { database, characteristic } = await connectedDatabase(fixture, manager)
+      const subscription = await settle(fixture.controller, database.subscribe(characteristic, subscriptionOptions()))
+      let unsubscribeDispatches = 0
+      const unsubscribe = fixture.backend.gatt.unsubscribe.bind(fixture.backend.gatt)
+      fixture.backend.gatt.unsubscribe = (...parameters) => {
+        unsubscribeDispatches += 1
+        return unsubscribe(...parameters)
+      }
+      try {
+        fixture.controller.queueCompletion('unsubscribe', {
+          delayMs: 1,
+          failure: 'platform.failure',
+          cancellable: false,
+          deadlineOrder: 'completion-first'
+        })
+        const terminal = () =>
+          settle(fixture.controller, manager.core.subscriptions.invalidatePath(subscription.path, 'service-changed'))
+        const databaseChange = () =>
+          settle(
+            fixture.controller,
+            manager.core.invalidateDatabase(database.database, 'connection-lost', 'service-changed', true)
+          )
+        const first = order === 'terminal-first' ? terminal() : databaseChange()
+        await expect(first).resolves.toMatchObject({ state: 'release-failed' })
+        const second = order === 'terminal-first' ? databaseChange() : terminal()
+        await expect(second).resolves.toMatchObject({ state: 'release-failed' })
+        await flushVirtual(fixture.controller)
 
-      expect(unsubscribeDispatches).toBe(1)
-      expect(Number(fixture.backend.resourceCounters().physicalCccdEnablements)).toBe(1)
+        expect(unsubscribeDispatches).toBe(1)
+        expect(Number(fixture.backend.resourceCounters().physicalCccdEnablements)).toBe(1)
 
-      await expect(settle(fixture.controller, subscription.remove())).resolves.toEqual({
-        state: 'released',
-        failures: []
-      })
-      expect(unsubscribeDispatches).toBe(2)
-    } finally {
-      fixture.backend.gatt.unsubscribe = unsubscribe
-      await settle(fixture.controller, manager.destroy())
+        await expect(settle(fixture.controller, subscription.remove())).resolves.toEqual({
+          state: 'released',
+          failures: []
+        })
+        expect(unsubscribeDispatches).toBe(2)
+      } finally {
+        fixture.backend.gatt.unsubscribe = unsubscribe
+        await settle(fixture.controller, manager.destroy())
+      }
+      expectNoResources(fixture.backend.resourceCounters())
     }
-    expectNoResources(fixture.backend.resourceCounters())
-  })
+  )
 
   test('settles owner destruction with an active subscription and its cached backend event stream', async () => {
     const { fixture, manager } = await createFixture()

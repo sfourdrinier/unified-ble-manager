@@ -58,9 +58,9 @@ interface PhysicalSubscription<Attachment extends string, Identity extends Backe
   released: boolean
   releaseInFlight: Promise<CleanupRecord> | null
   /**
-   * One database lifecycle event can reach this physical CCCD through every
-   * joined logical database. Retain its outcome, including a refusal, so a
-   * later fan-out recipient cannot turn the same event into an implicit retry.
+   * One service change reaches a physical CCCD both through its notification
+   * terminal and every joined logical database. Retain its outcome, including
+   * a refusal, so either lifecycle route cannot turn it into an implicit retry.
    */
   databaseInvalidationCleanup: Promise<CleanupRecord> | null
   releasedDuringEnable: boolean
@@ -360,7 +360,10 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     }
     const failures: CleanupFailure[] = []
     for (const physical of physicals) {
-      const cleanup = await this.invalidatePhysical(physical, reason, evidence)
+      const cleanup =
+        reason === 'service-changed'
+          ? await this.invalidateDatabasePhysical(physical, evidence)
+          : await this.invalidatePhysical(physical, reason, evidence)
       failures.push(...cleanup.failures)
     }
     return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
@@ -396,14 +399,17 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
   }
 
   /**
-   * Database lifecycle notifications fan out to every logical database joined
-   * to the same native path. A failed first physical disable remains a real
+   * A service change can arrive via a subscription terminal or fan out to
+   * joined database views. A failed first physical disable remains a real
    * obligation, but only an explicit owner retry (or a distinct connection
    * lifecycle path) may issue another native command.
    */
-  private invalidateDatabasePhysical(physical: PhysicalSubscription<Attachment, Identity>): Promise<CleanupRecord> {
+  private invalidateDatabasePhysical(
+    physical: PhysicalSubscription<Attachment, Identity>,
+    evidence?: TerminalEvidenceCommit
+  ): Promise<CleanupRecord> {
     if (physical.databaseInvalidationCleanup !== null) return physical.databaseInvalidationCleanup
-    const cleanup = this.disable(physical)
+    const cleanup = this.invalidatePhysical(physical, 'service-changed', evidence)
     physical.databaseInvalidationCleanup = cleanup
     return cleanup
   }

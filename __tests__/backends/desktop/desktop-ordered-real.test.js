@@ -620,6 +620,13 @@ test('replacement recorder marker rejects a changed native GATT graph before wri
     await manager.destroy()
     stage.stageGattSnapshotIdentity('peer-1', 'stale-owner', '1', '2')
     await stage.stageServicesChanged('peer-1')
+    // The staged indication is a native event. Drain it before publishing the
+    // replacement graph so no delayed invalidation can retire generation 2.
+    await backend.settleCoreEvents()
+    // Services Changed invalidates the synthetic core's current snapshot.
+    // Publish the replacement graph before a new manager discovers it; the
+    // recorded handoff still names generation 1 and must reject before write.
+    await stage.stageServices('peer-1', services)
     replacement = await host.createInternalManager()
     const replacementConnection = await replacement.connect(peer, { signal:null, deadline:null })
     const replacementDatabase = await require('../../../src/public/gatt').createPublicGattDatabase(await replacementConnection.discover({ signal:null, deadline:null }))
