@@ -78,6 +78,35 @@ fn cancelled_graph_waiter_does_not_release_source_operation() {
 }
 
 #[test]
+fn cancelled_observation_waiter_does_not_continue_after_its_caller() {
+    tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
+        let peer = Arc::new(PeerSource::default());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let owner = peer.clone();
+        let waiter = tokio::spawn(async move {
+            owner
+                .own_graph_operation(GraphOperationScope::Observation, async move {
+                    let _ = started_tx.send(());
+                    finish_rx
+                        .await
+                        .map_err(|_| crate::Error::Other("test observation interrupted".into()))?;
+                    Ok(())
+                })
+                .await
+        });
+        started_rx.await.unwrap();
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        assert_eq!(peer.state.lock().unwrap().graph_operations, 0);
+        assert!(finish_tx.send(()).is_err());
+        let state = peer.state.lock().unwrap();
+        assert!(!state.uncertain_unknown_owner);
+        assert!(state.uncertain_owners.is_empty());
+    });
+}
+
+#[test]
 fn graph_operation_recovery_distinguishes_refusal_timeout_and_owner_retirement() {
     tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
         let peer = Arc::new(PeerSource::default());

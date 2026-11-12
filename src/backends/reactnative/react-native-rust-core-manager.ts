@@ -61,6 +61,7 @@ import type {
   RssiMeasurement
 } from '../../backend-contract/connection-controls'
 import { CoreBoundedStream } from '../../core/bounded-stream'
+import { hydrateTerminalEvidence } from '../../core/terminal-evidence-codec'
 import { createCoreFeatureRegistry, observeMaximumWriteLength, planLongWrite } from '../../core/core-capabilities'
 import type { LongWriteFeatureOutput } from '../../backend-contract/capabilities'
 import { BackendContractError, contractError } from '../../backend-contract/errors'
@@ -372,10 +373,13 @@ class ReactNativeRustCoreManager {
   private readonly openScans = new Set<{ stop(): Promise<CleanupRecord> }>()
   /** Reservations are tracked from acquisition through one serialized release attempt. */
   private readonly pendingTerminalEvidenceReleases = new Map<TerminalEvidenceReservation, Promise<void> | null>()
-  /** Evidence scopes still consumed by an admitted scan acquisition. */
+  /** Reservations acquired before their scan or subscription lifecycle owns them. */
   private readonly acquisitionTerminalEvidence = new Set<TerminalEvidenceReservation>()
   /** Cancellable acquisitions that have not yet handed a lease to `openScans`. */
   private readonly pendingScanAcquisitions = new Set<(error: BackendContractError) => void>()
+  /** Admission fences installed before a GATT reserve or native enable can await. */
+  private readonly pendingSubscriptionAcquisitions = new Set<(error: BackendContractError) => void>()
+  private readonly pendingSubscriptionCompensations = new Set<{ compensate(): Promise<CleanupRecord> }>()
   private readonly openAdapterWatches = new Set<{ close(): Promise<unknown> }>()
   private resourceReleaseResult: Promise<CleanupRecord> | null = null
   private destroyResult: Promise<CleanupRecord> | null = null
@@ -476,6 +480,145 @@ class ReactNativeRustCoreManager {
 
   get backendGatt(): ReactNativeRustCoreBackend['gatt'] {
     return this.backend.gatt
+  }
+
+  async reserveSubscriptionTerminalEvidence(): Promise<
+    | {
+        readonly reservation: TerminalEvidenceReservation
+        readonly scope: { readonly managerId: string; readonly operationId: string; readonly incarnation: string }
+      }
+    | undefined
+  > {
+    if (this.options.terminalEvidence === undefined) return undefined
+    const reserve = this.backend.gatt.reserveTerminalEvidence
+    if (reserve === undefined)
+      throw contractError('capability.unsupported', 'gatt', 'rust-core-manager.subscribe.terminal-evidence')
+    const incarnation = String(this.nextTerminalEvidenceScope++)
+    const scope = Object.freeze({
+      managerId: String(this.options.managerId),
+      operationId: `terminal-evidence-subscription-${incarnation}`,
+      incarnation
+    })
+    const reservation = await reserve.call(this.backend.gatt, {
+      producer: 'subscription',
+      maximumBytes: this.options.terminalEvidence.maximumCanonicalBytes,
+      formatVersion: 1,
+      scope
+    })
+    this.acquisitionTerminalEvidence.add(reservation)
+    if (reservation.maximumBytes >= this.options.terminalEvidence.maximumCanonicalBytes)
+      return Object.freeze({ reservation, scope })
+    const failure = contractError(
+      'capability.unsupported',
+      'gatt',
+      'rust-core-manager.subscribe.terminal-evidence.reservation-too-small'
+    )
+    try {
+      await this.releasePendingTerminalEvidence(reservation)
+      this.acquisitionTerminalEvidence.delete(reservation)
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [failure, cleanupError],
+        'RN subscription reservation and terminal evidence cleanup failed'
+      )
+    }
+    throw failure
+  }
+
+  finishSubscriptionTerminalEvidenceAdmission(reservation: TerminalEvidenceReservation): void {
+    this.acquisitionTerminalEvidence.delete(reservation)
+  }
+
+  isSubscriptionTerminalEvidenceAcquiring(reservation: TerminalEvidenceReservation): boolean {
+    return this.acquisitionTerminalEvidence.has(reservation)
+  }
+
+  releaseSubscriptionTerminalEvidence(reservation: TerminalEvidenceReservation): Promise<void> {
+    return this.releasePendingTerminalEvidence(reservation)
+  }
+
+  reportSubscriptionTerminalEvidenceReleaseFailure(error: unknown): void {
+    this.diagnosticWarnings.push(
+      Object.freeze({
+        code: 'terminal-evidence-release-failed',
+        detail: Object.freeze({
+          code: asBackendError(error, 'rust-core-manager.subscribe.terminal-evidence.release').normalized.code
+        })
+      })
+    )
+    if (this.diagnosticWarnings.length > 256) this.diagnosticWarnings.shift()
+  }
+
+  hydrateSubscriptionTerminalEvidence(stream: BoundedAsyncStream<unknown>): void {
+    if (this.options.terminalEvidence === undefined || !hasTerminalEvidenceHydrator(stream)) return
+    stream.setTerminalEvidenceHydrator(notice =>
+      hydrateTerminalEvidence(this.backend.gatt, notice, this.options.terminalEvidence!.maximumCanonicalBytes)
+    )
+  }
+
+  assertSubscriptionAdmission(): void {
+    this.assertReady('subscribe')
+  }
+
+  admitSubscription<T>(acquire: () => Promise<T>, compensate: (value: T) => Promise<CleanupRecord>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      let cancelled = false
+      const cancel = (error: BackendContractError) => {
+        if (cancelled) return
+        cancelled = true
+        reject(error)
+      }
+      this.pendingSubscriptionAcquisitions.add(cancel)
+      acquire().then(
+        value => {
+          this.pendingSubscriptionAcquisitions.delete(cancel)
+          if (cancelled) {
+            const tracked = this.trackLateSubscriptionCompensation(() => compensate(value))
+            tracked.compensate().then(
+              record => {
+                if (record.state === 'release-failed')
+                  this.reportSubscriptionTerminalEvidenceReleaseFailure(
+                    new AggregateError(record.failures.map(item => new BackendContractError(item.error)))
+                  )
+              },
+              error => this.reportSubscriptionTerminalEvidenceReleaseFailure(error)
+            )
+            return
+          }
+          resolve(value)
+        },
+        error => {
+          this.pendingSubscriptionAcquisitions.delete(cancel)
+          if (!cancelled) reject(error)
+        }
+      )
+    })
+  }
+
+  private trackLateSubscriptionCompensation(compensate: () => Promise<CleanupRecord>): {
+    compensate(): Promise<CleanupRecord>
+  } {
+    let inFlight: Promise<CleanupRecord> | null = null
+    const tracked = {
+      compensate: (): Promise<CleanupRecord> => {
+        if (inFlight === null) {
+          inFlight = compensate().then(
+            record => {
+              inFlight = null
+              if (record.state === 'released') this.pendingSubscriptionCompensations.delete(tracked)
+              return record
+            },
+            error => {
+              inFlight = null
+              throw error
+            }
+          )
+        }
+        return inFlight
+      }
+    }
+    this.pendingSubscriptionCompensations.add(tracked)
+    return tracked
   }
 
   /** The next public correlation (legacy `operation-{n}`). */
@@ -1091,6 +1234,30 @@ class ReactNativeRustCoreManager {
         asCleanupFailure('scan', contractError('lifecycle.invalid-state', 'cleanup', 'scan.acquisition-pending'))
       )
     }
+    for (const cancel of this.pendingSubscriptionAcquisitions) {
+      cancel(contractError('operation.cancelled-by-destroy', 'core', 'subscription'))
+    }
+    if (this.pendingSubscriptionAcquisitions.size > 0) {
+      failures.push(
+        asCleanupFailure(
+          'subscription',
+          contractError('lifecycle.invalid-state', 'cleanup', 'subscription.acquisition-pending')
+        )
+      )
+    }
+    for (const compensation of [...this.pendingSubscriptionCompensations]) {
+      try {
+        const record = await compensation.compensate()
+        failures.push(...record.failures)
+      } catch (error) {
+        failures.push(asCleanupFailure('subscription', error))
+      }
+    }
+    // A native enable still owns the connection generation and may complete
+    // after its caller has been cancelled. Keep that transport alive until
+    // its late compensation has physically unsubscribed and discharged its
+    // reservation; disposing it here would strand both obligations.
+    if (failures.length > 0) return { state: 'release-failed', failures }
     for (const connection of [...this.connections.values()]) {
       connection.finishLifecycle(cause, null)
     }
@@ -1806,6 +1973,7 @@ class NativeGattDatabase {
     'drop-oldest'
   )
   private readonly subscriptions = new Set<NativeSubscription | NativeRecordedSubscription>()
+  private readonly subscriptionEvidence = new WeakMap<object, TerminalEvidenceReservation>()
 
   constructor(
     private readonly manager: ReactNativeRustCoreManager,
@@ -2098,21 +2266,213 @@ class NativeGattDatabase {
     path: CurrentCharacteristicPath,
     options: SubscriptionOptions
   ): Promise<BackendSubscription<string, string, string, string, string, string>> {
+    return this.manager.admitSubscription(
+      () => this.subscribeAfterAdmission(path, options),
+      subscription => this.compensateCancelledSubscription(subscription)
+    )
+  }
+
+  private async subscribeAfterAdmission(
+    path: CurrentCharacteristicPath,
+    options: SubscriptionOptions
+  ): Promise<BackendSubscription<string, string, string, string, string, string>> {
     this.assertPath(path)
     this.assertOperationAdmission(options, 'subscribe')
-    return this.backendDatabase.subscribe(path, options)
+    const evidence = await this.manager.reserveSubscriptionTerminalEvidence()
+    try {
+      this.manager.assertSubscriptionAdmission()
+      const nativeSubscription = await this.manager.backendGatt.subscribe(path, {
+        operation: this.manager.operationOptions(options),
+        options,
+        ...(evidence === undefined ? {} : { terminalEvidenceScope: evidence.scope })
+      }).completion
+      this.manager.hydrateSubscriptionTerminalEvidence(nativeSubscription.notifications)
+      const backend = Object.freeze({
+        subscriptionId: nativeSubscription.subscriptionId,
+        path: nativeSubscription.path,
+        observedDelivery: nativeSubscription.observedDelivery,
+        values: nativeSubscription.notifications,
+        remove: async (): Promise<CleanupRecord> => {
+          try {
+            await this.manager.backendGatt.unsubscribe(
+              nativeSubscription,
+              this.manager.operationOptions({ signal: null, deadline: null })
+            ).completion
+            return { state: 'released', failures: [] }
+          } catch (error) {
+            return { state: 'release-failed', failures: [asCleanupFailure('subscription', error)] }
+          }
+        }
+      })
+      if (evidence !== undefined && !hasRetainedValuesDrain(backend.values)) {
+        const cleanup = await backend.remove()
+        const failure = contractError(
+          'capability.unsupported',
+          'gatt',
+          'rust-core-manager.subscribe.terminal-evidence.drain'
+        )
+        if (cleanup.state === 'release-failed')
+          throw new AggregateError(
+            [failure, ...cleanup.failures.map(item => new BackendContractError(item.error))],
+            'RN subscription drain validation cleanup failed'
+          )
+        await this.manager.releaseSubscriptionTerminalEvidence(evidence.reservation)
+        this.manager.finishSubscriptionTerminalEvidenceAdmission(evidence.reservation)
+        throw failure
+      }
+      if (evidence !== undefined) this.subscriptionEvidence.set(backend, evidence.reservation)
+      return backend
+    } catch (error) {
+      if (evidence !== undefined && this.manager.isSubscriptionTerminalEvidenceAcquiring(evidence.reservation)) {
+        try {
+          await this.manager.releaseSubscriptionTerminalEvidence(evidence.reservation)
+          this.manager.finishSubscriptionTerminalEvidenceAdmission(evidence.reservation)
+        } catch (cleanupError) {
+          throw new AggregateError([error, cleanupError], 'RN subscription start and terminal evidence cleanup failed')
+        }
+      }
+      throw error
+    }
+  }
+
+  takeSubscriptionTerminalEvidence(subscription: object): TerminalEvidenceReservation | undefined {
+    const evidence = this.subscriptionEvidence.get(subscription)
+    if (evidence !== undefined) {
+      this.subscriptionEvidence.delete(subscription)
+      this.manager.finishSubscriptionTerminalEvidenceAdmission(evidence)
+    }
+    return evidence
+  }
+
+  private subscriptionTerminalEvidence(subscription: object): TerminalEvidenceReservation | undefined {
+    return this.subscriptionEvidence.get(subscription)
+  }
+
+  reportSubscriptionTerminalEvidenceReleaseFailure(error: unknown): void {
+    this.manager.reportSubscriptionTerminalEvidenceReleaseFailure(error)
+  }
+
+  releaseSubscriptionTerminalEvidence(reservation: TerminalEvidenceReservation): Promise<void> {
+    return this.manager.releaseSubscriptionTerminalEvidence(reservation)
+  }
+
+  private async compensateCancelledSubscription(
+    subscription: BackendSubscription<string, string, string, string, string, string>
+  ): Promise<CleanupRecord> {
+    const reservation = this.subscriptionTerminalEvidence(subscription)
+    const iterator = subscription.values[Symbol.asyncIterator]()
+    const cleanup = await subscription.remove()
+    if (cleanup.state === 'release-failed') return cleanup
+    await iterator.next()
+    return this.releaseCancelledSubscriptionEvidence(this.takeSubscriptionTerminalEvidence(subscription) ?? reservation)
+  }
+
+  private async compensateCancelledRecordedSubscription(result: {
+    readonly backend: import('../../backend-contract/gatt').RecordedSubscription<string>
+    readonly notifications: BoundedAsyncStream<unknown>
+  }): Promise<CleanupRecord> {
+    const reservation = this.subscriptionTerminalEvidence(result.backend)
+    const iterator = result.notifications[Symbol.asyncIterator]()
+    const cleanup = await result.backend.remove()
+    if (cleanup.state === 'release-failed') return cleanup
+    await iterator.next()
+    return this.releaseCancelledSubscriptionEvidence(
+      this.takeSubscriptionTerminalEvidence(result.backend) ?? reservation
+    )
+  }
+
+  private async releaseCancelledSubscriptionEvidence(
+    reservation: TerminalEvidenceReservation | undefined
+  ): Promise<CleanupRecord> {
+    if (reservation === undefined) return { state: 'released', failures: [] }
+    try {
+      await this.releaseSubscriptionTerminalEvidence(reservation)
+      return { state: 'released', failures: [] }
+    } catch (error) {
+      return { state: 'release-failed', failures: [asCleanupFailure('terminal-evidence', error)] }
+    }
   }
 
   async subscribeRecorded(
     path: CurrentCharacteristicPath,
     options: import('../../backend-contract/operations').RecordedSubscriptionOptions
   ) {
+    return this.manager.admitSubscription(
+      () => this.subscribeRecordedAfterAdmission(path, options),
+      result => this.compensateCancelledRecordedSubscription(result)
+    )
+  }
+
+  private async subscribeRecordedAfterAdmission(
+    path: CurrentCharacteristicPath,
+    options: import('../../backend-contract/operations').RecordedSubscriptionOptions
+  ) {
     this.assertPath(path)
     this.assertOperationAdmission(options, 'subscribe-recorded')
-    const subscribe = this.backendDatabase.subscribeRecorded
+    const subscribe = this.manager.backendGatt.subscribeRecorded
     if (subscribe === undefined)
       throw contractError('capability.unsupported', 'gatt', 'rust-core-manager.subscribe-recorded')
-    return subscribe.call(this.backendDatabase, path, options)
+    const evidence = await this.manager.reserveSubscriptionTerminalEvidence()
+    try {
+      this.manager.assertSubscriptionAdmission()
+      const nativeSubscription = await subscribe.call(this.manager.backendGatt, path, {
+        operation: this.manager.operationOptions(options),
+        options,
+        ...(evidence === undefined ? {} : { terminalEvidenceScope: evidence.scope })
+      }).completion
+      this.manager.hydrateSubscriptionTerminalEvidence(nativeSubscription.notifications)
+      if (nativeSubscription.changed === undefined)
+        throw contractError('protocol.violation', 'gatt', 'rust-core-manager.subscribe-recorded.changed')
+      const backend = Object.freeze({
+        subscriptionId: nativeSubscription.subscriptionId,
+        path: nativeSubscription.path,
+        recordingId: options.recording.id,
+        observedDelivery: nativeSubscription.observedDelivery,
+        changed: nativeSubscription.changed,
+        remove: async (): Promise<CleanupRecord> => {
+          try {
+            await this.manager.backendGatt.unsubscribe(
+              nativeSubscription,
+              this.manager.operationOptions({ signal: null, deadline: null })
+            ).completion
+            return { state: 'released', failures: [] }
+          } catch (error) {
+            return { state: 'release-failed', failures: [asCleanupFailure('subscription', error)] }
+          }
+        }
+      })
+      if (evidence !== undefined && !hasRetainedValuesDrain(nativeSubscription.notifications)) {
+        const cleanup = await backend.remove()
+        const failure = contractError(
+          'capability.unsupported',
+          'gatt',
+          'rust-core-manager.subscribe-recorded.terminal-evidence.drain'
+        )
+        if (cleanup.state === 'release-failed')
+          throw new AggregateError(
+            [failure, ...cleanup.failures.map(item => new BackendContractError(item.error))],
+            'RN recorded subscription drain validation cleanup failed'
+          )
+        await this.manager.releaseSubscriptionTerminalEvidence(evidence.reservation)
+        this.manager.finishSubscriptionTerminalEvidenceAdmission(evidence.reservation)
+        throw failure
+      }
+      if (evidence !== undefined) this.subscriptionEvidence.set(backend, evidence.reservation)
+      return Object.freeze({ backend, notifications: nativeSubscription.notifications })
+    } catch (error) {
+      if (evidence !== undefined && this.manager.isSubscriptionTerminalEvidenceAcquiring(evidence.reservation)) {
+        try {
+          await this.manager.releaseSubscriptionTerminalEvidence(evidence.reservation)
+          this.manager.finishSubscriptionTerminalEvidenceAdmission(evidence.reservation)
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            'RN recorded subscription start and terminal evidence cleanup failed'
+          )
+        }
+      }
+      throw error
+    }
   }
 
   trackSubscription(subscription: NativeSubscription | NativeRecordedSubscription): void {
@@ -2432,18 +2792,29 @@ class NativeDiscoveredGattDatabase {
       this.resolveCharacteristicPath(path),
       toPublicSubscriptionOptions(options)
     )
-    const subscription = new NativeSubscription(this.database, backendSubscription)
+    const subscription = new NativeSubscription(
+      this.database,
+      backendSubscription,
+      this.database.takeSubscriptionTerminalEvidence(backendSubscription),
+      reservation => this.database.releaseSubscriptionTerminalEvidence(reservation)
+    )
     this.database.trackSubscription(subscription)
     assertInternalSubscription(subscription)
     return subscription
   }
 
   async subscribeRecorded(path: PortableCurrentCharacteristicPath, options: PortableRecordedSubscriptionOptions) {
-    const backend = await this.database.subscribeRecorded(this.resolveCharacteristicPath(path), {
+    const result = await this.database.subscribeRecorded(this.resolveCharacteristicPath(path), {
       ...toPublicSubscriptionOptions(options),
       recording: options.recording
     })
-    const subscription = new NativeRecordedSubscription(this.database, backend)
+    const subscription = new NativeRecordedSubscription(
+      this.database,
+      result.backend,
+      result.notifications,
+      this.database.takeSubscriptionTerminalEvidence(result.backend),
+      reservation => this.database.releaseSubscriptionTerminalEvidence(reservation)
+    )
     this.database.trackSubscription(subscription)
     return subscription
   }
@@ -2477,10 +2848,31 @@ class NativeDiscoveredGattDatabase {
 
 class NativeRecordedSubscription {
   private removal: Promise<CleanupRecord> | null = null
+  private physicalReleaseConfirmed = false
+  private terminalEvidenceDrained = false
+  private terminalEvidenceReleased: boolean
+  private terminalEvidenceRelease: Promise<void> | null = null
+
   constructor(
     private readonly database: NativeGattDatabase,
-    private readonly backend: import('../../backend-contract/gatt').RecordedSubscription<string>
-  ) {}
+    private readonly backend: import('../../backend-contract/gatt').RecordedSubscription<string>,
+    notifications: BoundedAsyncStream<unknown>,
+    private readonly terminalEvidence: TerminalEvidenceReservation | undefined,
+    private readonly releaseTerminalEvidenceReservation: (reservation: TerminalEvidenceReservation) => Promise<void>
+  ) {
+    this.terminalEvidenceReleased = terminalEvidence === undefined
+    if (terminalEvidence !== undefined && hasRetainedValuesDrain(notifications)) {
+      notifications.onRetainedValuesDrained(() => {
+        this.terminalEvidenceDrained = true
+        this.releaseTerminalEvidence().catch(error => {
+          this.database.reportSubscriptionTerminalEvidenceReleaseFailure(error)
+        })
+      })
+      this.drainNotifications(notifications).catch(error => {
+        this.database.reportSubscriptionTerminalEvidenceReleaseFailure(error)
+      })
+    }
+  }
   get subscriptionId() {
     return this.backend.subscriptionId
   }
@@ -2498,30 +2890,116 @@ class NativeRecordedSubscription {
   }
   remove(): Promise<CleanupRecord> {
     if (this.removal === null) {
-      const removal = this.backend.remove().then(
-        result => {
-          if (result.state === 'released') this.database.untrackSubscription(this)
-          else this.removal = null
-          return result
-        },
-        error => {
-          this.removal = null
-          throw error
-        }
+      const removal = (
+        this.physicalReleaseConfirmed
+          ? Promise.resolve({ state: 'released' as const, failures: [] })
+          : this.backend.remove()
       )
+        .then(result => {
+          if (result.state !== 'released') return result
+          this.physicalReleaseConfirmed = true
+          return this.releaseAfterPhysicalRemoval(result)
+        })
+        .then(
+          result => {
+            if (result.state === 'release-failed') this.removal = null
+            return result
+          },
+          error => {
+            this.removal = null
+            throw error
+          }
+        )
       this.removal = removal
     }
     return this.removal
+  }
+
+  private async drainNotifications(notifications: BoundedAsyncStream<unknown>): Promise<void> {
+    for await (const _notice of notifications) {
+      // Recorded subscriptions surface durable wake hints through `changed`;
+      // this private drain only retires the source terminal receipt.
+    }
+  }
+
+  private async releaseAfterPhysicalRemoval(record: CleanupRecord): Promise<CleanupRecord> {
+    if (this.terminalEvidenceDrained && !this.terminalEvidenceReleased) {
+      try {
+        await this.releaseTerminalEvidence()
+      } catch (error) {
+        return { state: 'release-failed', failures: [asCleanupFailure('terminal-evidence', error)] }
+      }
+    }
+    if (!this.terminalEvidenceReleased) {
+      return {
+        state: 'release-failed',
+        failures: [
+          asCleanupFailure(
+            'terminal-evidence',
+            contractError(
+              'lifecycle.invalid-state',
+              'stream',
+              'rust-core-manager.subscribe-recorded.terminal-evidence.pending-drain'
+            )
+          )
+        ]
+      }
+    }
+    this.database.untrackSubscription(this)
+    return record
+  }
+
+  private async releaseTerminalEvidence(): Promise<void> {
+    if (
+      this.terminalEvidenceReleased ||
+      this.terminalEvidence === undefined ||
+      !this.physicalReleaseConfirmed ||
+      !this.terminalEvidenceDrained
+    ) {
+      return
+    }
+    if (this.terminalEvidenceRelease === null) {
+      this.terminalEvidenceRelease = this.releaseTerminalEvidenceReservation(this.terminalEvidence).then(
+        () => {
+          this.terminalEvidenceReleased = true
+          if (this.physicalReleaseConfirmed) this.database.untrackSubscription(this)
+        },
+        error => {
+          this.terminalEvidenceRelease = null
+          throw error
+        }
+      )
+    }
+    await this.terminalEvidenceRelease
   }
 }
 
 class NativeSubscription {
   private removal: Promise<CleanupRecord> | null = null
+  private physicalReleaseConfirmed = false
+  private terminalEvidenceDrained = false
+  private terminalEvidenceReleased: boolean
+  private terminalEvidenceRelease: Promise<void> | null = null
 
   constructor(
     private readonly database: NativeGattDatabase,
-    private readonly backendSubscription: BackendSubscription<string, string, string, string, string, string>
-  ) {}
+    private readonly backendSubscription: BackendSubscription<string, string, string, string, string, string>,
+    private readonly terminalEvidence: TerminalEvidenceReservation | undefined,
+    private readonly releaseTerminalEvidenceReservation: (reservation: TerminalEvidenceReservation) => Promise<void>
+  ) {
+    this.terminalEvidenceReleased = terminalEvidence === undefined
+    if (terminalEvidence !== undefined && hasRetainedValuesDrain(backendSubscription.values)) {
+      backendSubscription.values.onRetainedValuesDrained(() => {
+        this.terminalEvidenceDrained = true
+        // Drain callbacks cannot await.  A failed source-native release stays
+        // in the manager's retry map and the still-tracked subscription makes
+        // that debt visible to remove() and destroy().
+        this.releaseTerminalEvidence().catch(error => {
+          this.database.reportSubscriptionTerminalEvidenceReleaseFailure(error)
+        })
+      })
+    }
+  }
 
   get subscriptionId() {
     return this.backendSubscription.subscriptionId
@@ -2559,9 +3037,59 @@ class NativeSubscription {
 
   /** The subscription stays tracked until the owner confirms release, so a failed removal can be retried. */
   async removeBackend(): Promise<CleanupRecord> {
-    const record = await this.backendSubscription.remove()
-    if (record.state === 'released') this.database.untrackSubscription(this)
+    const record = this.physicalReleaseConfirmed
+      ? { state: 'released' as const, failures: [] }
+      : await this.backendSubscription.remove()
+    if (record.state !== 'released') return record
+    this.physicalReleaseConfirmed = true
+    if (this.terminalEvidenceDrained && !this.terminalEvidenceReleased) {
+      try {
+        await this.releaseTerminalEvidence()
+      } catch (error) {
+        return { state: 'release-failed', failures: [asCleanupFailure('terminal-evidence', error)] }
+      }
+    }
+    if (!this.terminalEvidenceReleased) {
+      return {
+        state: 'release-failed',
+        failures: [
+          asCleanupFailure(
+            'terminal-evidence',
+            contractError(
+              'lifecycle.invalid-state',
+              'stream',
+              'rust-core-manager.subscribe.terminal-evidence.pending-drain'
+            )
+          )
+        ]
+      }
+    }
+    this.database.untrackSubscription(this)
     return record
+  }
+
+  private async releaseTerminalEvidence(): Promise<void> {
+    if (
+      this.terminalEvidenceReleased ||
+      this.terminalEvidence === undefined ||
+      !this.physicalReleaseConfirmed ||
+      !this.terminalEvidenceDrained
+    ) {
+      return
+    }
+    if (this.terminalEvidenceRelease === null) {
+      this.terminalEvidenceRelease = this.releaseTerminalEvidenceReservation(this.terminalEvidence).then(
+        () => {
+          this.terminalEvidenceReleased = true
+          if (this.physicalReleaseConfirmed) this.database.untrackSubscription(this)
+        },
+        error => {
+          this.terminalEvidenceRelease = null
+          throw error
+        }
+      )
+    }
+    await this.terminalEvidenceRelease
   }
 }
 
@@ -2582,6 +3110,16 @@ function hasRetainedValuesDrain(
   stream: BoundedAsyncStream<unknown>
 ): stream is BoundedAsyncStream<unknown> & { onRetainedValuesDrained(callback: () => void): void } {
   return 'onRetainedValuesDrained' in stream && typeof stream.onRetainedValuesDrained === 'function'
+}
+
+function hasTerminalEvidenceHydrator(stream: BoundedAsyncStream<unknown>): stream is BoundedAsyncStream<unknown> & {
+  setTerminalEvidenceHydrator(
+    hydrator: (
+      notice: import('../../backend-contract/streams').StreamTerminalNotice
+    ) => Promise<import('../../backend-contract/streams').StreamTerminalNotice>
+  ): void
+} {
+  return 'setTerminalEvidenceHydrator' in stream && typeof stream.setTerminalEvidenceHydrator === 'function'
 }
 
 function asCleanupFailure(resourceKind: string, error: unknown): CleanupFailure {

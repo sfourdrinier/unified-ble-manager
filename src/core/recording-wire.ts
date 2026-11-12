@@ -193,6 +193,7 @@ export type WireDrainRecord =
   | {
       readonly t: 'stream-end'
       readonly error?: WireRemoteFailure
+      readonly evidence?: import('../backend-contract/terminal-evidence').TerminalEvidenceCommit
       readonly ordinal: number
       readonly consumer: string
       readonly reason: (typeof STREAM_END_REASONS)[number]
@@ -758,7 +759,8 @@ export function advertisementOrThrow(fields: ReadonlyMap<string, unknown>, ordin
 
 export function terminalEvidenceOrThrow(
   value: unknown,
-  path: string
+  path: string,
+  producer: import('../backend-contract/terminal-evidence').TerminalEvidenceProducer = 'scan'
 ): import('../backend-contract/terminal-evidence').TerminalEvidenceCommit {
   const fields = exactObject(
     value,
@@ -767,7 +769,7 @@ export function terminalEvidenceOrThrow(
   )
   const scope = exactObject(fields.get('scope'), ['managerId', 'operationId', 'incarnation'], `${path}.scope`)
   if (
-    fields.get('producer') !== 'scan' ||
+    fields.get('producer') !== producer ||
     fields.get('kind') !== 'committed' ||
     fields.get('formatVersion') !== 1 ||
     fields.get('durability') !== 'committed'
@@ -776,7 +778,7 @@ export function terminalEvidenceOrThrow(
   const digest = stringOrThrow(fields.get('digest'), `${path}.digest`)
   if (!/^[0-9a-f]{64}$/u.test(digest)) throw malformed(`${path}.digest`)
   return Object.freeze({
-    producer: 'scan',
+    producer,
     kind: 'committed',
     ref: stringOrThrow(fields.get('ref'), `${path}.ref`),
     byteLength: integerOrThrow(fields.get('byteLength'), NON_NEGATIVE, `${path}.byteLength`),
@@ -911,12 +913,14 @@ export function drainRecordOrThrow(value: unknown, path: string): WireDrainRecor
     }
     case 'stream-end': {
       const hasError = Object.hasOwn(value, 'error')
+      const hasEvidence = Object.hasOwn(value, 'evidence')
       const { fields, ordinal } = read([
         'consumer',
         'reason',
         'droppedItems',
         'droppedBytes',
-        ...(hasError ? ['error'] : [])
+        ...(hasError ? ['error'] : []),
+        ...(hasEvidence ? ['evidence'] : [])
       ])
       const reason = enumOrThrow(fields.get('reason'), STREAM_END_REASONS, `${recordPath}.reason`)
       if (hasError && reason !== 'source-failed') throw malformed(`${recordPath}.error`)
@@ -927,7 +931,10 @@ export function drainRecordOrThrow(value: unknown, path: string): WireDrainRecor
         reason,
         droppedItems: integerOrThrow(fields.get('droppedItems'), NON_NEGATIVE, `${recordPath}.droppedItems`),
         droppedBytes: integerOrThrow(fields.get('droppedBytes'), NON_NEGATIVE, `${recordPath}.droppedBytes`),
-        ...(hasError ? { error: remoteFailureOrThrow(fields.get('error'), `${recordPath}.error`) } : {})
+        ...(hasError ? { error: remoteFailureOrThrow(fields.get('error'), `${recordPath}.error`) } : {}),
+        ...(hasEvidence
+          ? { evidence: terminalEvidenceOrThrow(fields.get('evidence'), `${recordPath}.evidence`, 'subscription') }
+          : {})
       })
     }
     case 'adapter': {

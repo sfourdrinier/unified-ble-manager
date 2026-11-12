@@ -7,6 +7,8 @@ const {
 const { createDeterministicTestBackend } = require('../../src/testing/deterministic/deterministic-test-backend')
 const { capacity, opaqueId, version, versionRange } = require('../../src/backend-contract/primitives')
 const { CoreBoundedStream } = require('../../src/core/bounded-stream')
+const { encodeTerminalEvidence } = require('../../src/core/terminal-evidence-codec')
+const { createHash } = require('node:crypto')
 
 function compatibility() {
   return {
@@ -203,7 +205,14 @@ test('keeps evidence through a source terminal until every shared consumer has r
 
   const first = await settle(fixture.controller, database.subscribe(characteristic, subscriptionOptions()))
   const second = await settle(fixture.controller, database.subscribe(characteristic, subscriptionOptions()))
-  source.finishWithReason('source-failed', null, {
+  const sourceFailure = {
+    code: 'platform.failure',
+    domain: 'gatt',
+    operation: 'subscription.source-terminal',
+    retryability: 'never',
+    platform: { domain: 'desktop-rust-core', code: 'native-terminal', safeMessage: 'native terminal failure' }
+  }
+  source.finishWithReason('source-failed', sourceFailure, {
     producer: 'subscription',
     ref: 'terminal-ref',
     byteLength: 1,
@@ -216,13 +225,128 @@ test('keeps evidence through a source terminal until every shared consumer has r
   const firstValues = first.values[Symbol.asyncIterator]()
   const secondValues = second.values[Symbol.asyncIterator]()
   await expect(firstValues.next()).resolves.toMatchObject({
-    value: { kind: 'terminal', evidence: { ref: 'terminal-ref' } }
+    value: { kind: 'terminal', error: sourceFailure, evidence: { ref: 'terminal-ref' } }
   })
   expect(release).not.toHaveBeenCalled()
   await expect(secondValues.next()).resolves.toMatchObject({
-    value: { kind: 'terminal', evidence: { ref: 'terminal-ref' } }
+    value: { kind: 'terminal', error: sourceFailure, evidence: { ref: 'terminal-ref' } }
   })
   await Promise.resolve()
   expect(release).toHaveBeenCalledTimes(1)
+  await settle(fixture.controller, manager.destroy())
+})
+
+test('an explicit subscription removal discards its unread prefix', async () => {
+  const release = jest.fn(async () => {})
+  const reserve = jest.fn(async request => ({
+    maximumBytes: request.maximumBytes,
+    commit: async () => ({ kind: 'refused', reason: 'storage-unavailable' }),
+    release
+  }))
+  const { fixture, manager, database, characteristic } = await createFixture(reserve)
+  const source = terminalSource()
+  const subscribe = fixture.backend.gatt.subscribe.bind(fixture.backend.gatt)
+  fixture.backend.gatt.subscribe = (path, request) => {
+    const dispatch = subscribe(path, request)
+    return {
+      ...dispatch,
+      completion: dispatch.completion.then(subscription => ({ ...subscription, notifications: source }))
+    }
+  }
+  const subscription = await settle(fixture.controller, database.subscribe(characteristic, subscriptionOptions()))
+  const values = subscription.values[Symbol.asyncIterator]()
+  source.emit({ value: new Uint8Array([0xa5]), delivery: 'notification' }, 1)
+
+  await expect(settle(fixture.controller, subscription.remove())).resolves.toEqual({ state: 'released', failures: [] })
+  await expect(values.next()).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'owner-released' } })
+  expect(release).toHaveBeenCalledTimes(1)
+  await settle(fixture.controller, manager.destroy())
+})
+
+test('preserves a source terminal committed immediately before database invalidation', async () => {
+  let reservation
+  let reservationRequest
+  const release = jest.fn(async () => {})
+  const reserve = jest.fn(async request => {
+    reservationRequest = request
+    reservation = {
+      maximumBytes: request.maximumBytes,
+      commit: async record => ({
+        producer: request.producer,
+        ref: 'service-change-evidence-ref',
+        byteLength: record.canonicalBytes.byteLength,
+        digest: record.digest,
+        formatVersion: request.formatVersion,
+        durability: 'committed',
+        scope: request.scope
+      }),
+      release
+    }
+    return reservation
+  })
+  const { fixture, manager, database, characteristic } = await createFixture(reserve)
+  let committedCanonicalBytes
+  let committedDigest
+  fixture.backend.gatt.readTerminalEvidence = jest.fn(async reference => {
+    if (reference !== 'service-change-evidence-ref') return { kind: 'missing' }
+    return { kind: 'committed', canonicalBytes: committedCanonicalBytes, digest: committedDigest }
+  })
+  const source = terminalSource()
+  const subscribe = fixture.backend.gatt.subscribe.bind(fixture.backend.gatt)
+  fixture.backend.gatt.subscribe = (path, request) => {
+    const dispatch = subscribe(path, request)
+    return {
+      ...dispatch,
+      completion: dispatch.completion.then(subscription => ({ ...subscription, notifications: source }))
+    }
+  }
+  const first = await settle(fixture.controller, database.subscribe(characteristic, subscriptionOptions()))
+  const second = await settle(fixture.controller, database.subscribe(characteristic, subscriptionOptions()))
+  const terminal = {
+    kind: 'terminal',
+    reason: 'service-changed',
+    droppedItems: 0,
+    droppedBytes: 0,
+    replacedItems: 0
+  }
+  committedCanonicalBytes = encodeTerminalEvidence(terminal, reservationRequest.scope)
+  committedDigest = createHash('sha256').update(committedCanonicalBytes).digest('hex')
+  const committed = await reservation.commit({
+    canonicalBytes: committedCanonicalBytes,
+    digest: committedDigest
+  })
+  expect(committed).toMatchObject({ durability: 'committed', ref: 'service-change-evidence-ref' })
+  const firstValues = first.values[Symbol.asyncIterator]()
+  const secondValues = second.values[Symbol.asyncIterator]()
+  source.emit({ value: new Uint8Array([0xa5]), delivery: 'notification' }, 1)
+  source.finishWithReason('service-changed', null, {
+    ...committed
+  })
+  const invalidation = manager.core.invalidateDatabase(database.database, 'connection-lost', 'service-changed', true)
+  await settle(fixture.controller, invalidation)
+  expect(manager.core.aggregateQuota.retainedBytes()).toBeGreaterThan(0)
+
+  await expect(firstValues.next()).resolves.toMatchObject({
+    value: { kind: 'value', value: { value: new Uint8Array([0xa5]), delivery: 'notification' } }
+  })
+  await expect(secondValues.next()).resolves.toMatchObject({
+    value: { kind: 'value', value: { value: new Uint8Array([0xa5]), delivery: 'notification' } }
+  })
+  await expect(firstValues.next()).resolves.toMatchObject({
+    value: {
+      kind: 'terminal',
+      reason: 'service-changed',
+      evidence: { ref: 'service-change-evidence-ref', digest: committedDigest }
+    }
+  })
+  await expect(secondValues.next()).resolves.toMatchObject({
+    value: {
+      kind: 'terminal',
+      reason: 'service-changed',
+      evidence: { ref: 'service-change-evidence-ref', digest: committedDigest }
+    }
+  })
+  expect(fixture.backend.gatt.readTerminalEvidence).toHaveBeenCalledWith('service-change-evidence-ref', 512)
+  expect(manager.core.aggregateQuota.retainedBytes()).toBe(0)
   await settle(fixture.controller, manager.destroy())
 })

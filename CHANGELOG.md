@@ -26,6 +26,14 @@ All notable changes to `unified-ble-manager` are documented here.
   views. The refused cleanup remains visible and is retried only by its
   explicit owner or another distinct lifecycle authority; neither route issues
   an implicit native retry.
+- Preserve accepted subscription values and a committed terminal-evidence
+  receipt when a source terminal and a database invalidation race. Lifecycle
+  terminals now drain their admitted FIFO prefix before release; an explicit
+  owner removal still discards its unread values.
+- React Native preserves and hydrates scoped terminal evidence for ordinary and
+  recorded subscriptions, including retryable cleanup of cancelled late starts.
+- Linux discovery cancellation stops read-only graph work before a late reply
+  can publish a database; effectful operations retain their cleanup ownership.
 
 ## [5.2.1] - 2026-11-08
 

@@ -19,6 +19,16 @@ const end = {
   droppedItems: 0,
   droppedBytes: 0
 }
+const evidence = {
+  producer: 'subscription',
+  kind: 'committed',
+  ref: 'native-stream-end-evidence',
+  byteLength: 19,
+  digest: 'a'.repeat(64),
+  formatVersion: 1,
+  durability: 'committed',
+  scope: { managerId: 'native-manager', operationId: 'native-operation', incarnation: '1' }
+}
 
 it('validates optional structured stream errors without accepting them for other reasons', () => {
   const parse = record => parseDrainValue({ more: false, records: [record], controlLost: 0 }, null)
@@ -26,6 +36,12 @@ it('validates optional structured stream errors without accepting them for other
   expect(parse(end)).toMatchObject({ ok: true, value: { records: [end] } })
   expect(parse({ ...end, error: null })).toMatchObject({ ok: false })
   expect(parse({ ...end, reason: 'closed', error: failure })).toMatchObject({ ok: false })
+  expect(parse({ ...end, evidence })).toMatchObject({ ok: true, value: { records: [{ evidence }] } })
+  expect(parse({ ...end, reason: 'invalidated', evidence })).toMatchObject({
+    ok: true,
+    value: { records: [{ evidence }] }
+  })
+  expect(parse({ ...end, evidence: { ...evidence, producer: 'scan' } })).toMatchObject({ ok: false })
   expect(parse({ ...end, error: { ...failure, code: 'invented' } })).toMatchObject({ ok: false })
 })
 

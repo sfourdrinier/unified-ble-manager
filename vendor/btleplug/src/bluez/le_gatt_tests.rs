@@ -1246,6 +1246,7 @@ fn cancelled_new_attachment_wait_never_publishes_late_ready_reply() {
         entered.notified().await;
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(peripheral.peer.marker_reclaim_snapshot().0, 0);
         let pending = {
             let mut state = fixture.state.lock().unwrap();
             state.hold_snapshot_at = None;

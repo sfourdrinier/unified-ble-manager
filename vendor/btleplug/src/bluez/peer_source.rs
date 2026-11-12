@@ -264,7 +264,10 @@ pub enum PeerSourceError {
 impl PeerSource {
     /// Own a graph-changing operation until its native future settles, even if
     /// the initiating caller abandons its waiter. Indeterminate physical
-    /// effects remain fenced for subsequent reclaim admission.
+    /// effects remain fenced for subsequent reclaim admission. Observations,
+    /// which cannot create an external effect to compensate, remain
+    /// cancellation-aware and do not continue into graph publication after
+    /// their caller has gone away.
     pub(super) async fn own_graph_operation<T, F>(self: &Arc<Self>, scope: GraphOperationScope, future: F) -> crate::Result<T>
     where
         T: Send + 'static,
@@ -289,7 +292,14 @@ impl PeerSource {
             state.graph_operations = state.graph_operations.checked_add(1)
                 .ok_or_else(|| crate::Error::Other("BlueZ graph operation capacity exhausted".into()))?;
         }
+        let cancellable_observation = matches!(&scope, GraphOperationScope::Observation);
         let guard = GraphOperationGuard { peer: self.clone(), scope, settlement: GraphOperationSettlement::Indeterminate };
+        if cancellable_observation {
+            let mut guard = guard;
+            let result = future.await;
+            guard.settlement = classify(&guard.scope, &result);
+            return result;
+        }
         tokio::spawn(async move {
             let mut guard = guard;
             let result = future.await;

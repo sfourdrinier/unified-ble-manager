@@ -96,11 +96,11 @@ const ARG_SCHEMAS = Object.freeze({
   'gatt.write-descriptor': [['peerId', 'selector', 'valueB64', 'mode', 'operationId'], ['budgetMs']],
   'gatt.subscribe': [
     ['peerId', 'selector', 'consumer', 'operationId'],
-    ['deliveryMode', 'budgetMs']
+    ['deliveryMode', 'budgetMs', 'terminalEvidenceScope']
   ],
   'gatt.subscribe-recorded': [
     ['peerId', 'selector', 'consumer', 'operationId', 'recording'],
-    ['deliveryMode', 'budgetMs']
+    ['deliveryMode', 'budgetMs', 'terminalEvidenceScope']
   ],
   'gatt.unsubscribe': [['peerId', 'selector', 'consumer', 'operationId'], ['budgetMs']],
   'background.acquire': [
@@ -186,6 +186,15 @@ function exact(args, required, optional, path = 'args') {
   for (const key of Object.keys(args)) {
     if (!required.includes(key) && !optional.includes(key)) throw invalid(`${path}.${key}`)
   }
+}
+
+function terminalEvidenceScope(value, path = 'args.terminalEvidenceScope') {
+  if (value === undefined) return null
+  exact(value, ['managerId', 'operationId', 'incarnation'], [], path)
+  for (const key of ['managerId', 'operationId', 'incarnation']) {
+    if (typeof value[key] !== 'string') throw invalid(`${path}.${key}`)
+  }
+  return { managerId: value.managerId, operationId: value.operationId, incarnation: value.incarnation }
 }
 
 function defaultPeripheral(peerId = DEFAULT_PEER) {
@@ -1481,7 +1490,8 @@ class DeterministicRustCoreNative {
         session.consumers.set(args.consumer, {
           peerId: args.peerId,
           selector: { ...args.selector, characteristicUuid: canonicalUuid(args.selector.characteristicUuid) },
-          delivery
+          delivery,
+          terminalEvidenceScope: terminalEvidenceScope(args.terminalEvidenceScope)
         })
         return { consumer: args.consumer, delivery }
       }

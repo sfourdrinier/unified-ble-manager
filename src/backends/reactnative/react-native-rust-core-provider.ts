@@ -970,6 +970,12 @@ interface SubscriptionEntry {
   readonly nativePeerId: string
   readonly connectionKey: string
   readonly selector: CharacteristicSelector
+  /** The reserved receipt binding this native consumer must return at terminal delivery. */
+  readonly terminalEvidenceScope: {
+    readonly managerId: string
+    readonly operationId: string
+    readonly incarnation: string
+  } | null
   readonly stream: OwnedCoreBoundedStream<NotificationValue>
   /** `ended`: the owner retired the consumer itself (`stream-end`); nothing remains to release. */
   state: 'subscribing' | 'active' | 'ended'
@@ -4556,6 +4562,8 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
       nativePeerId: entry.nativePeerId,
       connectionKey: entry.key,
       selector,
+      terminalEvidenceScope:
+        request.terminalEvidenceScope === undefined ? null : Object.freeze({ ...request.terminalEvidenceScope }),
       stream,
       state: 'subscribing',
       removal: null,
@@ -4692,7 +4700,7 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
   private onStreamEnd(
     record: Pick<
       Extract<WireDrainRecord, { t: 'stream-end' }>,
-      'consumer' | 'reason' | 'droppedItems' | 'droppedBytes' | 'error'
+      'consumer' | 'reason' | 'droppedItems' | 'droppedBytes' | 'error' | 'evidence'
     >
   ): void {
     const stored = this.subscriptions.get(record.consumer)
@@ -4719,7 +4727,23 @@ export class ReactNativeRustCoreBackend implements BleCentralBackend<string, Nat
             ? 'closed'
             : (this.invalidations.get(stored.nativePeerId) ?? 'connection-lost')
     const error = record.error === undefined ? null : remoteFailureError(record.error).normalized
-    stored.stream.finishWithReason(reason, error)
+    if (
+      stored.terminalEvidenceScope !== null &&
+      (record.evidence === undefined ||
+        record.evidence.producer !== 'subscription' ||
+        !sameTerminalEvidenceScope(record.evidence.scope, stored.terminalEvidenceScope))
+    ) {
+      const protocolError = contractError(
+        'protocol.violation',
+        'gatt',
+        `${SCOPE}.subscription.terminal-evidence-missing`
+      ).normalized
+      stored.stream.finishWithReason('source-failed', protocolError)
+      this.finishRecordedWake(stored, 'source-failed', protocolError)
+      stored.lossCleanup?.()
+      return
+    }
+    stored.stream.finishWithReason(reason, error, record.evidence)
     this.finishRecordedWake(stored, reason, error)
     if (record.reason === 'source-failed') stored.lossCleanup?.()
   }
@@ -5526,6 +5550,17 @@ function advertisementBytes(record: Extract<WireDrainRecord, { t: 'adv' }>): num
   for (const entry of record.manufacturerData ?? []) bytes += 2 + entry.payload.byteLength
   if (record.rawRecord !== null) bytes += record.rawRecord.byteLength
   return bytes
+}
+
+function sameTerminalEvidenceScope(
+  actual: { readonly managerId: string; readonly operationId: string; readonly incarnation: string },
+  expected: { readonly managerId: string; readonly operationId: string; readonly incarnation: string }
+): boolean {
+  return (
+    actual.managerId === expected.managerId &&
+    actual.operationId === expected.operationId &&
+    actual.incarnation === expected.incarnation
+  )
 }
 
 /** Identity of the connection records for tests that inspect retained state. */

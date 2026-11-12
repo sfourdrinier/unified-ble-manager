@@ -7,8 +7,12 @@ jest.mock('react-native', () => ({
 const { Platform } = require('react-native')
 const { createReactNativeApplicationHost } = require('../../../src/react-native-app-manager')
 const { createExpoBleManagerWithEnvironment } = require('../../../src/expo')
+const { createPublicBleManager } = require('../../../src/public/ble-manager')
 const { createReactNativeRustCoreBinding } = require('../../../src/backends/reactnative/react-native-rust-core-binding')
-const { DeterministicRustCoreNative } = require('../../../test-support/react-native/deterministic-rust-core-native')
+const {
+  DeterministicRustCoreNative,
+  DEFAULT_PEER
+} = require('../../../test-support/react-native/deterministic-rust-core-native')
 const { scanOptions, settle } = require('../../../test-support/react-native/rust-core-harness')
 
 const terminalEvidence = Object.freeze({ maximumCanonicalBytes: 128, maximumDurableBytes: 1024 })
@@ -54,6 +58,128 @@ test.each([
     fixture.native.calls.find(call => call[0] === 'invoke' && call[2] === 'terminal-evidence.release')
   ).toBeDefined()
   await host.manager.destroy()
+})
+
+test('React Native public GATT subscription reserves a scoped terminal-evidence slot before native subscribe', async () => {
+  Platform.OS = 'android'
+  const fixture = binding('android')
+  const host = await createReactNativeApplicationHost({
+    rustCore: fixture.binding,
+    randomBytes: length => new Uint8Array(length).fill(1),
+    terminalEvidence
+  })
+  try {
+    const manager = await createPublicBleManager(host.manager, () => 1000)
+    const peer = host.manager.attachedBackend.backend.connections.peerFromAddress({
+      address: DEFAULT_PEER,
+      addressType: 'public'
+    })
+    const connection = await manager.connect(peer)
+    const database = await connection.discover()
+    await database.services[0].characteristics[0].subscribe()
+    const reserves = fixture.native.calls.filter(
+      call => call[0] === 'invoke' && call[2] === 'terminal-evidence.reserve'
+    )
+    const subscribe = fixture.native.calls.find(call => call[0] === 'invoke' && call[2] === 'gatt.subscribe')
+    expect(reserves).toHaveLength(1)
+    const reservation = JSON.parse(reserves[0][3])
+    expect(reservation).toMatchObject({ producer: 'subscription', maximumBytes: 128, scope: expect.any(Object) })
+    expect(JSON.parse(subscribe[3]).terminalEvidenceScope).toEqual(reservation.scope)
+  } finally {
+    await host.manager.destroy()
+  }
+})
+
+test('React Native public recorded GATT subscription reserves a scoped terminal-evidence slot before native subscribe', async () => {
+  Platform.OS = 'android'
+  const fixture = binding('android')
+  const host = await createReactNativeApplicationHost({
+    rustCore: fixture.binding,
+    randomBytes: length => new Uint8Array(length).fill(1),
+    terminalEvidence
+  })
+  try {
+    const manager = await createPublicBleManager(host.manager, () => 1000)
+    const peer = host.manager.attachedBackend.backend.connections.peerFromAddress({
+      address: DEFAULT_PEER,
+      addressType: 'public'
+    })
+    const connection = await manager.connect(peer)
+    const database = await connection.discover()
+    await database.services[0].characteristics[0].subscribeRecorded({
+      recording: { id: 'terminal-evidence-recorded', maxBytes: 1048576, maxRecords: 1 }
+    })
+    const reserve = fixture.native.calls.find(call => call[0] === 'invoke' && call[2] === 'terminal-evidence.reserve')
+    const subscribe = fixture.native.calls.find(call => call[0] === 'invoke' && call[2] === 'gatt.subscribe-recorded')
+    const reservation = JSON.parse(reserve[3])
+    expect(reservation).toMatchObject({ producer: 'subscription', maximumBytes: 128, scope: expect.any(Object) })
+    expect(JSON.parse(subscribe[3]).terminalEvidenceScope).toEqual(reservation.scope)
+  } finally {
+    await host.manager.destroy()
+  }
+})
+
+test('React Native public GATT subscription retains a failed terminal-evidence release for remove retry', async () => {
+  Platform.OS = 'android'
+  const fixture = binding('android')
+  const host = await createReactNativeApplicationHost({
+    rustCore: fixture.binding,
+    randomBytes: length => new Uint8Array(length).fill(1),
+    terminalEvidence
+  })
+  try {
+    const manager = await createPublicBleManager(host.manager, () => 1000)
+    const peer = host.manager.attachedBackend.backend.connections.peerFromAddress({
+      address: DEFAULT_PEER,
+      addressType: 'public'
+    })
+    const connection = await manager.connect(peer)
+    const database = await connection.discover()
+    const subscription = await database.services[0].characteristics[0].subscribe()
+    fixture.native.failNext('terminal-evidence.release', 'platform.failure', 'stream')
+    await expect(subscription.remove()).resolves.toMatchObject({ state: 'release-failed' })
+    const terminal = await subscription.values[Symbol.asyncIterator]().next()
+    expect(terminal.value).toMatchObject({ kind: 'terminal', reason: 'owner-released' })
+    await settle()
+    await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(
+      fixture.native.calls.filter(call => call[0] === 'invoke' && call[2] === 'terminal-evidence.release')
+    ).toHaveLength(2)
+    expect(fixture.native.calls.filter(call => call[0] === 'invoke' && call[2] === 'gatt.unsubscribe')).toHaveLength(1)
+  } finally {
+    await host.manager.destroy()
+  }
+})
+
+test('React Native public recorded GATT subscription retains a failed terminal-evidence release for remove retry', async () => {
+  Platform.OS = 'android'
+  const fixture = binding('android')
+  const host = await createReactNativeApplicationHost({
+    rustCore: fixture.binding,
+    randomBytes: length => new Uint8Array(length).fill(1),
+    terminalEvidence
+  })
+  try {
+    const manager = await createPublicBleManager(host.manager, () => 1000)
+    const peer = host.manager.attachedBackend.backend.connections.peerFromAddress({
+      address: DEFAULT_PEER,
+      addressType: 'public'
+    })
+    const connection = await manager.connect(peer)
+    const database = await connection.discover()
+    const subscription = await database.services[0].characteristics[0].subscribeRecorded({
+      recording: { id: 'terminal-evidence-retry', maxBytes: 1048576, maxRecords: 1 }
+    })
+    fixture.native.failNext('terminal-evidence.release', 'platform.failure', 'stream')
+    await expect(subscription.remove()).resolves.toMatchObject({ state: 'release-failed' })
+    await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(
+      fixture.native.calls.filter(call => call[0] === 'invoke' && call[2] === 'terminal-evidence.release')
+    ).toHaveLength(2)
+    expect(fixture.native.calls.filter(call => call[0] === 'invoke' && call[2] === 'gatt.unsubscribe')).toHaveLength(1)
+  } finally {
+    await host.manager.destroy()
+  }
 })
 
 test('Expo environment factory preserves terminal evidence through its RN host', async () => {
@@ -216,6 +342,90 @@ test.each(['terminal-evidence.reserve', 'scan.start'])(
     ).toHaveLength(1)
   }
 )
+
+test.each([
+  ['terminal-evidence.reserve', 'ordinary'],
+  ['terminal-evidence.reserve', 'recorded'],
+  ['gatt.subscribe', 'ordinary'],
+  ['gatt.subscribe-recorded', 'recorded']
+])(
+  'destroy fences a held %s %s subscription acquisition and compensates its late native result',
+  async (held, kind) => {
+    Platform.OS = 'android'
+    const fixture = binding('android')
+    const host = await createReactNativeApplicationHost({
+      rustCore: fixture.binding,
+      randomBytes: length => new Uint8Array(length).fill(1),
+      terminalEvidence
+    })
+    const manager = await createPublicBleManager(host.manager, () => 1000)
+    const peer = host.manager.attachedBackend.backend.connections.peerFromAddress({
+      address: DEFAULT_PEER,
+      addressType: 'public'
+    })
+    const connection = await manager.connect(peer)
+    const database = await connection.discover()
+    fixture.native.hold(held)
+    const starting =
+      kind === 'ordinary'
+        ? database.services[0].characteristics[0].subscribe()
+        : database.services[0].characteristics[0].subscribeRecorded({
+            recording: { id: `held-${held}`, maxBytes: 1048576, maxRecords: 1 }
+          })
+    await settle()
+    const destroying = host.manager.destroy()
+    await expect(starting).rejects.toMatchObject({ code: 'operation.cancelled-by-destroy' })
+    await expect(destroying).resolves.toMatchObject({ state: 'release-failed' })
+    expect(fixture.native.calls.some(call => call[0] === 'invoke' && call[2] === 'session.dispose')).toBe(false)
+    fixture.native.release(held)
+    await settle(60)
+    if (held !== 'terminal-evidence.reserve')
+      expect(fixture.native.calls.some(call => call[0] === 'invoke' && call[2] === 'gatt.unsubscribe')).toBe(true)
+    await expect(host.manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(
+      fixture.native.calls.filter(call => call[0] === 'invoke' && call[2] === 'terminal-evidence.release')
+    ).toHaveLength(1)
+  }
+)
+
+test.each([
+  ['gatt.subscribe', 'ordinary'],
+  ['gatt.subscribe-recorded', 'recorded']
+])('destroy retries failed late %s %s subscription compensation', async (held, kind) => {
+  Platform.OS = 'android'
+  const fixture = binding('android')
+  const host = await createReactNativeApplicationHost({
+    rustCore: fixture.binding,
+    randomBytes: length => new Uint8Array(length).fill(1),
+    terminalEvidence
+  })
+  const manager = await createPublicBleManager(host.manager, () => 1000)
+  const peer = host.manager.attachedBackend.backend.connections.peerFromAddress({
+    address: DEFAULT_PEER,
+    addressType: 'public'
+  })
+  const connection = await manager.connect(peer)
+  const database = await connection.discover()
+  fixture.native.hold(held)
+  const starting =
+    kind === 'ordinary'
+      ? database.services[0].characteristics[0].subscribe()
+      : database.services[0].characteristics[0].subscribeRecorded({
+          recording: { id: `retry-${held}`, maxBytes: 1048576, maxRecords: 1 }
+        })
+  await settle()
+  const destroying = host.manager.destroy()
+  await expect(starting).rejects.toMatchObject({ code: 'operation.cancelled-by-destroy' })
+  await expect(destroying).resolves.toMatchObject({ state: 'release-failed' })
+  fixture.native.failNext('gatt.unsubscribe', 'platform.failure', 'gatt')
+  fixture.native.release(held)
+  await settle(60)
+  await expect(host.manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  expect(fixture.native.calls.filter(call => call[0] === 'invoke' && call[2] === 'gatt.unsubscribe')).toHaveLength(2)
+  expect(
+    fixture.native.calls.filter(call => call[0] === 'invoke' && call[2] === 'terminal-evidence.release')
+  ).toHaveLength(1)
+})
 
 test('a cancelled late scan whose stop fails remains visible for destroy retry', async () => {
   Platform.OS = 'android'

@@ -135,6 +135,21 @@ export class CoreSubscription<Attachment extends string, Identity extends Backen
     }
   }
 
+  /** End a source or lifecycle stream after its accepted FIFO prefix drains. */
+  finish(
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed',
+    error: NormalizedBleError | null = null,
+    evidence?: TerminalEvidenceCommit
+  ): void {
+    if (!this.isActive()) {
+      return
+    }
+    this.state = 'invalid'
+    if (this.values instanceof CoreBoundedStream) {
+      this.values.finishWithReason(reason, error, evidence)
+    }
+  }
+
   remove(): Promise<CleanupRecord> {
     if (this.removal === null) {
       const removal = this.removeSubscription(this)
@@ -350,7 +365,8 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
   async invalidatePath(
     path: CurrentCharacteristicPath<Attachment>,
     reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed',
-    evidence?: TerminalEvidenceCommit
+    evidence?: TerminalEvidenceCommit,
+    error: NormalizedBleError | null = null
   ): Promise<CleanupRecord> {
     const physicals = [...this.physicalByPath.values()].filter(candidate =>
       characteristicPathsEqual(candidate.path, path)
@@ -362,8 +378,8 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     for (const physical of physicals) {
       const cleanup =
         reason === 'service-changed'
-          ? await this.invalidateDatabasePhysical(physical, evidence)
-          : await this.invalidatePhysical(physical, reason, evidence)
+          ? await this.invalidateDatabasePhysical(physical, evidence, error)
+          : await this.invalidatePhysical(physical, reason, evidence, error)
       failures.push(...cleanup.failures)
     }
     return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
@@ -386,8 +402,9 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
       if (!matchesDatabasePath(physical.path, database)) {
         continue
       }
+      await this.drainCommittedTerminalBeforeDatabaseInvalidation(physical, retainFailedDatabaseCleanup)
       for (const subscription of [...physical.consumers]) {
-        this.closeConsumer(subscription, reason)
+        this.terminalizeConsumer(subscription, reason)
         physical.consumers.delete(subscription)
       }
       const result = await (retainFailedDatabaseCleanup
@@ -399,6 +416,30 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
   }
 
   /**
+   * A terminal-evidence source may have accepted its exact terminal before a
+   * separately queued database event reaches this registry. For the
+   * UBM-provided notification streams, the existing pump drains that final
+   * state and owns delivery of the receipt; do not replace it with a synthetic
+   * service-change terminal. Open and non-observable sources keep the ordinary
+   * database invalidation path.
+   */
+  private async drainCommittedTerminalBeforeDatabaseInvalidation(
+    physical: PhysicalSubscription<Attachment, Identity>,
+    retainFailedDatabaseCleanup: boolean
+  ): Promise<void> {
+    const source = physical.backend?.notifications
+    if (
+      !retainFailedDatabaseCleanup ||
+      physical.terminalEvidence === null ||
+      physical.pump === null ||
+      source?.isTerminal?.() !== true
+    ) {
+      return
+    }
+    await physical.pump
+  }
+
+  /**
    * A service change can arrive via a subscription terminal or fan out to
    * joined database views. A failed first physical disable remains a real
    * obligation, but only an explicit owner retry (or a distinct connection
@@ -406,10 +447,11 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
    */
   private invalidateDatabasePhysical(
     physical: PhysicalSubscription<Attachment, Identity>,
-    evidence?: TerminalEvidenceCommit
+    evidence?: TerminalEvidenceCommit,
+    error: NormalizedBleError | null = null
   ): Promise<CleanupRecord> {
     if (physical.databaseInvalidationCleanup !== null) return physical.databaseInvalidationCleanup
-    const cleanup = this.invalidatePhysical(physical, 'service-changed', evidence)
+    const cleanup = this.invalidatePhysical(physical, 'service-changed', evidence, error)
     physical.databaseInvalidationCleanup = cleanup
     return cleanup
   }
@@ -797,7 +839,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
         dispatchedOperations: 0,
         quarantinedOperations: 0
       })
-      await this.invalidatePhysical(physical, 'source-failed')
+      await this.invalidatePhysical(physical, 'source-failed', undefined, normalized)
     }
   }
 
@@ -840,9 +882,9 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
                 : 'source-failed'
         if (reason === 'connection-lost' || reason === 'service-changed') {
           if (reason === 'connection-lost') this.confirmConnectionReleased(physical.path)
-          await this.invalidatePath(physical.path, reason, item.evidence)
+          await this.invalidatePath(physical.path, reason, item.evidence, item.error ?? null)
         } else {
-          await this.invalidatePhysical(physical, reason, item.evidence)
+          await this.invalidatePhysical(physical, reason, item.evidence, item.error ?? null)
         }
         return true
       }
@@ -903,14 +945,40 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     }
   }
 
+  private terminalizeConsumer(
+    subscription: CoreSubscription<Attachment, Identity>,
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed',
+    evidence?: TerminalEvidenceCommit,
+    error: NormalizedBleError | null = null
+  ): void {
+    if (!subscription.isActive()) {
+      return
+    }
+    if (reason === 'owner-released') {
+      this.closeConsumer(subscription, reason, evidence)
+      return
+    }
+    subscription.finish(reason, error, evidence)
+    subscription.markRemoved()
+    this.runtime.resourceLedger.decrement('subscriptionConsumers')
+    const stream = subscription.values
+    if (stream instanceof CoreBoundedStream) {
+      // The source is closed, but its already accepted prefix and terminal
+      // remain readable. Keep its aggregate charge until that retained state
+      // has actually drained, as scan finalization does.
+      stream.onRetainedValuesDrained(() => this.runtime.aggregateQuota.unregister(stream))
+    }
+  }
+
   private async invalidatePhysical(
     physical: PhysicalSubscription<Attachment, Identity>,
     reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed',
-    evidence?: TerminalEvidenceCommit
+    evidence?: TerminalEvidenceCommit,
+    error: NormalizedBleError | null = null
   ): Promise<CleanupRecord> {
     if (evidence !== undefined) this.retainTerminalEvidenceForConsumers(physical)
     for (const subscription of [...physical.consumers]) {
-      this.closeConsumer(subscription, reason, evidence)
+      this.terminalizeConsumer(subscription, reason, evidence, error)
       physical.consumers.delete(subscription)
     }
     // Database invalidation ends usability, not the native enablement. Keep
