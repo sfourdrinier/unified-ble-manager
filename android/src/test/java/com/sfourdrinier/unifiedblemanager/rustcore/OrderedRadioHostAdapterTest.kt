@@ -30,6 +30,22 @@ import org.mockito.Mockito.mock
 import org.mockito.Mockito
 
 class OrderedRadioHostAdapterTest {
+  @Test fun callbackIngressWithoutOrderedGroupPortRemainsSupported() {
+    val radio = FakeRadio()
+    var advertisements = 0
+    val core = object : MobileCorePort by FakeCore() {
+      override fun ingestAdvertisement(advertisement: AdvertisementFacts): Int {
+        advertisements++
+        return MobileCoreBridge.STATUS_ACCEPTED
+      }
+    }
+    val direct = Executor { it.run() }
+    val adapter = RustRadioHostAdapter(core, radio, FakeBackground(), { null }, { null }, direct, direct) {}
+    radio.events.onAdvertisement(AdvertisementFacts("peer", "peer", null, null, null, emptyList(), emptyList(), emptyList(), null, null))
+    assertEquals(1, advertisements)
+    assertEquals(0L, adapter.statusCounts()["ingest:advertisement:retired-owner"] ?: 0L)
+  }
+
   @Test fun statusReportsCleanupFailureEvenWhenItsRetrySucceedsImmediately() {
     val native = OwnedAndroidGattRadio(mock(Context::class.java), post = { it(); true }, scheduleDelayed = { _, _ -> true })
     val owner = OwnedOrderedGroupPort(native)
@@ -1324,6 +1340,7 @@ class OrderedRadioHostAdapterTest {
     val allowSlotReservation = CountDownLatch(1)
     val coreEntered = CountDownLatch(1)
     val allowCore = CountDownLatch(1)
+    val fenceStarted = CountDownLatch(1)
     val fenceReturned = CountDownLatch(1)
     val blockNextSlotLookup = AtomicBoolean(false)
     val port = object : AndroidRadioPort by FakeRadio(), OrderedGroupPort by owner {
@@ -1384,6 +1401,7 @@ class OrderedRadioHostAdapterTest {
     blockNextSlotLookup.set(true)
     val callback = Thread { wake!!.invoke(7u, 20u) }
     val fence = Thread {
+      fenceStarted.countDown()
       adapter.ownerFence(11, v4Owner, retirement)
       fenceReturned.countDown()
     }
@@ -1391,7 +1409,8 @@ class OrderedRadioHostAdapterTest {
     try {
       assertTrue(coordinatorAdmitted.await(5, TimeUnit.SECONDS))
       fence.start()
-      assertFalse("fence must wait for an already admitted ordered wake to reserve slot work", fenceReturned.await(100, TimeUnit.MILLISECONDS))
+      assertTrue(fenceStarted.await(5, TimeUnit.SECONDS))
+      assertTrue("fence must block behind the coordinator-to-slot admission transaction", awaitBlocked(fence))
       allowSlotReservation.countDown()
       assertTrue(coreEntered.await(5, TimeUnit.SECONDS))
       assertTrue(fenceReturned.await(5, TimeUnit.SECONDS))
@@ -1421,6 +1440,7 @@ class OrderedRadioHostAdapterTest {
     val allowSlotReservation = CountDownLatch(1)
     val coreEntered = CountDownLatch(1)
     val allowCore = CountDownLatch(1)
+    val fenceStarted = CountDownLatch(1)
     val fenceReturned = CountDownLatch(1)
     val blockNextSlotLookup = AtomicBoolean(false)
     val port = object : AndroidRadioPort by FakeRadio(), OrderedGroupPort by owner {
@@ -1475,6 +1495,7 @@ class OrderedRadioHostAdapterTest {
     blockNextSlotLookup.set(true)
     val callback = Thread { wakeFailure!!.invoke(7u, 20u, IllegalStateException("native wake failure")) }
     val fence = Thread {
+      fenceStarted.countDown()
       adapter.ownerFence(11, v4Owner, retirement)
       fenceReturned.countDown()
     }
@@ -1482,7 +1503,8 @@ class OrderedRadioHostAdapterTest {
     try {
       assertTrue(coordinatorAdmitted.await(5, TimeUnit.SECONDS))
       fence.start()
-      assertFalse("fence must wait for an already admitted ordered wake failure to reserve slot work", fenceReturned.await(100, TimeUnit.MILLISECONDS))
+      assertTrue(fenceStarted.await(5, TimeUnit.SECONDS))
+      assertTrue("fence must block behind the coordinator-to-slot admission transaction", awaitBlocked(fence))
       allowSlotReservation.countDown()
       assertTrue(coreEntered.await(5, TimeUnit.SECONDS))
       assertTrue(fenceReturned.await(5, TimeUnit.SECONDS))
@@ -1738,6 +1760,7 @@ class OrderedRadioHostAdapterTest {
     val allowSlotReservation = CountDownLatch(1)
     val coreEntered = CountDownLatch(1)
     val allowCore = CountDownLatch(1)
+    val fenceStarted = CountDownLatch(1)
     val fenceReturned = CountDownLatch(1)
     val firstSlotLookup = AtomicBoolean(true)
     val port = object : AndroidRadioPort by driver, OrderedGroupPort by owner {
@@ -1770,6 +1793,7 @@ class OrderedRadioHostAdapterTest {
     val advertisement = AdvertisementFacts("peer", "peer", null, null, null, emptyList(), emptyList(), emptyList(), null, null)
     val callback = Thread { driver.events.onAdvertisement(advertisement) }
     val fence = Thread {
+      fenceStarted.countDown()
       adapter.ownerFence(1, ownerId, retirement)
       fenceReturned.countDown()
     }
@@ -1777,7 +1801,8 @@ class OrderedRadioHostAdapterTest {
     try {
       assertTrue(coordinatorAdmitted.await(5, TimeUnit.SECONDS))
       fence.start()
-      assertFalse("the fence must wait for the coordinator-to-slot admission transaction", fenceReturned.await(100, TimeUnit.MILLISECONDS))
+      assertTrue(fenceStarted.await(5, TimeUnit.SECONDS))
+      assertTrue("fence must block behind the coordinator-to-slot admission transaction", awaitBlocked(fence))
       allowSlotReservation.countDown()
       assertTrue(coreEntered.await(5, TimeUnit.SECONDS))
       assertTrue(fenceReturned.await(5, TimeUnit.SECONDS))
@@ -2317,5 +2342,14 @@ class OrderedRadioHostAdapterTest {
     cancellable.orderedRequest(22, "seal", "counter", barrierGroup.generationValue, 99, 0, 0, 0, 0)
     queued.runAll()
     assertTrue(baseCore.calls.contains("unit:22"))
+  }
+
+  private fun awaitBlocked(thread: Thread): Boolean {
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+    while (System.nanoTime() < deadline) {
+      if (thread.state == Thread.State.BLOCKED) return true
+      Thread.sleep(1)
+    }
+    return thread.state == Thread.State.BLOCKED
   }
 }

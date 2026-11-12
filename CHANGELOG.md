@@ -47,6 +47,8 @@ All notable changes to `unified-ble-manager` are documented here.
   desktop consumer, and preserve the original staging failure and cleanup
   ownership if durable storage refuses it. Recover scans whose terminal event
   was missed while their native cleanup is still finishing.
+- Preserve Android callbacks admitted before an owner fence, while keeping
+  queued host requests cancellable before dispatch.
 
 ## [5.2.1] - 2026-11-08
 

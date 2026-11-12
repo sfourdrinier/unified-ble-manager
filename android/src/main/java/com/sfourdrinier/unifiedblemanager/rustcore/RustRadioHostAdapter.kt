@@ -69,7 +69,8 @@ class RustRadioHostAdapter internal constructor(
   private data class OwnerCallbackAdmission(
     val slots: AndroidOrderedOpenSlots?,
     val work: AndroidOrderedOpenSlots.EffectWork?,
-    val quiescence: AndroidOwnerQuiescenceCoordinator.Lease?
+    val quiescence: AndroidOwnerQuiescenceCoordinator.Lease?,
+    val begun: Boolean = false
   )
 
   private data class OwnerOrderedOpenAdmission(
@@ -2213,9 +2214,10 @@ class RustRadioHostAdapter internal constructor(
    * as one owner-control transaction. The fence takes [ownerAdmissionLock]
    * while closing both ledgers, so it can neither close slots after the
    * coordinator accepted this effect nor leave a post-fence effect in either
-   * ledger. The returned work is started only after this lock is released.
+   * ledger. Callback work can be begun in this transaction; queued host work
+   * remains reserve-only until its executor owns it.
    */
-  private fun admitOwnerEffect(label: String, reserveSlot: Boolean = true): OwnerCallbackAdmission? =
+  private fun admitOwnerEffect(label: String, reserveSlot: Boolean = true, beginSlotWork: Boolean = false): OwnerCallbackAdmission? =
     synchronized(ownerAdmissionLock) {
       val orderedPort = radio as? OrderedGroupPort
       val coordinator = orderedPort?.ownerQuiescenceCoordinator()
@@ -2229,7 +2231,11 @@ class RustRadioHostAdapter internal constructor(
         if (slots != null && work == null) {
           quiescence?.close()
           null
-        } else OwnerCallbackAdmission(slots, work, quiescence)
+        } else if (beginSlotWork && slots != null && work != null && !slots.beginEffectWork(work)) {
+          slots.finishEffectWork(work)
+          quiescence?.close()
+          null
+        } else OwnerCallbackAdmission(slots, work, quiescence, beginSlotWork && slots != null && work != null)
       } catch (error: Throwable) {
         quiescence?.close()
         throw error
@@ -2264,13 +2270,13 @@ class RustRadioHostAdapter internal constructor(
     // critical section as ownerControl's two fences. A source wake admitted
     // before a v4 fence must keep its slot obligation; a wake admitted after
     // the fence must not enter either ledger.
-    val admission = admitOwnerEffect("callback:$label")
+    val admission = admitOwnerEffect("callback:$label", beginSlotWork = true)
     if (admission == null) {
       bump("ingest:$label:retired-owner")
       return
     }
     try {
-      if (admission.slots != null && admission.work != null && !admission.slots.beginEffectWork(admission.work)) {
+      if (!admission.begun && admission.slots != null && admission.work != null && !admission.slots.beginEffectWork(admission.work)) {
         bump("ingest:$label:retired-owner")
         return
       }
@@ -2290,13 +2296,13 @@ class RustRadioHostAdapter internal constructor(
 
   private inner class Events : RadioPortEvents {
     private fun relayOwnerCallback(label: String, reserveSlot: Boolean = true, body: () -> Unit) {
-      val admission = admitOwnerEffect("callback:$label", reserveSlot)
+      val admission = admitOwnerEffect("callback:$label", reserveSlot, beginSlotWork = reserveSlot)
       if (admission == null) {
         bump("ingest:$label:retired-owner")
         return
       }
       try {
-        if (admission.slots != null && admission.work != null && !admission.slots.beginEffectWork(admission.work)) {
+        if (!admission.begun && admission.slots != null && admission.work != null && !admission.slots.beginEffectWork(admission.work)) {
           bump("ingest:$label:retired-owner")
           return
         }
