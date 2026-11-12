@@ -69,7 +69,8 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, broadcast, watch};
 use ubm_core::central::{
     Central, CentralEffectKind, CentralResourceCounters, CompletionOutcome, ConnectionState,
-    DatabaseState, PathSelector, StoredPath, canonical_uuid, validate_scan_request,
+    DatabaseState, NotificationInvalidationCause, PathSelector, StoredPath, canonical_uuid,
+    validate_scan_request,
 };
 use ubm_core::contracts::{
     AttachmentTuple, BleErrorCode, BleErrorDomain, CommitState, ContenderKind, CoreError,
@@ -1374,6 +1375,14 @@ impl Generations {
             database: core.database_generation(peer_key),
         }
     }
+}
+
+/// A lease that the OS already ended. Exact callers must present the
+/// admission captured at that loss; peer/lease names are reusable.
+#[derive(Clone)]
+struct RetiredLease {
+    connection_generation: Option<String>,
+    admission: Option<ubm_core::central::OperationAdmission>,
 }
 
 /// One signal to a [`CentralProfile::observer`], delivered after every
@@ -2967,7 +2976,7 @@ struct Inner<B> {
     /// cleared them, and their release answers
     /// already-released once (legacy adapter-loss cleanup left
     /// terminalized handles).
-    retired_leases: StdMutex<HashMap<(String, String), Option<String>>>,
+    retired_leases: StdMutex<HashMap<(String, String), RetiredLease>>,
     /// Consumers whose physical obligation ended with a confirmed link loss
     /// or adapter reset. A later failed reconnect may erase their old paths.
     retired_consumers: StdMutex<HashSet<(String, String)>>,
@@ -6385,7 +6394,6 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let id = admission.operation_id().clone();
             publish_or_refuse(&mut core, &ctl.ticket, &id, "connection.connect", None)?;
             *admitted = Some(admission);
-            lock_std(&self.inner.retired_leases).remove(&(peer_key.clone(), lease.to_owned()));
             core.dispatch_op(&id, &mut out)
                 .map_err(DesktopError::from)?;
             (
@@ -6511,6 +6519,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                             // A new link: streams from before a reset no
                             // longer name that reset as their end.
                             lock_std(&self.inner.reset_peers).remove(&peer_key);
+                            // The new generation is now established. Only a
+                            // successful replacement can supersede a prior
+                            // loss receipt for this reusable lease name; a
+                            // failed reconnect leaves its original owner
+                            // able to acknowledge the confirmed loss.
+                            lock_std(&self.inner.retired_leases)
+                                .remove(&(peer_key.clone(), lease.to_owned()));
                             Ok(ConnectionHandle {
                                 connection_generation: core.connection_generation(&peer_key),
                                 peer_key: peer_key.clone(),
@@ -6755,6 +6770,47 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             self.precheck(&ctl, "connection.release")?;
             self.refuse_before_admission(&ctl, "connection.release")?;
             let peer_key = self.known_peer_key(peer_id).await?;
+            let retired = {
+                let core = self.inner.core.lock().await;
+                // A confirmed link loss retires the exact lease before its
+                // session reaches disposal. There is no live admission left
+                // to fence in that case, but only the exact admission
+                // captured at loss may consume the receipt: peer/lease names
+                // are reusable across connection generations.
+                if matches!(
+                    core.connection_state(&peer_key),
+                    None | Some(
+                        ConnectionState::Disconnected
+                            | ConnectionState::Lost
+                            | ConnectionState::Invalid
+                    )
+                ) {
+                    let key = (peer_key.clone(), lease.to_owned());
+                    let receipts = &mut *lock_std(&self.inner.retired_leases);
+                    if let Some(receipt) = receipts.get(&key) {
+                        if receipt.admission.as_ref() == Some(admission) {
+                            receipts.remove(&key)
+                        } else {
+                            return Err(contract_error(
+                                BleErrorCode::ConnectionStale,
+                                BleErrorDomain::Connection,
+                                "connection.release.admission",
+                            ));
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            if let Some(retired) = retired {
+                return Ok(ConnectionReleaseReport {
+                    physical: true,
+                    connection_generation: retired.connection_generation,
+                    platform: None,
+                });
+            }
             self.inner
                 .core
                 .lock()
@@ -6785,7 +6841,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 return result.map(|physical| ConnectionReleaseReport {
                     physical,
                     connection_generation: retired_generation
-                        .flatten()
+                        .and_then(|receipt| receipt.connection_generation)
                         .or_else(|| Generations::of(&core, &peer_key).connection),
                     platform: None,
                 });
@@ -6837,12 +6893,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     .map_err(DesktopError::from)?;
             }
             if !core.holds_lease(&peer_key, lease)
-                && let Some(original_generation) = lock_std(&self.inner.retired_leases)
+                && let Some(original) = lock_std(&self.inner.retired_leases)
                     .remove(&(peer_key.clone(), lease.to_owned()))
             {
                 let report = ConnectionReleaseReport {
                     physical: true,
-                    connection_generation: original_generation,
+                    connection_generation: original.connection_generation,
                     platform: None,
                 };
                 *released = Some(report.clone());
@@ -7079,12 +7135,12 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 ));
             }
             if core.connection_state(&peer_key).is_none()
-                && let Some(original_generation) = lock_std(&self.inner.retired_leases)
+                && let Some(original) = lock_std(&self.inner.retired_leases)
                     .remove(&(peer_key.clone(), lease.to_owned()))
             {
                 return Ok(DisconnectReport {
                     release: LinkRelease::AlreadyReleased,
-                    connection_generation: original_generation,
+                    connection_generation: original.connection_generation,
                     platform: None,
                 });
             }
@@ -12163,15 +12219,30 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 "gatt.take-notification",
             ));
         }
-        let cause = match core.connection_state(&peer_key) {
-            Some(ConnectionState::Connected | ConnectionState::Connecting) => {
-                InvalidationCause::ServicesChanged
-            }
-            _ if lock_std(&self.inner.reset_peers).contains(&peer_key) => {
+        let observed_cause = core
+            .consumer_invalidation_cause(&peer_key, selector, consumer)
+            .map(|cause| match cause {
+                NotificationInvalidationCause::ServicesChanged => {
+                    InvalidationCause::ServicesChanged
+                }
+                NotificationInvalidationCause::LinkEnded => InvalidationCause::LinkEnded,
+                NotificationInvalidationCause::AdapterReset => InvalidationCause::AdapterReset,
+            });
+        let cause = observed_cause.unwrap_or_else(|| {
+            if lock_std(&self.inner.reset_peers).contains(&peer_key) {
+                // A reset fence is the authoritative retirement cause even while
+                // the core's prior connection state remains observable during
+                // teardown. It must not be recast as a services-only change.
                 InvalidationCause::AdapterReset
+            } else {
+                match core.connection_state(&peer_key) {
+                    Some(ConnectionState::Connected | ConnectionState::Connecting) => {
+                        InvalidationCause::ServicesChanged
+                    }
+                    _ => InvalidationCause::LinkEnded,
+                }
             }
-            _ => InvalidationCause::LinkEnded,
-        };
+        });
         // Finding 111: the consumer's own subscription, whatever its
         // generation, so values it held at a service change, link loss or
         // adapter reset drain before the invalidation.
@@ -13835,8 +13906,15 @@ async fn adapter_reset<B: RadioBoundary>(
             .collect();
         lock_std(&inner.reset_ops).extend(core.live_operation_ids());
         lock_std(&inner.retired_leases).extend(core.held_leases().into_iter().map(|key| {
-            let generation = Generations::of(&core, &key.0).connection;
-            (key, generation)
+            let connection_generation = Generations::of(&core, &key.0).connection;
+            let admission = core.connection_lease_admission(&key.0, &key.1);
+            (
+                key,
+                RetiredLease {
+                    connection_generation,
+                    admission,
+                },
+            )
         }));
         lock_std(&inner.retired_consumers).extend(core.held_consumers());
         if let Some(active) = &scan {
@@ -15067,8 +15145,15 @@ async fn reconcile_disconnected_scoped<B: RadioBoundary>(
                     .into_iter()
                     .filter(|(peer, _)| peer == &peer_key)
                     .map(|key| {
-                        let generation = Generations::of(&core, &key.0).connection;
-                        (key, generation)
+                        let connection_generation = Generations::of(&core, &key.0).connection;
+                        let admission = core.connection_lease_admission(&key.0, &key.1);
+                        (
+                            key,
+                            RetiredLease {
+                                connection_generation,
+                                admission,
+                            },
+                        )
                     }),
             );
             let platform = physical_generation
@@ -21456,6 +21541,131 @@ mod adapter_tests {
     }
 
     #[tokio::test]
+    async fn notification_poll_reports_adapter_reset_after_the_reset_fence() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        central
+            .subscribe("peer", &selector, "consumer", None, OpControl::unbounded())
+            .await
+            .unwrap();
+
+        super::adapter_reset(
+            &central.inner,
+            crate::boundary::AdapterLossCause::DaemonRestarted,
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            central
+                .poll_notification("peer", &selector, "consumer")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Invalidated(super::InvalidationCause::AdapterReset)
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn notification_poll_keeps_a_service_change_before_a_later_reset() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        central
+            .subscribe("peer", &selector, "consumer", None, OpControl::unbounded())
+            .await
+            .unwrap();
+
+        super::services_changed_invalidated(&central.inner, "peer").await;
+        super::adapter_reset(
+            &central.inner,
+            crate::boundary::AdapterLossCause::DaemonRestarted,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(
+            central
+                .poll_notification("peer", &selector, "consumer")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Invalidated(super::InvalidationCause::ServicesChanged)
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn notification_poll_keeps_a_reset_before_a_stale_service_change() {
+        let central = open().await;
+        central
+            .connect("peer", "a", OpControl::unbounded())
+            .await
+            .unwrap();
+        central.boundary().set_services("peer", vec![hrm_service()]);
+        discover_with_identity(&central, 1).await;
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            None,
+            None,
+        )
+        .unwrap();
+        central
+            .subscribe("peer", &selector, "consumer", None, OpControl::unbounded())
+            .await
+            .unwrap();
+
+        super::adapter_reset(
+            &central.inner,
+            crate::boundary::AdapterLossCause::DaemonRestarted,
+            None,
+            None,
+        )
+        .await;
+        // A stale services callback after reset cannot overwrite the cause
+        // retained by the consumer that was invalidated at the reset fence.
+        super::services_changed_invalidated(&central.inner, "peer").await;
+        assert_eq!(
+            central
+                .poll_notification("peer", &selector, "consumer")
+                .await
+                .unwrap(),
+            super::NotificationPoll::Invalidated(super::InvalidationCause::AdapterReset)
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn explicit_rediscovery_retires_old_fifo_and_routing_without_physical_event() {
         let central = open().await;
         central
@@ -22681,6 +22891,152 @@ mod adapter_tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn exact_release_requires_the_admission_captured_at_confirmed_loss() {
+        let central = open().await;
+        central
+            .boundary()
+            .push_event(advertisement("exact-loss-owner"))
+            .expect("synthetic event admission failed");
+        let (_, first_admission) = central
+            .connect_with_admission("exact-loss-owner", "lease-a", OpControl::unbounded())
+            .await
+            .expect("connect with exact admission");
+
+        central.remote_peer_loss("exact-loss-owner").await.unwrap();
+
+        let (_, second_admission) = central
+            .connect_with_admission("exact-loss-owner", "lease-a", OpControl::unbounded())
+            .await
+            .expect("same name on a new generation");
+        central.remote_peer_loss("exact-loss-owner").await.unwrap();
+
+        let stale = central
+            .release_connection_lease_exact(
+                "exact-loss-owner",
+                "lease-a",
+                &first_admission,
+                OpControl::unbounded(),
+            )
+            .await
+            .expect_err("an older same-named admission cannot consume the new receipt");
+        assert_eq!(stale.code(), BleErrorCode::ConnectionStale);
+
+        assert!(
+            central
+                .release_connection_lease_exact(
+                    "exact-loss-owner",
+                    "lease-a",
+                    &second_admission,
+                    OpControl::unbounded(),
+                )
+                .await
+                .expect("confirmed loss is an exact-release receipt"),
+            "the retired final lease was physical"
+        );
+        let peer_key = central.peer_key_for("exact-loss-owner").await.unwrap();
+        assert!(
+            !super::lock_std(&central.inner.retired_leases)
+                .contains_key(&(peer_key, "lease-a".into())),
+            "the consumed receipt cannot authorize a later owner"
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn exact_release_acknowledges_its_matching_adapter_reset_receipt() {
+        let central = open().await;
+        central
+            .boundary()
+            .push_event(advertisement("exact-reset-owner"))
+            .expect("synthetic event admission failed");
+        let (_, admission) = central
+            .connect_with_admission("exact-reset-owner", "lease-a", OpControl::unbounded())
+            .await
+            .expect("connect with exact admission");
+
+        super::adapter_reset(
+            &central.inner,
+            crate::boundary::AdapterLossCause::DaemonRestarted,
+            None,
+            None,
+        )
+        .await;
+
+        central
+            .boundary()
+            .push_event(advertisement("wrong-reset-owner"))
+            .expect("synthetic event admission failed");
+        let (_, wrong_admission) = central
+            .connect_with_admission("wrong-reset-owner", "lease-b", OpControl::unbounded())
+            .await
+            .expect("independent admission");
+        let stale = central
+            .release_connection_lease_exact(
+                "exact-reset-owner",
+                "lease-a",
+                &wrong_admission,
+                OpControl::unbounded(),
+            )
+            .await
+            .expect_err("a different admission cannot consume the reset receipt");
+        assert_eq!(stale.code(), BleErrorCode::ConnectionStale);
+
+        assert!(
+            central
+                .release_connection_lease_exact(
+                    "exact-reset-owner",
+                    "lease-a",
+                    &admission,
+                    OpControl::unbounded(),
+                )
+                .await
+                .expect("matching reset receipt acknowledges exact cleanup")
+        );
+        central.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn failed_reconnect_keeps_the_prior_exact_loss_receipt() {
+        let central = open().await;
+        central
+            .boundary()
+            .push_event(advertisement("failed-reconnect-owner"))
+            .expect("synthetic event admission failed");
+        let (_, admission) = central
+            .connect_with_admission("failed-reconnect-owner", "lease-a", OpControl::unbounded())
+            .await
+            .expect("first connection");
+        central
+            .remote_peer_loss("failed-reconnect-owner")
+            .await
+            .expect("confirmed first loss");
+
+        central
+            .boundary()
+            .fail_next(FaultOp::Connect, "replacement refused");
+        assert!(
+            central
+                .connect("failed-reconnect-owner", "lease-a", OpControl::unbounded())
+                .await
+                .is_err(),
+            "an unsuccessful reconnect does not establish a replacement generation"
+        );
+
+        assert!(
+            central
+                .release_connection_lease_exact(
+                    "failed-reconnect-owner",
+                    "lease-a",
+                    &admission,
+                    OpControl::unbounded(),
+                )
+                .await
+                .expect("the original owner can acknowledge its retained loss receipt")
+        );
+        central.shutdown().await;
     }
 
     #[tokio::test]

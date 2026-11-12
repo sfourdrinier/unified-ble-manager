@@ -497,6 +497,18 @@ struct SubscriptionTerminalEvidenceDebt {
     record: Value,
 }
 
+/// A terminal whose bytes committed while its session was still live. The
+/// source keeps this ownership record until the session explicitly releases
+/// the reservation or session teardown hands the committed bytes to recovery.
+/// Keeping it independently of the session/outbox closes the race where
+/// teardown follows a successful publication lookup but precedes delivery.
+#[derive(Debug, Clone)]
+struct PublishedSubscriptionTerminalEvidence {
+    route: Route,
+    record: Value,
+    reservation_id: String,
+}
+
 #[derive(Debug)]
 pub(crate) struct PhysicalScan {
     pub operation: OperationId,
@@ -1376,10 +1388,18 @@ pub(crate) struct HostInner {
     pub scan_members: Mutex<BTreeMap<u64, ScanMember>>,
     scan_terminal_evidence_debts: Mutex<Vec<ScanTerminalEvidenceDebt>>,
     subscription_terminal_evidence_debts: Mutex<Vec<SubscriptionTerminalEvidenceDebt>>,
+    subscription_terminal_evidence_publications:
+        Mutex<HashMap<String, PublishedSubscriptionTerminalEvidence>>,
     #[cfg(any(test, feature = "test-support"))]
     scan_terminal_evidence_commit_failures_remaining: AtomicUsize,
     #[cfg(any(test, feature = "test-support"))]
     subscription_terminal_evidence_commit_failures_remaining: AtomicUsize,
+    #[cfg(test)]
+    subscription_terminal_evidence_after_commit: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Process-owned key that authenticates an exact scan cleanup retry after
+    /// its session and outbox have been reclaimed. It never crosses a host
+    /// boundary or enters a recording.
+    scan_finalization_secret: [u8; 32],
     scan_ingress: Mutex<ScanIngress>,
     pub routes: Mutex<HashMap<InstanceKey, Vec<Route>>>,
     pending_recordings: Mutex<HashMap<(u64, String), RecordedRoute>>,
@@ -1623,7 +1643,12 @@ pub struct TerminalEvidenceRecoveryPage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScanFailureCleanupProof {
     pub receipt: ubm_desktop::continuation_outbox::ScanFailureReleaseConfirmation,
+    /// Stable authority-bound MAC for a live or durable rehydrated outbox.
     pub authenticator: [u8; 32],
+    /// Process-bound MAC used only after the owning session/outbox was
+    /// actually reclaimed. It prevents a caller from fabricating an
+    /// authority/proof pair for a missing owner.
+    pub reclamation_authenticator: [u8; 32],
 }
 
 type ScanOutboxError = ubm_desktop::continuation_outbox::ScanFailureOutboxError;
@@ -1923,6 +1948,24 @@ impl HostInner {
         mac.update(&receipt.authenticator);
         Ok(mac)
     }
+
+    fn reclaimed_scan_cleanup_mac(
+        &self,
+        id: u64,
+        authority: &[u8; 32],
+        receipt: &ubm_desktop::continuation_outbox::ScanFailureReleaseConfirmation,
+    ) -> Hmac<Sha256> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.scan_finalization_secret)
+            .expect("HMAC key length");
+        mac.update(b"ubm-mobile-scan-cleanup-reclaimed/1");
+        mac.update(&id.to_be_bytes());
+        mac.update(authority);
+        mac.update(&receipt.ordinal.to_be_bytes());
+        mac.update(&receipt.capability);
+        mac.update(&[u8::from(receipt.raw)]);
+        mac.update(&receipt.authenticator);
+        mac
+    }
 }
 
 impl ScanFailureRecovery {
@@ -1962,24 +2005,28 @@ impl ScanFailureRecovery {
         &self,
         receipt: ubm_desktop::continuation_outbox::ScanFailureReleaseConfirmation,
     ) -> Result<ScanFailureCleanupProof, DesktopError> {
+        let authority = self
+            .state
+            .outbox
+            .scan_failure_recovery_authority()
+            .map_err(|_| scan_recovery_error())?
+            .ok_or_else(scan_recovery_error)?;
         let authenticator = self
             .host
-            .scan_cleanup_mac(
-                self.state.id,
-                &self
-                    .state
-                    .outbox
-                    .scan_failure_recovery_authority()
-                    .map_err(|_| scan_recovery_error())?
-                    .ok_or_else(scan_recovery_error)?,
-                &receipt,
-            )?
+            .scan_cleanup_mac(self.state.id, &authority, &receipt)?
+            .finalize()
+            .into_bytes()
+            .into();
+        let reclamation_authenticator = self
+            .host
+            .reclaimed_scan_cleanup_mac(self.state.id, &authority, &receipt)
             .finalize()
             .into_bytes()
             .into();
         Ok(ScanFailureCleanupProof {
             receipt,
             authenticator,
+            reclamation_authenticator,
         })
     }
     pub fn confirm_release(
@@ -3756,28 +3803,84 @@ impl HostInner {
                 &canonical,
                 Sha256::digest(&canonical).into(),
             )?;
-            Ok::<_, ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError>(
+            Ok::<_, ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError>((
                 serde_json::json!({
                     "producer":"subscription", "kind":"committed", "ref":committed.reference,
                     "byteLength":committed.byte_length, "digest":committed.digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
                     "formatVersion":committed.format_version, "durability":"committed",
                     "scope":{"managerId":scope.manager_id,"operationId":scope.operation_id,"incarnation":scope.incarnation}
                 }),
-            )
+                ledger,
+                reservation.reservation_id,
+            ))
         })();
         match result {
-            Ok(evidence) => {
-                record
-                    .as_object_mut()
-                    .expect("terminal record object")
-                    .insert("evidence".to_owned(), evidence);
+            Ok((evidence, _ledger, reservation_id)) => {
+                let publication = PublishedSubscriptionTerminalEvidence {
+                    route: route.clone(),
+                    record: record.clone(),
+                    reservation_id: reservation_id.clone(),
+                };
+                lock(&self.subscription_terminal_evidence_publications)
+                    .insert(reservation_id.clone(), publication);
+                #[cfg(test)]
+                if let Some(callback) = lock(&self.subscription_terminal_evidence_after_commit)
+                    .as_ref()
+                    .cloned()
+                {
+                    callback();
+                }
                 if let Some(session) = self.session(route.session_id) {
+                    record
+                        .as_object_mut()
+                        .expect("terminal record object")
+                        .insert("evidence".to_owned(), evidence);
                     session.outbox.push_control(record);
+                }
+                // Session teardown can race both the lookup and the outbox
+                // push. It takes the publication record before abandoning it;
+                // if it won that race there is nothing left for this producer
+                // to hand off. Conversely, a removed session observed here
+                // transfers the exact committed reservation to recovery.
+                if self.session(route.session_id).is_none()
+                    && let Some(publication) =
+                        lock(&self.subscription_terminal_evidence_publications)
+                            .remove(&reservation_id)
+                {
+                    self.abandon_subscription_terminal_evidence_or_retain(publication);
                 }
             }
             Err(_) => lock(&self.subscription_terminal_evidence_debts)
                 .push(SubscriptionTerminalEvidenceDebt { route, record }),
         }
+    }
+
+    fn abandon_subscription_terminal_evidence_or_retain(
+        &self,
+        publication: PublishedSubscriptionTerminalEvidence,
+    ) {
+        let handed_off = self
+            .terminal_evidence_ledger()
+            .map(|ledger| ledger.abandon(&publication.reservation_id))
+            .is_some_and(|result| {
+                result.is_ok()
+                    || matches!(
+                        result,
+                        Err(ubm_desktop::terminal_evidence_ledger::TerminalEvidenceError::Missing)
+                    )
+            });
+        if !handed_off {
+            lock(&self.subscription_terminal_evidence_debts).push(
+                SubscriptionTerminalEvidenceDebt {
+                    route: publication.route,
+                    record: publication.record,
+                },
+            );
+        }
+    }
+
+    pub(crate) fn release_subscription_terminal_evidence(&self, reservation_id: &str) {
+        lock(&self.subscription_terminal_evidence_publications).remove(reservation_id);
     }
 
     pub(crate) fn retry_subscription_terminal_evidence_debts(&self) {
@@ -5585,6 +5688,23 @@ impl HostInner {
         {
             ingress.retired_sessions.insert(session_id, session);
         }
+        drop(ingress);
+        let publications = {
+            let mut publications = lock(&self.subscription_terminal_evidence_publications);
+            let reservation_ids = publications
+                .iter()
+                .filter_map(|(reservation_id, publication)| {
+                    (publication.route.session_id == session_id).then(|| reservation_id.clone())
+                })
+                .collect::<Vec<_>>();
+            reservation_ids
+                .into_iter()
+                .filter_map(|reservation_id| publications.remove(&reservation_id))
+                .collect::<Vec<_>>()
+        };
+        for publication in publications {
+            self.abandon_subscription_terminal_evidence_or_retain(publication);
+        }
     }
 
     pub(crate) fn note_background(&self, scope: &BackgroundScope, lease_id: String) {
@@ -6367,6 +6487,15 @@ impl MobileHost {
                     })?,
             )),
         };
+        let mut scan_finalization_secret = [0; 32];
+        getrandom::fill(&mut scan_finalization_secret).map_err(|_| {
+            DesktopError::new(
+                BleErrorCode::LifecycleInvariantViolation,
+                BleErrorDomain::Core,
+                "ubm-mobile.host.scan-finalization",
+            )
+            .with_detail("unable to allocate the process-owned scan finalization secret")
+        })?;
         let radio = ForeignRadio::new(platform, options.platform, options.adapter_label.clone());
         let ordered_admission_owner = radio.ordered_admission_owner();
         let ordered_retirement_owner = radio.ordered_owner_retirement_owner();
@@ -6528,11 +6657,15 @@ impl MobileHost {
             scan_members: Mutex::new(BTreeMap::new()),
             scan_terminal_evidence_debts: Mutex::new(Vec::new()),
             subscription_terminal_evidence_debts: Mutex::new(Vec::new()),
+            subscription_terminal_evidence_publications: Mutex::new(HashMap::new()),
             terminal_evidence_recipient: options.owner.clone(),
             #[cfg(any(test, feature = "test-support"))]
             scan_terminal_evidence_commit_failures_remaining: AtomicUsize::new(0),
             #[cfg(any(test, feature = "test-support"))]
             subscription_terminal_evidence_commit_failures_remaining: AtomicUsize::new(0),
+            #[cfg(test)]
+            subscription_terminal_evidence_after_commit: Mutex::new(None),
+            scan_finalization_secret,
             scan_ingress: Mutex::new(ScanIngress::default()),
             routes: Mutex::new(HashMap::new()),
             pending_recordings: Mutex::new(HashMap::new()),
@@ -7404,24 +7537,28 @@ impl MobileHost {
         })
     }
 
-    /// Finalize an observed confirmation. The signed proof permits an exact
-    /// retry after the disposed session and its outbox have been reclaimed.
+    /// Finalize an observed confirmation. A durable outbox verifies the
+    /// authority-bound proof after rehydration; after this host has actually
+    /// reclaimed that outbox, the process-bound proof permits only its exact
+    /// lost-response retry.
     pub fn finalize_scan_failure_release(
         &self,
         id: u64,
         authority: &[u8; 32],
         proof: &ScanFailureCleanupProof,
     ) -> Result<(), DesktopError> {
-        let state = self
-            .inner
-            .session(id)
-            .or_else(|| {
-                lock(&self.inner.scan_ingress)
-                    .retired_sessions
-                    .get(&id)
-                    .cloned()
-            })
-            .ok_or_else(scan_recovery_error)?;
+        let state = self.inner.scan_session(id);
+        let Some(state) = state else {
+            self.inner
+                .scan_cleanup_mac(id, authority, &proof.receipt)?
+                .verify_slice(&proof.authenticator)
+                .map_err(|_| scan_recovery_error())?;
+            self.inner
+                .reclaimed_scan_cleanup_mac(id, authority, &proof.receipt)
+                .verify_slice(&proof.reclamation_authenticator)
+                .map_err(|_| scan_recovery_error())?;
+            return Ok(());
+        };
         self.inner.authenticate_scan_authority(&state, authority)?;
         self.inner
             .scan_cleanup_mac(id, authority, &proof.receipt)?
@@ -7979,9 +8116,18 @@ impl MobileHost {
                     state.retirement_retryable = true;
                 }
                 if inner.radio.uses_v2_admission() && !retirement.native_quiescent {
-                    let owner = inner
-                        .ordered_retirement_owner
-                        .expect("v4 retirement has an owner");
+                    let Some(owner) = inner.ordered_retirement_owner else {
+                        let error = DesktopError::new(
+                            BleErrorCode::LifecycleInvalidState,
+                            BleErrorDomain::Cleanup,
+                            "host.shutdown.ordered-owner",
+                        )
+                        .with_detail(
+                            "native owner retirement version was negotiated without an owner identity",
+                        );
+                        failures.push(crate::session::cleanup_failure("ordered-owner", &error));
+                        return crate::session::cleanup_record(failures.values.clone()).to_string();
+                    };
                     if retirement.identity.is_none() {
                         let mut bytes = [0u8; 16];
                         if getrandom::fill(&mut bytes).is_err() {
@@ -8906,13 +9052,53 @@ mod signal_tests {
         recovery.release(&head).unwrap();
         let proof = recovery.confirm_release(&head).unwrap();
         assert_eq!(proof, recovery.confirm_release(&head).unwrap());
+        assert!(
+            host.inner.scan_session(session.id()).is_some(),
+            "confirmation retains a disposed outbox until finalization"
+        );
+        let shutdown: serde_json::Value = serde_json::from_str(&host.shutdown().await).unwrap();
+        assert_eq!(
+            shutdown["state"], "release-failed",
+            "shutdown remains blocked until the confirmed cleanup is finalized"
+        );
+        assert!(host.inner.scan_session(session.id()).is_some());
         host.finalize_scan_failure_release(session.id(), &authority, &proof)
             .unwrap();
         assert!(host.inner.scan_session(session.id()).is_none());
         host.finalize_scan_failure_release(session.id(), &authority, &proof)
             .unwrap();
+        let mut altered_proof = proof;
+        altered_proof.authenticator[0] ^= 1;
+        assert!(
+            host.finalize_scan_failure_release(session.id(), &authority, &altered_proof)
+                .is_err()
+        );
+        let mut altered_reclamation_proof = proof;
+        altered_reclamation_proof.reclamation_authenticator[0] ^= 1;
+        assert!(
+            host.finalize_scan_failure_release(
+                session.id(),
+                &authority,
+                &altered_reclamation_proof
+            )
+            .is_err(),
+            "a reclaimed owner still requires this host's exact retry proof"
+        );
+        let mut altered_receipt = proof;
+        altered_receipt.receipt.authenticator[0] ^= 1;
+        assert!(
+            host.finalize_scan_failure_release(session.id(), &authority, &altered_receipt)
+                .is_err()
+        );
         assert!(
             host.finalize_scan_failure_release(session.id(), &wrong, &proof)
+                .is_err()
+        );
+        let foreign_radio = Scripted::polar();
+        let (foreign_host, _) = open(&foreign_radio, crate::MobilePlatform::Android).await;
+        assert!(
+            foreign_host
+                .finalize_scan_failure_release(session.id(), &authority, &proof)
                 .is_err()
         );
     }
@@ -10927,15 +11113,12 @@ mod signal_tests {
 
     #[tokio::test]
     async fn removed_session_terminal_is_committed_for_explicit_recovery() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static SERIAL: AtomicU64 = AtomicU64::new(0);
+        let Some(directory) = crate::test_common::recording_test_directory(
+            "host::signal_tests::removed_session_terminal_is_committed_for_explicit_recovery",
+        ) else {
+            return;
+        };
         let _ = crate::continuation::configure_terminal_evidence_maximum_bytes(65_536);
-        let directory = std::env::temp_dir().join(format!(
-            "ubm-mobile-removed-session-terminal-{}-{}",
-            std::process::id(),
-            SERIAL.fetch_add(1, Ordering::Relaxed),
-        ));
-        std::fs::create_dir_all(&directory).expect("create private registry directory");
         let registry =
             std::sync::Arc::new(ubm_desktop::continuation_journal::JournalRegistry::default());
         registry
@@ -10998,7 +11181,16 @@ mod signal_tests {
             terminal_evidence_scope: Some(scope),
             terminal: None,
         };
-        host.inner.remove_session(session.id());
+        let weak_host = Arc::downgrade(&host);
+        let removed_session_id = session.id();
+        *super::lock(&host.inner.subscription_terminal_evidence_after_commit) =
+            Some(Arc::new(move || {
+                weak_host
+                    .upgrade()
+                    .expect("host remains alive during terminal publication")
+                    .inner
+                    .remove_session(removed_session_id);
+            }));
         host.inner
             .end_route(&route, ("source-failed", 0, 0, None), false);
         let recovery = host
@@ -11023,20 +11215,16 @@ mod signal_tests {
                 .expect("shutdown record")["state"],
             "released"
         );
-        std::fs::remove_dir_all(&directory).expect("remove private registry directory");
     }
 
     #[tokio::test]
     async fn recovery_close_waits_for_an_admitted_list_and_leaves_no_lease_lock() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static SERIAL: AtomicU64 = AtomicU64::new(0);
+        let Some(directory) = crate::test_common::recording_test_directory(
+            "host::signal_tests::recovery_close_waits_for_an_admitted_list_and_leaves_no_lease_lock",
+        ) else {
+            return;
+        };
         let _ = crate::continuation::configure_terminal_evidence_maximum_bytes(65_536);
-        let directory = std::env::temp_dir().join(format!(
-            "ubm-mobile-recovery-close-list-{}-{}",
-            std::process::id(),
-            SERIAL.fetch_add(1, Ordering::Relaxed),
-        ));
-        std::fs::create_dir_all(&directory).unwrap();
         let registry = Arc::new(ubm_desktop::continuation_journal::JournalRegistry::default());
         registry.configure_directory(&directory).unwrap();
         let radio = crate::test_common::Scripted::polar();
@@ -11079,7 +11267,6 @@ mod signal_tests {
         let later = host.terminal_evidence_recovery_selected().unwrap();
         assert_eq!(later.list(8, 65_536).unwrap().entries.len(), 1);
         host.shutdown().await;
-        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[tokio::test]

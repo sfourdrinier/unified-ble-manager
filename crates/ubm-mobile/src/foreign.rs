@@ -518,6 +518,11 @@ impl ForeignRadio {
     pub(crate) fn owner_retirement_supported(&self) -> bool {
         self.shared.platform.ordered_owner_retirement_version()
             == crate::ORDERED_OWNER_RETIREMENT_VERSION
+            && self
+                .shared
+                .platform
+                .ordered_owner_retirement_owner()
+                .is_some()
     }
 
     pub(crate) fn ordered_owner_retirement_owner(

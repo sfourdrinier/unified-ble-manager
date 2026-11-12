@@ -36,6 +36,10 @@ All notable changes to `unified-ble-manager` are documented here.
   can publish a database; effectful operations retain their cleanup ownership.
 - Web recording handoff retains a bounded replay request when a retry arrives
   while its original request is still being processed, without executing it twice.
+- Preserve each notification consumer's first invalidation reason through
+  delayed reads, and match retired connection cleanup to the exact admission.
+- Preserve committed mobile subscription evidence across session removal and
+  authenticate exact scan-cleanup retries after the session is reclaimed.
 
 ## [5.2.1] - 2026-11-08
 

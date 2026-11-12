@@ -416,6 +416,58 @@ fn owner_transport_v4_negotiates_without_changing_slot_identity_version() {
     assert_eq!(ubm_mobile::ORDERED_ADMISSION_SLOT_VERSION, 2);
 }
 
+struct MissingRetirementOwner {
+    owner: OrderedAdmissionOwner,
+}
+
+impl PlatformRadio for MissingRetirementOwner {
+    fn ordered_admission_owner(&self) -> Option<OrderedAdmissionOwner> {
+        Some(self.owner)
+    }
+    fn ordered_admission_negotiation(&self) -> Option<OrderedAdmissionNegotiation> {
+        Some(OrderedAdmissionNegotiation {
+            version: 2,
+            owner: self.owner,
+        })
+    }
+    fn ordered_owner_retirement_version(&self) -> u32 {
+        4
+    }
+    fn submit(&self, _: RadioRequest) {
+        panic!("an incomplete v4 owner negotiation must not submit a native request");
+    }
+    fn cancel(&self, _: u64) {}
+}
+
+#[tokio::test]
+async fn retirement_version_without_owner_identity_fails_closed_without_panicking() {
+    let radio = Arc::new(MissingRetirementOwner {
+        owner: OrderedAdmissionOwner::negotiate_v2(OWNER).unwrap(),
+    });
+    let host = MobileHost::open(
+        radio,
+        Arc::new(common::Wakes::default()),
+        HostOptions {
+            platform: MobilePlatform::Android,
+            owner: "quiescence-522-incomplete-v4".into(),
+            adapter_label: "scripted".into(),
+        },
+        tokio::runtime::Handle::current(),
+    )
+    .await
+    .unwrap();
+    let receipt = parse(&host.shutdown().await);
+    assert_eq!(receipt["state"], "release-failed");
+    assert!(
+        receipt["failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|failure| failure["resourceKind"] == "ordered-owner"),
+        "missing v4 owner identity must become an actionable cleanup failure: {receipt}"
+    );
+}
+
 struct RetiringOwner {
     owner: OrderedAdmissionOwner,
     host: OnceLock<Weak<MobileHost>>,
@@ -435,6 +487,9 @@ impl PlatformRadio for RetiringOwner {
     }
     fn ordered_owner_retirement_version(&self) -> u32 {
         4
+    }
+    fn ordered_owner_retirement_owner(&self) -> Option<OrderedAdmissionOwner> {
+        Some(self.owner)
     }
     fn submit(&self, request: RadioRequest) {
         if matches!(
@@ -1073,6 +1128,9 @@ async fn callback_panic_after_dispatch_cannot_authorize_an_overlapping_attempt()
         }
         fn ordered_owner_retirement_version(&self) -> u32 {
             4
+        }
+        fn ordered_owner_retirement_owner(&self) -> Option<OrderedAdmissionOwner> {
+            Some(self.0.owner)
         }
         fn submit(&self, request: RadioRequest) {
             if matches!(

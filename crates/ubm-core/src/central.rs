@@ -1467,6 +1467,20 @@ pub enum ConsumerState {
     Invalid,
 }
 
+/// The first authoritative lifecycle event that retired a notification
+/// consumer.  The consumer can retain admitted values after its path is no
+/// longer resolvable, so this belongs to the consumer rather than being
+/// inferred later from the current connection state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NotificationInvalidationCause {
+    /// The peer's GATT database changed.
+    ServicesChanged,
+    /// The link ended or was explicitly released.
+    LinkEnded,
+    /// The host adapter reset while the consumer was active.
+    AdapterReset,
+}
+
 impl ConsumerState {
     /// Frozen wire string.
     #[must_use]
@@ -1727,6 +1741,10 @@ struct ConsumerRecord {
     lease: String,
     connection_lease: String,
     state: ConsumerState,
+    /// First lifecycle cause, retained until the terminal consumer is
+    /// reclaimed so delayed polling reports the event that retired this
+    /// exact admission rather than a later unrelated event.
+    invalidation_cause: Option<NotificationInvalidationCause>,
     op: Option<OperationId>,
     attachment: AttachmentTuple,
     /// An exact release still owns this record until its receipt is acknowledged.
@@ -2252,6 +2270,28 @@ impl Central {
             })
     }
 
+    /// The first lifecycle cause that invalidated this exact consumer, when
+    /// it remains retained for its accepted-prefix drain.
+    #[must_use]
+    pub fn consumer_invalidation_cause(
+        &self,
+        peer_key: &str,
+        selector: &PathSelector,
+        consumer: &str,
+    ) -> Option<NotificationInvalidationCause> {
+        self.hubs.iter().find_map(|hub| {
+            let path = self.paths.get(hub.path_index)?;
+            (path.peer_key == peer_key && selector_matches(path, selector))
+                .then(|| {
+                    hub.consumers
+                        .iter()
+                        .find(|known| known.lease == consumer)
+                        .and_then(|known| known.invalidation_cause)
+                })
+                .flatten()
+        })
+    }
+
     /// Find a consumer only when its resource admission matches as well as
     /// the peer and selector. Callers must keep the core lock while using
     /// the returned path for any name-addressed consumer operation.
@@ -2326,7 +2366,7 @@ impl Central {
     /// Invalidate every subscription hub whose path belongs to `peer_key`.
     /// Used when a terminal record is replaced and on service change: after
     /// removal/revocation, later native values cannot reach old consumers.
-    fn invalidate_peer_hubs(&mut self, peer_key: &str) {
+    fn invalidate_peer_hubs(&mut self, peer_key: &str, cause: NotificationInvalidationCause) {
         let mut stale_paths: Vec<usize> = Vec::new();
         for (index, path) in self.paths.iter().enumerate() {
             if path.peer_key == peer_key {
@@ -2337,6 +2377,9 @@ impl Central {
             if stale_paths.contains(&hub.path_index) {
                 hub.physical = CccdPhysical::Invalid;
                 for consumer in hub.consumers.iter_mut() {
+                    if consumer.invalidation_cause.is_none() {
+                        consumer.invalidation_cause = Some(cause);
+                    }
                     consumer.state = ConsumerState::Invalid;
                 }
             }
@@ -2893,7 +2936,7 @@ impl Central {
                     }
                 }
             } else {
-                self.invalidate_peer_hubs(peer_key);
+                self.invalidate_peer_hubs(peer_key, NotificationInvalidationCause::LinkEnded);
                 self.connections.remove(index);
             }
         }
@@ -2944,6 +2987,26 @@ impl Central {
             operation_id,
             attachment: self.attachment.clone(),
         })
+    }
+
+    /// The immutable admission that owns `lease` on this live connection.
+    /// A retirement receipt uses this identity to distinguish an older
+    /// same-named lease from a later connection generation.
+    #[must_use]
+    pub fn connection_lease_admission(
+        &self,
+        peer_key: &str,
+        lease: &str,
+    ) -> Option<OperationAdmission> {
+        let index = self.connection_position(peer_key)?;
+        self.connections[index]
+            .lease_admissions
+            .iter()
+            .find(|(name, _)| name == lease)
+            .map(|(_, operation_id)| OperationAdmission {
+                operation_id: operation_id.clone(),
+                attachment: self.attachment.clone(),
+            })
     }
 
     /// Borrow the physical link under the explicit sharing rule. Without
@@ -3221,7 +3284,7 @@ impl Central {
         }
         let next = step_connection(self.connections[index].state, ConnectionEvent::Disconnect)?;
         self.connections[index].state = next;
-        self.invalidate_peer_hubs(peer_key);
+        self.invalidate_peer_hubs(peer_key, NotificationInvalidationCause::LinkEnded);
         Ok(())
     }
 
@@ -3283,7 +3346,7 @@ impl Central {
         let next = step_connection(self.connections[index].state, ConnectionEvent::PeerLoss)?;
         self.connections[index].state = next;
         self.connections[index].db_state = DatabaseState::Invalid;
-        self.invalidate_peer_hubs(peer_key);
+        self.invalidate_peer_hubs(peer_key, NotificationInvalidationCause::LinkEnded);
         Ok(next)
     }
 
@@ -3310,7 +3373,7 @@ impl Central {
         })?;
         let next = step_connection(self.connections[index].state, ConnectionEvent::LinkReleased)?;
         self.connections[index].state = next;
-        self.invalidate_peer_hubs(peer_key);
+        self.invalidate_peer_hubs(peer_key, NotificationInvalidationCause::LinkEnded);
         // The platform confirmed this link released: earlier failed release
         // attempts no longer describe an outstanding resource (finding 38).
         self.disconnect_failures
@@ -3753,6 +3816,9 @@ impl Central {
         for hub in self.hubs.iter_mut() {
             hub.physical = CccdPhysical::Invalid;
             for consumer in hub.consumers.iter_mut() {
+                if consumer.invalidation_cause.is_none() {
+                    consumer.invalidation_cause = Some(NotificationInvalidationCause::AdapterReset);
+                }
                 consumer.state = ConsumerState::Invalid;
             }
         }
@@ -3790,7 +3856,7 @@ impl Central {
         let next = step_database(self.connections[index].db_state, event)?;
         self.connections[index].db_state = next;
         if replacing {
-            self.invalidate_peer_hubs(peer_key);
+            self.invalidate_peer_hubs(peer_key, NotificationInvalidationCause::ServicesChanged);
         }
         Ok(())
     }
@@ -3850,7 +3916,7 @@ impl Central {
         self.connections[index].db_state = next;
         self.connections[index].database_generation = generation;
         self.connections[index].live_paths = 0;
-        self.invalidate_peer_hubs(peer_key);
+        self.invalidate_peer_hubs(peer_key, NotificationInvalidationCause::ServicesChanged);
         Ok(())
     }
 
@@ -5253,6 +5319,7 @@ impl Central {
                 lease: String::from(consumer),
                 connection_lease,
                 state: ConsumerState::Ready,
+                invalidation_cause: None,
                 op: Some(id.clone()),
                 attachment: self.attachment.clone(),
                 exact_cleanup_pending: false,
@@ -5270,6 +5337,7 @@ impl Central {
             lease: String::from(consumer),
             connection_lease,
             state: ConsumerState::Enabling,
+            invalidation_cause: None,
             op: Some(id.clone()),
             attachment: self.attachment.clone(),
             exact_cleanup_pending: false,

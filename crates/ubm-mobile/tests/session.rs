@@ -3,14 +3,17 @@
 
 mod common;
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use common::*;
 use serde_json::{Value, json};
+use ubm_desktop::continuation_journal::JournalRegistry;
 use ubm_mobile::{
-    Advertisement, FailureKind, IngressClass, IngressStatus, Instance, ManufacturerData,
-    MobilePlatform, OPS, PlatformFailure, RadioCompletion, RadioIngress, RequestKind, RestoredPeer,
+    Advertisement, FailureKind, HostOptions, IngressClass, IngressStatus, Instance,
+    ManufacturerData, MobileHost, MobilePlatform, OPS, PlatformFailure, PlatformRadio,
+    RadioCompletion, RadioIngress, RequestKind, RestoredPeer, WakeSink,
 };
 
 #[test]
@@ -931,9 +934,52 @@ async fn polar_h10_script_runs_end_to_end() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scan_start_accepts_and_retains_terminal_evidence_scope() {
+    let Some(directory) =
+        recording_test_directory("scan_start_accepts_and_retains_terminal_evidence_scope")
+    else {
+        return;
+    };
+    let _ = ubm_mobile::continuation::configure_terminal_evidence_maximum_bytes(65_536);
+    let registry = Arc::new(JournalRegistry::default());
+    registry
+        .configure_directory(&directory)
+        .expect("configure private terminal-evidence registry");
     let radio = Scripted::polar();
-    let (host, _wakes) = open(&radio, MobilePlatform::Android).await;
+    let wakes = Arc::new(Wakes::default());
+    let host = Arc::new(
+        MobileHost::open_with_recording_registry(
+            Arc::clone(&radio) as Arc<dyn PlatformRadio>,
+            Arc::clone(&wakes) as Arc<dyn WakeSink>,
+            HostOptions {
+                platform: MobilePlatform::Android,
+                owner: "terminal-evidence-scan".into(),
+                adapter_label: "scripted".into(),
+            },
+            tokio::runtime::Handle::current(),
+            registry,
+        )
+        .await
+        .expect("open host with durable terminal-evidence registry"),
+    );
+    radio.bind_host(&host);
     let session = host.open_session("rn-manager").expect("session");
+
+    let reservation = ok(&call(
+        &session,
+        "terminal-evidence.reserve",
+        &json!({
+            "producer": "scan",
+            "maximumBytes": 65_536,
+            "formatVersion": 1,
+            "scope": {
+                "managerId": "manager-1",
+                "operationId": "terminal-scan-1",
+                "incarnation": "1"
+            }
+        })
+        .to_string(),
+    )
+    .await);
 
     let scan = ok(&call(
         &session,
@@ -957,8 +1003,18 @@ async fn scan_start_accepts_and_retains_terminal_evidence_scope() {
         &json!({"operationId": scan["operationId"]}).to_string(),
     )
     .await);
+    let released = ok(&call(
+        &session,
+        "terminal-evidence.release",
+        &json!({"reservationId": reservation["reservationId"]}).to_string(),
+    )
+    .await);
+    assert_eq!(
+        released,
+        json!({"released": true, "retainedForRecovery": false})
+    );
     ok(&call(&session, "session.dispose", "{}").await);
-    host.shutdown().await;
+    assert_eq!(parse(&host.shutdown().await)["state"], "released");
 }
 
 /// A characteristic read reports the radio's own provenance: CoreBluetooth

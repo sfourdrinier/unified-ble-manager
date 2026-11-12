@@ -99,6 +99,9 @@ opaque lease, owner, head, and cleanup-receipt handles only. Handles are scoped
 to the selected recording and exact native binding. Replacing selection,
 retiring a binding, invalidating the TurboModule, or using a handle from a
 different binding rejects rather than reading the replacement recording.
+Confirmed scan-failure cleanup remains owned until finalization. An exact
+finalization retry after reclamation is authenticated within the same host;
+durable recovery after a restart uses the recovered recording authority.
 
 The native-selected page route is deliberately a JSI `Uint8Array` boundary:
 
@@ -159,6 +162,10 @@ matching native persisted selection, it was retired, a different owner is
 retained, or the installed native module does not implement the complete route,
 the call fails with `capability.unsupported`; it never guesses a former manager
 or searches another owner's evidence.
+
+When a session ends during subscription terminal publication, native retains
+the committed bytes and transfers their source authority to recovery. A failed
+transfer remains an explicit retryable cleanup obligation.
 
 ```ts
 import { createReactNativeContinuationRecordings } from 'unified-ble-manager/react-native'

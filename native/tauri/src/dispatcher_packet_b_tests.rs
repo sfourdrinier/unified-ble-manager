@@ -6497,9 +6497,10 @@ async fn terminal_evidence_recovery_refresh_and_release_share_the_caller_lease_f
         .await
         .expect("refresh task")
         .expect("refresh succeeds before release");
+    let release_result = release.await.expect("release task");
     assert!(
-        super::is_released(&release.await.expect("release task")),
-        "teardown observes and releases the alias inserted by refresh"
+        super::is_released(&release_result),
+        "teardown observes and releases the alias inserted by refresh: {release_result:?}"
     );
     *harness
         .dispatcher

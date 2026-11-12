@@ -3738,6 +3738,7 @@ impl MobileSession {
                 let abandonment = ledger
                     .abandon(&reservation_id)
                     .map_err(terminal_evidence_error)?;
+                host.release_subscription_terminal_evidence(&reservation_id);
                 Ok(
                     serde_json::json!({"released":true,"retainedForRecovery":matches!(abandonment, ubm_desktop::terminal_evidence_ledger::TerminalEvidenceAbandonment::RetainedForRecovery)}),
                 )
