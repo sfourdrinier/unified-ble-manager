@@ -52,14 +52,18 @@ test('lost acceptance is retried and an abandoned acceptance expires', async () 
   const owner = await handoffOwner({
     crypto: webcrypto,
     channel: network.channel(),
-    lifetimeMs: 500,
+    // The retry is asynchronous WebCrypto work on both peers. This test proves
+    // recovery of a lost acceptance; the following case independently proves
+    // short-lifetime abandonment, so do not make recovery depend on a narrow
+    // scheduler window.
+    lifetimeMs: 1500,
     execute: async x => x
   })
   const client = await importWebRecordingHandoff({
     crypto: webcrypto,
     channel: network.channel(),
     ticket: owner.ticket,
-    timeoutMs: 400
+    timeoutMs: 1000
   })
   expect(await client.request('1', 'alive', 400)).toBe('alive')
   client.close()

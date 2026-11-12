@@ -57,6 +57,12 @@ interface PhysicalSubscription<Attachment extends string, Identity extends Backe
   closed: boolean
   released: boolean
   releaseInFlight: Promise<CleanupRecord> | null
+  /**
+   * One database lifecycle event can reach this physical CCCD through every
+   * joined logical database. Retain its outcome, including a refusal, so a
+   * later fan-out recipient cannot turn the same event into an implicit retry.
+   */
+  databaseInvalidationCleanup: Promise<CleanupRecord> | null
   releasedDuringEnable: boolean
   backendInvalidated: boolean
   lateSubscriptionPending: boolean
@@ -296,6 +302,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
       closed: false,
       released: false,
       releaseInFlight: null,
+      databaseInvalidationCleanup: null,
       releasedDuringEnable: false,
       backendInvalidated: false,
       lateSubscriptionPending: false,
@@ -368,7 +375,8 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
 
   async invalidateDatabase(
     database: DatabasePath<Attachment, string, string>,
-    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed'
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed',
+    retainFailedDatabaseCleanup = false
   ): Promise<CleanupRecord> {
     const failures: CleanupFailure[] = []
     for (const physical of [...this.physicalByPath.values()]) {
@@ -379,10 +387,25 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
         this.closeConsumer(subscription, reason)
         physical.consumers.delete(subscription)
       }
-      const result = await this.disable(physical)
+      const result = await (retainFailedDatabaseCleanup
+        ? this.invalidateDatabasePhysical(physical)
+        : this.disable(physical))
       failures.push(...result.failures)
     }
     return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
+  }
+
+  /**
+   * Database lifecycle notifications fan out to every logical database joined
+   * to the same native path. A failed first physical disable remains a real
+   * obligation, but only an explicit owner retry (or a distinct connection
+   * lifecycle path) may issue another native command.
+   */
+  private invalidateDatabasePhysical(physical: PhysicalSubscription<Attachment, Identity>): Promise<CleanupRecord> {
+    if (physical.databaseInvalidationCleanup !== null) return physical.databaseInvalidationCleanup
+    const cleanup = this.disable(physical)
+    physical.databaseInvalidationCleanup = cleanup
+    return cleanup
   }
 
   async destroy(): Promise<CleanupRecord> {

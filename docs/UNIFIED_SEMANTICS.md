@@ -201,7 +201,12 @@ identity even after graph replacement. A refused unsubscribe remains owned and
 retryable; only confirmed unsubscribe or end of its physical connection
 generation discharges that obligation, not a merely logical lease-release
 receipt or stale-handle error. Releasing it must not release another owner's
-connection lease.
+connection lease. One backend Services Changed fanout may reach multiple
+joined logical database views; all of those views share its one physical
+cleanup attempt, including a refused result. A later explicit owner removal,
+manager teardown, connection-end invalidation, or a distinct lifecycle action
+may retry the retained obligation, but another recipient of that same fanout
+MUST NOT issue an implicit native retry.
 
 <!-- SEM-COVERAGE: SEM-ADAPTER -->
 

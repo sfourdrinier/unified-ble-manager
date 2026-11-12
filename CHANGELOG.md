@@ -21,6 +21,10 @@ All notable changes to `unified-ble-manager` are documented here.
   the supervisor's normal bounded backoff and attempt budget, rather than
   treating an early power-on snapshot as a ready reconnect. Powered-off and
   unavailable adapters retain their readiness-wait behavior.
+- Deduplicate a single backend Services Changed fanout across joined logical
+  database views after a refused CCCD disable. The refused cleanup remains
+  visible and is retried only by its explicit owner or another distinct
+  lifecycle authority; a second view never issues an implicit native retry.
 
 ## [5.2.1] - 2026-11-08
 
