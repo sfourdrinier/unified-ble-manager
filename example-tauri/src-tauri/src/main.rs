@@ -40,6 +40,8 @@ fn main() {
         tauri_plugin_unified_ble_manager::BtleplugDispatcherOptions {
             connection_policy,
             adapter_id,
+            failure_evidence_store: None,
+            terminal_evidence_maximum_bytes: None,
         },
     );
     let process_dispatcher = dispatcher.clone();
